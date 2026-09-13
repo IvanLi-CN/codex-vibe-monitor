@@ -1668,6 +1668,81 @@ pub(crate) async fn begin_system_task_run(
     })
 }
 
+/// Record a task start without allowing SQLite's configured busy timeout to outlive shutdown.
+/// This uses a short-lived connection so the normal pool timeout remains unchanged for callers.
+pub(crate) async fn begin_system_task_run_nonblocking(
+    database_url: &str,
+    task_kind: SystemTaskKind,
+    trigger_kind: impl Into<String>,
+    summary: Option<String>,
+) -> Result<SystemTaskRunHandle> {
+    let options = SqliteConnectOptions::from_str(database_url)
+        .context("invalid sqlite database url")?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::ZERO);
+    let mut connection = SqliteConnection::connect_with(&options).await?;
+    let started_at = format_utc_iso_millis(Utc::now());
+    let trigger_kind = trigger_kind.into();
+    let result = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO system_task_runs (
+            task_kind,
+            trigger_kind,
+            status,
+            summary,
+            started_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        RETURNING id
+        "#,
+    )
+    .bind(task_kind.as_str())
+    .bind(&trigger_kind)
+    .bind(SystemTaskStatus::Running.as_str())
+    .bind(summary)
+    .bind(&started_at)
+    .fetch_one(&mut connection)
+    .await;
+    connection.close().await?;
+    let id = result?;
+
+    Ok(SystemTaskRunHandle {
+        id,
+        task_kind,
+        trigger_kind,
+        started_at: Instant::now(),
+    })
+}
+
+pub(crate) async fn begin_system_task_run_admitted(
+    state: &AppState,
+    write_class: crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass,
+    task_kind: SystemTaskKind,
+    trigger_kind: impl Into<String>,
+    summary: Option<String>,
+) -> Result<SystemTaskRunHandle> {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let _write_permit = coordinator.acquire(write_class).await;
+    begin_system_task_run(&state.pool, task_kind, trigger_kind, summary).await
+}
+
+pub(crate) async fn try_begin_system_task_run_with_admission(
+    state: &AppState,
+    write_class: crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass,
+    task_kind: SystemTaskKind,
+    trigger_kind: impl Into<String>,
+    summary: Option<String>,
+) -> Result<Option<SystemTaskRunHandle>> {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let Some(_write_permit) = coordinator.try_acquire(write_class) else {
+        return Ok(None);
+    };
+    begin_system_task_run(&state.pool, task_kind, trigger_kind, summary)
+        .await
+        .map(Some)
+}
+
 pub(crate) async fn finish_system_task_run(
     pool: &Pool<Sqlite>,
     handle: &SystemTaskRunHandle,
@@ -1720,11 +1795,78 @@ pub(crate) async fn finish_system_task_run_batched(
     summary: Option<String>,
     detail: Option<String>,
 ) {
-    if try_enqueue_system_task_run_finish(state, handle, status, summary.clone(), detail.clone()) {
-        return;
+    if !finish_system_task_run_reliably(state, None, handle, status, summary, detail).await {
+        warn!(
+            task_kind = handle.task_kind.as_str(),
+            trigger_kind = %handle.trigger_kind,
+            "failed to durably finalize system task run after bounded retries"
+        );
     }
+}
 
-    finish_system_task_run(&state.pool, handle, status, summary, detail).await;
+const SYSTEM_TASK_FINISH_RETRY_ATTEMPTS: usize = 20;
+const SYSTEM_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+pub(crate) async fn finish_system_task_run_reliably(
+    state: &AppState,
+    cancel: Option<&CancellationToken>,
+    handle: &SystemTaskRunHandle,
+    status: SystemTaskStatus,
+    summary: Option<String>,
+    detail: Option<String>,
+) -> bool {
+    let recovery_finish = BatchedSystemTaskFinish {
+        run_id: handle.id,
+        task_kind: handle.task_kind,
+        trigger_kind: handle.trigger_kind.clone(),
+        status,
+        summary: summary.clone(),
+        detail: detail.clone(),
+        finished_at: format_utc_iso_millis(Utc::now()),
+        duration_ms: handle
+            .started_at
+            .elapsed()
+            .as_millis()
+            .min(i64::MAX as u128) as i64,
+    };
+    for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+        // Journal and enqueue first. A cancellation path must never perform a direct SQL update
+        // while holding a P2 permit: SQLite's busy timeout could otherwise block P1/interactive
+        // writers behind a lock held by an external connection.
+        if try_enqueue_system_task_run_finish(
+            state,
+            handle,
+            status,
+            summary.clone(),
+            detail.clone(),
+        ) {
+            return true;
+        }
+
+        if attempt < SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+            if let Some(cancel) = cancel {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL) => {}
+                }
+            } else {
+                tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL).await;
+            }
+        }
+    }
+    let persisted = state.sqlite_batch_writer.quarantine_system_task_finish(
+        &recovery_finish,
+        "task-history finish exceeded bounded enqueue retries",
+    );
+    if !persisted {
+        warn!(
+            task_kind = handle.task_kind.as_str(),
+            trigger_kind = %handle.trigger_kind,
+            "failed to persist task-history finish recovery record"
+        );
+    }
+    persisted
 }
 
 pub(crate) fn try_enqueue_system_task_run_finish(
@@ -1740,20 +1882,35 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    state
+    let finish = BatchedSystemTaskFinish {
+        run_id: handle.id,
+        task_kind: handle.task_kind,
+        trigger_kind: handle.trigger_kind.clone(),
+        status,
+        summary,
+        detail,
+        finished_at,
+        duration_ms,
+    };
+    let journaled = state.sqlite_batch_writer.quarantine_system_task_finish(
+        &finish,
+        "task-history finish admitted for durable recovery",
+    );
+    if !journaled {
+        warn!(
+            run_id = handle.id,
+            task_kind = handle.task_kind.as_str(),
+            durability_mode = "memory_fallback",
+            "task-history finish journal unavailable; enqueueing with reduced durability"
+        );
+    }
+    let enqueued = state
         .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::SystemTaskFinish(
-            BatchedSystemTaskFinish {
-                run_id: handle.id,
-                task_kind: handle.task_kind,
-                trigger_kind: handle.trigger_kind.clone(),
-                status,
-                summary,
-                detail,
-                finished_at,
-                duration_ms,
-            },
-        ))
+        .enqueue(SqliteBatchWrite::SystemTaskFinish(finish));
+    if !enqueued {
+        return false;
+    }
+    true
 }
 
 pub(crate) async fn fetch_system_status(

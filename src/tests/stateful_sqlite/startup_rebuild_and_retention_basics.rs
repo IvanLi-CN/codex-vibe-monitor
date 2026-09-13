@@ -1672,8 +1672,51 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_task_history_s
         .execute(&mut lock_conn)
         .await
         .expect("release task-history write lock");
+    let orphaned_running_tasks: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM system_task_runs
+        WHERE task_kind = 'hourly_rollup_bootstrap'
+          AND trigger_kind = 'startup'
+          AND status = 'running'
+          AND summary = 'background hourly rollup bootstrap started'
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count cancelled bootstrap task-history rows");
+    assert_eq!(orphaned_running_tasks, 0);
     state.pool.close().await;
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_retries_coordinator_contention_promptly() {
+    let state = test_state_from_config(test_config(), false).await;
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let write_permit = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let task_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'hourly_rollup_bootstrap'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("read bootstrap task count while coordinator is occupied");
+    assert_eq!(task_count, 0);
+
+    drop(write_permit);
+    wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "running").await;
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
+        .await
+        .expect("bootstrap should stop after cancellation")
+        .expect("bootstrap task should join after cancellation");
+    state.pool.close().await;
 }
 
 #[tokio::test]
@@ -1729,8 +1772,7 @@ async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_d
 }
 
 #[tokio::test]
-async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_races_with_write_lock()
-{
+async fn startup_hourly_rollup_task_history_finish_does_not_wait_for_write_lock() {
     let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
         "startup-hourly-rollup-bootstrap-task-history-finish-cancel-race",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
@@ -1755,7 +1797,7 @@ async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_race
     let cancel = CancellationToken::new();
     let state_for_finish = state.clone();
     let cancel_for_finish = cancel.clone();
-    let mut finish_handle = tokio::spawn(async move {
+    let finish_handle = tokio::spawn(async move {
         finish_runtime_startup_hourly_rollup_bootstrap_task(
             state_for_finish.as_ref(),
             &cancel_for_finish,
@@ -1766,14 +1808,9 @@ async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_race
         )
         .await;
     });
-    tokio::time::timeout(Duration::from_millis(100), &mut finish_handle)
+    tokio::time::timeout(Duration::from_millis(100), finish_handle)
         .await
-        .expect_err("task-history finish should wait for the sqlite write lock");
-
-    cancel.cancel();
-    tokio::time::timeout(Duration::from_secs(1), finish_handle)
-        .await
-        .expect("task-history finish should defer after cancellation")
+        .expect("task-history finish should enqueue without waiting for the sqlite write lock")
         .expect("task-history finish task should join");
 
     sqlx::query("ROLLBACK")
@@ -3194,7 +3231,7 @@ async fn idle_coverage_repair_persists_its_next_probe_deadline() {
 }
 
 #[tokio::test]
-async fn startup_coverage_repair_executes_under_its_single_admitted_gate_permit() {
+async fn startup_coverage_repair_defers_when_hourly_rollup_lock_is_busy() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -3203,24 +3240,23 @@ async fn startup_coverage_repair_executes_under_its_single_admitted_gate_permit(
     let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
     let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
 
-    let run = run_startup_backfill_task_if_due_with_gate(&state, task, &gate);
-    tokio::pin!(run);
-    tokio::select! {
-        result = &mut run => panic!("coverage repair must wait for the held rollup lock, got {result:?}"),
-        _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-    }
-
+    let run = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        .await
+        .expect("busy hourly rollup lock should defer without SQLite access");
     assert!(
-        matches!(
-            gate.try_begin_background("coverage_admission_probe"),
-            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy)
-        ),
-        "the coverage repair must retain its single production-shaped gate permit while it waits"
+        !run,
+        "coverage repair should defer while its synchronization lock is busy"
     );
+    {
+        let _probe = gate
+            .try_begin_background("coverage_admission_probe")
+            .expect("a lock-only defer must not consume the pressure permit");
+    }
     drop(rollup_guard);
 
     assert!(
-        !run.await
+        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+            .await
             .expect("coverage repair should finish after the rollup lock is released")
     );
     let progress = load_startup_backfill_progress(&state.pool, task.name())

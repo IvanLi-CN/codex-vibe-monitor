@@ -2974,6 +2974,32 @@ mod hourly_rollup_budget_tests {
         );
     }
 
+    #[tokio::test]
+    async fn read_surface_refresh_cancels_while_waiting_for_sync_lock() {
+        let pool = SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .expect("create lazy sqlite pool");
+        let lock = Arc::new(Mutex::new(()));
+        let _held_guard = lock.lock().await;
+        let cancel = CancellationToken::new();
+        let refresh_lock = Arc::clone(&lock);
+        let refresh_cancel = cancel.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_hourly_rollups_for_read_surfaces_best_effort(
+                &pool,
+                refresh_lock.as_ref(),
+                &refresh_cancel,
+                "cancellation regression test",
+                HourlyRollupRefreshScope::Full,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        assert!(refresh.await.expect("refresh task should finish"));
+    }
+
     #[test]
     fn historical_rollup_elapsed_budget_reached_respects_unbounded_mode() {
         assert!(!historical_rollup_elapsed_budget_reached(
@@ -3213,10 +3239,19 @@ pub(crate) async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<
 pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     pool: &Pool<Sqlite>,
     hourly_rollup_sync_lock: &Mutex<()>,
+    cancel: &CancellationToken,
     reason: &'static str,
     scope: HourlyRollupRefreshScope,
-) {
+) -> bool {
     let gate = crate::db_pressure::global_db_pressure_gate();
+    let _guard = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            debug!(reason, "background hourly rollup refresh cancelled while waiting for sync lock");
+            return true;
+        }
+        guard = hourly_rollup_sync_lock.lock() => guard,
+    };
     let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
         Ok(permit) => permit,
         Err(deny_reason) => {
@@ -3225,12 +3260,37 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
                 deny_reason = %deny_reason,
                 "background hourly rollup refresh skipped because database pressure gate is closed"
             );
-            return;
+            return true;
         }
     };
-    let _guard = hourly_rollup_sync_lock.lock().await;
+    let _write_permit =
+        match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        {
+            Some(permit) => permit,
+            None => {
+                debug!(
+                    reason,
+                    defer_reason = "coordinator_priority",
+                    "background hourly rollup refresh skipped before SQLite access"
+                );
+                return true;
+            }
+        };
 
-    if let Err(err) = refresh_hourly_rollups_for_read_surfaces_with_scope(pool, scope).await {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let refresh_result = tokio::select! {
+        _ = cancel.cancelled() => {
+            debug!(reason, "background hourly rollup refresh cancelled during SQLite work");
+            return true;
+        }
+        _ = coordinator.wait_for_p2_preemption() => {
+            debug!(reason, "background hourly rollup refresh yielded to higher-priority SQLite writes");
+            return true;
+        }
+        result = refresh_hourly_rollups_for_read_surfaces_with_scope(pool, scope) => result,
+    };
+    if let Err(err) = refresh_result {
         gate.record_error("hourly_rollup_refresh", &err);
         warn!(
             error = %err,
@@ -3238,6 +3298,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
             "background hourly rollup refresh failed; keeping existing rollups for read surfaces"
         );
     }
+    false
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3253,6 +3314,7 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
     reason: &'static str,
 ) -> ActiveAccountActivityV2RepairResult {
     let gate = crate::db_pressure::global_db_pressure_gate();
+    let _guard = hourly_rollup_sync_lock.lock().await;
     let _permit = match gate.try_begin_background("account_activity_v2_priority_repair") {
         Ok(permit) => permit,
         Err(deny_reason) => {
@@ -3265,8 +3327,30 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
             return ActiveAccountActivityV2RepairResult::Deferred;
         }
     };
-    let _guard = hourly_rollup_sync_lock.lock().await;
-    match repair_active_account_activity_v2_coverage(pool).await {
+    let _write_permit =
+        match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        {
+            Some(permit) => permit,
+            None => {
+                debug!(
+                    reason,
+                    defer_reason = "coordinator_priority",
+                    wake_reason = "active_window_coverage_check",
+                    "active Dashboard coverage repair deferred before SQLite access"
+                );
+                return ActiveAccountActivityV2RepairResult::Deferred;
+            }
+        };
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let repair_result = tokio::select! {
+        _ = coordinator.wait_for_p2_preemption() => {
+            debug!(reason, wake_reason = "active_window_coverage_check", "active Dashboard coverage repair yielded to higher-priority SQLite writes");
+            return ActiveAccountActivityV2RepairResult::Deferred;
+        }
+        result = repair_active_account_activity_v2_coverage(pool) => result,
+    };
+    match repair_result {
         Ok(outcome) => ActiveAccountActivityV2RepairResult::Repaired(outcome),
         Err(err) => {
             gate.record_error("account_activity_v2_priority_repair", &err);

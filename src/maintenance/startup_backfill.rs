@@ -370,6 +370,14 @@ fn startup_backfill_pressure_defer_outcome(
     reason: crate::db_pressure::DbPressureDenyReason,
 ) -> StartupBackfillTaskRunOutcome {
     let retry_at = startup_backfill_pressure_retry_at(gate, reason);
+    startup_backfill_pressure_defer_outcome_at(task, reason, retry_at)
+}
+
+fn startup_backfill_pressure_defer_outcome_at(
+    task: StartupBackfillTask,
+    reason: crate::db_pressure::DbPressureDenyReason,
+    retry_at: DateTime<Utc>,
+) -> StartupBackfillTaskRunOutcome {
     STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
     info!(
         task = task.log_label(),
@@ -387,6 +395,44 @@ fn startup_backfill_pressure_defer_outcome(
         completed: true,
         next_due: retry_at,
     }
+}
+
+async fn persist_startup_backfill_pressure_defer(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    gate: &crate::db_pressure::DbPressureGate,
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    let retry_at = startup_backfill_pressure_retry_at(gate, reason);
+    let retry_after = format_utc_iso(retry_at);
+    // The caller releases its previous P2 permit before entering this helper. Re-admit this short
+    // state update after any queued P1/interactive writer completes, so the defer is coordinated
+    // without keeping higher-priority work behind the cancelled backfill.
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .await;
+    save_startup_backfill_progress(
+        &state.pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_IDLE,
+            suspension_reason: None,
+        },
+    )
+    .await
+    .inspect_err(|err| {
+        record_startup_backfill_pressure_error(gate, err);
+    })?;
+    Ok(startup_backfill_pressure_defer_outcome_at(
+        task, reason, retry_at,
+    ))
 }
 
 fn startup_backfill_pressure_error_defer_outcome(
@@ -1239,12 +1285,38 @@ where
 {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
 
+    // Coverage repair shares the hourly-rollup synchronization lock. Only admit work when the
+    // lock is immediately available; waiting while holding P2 could deadlock another maintenance
+    // path that already owns the lock and is waiting for coordinator admission.
+    let _hourly_rollup_guard = match state.hourly_rollup_sync_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Ok(startup_backfill_pressure_defer_outcome(
+                task,
+                gate,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            ));
+        }
+    };
+
     // Coverage repair owns this one permit. The hourly-rollup convenience wrapper also acquires
     // the global gate, so calling it while the startup path holds a permit would always defer in
     // production. Keep admission before progress access, then call the underlying repair once.
     let _permit = match gate.try_begin_background("startup_backfill_account_activity_v2_coverage") {
         Ok(permit) => permit,
         Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
+    };
+    let write_permit = match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+    {
+        Some(permit) => permit,
+        None => {
+            return Ok(startup_backfill_pressure_defer_outcome(
+                task,
+                gate,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            ));
+        }
     };
 
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
@@ -1281,9 +1353,18 @@ where
         });
     }
 
-    let repair_outcome = {
-        let _guard = state.hourly_rollup_sync_lock.lock().await;
-        repair().await
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let repair_outcome = tokio::select! {
+        biased;
+        _ = coordinator.wait_for_p2_preemption() => {
+            drop(write_permit);
+            return Ok(startup_backfill_pressure_defer_outcome(
+                task,
+                gate,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            ));
+        }
+        outcome = repair() => outcome,
     };
     let repair_outcome = match repair_outcome {
         Ok(outcome) => outcome,
@@ -1455,6 +1536,23 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate).await
 }
 
+async fn begin_startup_backfill_audit(
+    state: &Arc<AppState>,
+    cancel: &CancellationToken,
+) -> Result<Option<SystemTaskRunHandle>> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Ok(None),
+        result = begin_system_task_run_admitted(
+            state.as_ref(),
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+            SystemTaskKind::StartupBackfill,
+            "event_or_due",
+            Some("startup backfill maintenance changed data or failed".to_string()),
+        ) => result.map(Some),
+    }
+}
+
 async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -1485,7 +1583,12 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
             STARTUP_BACKFILL_SCHEDULER.clear_next_due(*task);
             continue;
         }
-        match run_startup_backfill_task_if_due_outcome(&state, *task, gate).await {
+        let task_result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            result = run_startup_backfill_task_if_due_outcome(&state, *task, gate) => result,
+        };
+        match task_result {
             Ok(outcome) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
@@ -1513,54 +1616,139 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     }
 
     if ran_actionable_task {
-        refresh_hourly_rollups_for_read_surfaces_best_effort(
+        had_deferred_task |= refresh_hourly_rollups_for_read_surfaces_best_effort(
             &state.pool,
             state.hourly_rollup_sync_lock.as_ref(),
+            cancel,
             "startup backfill maintenance pass",
             startup_backfill_hourly_rollup_refresh_scope(),
         )
         .await;
         if !cancel.is_cancelled() {
-            let _guard = state.hourly_rollup_sync_lock.lock().await;
-            let live_start_epoch =
-                shanghai_retention_cutoff(state.config.invocation_max_days).timestamp();
-            if let Err(err) =
-                maintain_parallel_work_rollups(&state.pool, Some(live_start_epoch)).await
+            let _guard = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    return StartupBackfillMaintenancePass {
+                        ran_actionable_task,
+                        had_failure,
+                    };
+                }
+                guard = state.hourly_rollup_sync_lock.lock() => guard,
+            };
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            if let Ok(_pressure_permit) =
+                gate.try_begin_background("parallel_work_rollup_maintenance")
             {
-                had_failure = true;
-                crate::db_pressure::global_db_pressure_gate()
-                    .record_error("parallel_work_rollup_maintenance", &err);
-                warn!(error = %err, "parallel-work rollup maintenance pass failed");
+                if let Some(_write_permit) =
+                    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                        .try_acquire(
+                            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                        )
+                {
+                    let live_start_epoch =
+                        shanghai_retention_cutoff(state.config.invocation_max_days).timestamp();
+                    let coordinator =
+                        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+                    let maintenance_deferred = tokio::select! {
+                        _ = cancel.cancelled() => {
+                            debug!("parallel-work rollup maintenance cancelled during SQLite work");
+                            true
+                        }
+                        _ = coordinator.wait_for_p2_preemption() => {
+                            debug!("parallel-work rollup maintenance yielded to higher-priority SQLite writes");
+                            true
+                        }
+                        result = maintain_parallel_work_rollups(&state.pool, Some(live_start_epoch)) => {
+                            if let Err(err) = result {
+                                had_failure = true;
+                                gate.record_error("parallel_work_rollup_maintenance", &err);
+                                warn!(error = %err, "parallel-work rollup maintenance pass failed");
+                            }
+                            false
+                        }
+                    };
+                    had_deferred_task |= maintenance_deferred;
+                } else {
+                    had_deferred_task = true;
+                    debug!(
+                        defer_reason = "coordinator_priority",
+                        "parallel-work rollup maintenance deferred before SQLite access"
+                    );
+                }
+            } else {
+                had_deferred_task = true;
+                debug!(
+                    defer_reason = "database_pressure",
+                    "parallel-work rollup maintenance deferred before SQLite access"
+                );
             }
         }
     }
 
-    if ran_actionable_task || had_failure {
-        let task_run = begin_system_task_run(
-            &state.pool,
-            SystemTaskKind::StartupBackfill,
-            "event_or_due",
-            Some("startup backfill maintenance changed data or failed".to_string()),
-        )
-        .await
-        .ok();
-        if let Some(run) = task_run.as_ref() {
-            finish_system_task_run_batched(
-                state.as_ref(),
-                run,
-                if had_failure {
-                    SystemTaskStatus::Failed
-                } else {
-                    SystemTaskStatus::Success
-                },
-                Some(if had_failure {
-                    "startup backfill maintenance pass completed with failures".to_string()
-                } else {
-                    "startup backfill maintenance pass completed".to_string()
-                }),
-                None,
-            )
-            .await;
+    if (ran_actionable_task || had_failure) && !cancel.is_cancelled() {
+        // The audit row is non-critical bookkeeping. Do not hold a pressure slot while the
+        // P2 admission waits: if cancellation wins, leave the row for the next pass. The durable
+        // task/progress rows above remain the source of truth.
+        let gate = crate::db_pressure::global_db_pressure_gate();
+        match gate.try_begin_background("startup_backfill_audit") {
+            Ok(pressure_permit) => {
+                // Do not hold the background slot while waiting for the process-wide write
+                // coordinator. P1/interactive writes can still preempt this P2 audit waiter.
+                drop(pressure_permit);
+                let task_run = begin_startup_backfill_audit(&state, cancel).await;
+                match task_run {
+                    Ok(Some(run)) => {
+                        let audit_status = if had_failure {
+                            SystemTaskStatus::Failed
+                        } else if had_deferred_task {
+                            SystemTaskStatus::Skipped
+                        } else {
+                            SystemTaskStatus::Success
+                        };
+                        let audit_summary = if had_failure {
+                            "startup backfill maintenance pass completed with failures"
+                        } else if had_deferred_task {
+                            "startup backfill maintenance pass deferred work for a later run"
+                        } else {
+                            "startup backfill maintenance pass completed"
+                        };
+                        if !finish_system_task_run_reliably(
+                            state.as_ref(),
+                            Some(cancel),
+                            &run,
+                            audit_status,
+                            Some(audit_summary.to_string()),
+                            None,
+                        )
+                        .await
+                        {
+                            warn!(
+                                task_kind = run.task_kind.as_str(),
+                                trigger_kind = %run.trigger_kind,
+                                "failed to durably finalize startup backfill maintenance audit"
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        debug!(
+                            defer_reason = "cancelled",
+                            "startup backfill maintenance audit cancelled before SQLite access"
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            "failed to record startup backfill maintenance audit start"
+                        );
+                    }
+                }
+            }
+            Err(reason) => {
+                debug!(
+                    defer_reason = %reason,
+                    "startup backfill maintenance audit deferred before SQLite access"
+                );
+            }
         }
     } else if !had_deferred_task {
         // Idle passes deliberately do not write system_task_runs, avoiding an audit workload
@@ -1642,11 +1830,32 @@ async fn run_startup_backfill_task_if_due_outcome(
         });
     }
 
+    // Pool health archive backfill shares the hourly-rollup synchronization lock. Acquire that
+    // lock before P2 admission so another maintenance path cannot hold the lock while waiting
+    // for the coordinator and deadlock an already-admitted P2 task.
+    let _hourly_rollup_guard = if task == StartupBackfillTask::PoolUpstreamNodeHealthArchives {
+        Some(state.hourly_rollup_sync_lock.lock().await)
+    } else {
+        None
+    };
+
     // This admission is deliberately before progress lookup: a pressure defer must remain a
     // scheduler-only decision, not turn into a SQLite read, progress write, or task-run audit.
     let _permit = match gate.try_begin_background("startup_backfill") {
         Ok(permit) => permit,
         Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
+    };
+    let write_permit = match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+    {
+        Some(permit) => permit,
+        None => {
+            return Ok(startup_backfill_pressure_defer_outcome(
+                task,
+                gate,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            ));
+        }
     };
 
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
@@ -1684,15 +1893,33 @@ async fn run_startup_backfill_task_if_due_outcome(
         })?;
 
     let started_at = Instant::now();
-    let outcome = match run_startup_backfill_task(
-        state,
-        task,
-        progress.cursor_id,
-        progress.zero_update_streak,
-        progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
-    )
-    .await
-    {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    // Backfill implementations combine bounded SQL batches with file reads/decompression. If
+    // an interactive writer arrives while this P2 task is active, cancel the in-flight future so
+    // its transaction rolls back and release admission immediately for the higher-priority write.
+    let task_result = tokio::select! {
+        biased;
+        _ = coordinator.wait_for_p2_preemption() => {
+            drop(write_permit);
+            return persist_startup_backfill_pressure_defer(
+                state,
+                task,
+                &task_name,
+                &progress,
+                gate,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            )
+            .await;
+        }
+        result = run_startup_backfill_task(
+            state,
+            task,
+            progress.cursor_id,
+            progress.zero_update_streak,
+            progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+        ) => result,
+    };
+    let outcome = match task_result {
         Ok((run, detail)) => {
             let zero_update_streak = if run.updated == 0 {
                 progress.zero_update_streak.saturating_add(1)
@@ -2153,7 +2380,6 @@ pub(crate) async fn run_startup_backfill_task(
             ))
         }
         StartupBackfillTask::PoolUpstreamNodeHealthArchives => {
-            let _guard = state.hourly_rollup_sync_lock.lock().await;
             let cache_summary =
                 backfill_pool_upstream_node_health_archives(&state.pool, Some(1), max_elapsed)
                     .await?;
@@ -2324,6 +2550,18 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     }
 }
 
+async fn run_startup_persistent_prep_best_effort_cancellable(
+    state: &Arc<AppState>,
+    prep_cli: &CliArgs,
+    cancel: &CancellationToken,
+) -> Option<bool> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => None,
+        result = run_startup_persistent_prep_best_effort(state, prep_cli) => Some(result),
+    }
+}
+
 pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -2353,8 +2591,12 @@ pub(crate) fn spawn_startup_backfill_maintenance(
             return;
         }
         let prep_cli = CliArgs::default();
-        let mut startup_prep_pending =
-            !run_startup_persistent_prep_best_effort(&state, &prep_cli).await;
+        let Some(prep_pending) =
+            run_startup_persistent_prep_best_effort_cancellable(&state, &prep_cli, &cancel).await
+        else {
+            return;
+        };
+        let mut startup_prep_pending = prep_pending;
         let mut startup_prep_retry_at = startup_prep_pending
             .then(|| Instant::now() + Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
         run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
@@ -2402,8 +2644,13 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                     if startup_prep_pending
                         && startup_prep_retry_at.is_none_or(|retry_at| retry_at <= Instant::now())
                     {
-                        startup_prep_pending =
-                            !run_startup_persistent_prep_best_effort(&state, &prep_cli).await;
+                        let Some(prep_pending) =
+                            run_startup_persistent_prep_best_effort_cancellable(&state, &prep_cli, &cancel)
+                                .await
+                        else {
+                            break;
+                        };
+                        startup_prep_pending = prep_pending;
                         startup_prep_retry_at = startup_prep_pending.then(|| {
                             Instant::now()
                                 + Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)

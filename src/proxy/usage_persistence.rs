@@ -1106,6 +1106,10 @@ pub(crate) async fn annotate_pool_upstream_request_attempt_request_compression(
         return Ok(false);
     };
 
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+
     let result = sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
@@ -1141,6 +1145,10 @@ pub(crate) async fn annotate_pool_upstream_request_attempt_codex_imagegen_rewrit
     let Some(attempt_id) = pending.attempt_id else {
         return Ok(false);
     };
+
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
 
     let existing = sqlx::query_scalar::<_, Option<String>>(
         "SELECT request_summary_json FROM pool_upstream_request_attempts WHERE id = ?1",
@@ -2092,32 +2100,38 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
         );
     }
 
-    let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
-    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-    let mut tx = state.pool.begin().await?;
-    let recovered_attempts = match pending_attempt_record.attempt_id {
-        Some(attempt_id) => {
-            recover_pool_upstream_request_attempts_with_scope_tx(
-                tx.as_mut(),
-                PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id },
-            )
-            .await?
-        }
-        None => Vec::new(),
-    };
-
-    let recovered_invocations =
-        if pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty() {
-            let selector = InvocationRecoverySelector::from(&pending_attempt_record);
-            recover_proxy_invocations_with_scope_tx(
-                tx.as_mut(),
-                ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-            )
-            .await?
-        } else {
-            Vec::new()
+    let (recovered_attempts, recovered_invocations) = {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+        let mut tx = state.pool.begin().await?;
+        let recovered_attempts = match pending_attempt_record.attempt_id {
+            Some(attempt_id) => {
+                recover_pool_upstream_request_attempts_with_scope_tx(
+                    tx.as_mut(),
+                    PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id },
+                )
+                .await?
+            }
+            None => Vec::new(),
         };
-    tx.commit().await?;
+
+        let recovered_invocations =
+            if pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty() {
+                let selector = InvocationRecoverySelector::from(&pending_attempt_record);
+                recover_proxy_invocations_with_scope_tx(
+                    tx.as_mut(),
+                    ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+        tx.commit().await?;
+        (recovered_attempts, recovered_invocations)
+    };
 
     let should_clean_up_route = pending_attempt_record.attempt_id.is_none()
         || !recovered_attempts.is_empty()
@@ -2198,13 +2212,18 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
 ) -> Result<()> {
     state.sqlite_batch_writer.flush_now(&state.pool).await?;
 
-    let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
-    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-    let recovered_invocations = recover_proxy_invocations_with_scope(
-        &state.pool,
-        ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-    )
-    .await?;
+    let recovered_invocations = {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+        recover_proxy_invocations_with_scope(
+            &state.pool,
+            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+        )
+        .await?
+    };
 
     if recovered_invocations.is_empty() {
         terminalize_proxy_runtime_snapshot_by_key(
@@ -2259,46 +2278,57 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .clone();
-    let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
-    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-    let mut tx = state.pool.begin().await?;
-    let stale_candidates = load_stale_pool_upstream_request_attempt_candidate_rows_tx(
-        tx.as_mut(),
-        &responses_started_before,
-        &compact_started_before,
-        &default_started_before,
-    )
-    .await?;
-    let candidate_ids = stale_candidates
-        .into_iter()
-        .filter(|row| !active_attempt_ids.contains(&row.id))
-        .map(|row| row.id)
-        .collect::<Vec<_>>();
-    let finished_at = shanghai_now_string();
-    let recovered_attempts = recover_stale_pool_upstream_request_attempt_candidates_tx(
-        tx.as_mut(),
-        &candidate_ids,
-        finished_at.as_str(),
-        &responses_started_before,
-        &compact_started_before,
-        &default_started_before,
-    )
-    .await?;
-    if recovered_attempts.is_empty() {
-        tx.commit().await?;
+    let recovery = {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+        let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+        let mut tx = state.pool.begin().await?;
+        let stale_candidates = load_stale_pool_upstream_request_attempt_candidate_rows_tx(
+            tx.as_mut(),
+            &responses_started_before,
+            &compact_started_before,
+            &default_started_before,
+        )
+        .await?;
+        let candidate_ids = stale_candidates
+            .into_iter()
+            .filter(|row| !active_attempt_ids.contains(&row.id))
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        let finished_at = shanghai_now_string();
+        let recovered_attempts = recover_stale_pool_upstream_request_attempt_candidates_tx(
+            tx.as_mut(),
+            &candidate_ids,
+            finished_at.as_str(),
+            &responses_started_before,
+            &compact_started_before,
+            &default_started_before,
+        )
+        .await?;
+        if recovered_attempts.is_empty() {
+            tx.commit().await?;
+            None
+        } else {
+            let selectors: Vec<_> = recovered_attempts
+                .iter()
+                .map(|row| {
+                    InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone())
+                })
+                .collect();
+            let recovered_invocations = recover_proxy_invocations_with_scope_tx(
+                tx.as_mut(),
+                ProxyInvocationRecoveryScope::Selectors(&selectors),
+            )
+            .await?;
+            tx.commit().await?;
+            Some((recovered_attempts, recovered_invocations))
+        }
+    };
+    let Some((recovered_attempts, recovered_invocations)) = recovery else {
         return Ok(PoolOrphanRecoveryOutcome::default());
-    }
-
-    let selectors: Vec<_> = recovered_attempts
-        .iter()
-        .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
-        .collect();
-    let recovered_invocations = recover_proxy_invocations_with_scope_tx(
-        tx.as_mut(),
-        ProxyInvocationRecoveryScope::Selectors(&selectors),
-    )
-    .await?;
-    tx.commit().await?;
+    };
 
     clean_up_recovered_pool_routes(
         state,

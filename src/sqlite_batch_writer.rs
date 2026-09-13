@@ -1162,6 +1162,7 @@ pub(crate) struct RetainedBatch {
     p2_retryable_failure: bool,
     p2_lock_failure: bool,
     p2_defer: Option<P2DeferReason>,
+    quarantined_system_task_ids: Vec<i64>,
 }
 
 impl RetainedBatch {
@@ -1173,6 +1174,7 @@ impl RetainedBatch {
             p2_retryable_failure: false,
             p2_lock_failure: false,
             p2_defer: None,
+            quarantined_system_task_ids: Vec::new(),
         }
     }
 
@@ -1184,6 +1186,7 @@ impl RetainedBatch {
             p2_retryable_failure: false,
             p2_lock_failure: false,
             p2_defer: Some(reason),
+            quarantined_system_task_ids: Vec::new(),
         }
     }
 
@@ -1195,7 +1198,13 @@ impl RetainedBatch {
             p2_retryable_failure: retryable_failure,
             p2_lock_failure: lock_failure,
             p2_defer: None,
+            quarantined_system_task_ids: Vec::new(),
         }
+    }
+
+    fn with_quarantined_system_task_ids(mut self, ids: Vec<i64>) -> Self {
+        self.quarantined_system_task_ids = ids;
+        self
     }
 }
 
@@ -1696,6 +1705,32 @@ impl SqliteBatchWriter {
             accounting.pending_bytes,
             self.dropped_writes.load(Ordering::Relaxed),
         )
+    }
+
+    pub(crate) fn quarantine_system_task_finish(
+        &self,
+        finish: &BatchedSystemTaskFinish,
+        error: &str,
+    ) -> bool {
+        let persisted = self
+            .terminal_journal
+            .lock()
+            .ok()
+            .and_then(|mut guard| {
+                guard
+                    .as_mut()
+                    .map(|journal| journal.quarantine_system_task_finish(finish, error).is_ok())
+            })
+            .unwrap_or(false);
+        if persisted {
+            return true;
+        }
+        #[cfg(test)]
+        if self.buffered_writes.is_some() {
+            // Test-only buffered writers intentionally omit the filesystem journal.
+            return true;
+        }
+        false
     }
 
     pub(crate) fn accounting_snapshot(&self) -> PendingQueueAccountingSnapshot {
@@ -2482,6 +2517,10 @@ pub(crate) async fn run_sqlite_batch_writer(
                     deferred_capacity,
                     &queued_p1_count,
                 );
+                if pending.has_p2() {
+                    p2_schedule.arm_if_idle(Instant::now());
+                    accounting.update_p2_schedule(&p2_schedule);
+                }
             }
             maybe_write = write_receiver.recv() => {
                 let Some(write) = maybe_write else {
@@ -2898,6 +2937,14 @@ fn drain_terminal_journal_deferred_writes(
             accounting.retry_deferred();
             pending.push_accounted(write, accounting);
         }
+        for finish in
+            journal.take_system_task_finishes(max_writes.saturating_sub(pending.logical_rows()))
+        {
+            let write = SqliteBatchWrite::SystemTaskFinish(finish);
+            accounting.enqueue(write.estimated_memory_bytes());
+            accounting.retry_deferred();
+            pending.push_accounted(write, accounting);
+        }
     }
 }
 
@@ -2955,6 +3002,11 @@ async fn flush_pending_batch_accounted(
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
     let was_retained_retry = batch.retained_for_retry;
+    let submitted_system_task_ids = batch
+        .system_task_finishes
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
     let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
     let result = flush_pending_batch(
@@ -2972,6 +3024,19 @@ async fn flush_pending_batch_accounted(
         terminal_journal,
     )
     .await;
+    let completed_system_task_ids =
+        successfully_flushed_system_task_ids(&submitted_system_task_ids, result.as_ref());
+    if !completed_system_task_ids.is_empty()
+        && let Ok(mut guard) = terminal_journal.lock()
+        && let Some(journal) = guard.as_mut()
+        && let Err(err) = journal.acknowledge_system_task_finishes(&completed_system_task_ids)
+    {
+        warn!(
+            error = %err,
+            completed_system_task_count = completed_system_task_ids.len(),
+            "failed to acknowledge recovered system-task finishes"
+        );
+    }
     let discard_non_retryable_p2 = result.as_ref().is_some_and(|retained| {
         retained.failed
             && !retained.p2_retryable_failure
@@ -3018,6 +3083,22 @@ async fn flush_pending_batch_accounted(
     }
 }
 
+fn successfully_flushed_system_task_ids(
+    submitted_ids: &[i64],
+    result: Option<&RetainedBatch>,
+) -> Vec<i64> {
+    submitted_ids
+        .iter()
+        .copied()
+        .filter(|run_id| {
+            !result.is_some_and(|retained| retained.quarantined_system_task_ids.contains(run_id))
+        })
+        .filter(|run_id| {
+            result.is_none_or(|retained| !retained.batch.system_task_finishes.contains_key(run_id))
+        })
+        .collect()
+}
+
 fn cleanup_discarded_p2_runtime_overlays(
     batch: &PendingBatch,
     terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
@@ -3053,6 +3134,11 @@ fn quarantine_system_task_batch(
     let error = format!("{error:#}");
     let finishes = batch.system_task_finishes.values().collect::<Vec<_>>();
     journal.quarantine_system_task_finishes(&finishes, &error)?;
+    let run_ids = finishes
+        .iter()
+        .map(|finish| finish.run_id)
+        .collect::<Vec<_>>();
+    journal.remove_deferred_system_task_finishes(&run_ids);
     Ok(batch.system_task_finishes.len())
 }
 
@@ -3382,9 +3468,7 @@ pub(crate) async fn flush_pending_batch(
     // A deterministic failure in a derived write must not retain unrelated
     // system-task completions forever. Flush those completions separately so
     // their final state is durable even when another P2 write is discarded.
-    let system_task_batch = if !batch.system_task_finishes.is_empty()
-        && batch.logical_rows() > batch.system_task_finishes.len()
-    {
+    let system_task_batch = if !batch.system_task_finishes.is_empty() {
         let mut system_task_batch = PendingBatch {
             oldest_at: batch.oldest_at,
             ..PendingBatch::default()
@@ -3433,6 +3517,8 @@ pub(crate) async fn flush_pending_batch(
             }
         }
     }
+    // Retry lock/pressure failures, but quarantine deterministic SQL failures. Every finish is
+    // journaled before enqueue, so quarantine remains durable without repeatedly stressing SQLite.
     let system_task_retryable_failure = system_task_failure
         .as_ref()
         .is_some_and(crate::db_pressure::is_db_pressure_error);
@@ -3457,6 +3543,11 @@ pub(crate) async fn flush_pending_batch(
                     let system_task_batch_ref = system_task_batch
                         .as_ref()
                         .expect("system task failure must retain its isolated batch");
+                    let quarantined_system_task_ids = system_task_batch_ref
+                        .system_task_finishes
+                        .keys()
+                        .copied()
+                        .collect::<Vec<_>>();
                     let quarantine_result = quarantine_system_task_batch(
                         terminal_journal,
                         system_task_batch_ref,
@@ -3482,12 +3573,14 @@ pub(crate) async fn flush_pending_batch(
                         system_task_scope = %summarize_system_task_batch_scope(system_task_batch_ref),
                         "quarantined deterministic system-task completion after failed finalization"
                     );
-                    drop(permit);
-                    return if deferred_batch.is_empty() {
-                        None
+                    let retained = if deferred_batch.is_empty() {
+                        RetainedBatch::new(PendingBatch::default(), false)
                     } else {
-                        Some(RetainedBatch::new(deferred_batch, false))
-                    };
+                        RetainedBatch::new(deferred_batch, false)
+                    }
+                    .with_quarantined_system_task_ids(quarantined_system_task_ids);
+                    drop(permit);
+                    return Some(retained);
                 }
                 let mut retry_batch =
                     system_task_batch.expect("system task failure must retain its isolated batch");
@@ -3518,6 +3611,11 @@ pub(crate) async fn flush_pending_batch(
                 cleanup_discarded_p2_runtime_overlays(&batch, terminal_runtime_store);
                 let retry_batch =
                     system_task_batch.expect("system task failure must retain its isolated batch");
+                let quarantined_system_task_ids = retry_batch
+                    .system_task_finishes
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>();
                 if !system_task_retryable_failure
                     && quarantine_system_task_batch(
                         terminal_journal,
@@ -3526,7 +3624,10 @@ pub(crate) async fn flush_pending_batch(
                     )
                     .is_ok()
                 {
-                    return None;
+                    return Some(
+                        RetainedBatch::new(PendingBatch::default(), false)
+                            .with_quarantined_system_task_ids(quarantined_system_task_ids),
+                    );
                 }
                 return Some(RetainedBatch::p2_failed(
                     retry_batch,
@@ -3536,6 +3637,11 @@ pub(crate) async fn flush_pending_batch(
             }
             if let Some(system_task_batch) = system_task_batch {
                 if let Some(system_task_error) = system_task_failure.as_ref() {
+                    let quarantined_system_task_ids = system_task_batch
+                        .system_task_finishes
+                        .keys()
+                        .copied()
+                        .collect::<Vec<_>>();
                     if !system_task_retryable_failure
                         && quarantine_system_task_batch(
                             terminal_journal,
@@ -3544,11 +3650,14 @@ pub(crate) async fn flush_pending_batch(
                         )
                         .is_ok()
                     {
-                        return Some(RetainedBatch::p2_failed(
-                            batch,
-                            crate::db_pressure::is_db_pressure_error(&err),
-                            is_sqlite_lock_error(&err),
-                        ));
+                        return Some(
+                            RetainedBatch::p2_failed(
+                                batch,
+                                crate::db_pressure::is_db_pressure_error(&err),
+                                is_sqlite_lock_error(&err),
+                            )
+                            .with_quarantined_system_task_ids(quarantined_system_task_ids),
+                        );
                     }
                     let mut retry_batch = system_task_batch;
                     retry_batch.merge_p2(batch);
@@ -5549,6 +5658,18 @@ mod tests {
         assert_eq!(row.1.as_deref(), Some("completed"));
         assert_eq!(row.2.as_deref(), Some("2026-07-01T10:00:05Z"));
         assert_eq!(row.3, Some(125));
+    }
+
+    #[test]
+    fn quarantined_system_task_finish_is_not_acknowledged_as_committed() {
+        let run_id = 991_001;
+        let retained = RetainedBatch::new(PendingBatch::default(), false)
+            .with_quarantined_system_task_ids(vec![run_id]);
+        assert!(successfully_flushed_system_task_ids(&[run_id], Some(&retained)).is_empty());
+        assert_eq!(
+            successfully_flushed_system_task_ids(&[run_id], None),
+            vec![run_id]
+        );
     }
 
     #[tokio::test]
