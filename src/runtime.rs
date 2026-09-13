@@ -1100,57 +1100,56 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         let task_start_window = format_utc_iso_millis(Utc::now() - ChronoDuration::seconds(1));
         let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-        let start_write_permit = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                info!(
-                    elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    "background hourly rollup bootstrap cancelled before acquiring task-history write admission"
-                );
-                finish_orphaned_startup_hourly_rollup_bootstrap_task(
-                    state.as_ref(),
-                    &cancel,
-                    &task_start_window,
-                )
-                .await;
-                return;
-            }
-            permit = coordinator.acquire(
+        // Task history is best-effort bookkeeping. Admit it only when both gates are immediately
+        // available; the bootstrap itself will retry its real work below without creating a
+        // pressure-window write or waiting behind an interactive writer.
+        let task_run = match pressure_gate
+            .try_begin_background("startup_hourly_rollup_bootstrap_task_history")
+        {
+            Ok(pressure_permit) => match coordinator.try_acquire(
                 crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            ) => permit,
-        };
-        let task_run = match tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
+            ) {
+                Some(write_permit) => {
+                    let result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        result = begin_system_task_run(
+                            &state.pool,
+                            SystemTaskKind::HourlyRollupBootstrap,
+                            "startup",
+                            Some("background hourly rollup bootstrap started".to_string()),
+                        ) => match result {
+                            Ok(task_run) => Some(task_run),
+                            Err(err) => {
+                                warn!(
+                                    error = %err,
+                                    "failed to record background startup hourly rollup bootstrap start"
+                                );
+                                None
+                            }
+                        },
+                    };
+                    drop(write_permit);
+                    drop(pressure_permit);
+                    result
+                }
+                None => {
+                    drop(pressure_permit);
+                    info!(
+                        defer_reason = "coordinator_priority",
+                        "background startup hourly rollup bootstrap task history deferred"
+                    );
+                    None
+                }
+            },
+            Err(reason) => {
                 info!(
-                    elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    "background startup hourly rollup bootstrap cancelled before recording task start"
-                );
-                finish_orphaned_startup_hourly_rollup_bootstrap_task(
-                    state.as_ref(),
-                    &cancel,
-                    &task_start_window,
-                )
-                .await;
-                return;
-            }
-            result = begin_system_task_run(
-                &state.pool,
-                SystemTaskKind::HourlyRollupBootstrap,
-                "startup",
-                Some("background hourly rollup bootstrap started".to_string()),
-            ) => result,
-        } {
-            Ok(task_run) => Some(task_run),
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "failed to record background startup hourly rollup bootstrap start"
+                    defer_reason = %reason,
+                    "background startup hourly rollup bootstrap task history deferred"
                 );
                 None
             }
         };
-        drop(start_write_permit);
         let (_permit, _write_permit) = loop {
             match pressure_gate.try_begin_background("startup_hourly_rollup_bootstrap") {
                 Ok(permit) => {

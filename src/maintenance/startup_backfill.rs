@@ -1281,6 +1281,20 @@ where
 {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
 
+    // Coverage repair shares the hourly-rollup synchronization lock. Only admit work when the
+    // lock is immediately available; waiting while holding P2 could deadlock another maintenance
+    // path that already owns the lock and is waiting for coordinator admission.
+    let _hourly_rollup_guard = match state.hourly_rollup_sync_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Ok(startup_backfill_pressure_defer_outcome(
+                task,
+                gate,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            ));
+        }
+    };
+
     // Coverage repair owns this one permit. The hourly-rollup convenience wrapper also acquires
     // the global gate, so calling it while the startup path holds a permit would always defer in
     // production. Keep admission before progress access, then call the underlying repair once.
@@ -1336,10 +1350,7 @@ where
         });
     }
 
-    let repair_outcome = {
-        let _guard = state.hourly_rollup_sync_lock.lock().await;
-        repair().await
-    };
+    let repair_outcome = repair().await;
     let repair_outcome = match repair_outcome {
         Ok(outcome) => outcome,
         Err(err) => {

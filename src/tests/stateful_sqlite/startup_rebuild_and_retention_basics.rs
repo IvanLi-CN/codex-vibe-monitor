@@ -3194,7 +3194,7 @@ async fn idle_coverage_repair_persists_its_next_probe_deadline() {
 }
 
 #[tokio::test]
-async fn startup_coverage_repair_executes_under_its_single_admitted_gate_permit() {
+async fn startup_coverage_repair_defers_when_hourly_rollup_lock_is_busy() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -3203,24 +3203,23 @@ async fn startup_coverage_repair_executes_under_its_single_admitted_gate_permit(
     let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
     let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
 
-    let run = run_startup_backfill_task_if_due_with_gate(&state, task, &gate);
-    tokio::pin!(run);
-    tokio::select! {
-        result = &mut run => panic!("coverage repair must wait for the held rollup lock, got {result:?}"),
-        _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-    }
-
+    let run = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        .await
+        .expect("busy hourly rollup lock should defer without SQLite access");
     assert!(
-        matches!(
-            gate.try_begin_background("coverage_admission_probe"),
-            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy)
-        ),
-        "the coverage repair must retain its single production-shaped gate permit while it waits"
+        !run,
+        "coverage repair should defer while its synchronization lock is busy"
     );
+    {
+        let _probe = gate
+            .try_begin_background("coverage_admission_probe")
+            .expect("a lock-only defer must not consume the pressure permit");
+    }
     drop(rollup_guard);
 
     assert!(
-        !run.await
+        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+            .await
             .expect("coverage repair should finish after the rollup lock is released")
     );
     let progress = load_startup_backfill_progress(&state.pool, task.name())
