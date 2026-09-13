@@ -1672,6 +1672,20 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_task_history_s
         .execute(&mut lock_conn)
         .await
         .expect("release task-history write lock");
+    let orphaned_running_tasks: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM system_task_runs
+        WHERE task_kind = 'hourly_rollup_bootstrap'
+          AND trigger_kind = 'startup'
+          AND status = 'running'
+          AND summary = 'background hourly rollup bootstrap started'
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count cancelled bootstrap task-history rows");
+    assert_eq!(orphaned_running_tasks, 0);
     state.pool.close().await;
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -1729,8 +1743,7 @@ async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_d
 }
 
 #[tokio::test]
-async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_races_with_write_lock()
-{
+async fn startup_hourly_rollup_task_history_finish_does_not_wait_for_write_lock() {
     let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
         "startup-hourly-rollup-bootstrap-task-history-finish-cancel-race",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
@@ -1755,7 +1768,7 @@ async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_race
     let cancel = CancellationToken::new();
     let state_for_finish = state.clone();
     let cancel_for_finish = cancel.clone();
-    let mut finish_handle = tokio::spawn(async move {
+    let finish_handle = tokio::spawn(async move {
         finish_runtime_startup_hourly_rollup_bootstrap_task(
             state_for_finish.as_ref(),
             &cancel_for_finish,
@@ -1766,14 +1779,9 @@ async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_race
         )
         .await;
     });
-    tokio::time::timeout(Duration::from_millis(100), &mut finish_handle)
+    tokio::time::timeout(Duration::from_millis(100), finish_handle)
         .await
-        .expect_err("task-history finish should wait for the sqlite write lock");
-
-    cancel.cancel();
-    tokio::time::timeout(Duration::from_secs(1), finish_handle)
-        .await
-        .expect("task-history finish should defer after cancellation")
+        .expect("task-history finish should enqueue without waiting for the sqlite write lock")
         .expect("task-history finish task should join");
 
     sqlx::query("ROLLBACK")

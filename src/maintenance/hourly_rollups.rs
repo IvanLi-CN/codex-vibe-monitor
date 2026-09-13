@@ -2974,6 +2974,32 @@ mod hourly_rollup_budget_tests {
         );
     }
 
+    #[tokio::test]
+    async fn read_surface_refresh_cancels_while_waiting_for_sync_lock() {
+        let pool = SqlitePoolOptions::new()
+            .connect_lazy("sqlite::memory:")
+            .expect("create lazy sqlite pool");
+        let lock = Arc::new(Mutex::new(()));
+        let _held_guard = lock.lock().await;
+        let cancel = CancellationToken::new();
+        let refresh_lock = Arc::clone(&lock);
+        let refresh_cancel = cancel.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_hourly_rollups_for_read_surfaces_best_effort(
+                &pool,
+                refresh_lock.as_ref(),
+                &refresh_cancel,
+                "cancellation regression test",
+                HourlyRollupRefreshScope::Full,
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        assert!(refresh.await.expect("refresh task should finish"));
+    }
+
     #[test]
     fn historical_rollup_elapsed_budget_reached_respects_unbounded_mode() {
         assert!(!historical_rollup_elapsed_budget_reached(
@@ -3213,11 +3239,19 @@ pub(crate) async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<
 pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     pool: &Pool<Sqlite>,
     hourly_rollup_sync_lock: &Mutex<()>,
+    cancel: &CancellationToken,
     reason: &'static str,
     scope: HourlyRollupRefreshScope,
 ) -> bool {
     let gate = crate::db_pressure::global_db_pressure_gate();
-    let _guard = hourly_rollup_sync_lock.lock().await;
+    let _guard = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            debug!(reason, "background hourly rollup refresh cancelled while waiting for sync lock");
+            return true;
+        }
+        guard = hourly_rollup_sync_lock.lock() => guard,
+    };
     let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
         Ok(permit) => permit,
         Err(deny_reason) => {
@@ -3246,6 +3280,10 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
 
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let refresh_result = tokio::select! {
+        _ = cancel.cancelled() => {
+            debug!(reason, "background hourly rollup refresh cancelled during SQLite work");
+            return true;
+        }
         _ = coordinator.wait_for_p2_preemption() => {
             debug!(reason, "background hourly rollup refresh yielded to higher-priority SQLite writes");
             return true;

@@ -1640,19 +1640,22 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             let touched_anything = summary.touched_anything();
             if touched_anything && !summary.dry_run {
-                let task_run = begin_system_task_run_admitted(
-                    state.as_ref(),
-                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
-                    SystemTaskKind::RetentionArchive,
-                    trigger,
-                    Some("retention maintenance completed a write pass".to_string()),
-                )
-                .await
-                .ok();
+                let task_run = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return false,
+                    result = begin_system_task_run_admitted(
+                        state.as_ref(),
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+                        SystemTaskKind::RetentionArchive,
+                        trigger,
+                        Some("retention maintenance completed a write pass".to_string()),
+                    ) => result.ok(),
+                };
                 if let Some(handle) = task_run.as_ref() {
                     let (brief, detail) = summarize_retention_run_for_system_task(&summary);
-                    finish_system_task_run_batched(
+                    let _ = finish_system_task_run_reliably(
                         state.as_ref(),
+                        Some(cancel),
                         handle,
                         SystemTaskStatus::Success,
                         Some(brief),
@@ -1709,18 +1712,21 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 .record_error("data_retention_maintenance", &err);
             retention_record_error("data_retention_maintenance", &err);
             if !state.config.retention_dry_run {
-                let task_run = begin_system_task_run_admitted(
-                    state.as_ref(),
-                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
-                    SystemTaskKind::RetentionArchive,
-                    trigger,
-                    Some("retention maintenance failed".to_string()),
-                )
-                .await
-                .ok();
-                if let Some(handle) = task_run.as_ref() {
-                    finish_system_task_run_batched(
+                let task_run = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return false,
+                    result = begin_system_task_run_admitted(
                         state.as_ref(),
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+                        SystemTaskKind::RetentionArchive,
+                        trigger,
+                        Some("retention maintenance failed".to_string()),
+                    ) => result.ok(),
+                };
+                if let Some(handle) = task_run.as_ref() {
+                    let _ = finish_system_task_run_reliably(
+                        state.as_ref(),
+                        Some(cancel),
                         handle,
                         SystemTaskStatus::Failed,
                         Some("retention maintenance failed".to_string()),

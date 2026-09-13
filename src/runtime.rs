@@ -1099,6 +1099,10 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
         let started_at = Instant::now();
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        // Every task row created by this bootstrap attempt is timestamped after this point.
+        // Using the exact lower bound avoids losing a row when SQLite admission takes longer
+        // than the old one-second grace window during shutdown.
+        let task_start_window = format_utc_iso_millis(Utc::now());
         loop {
             // Task history is admitted and recorded before waiting for the synchronization lock,
             // but both permits are released immediately so a lock wait cannot occupy the only
@@ -1143,9 +1147,16 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 };
                 let result = tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return,
-                    result = crate::api::begin_system_task_run(
-                        &state.pool,
+                    _ = cancel.cancelled() => {
+                        finish_orphaned_startup_hourly_rollup_bootstrap_task(
+                            state.as_ref(),
+                            &cancel,
+                            &task_start_window,
+                        ).await;
+                        return;
+                    }
+                    result = begin_runtime_startup_hourly_rollup_task(
+                        state.as_ref(),
                         SystemTaskKind::HourlyRollupBootstrap,
                         "startup",
                         Some("background hourly rollup bootstrap started".to_string()),
@@ -1396,6 +1407,88 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     })
 }
 
+async fn begin_runtime_startup_hourly_rollup_task(
+    state: &AppState,
+    task_kind: SystemTaskKind,
+    trigger_kind: &'static str,
+    summary: Option<String>,
+) -> Result<SystemTaskRunHandle> {
+    #[cfg(test)]
+    {
+        crate::api::begin_system_task_run(&state.pool, task_kind, trigger_kind, summary).await
+    }
+    #[cfg(not(test))]
+    {
+        crate::api::begin_system_task_run_nonblocking(
+            &state.config.database_url(),
+            task_kind,
+            trigger_kind,
+            summary,
+        )
+        .await
+    }
+}
+
+async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
+    state: &AppState,
+    cancel: &CancellationToken,
+    started_at_from: &str,
+) {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        let task = tokio::time::timeout(
+            Duration::from_millis(50),
+            sqlx::query_as::<_, (i64, String)>(
+                r#"
+                SELECT id, trigger_kind
+                FROM system_task_runs
+                WHERE task_kind = ?1
+                  AND trigger_kind = 'startup'
+                  AND status = ?2
+                  AND summary = 'background hourly rollup bootstrap started'
+                  AND started_at >= ?3
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
+            .bind(SystemTaskStatus::Running.as_str())
+            .bind(started_at_from)
+            .fetch_optional(&state.pool),
+        )
+        .await;
+        match task {
+            Ok(Ok(Some((id, trigger_kind)))) => {
+                let task_run = SystemTaskRunHandle {
+                    id,
+                    task_kind: SystemTaskKind::HourlyRollupBootstrap,
+                    trigger_kind,
+                    started_at: Instant::now(),
+                };
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state,
+                    cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap cancelled before recording task start",
+                    None,
+                )
+                .await;
+                return;
+            }
+            Ok(Ok(None)) | Err(_) => {}
+            Ok(Err(err)) => {
+                debug!(error = %err, "failed to inspect for an orphaned startup hourly rollup bootstrap task");
+                return;
+            }
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     state: &AppState,
     cancel: &CancellationToken,
@@ -1438,15 +1531,17 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             info!("forward proxy maintenance skipped because shutdown is already in progress");
             return;
         }
-        let startup_run = begin_system_task_run_admitted(
-            state.as_ref(),
-            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            SystemTaskKind::ForwardProxySubscriptionRefresh,
-            "startup",
-            Some("forward proxy subscription refresh started".to_string()),
-        )
-        .await
-        .ok();
+        let startup_run = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return,
+            result = begin_system_task_run_admitted(
+                state.as_ref(),
+                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                SystemTaskKind::ForwardProxySubscriptionRefresh,
+                "startup",
+                Some("forward proxy subscription refresh started".to_string()),
+            ) => result.ok(),
+        };
         if let Err(err) = refresh_forward_proxy_subscriptions(
             state.clone(),
             true,
@@ -1455,8 +1550,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
         .await
         {
             if let Some(run) = startup_run.as_ref() {
-                finish_system_task_run_batched(
+                let _ = finish_system_task_run_reliably(
                     state.as_ref(),
+                    Some(&cancel),
                     run,
                     SystemTaskStatus::Failed,
                     Some("forward proxy startup refresh failed".to_string()),
@@ -1466,8 +1562,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             }
             warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
         } else if let Some(run) = startup_run.as_ref() {
-            finish_system_task_run_batched(
+            let _ = finish_system_task_run_reliably(
                 state.as_ref(),
+                Some(&cancel),
                 run,
                 SystemTaskStatus::Success,
                 Some("forward proxy startup refresh completed".to_string()),
@@ -1485,19 +1582,22 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    let task_run = begin_system_task_run_admitted(
-                        state.as_ref(),
-                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-                        SystemTaskKind::ForwardProxySubscriptionRefresh,
-                        "interval",
-                        Some("forward proxy interval refresh started".to_string()),
-                    )
-                    .await
-                    .ok();
+                    let task_run = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        result = begin_system_task_run_admitted(
+                            state.as_ref(),
+                            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                            SystemTaskKind::ForwardProxySubscriptionRefresh,
+                            "interval",
+                            Some("forward proxy interval refresh started".to_string()),
+                        ) => result.ok(),
+                    };
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         if let Some(run) = task_run.as_ref() {
-                            finish_system_task_run_batched(
-                    state.as_ref(),
+                            let _ = finish_system_task_run_reliably(
+                                state.as_ref(),
+                                Some(&cancel),
                                 run,
                                 SystemTaskStatus::Failed,
                                 Some("forward proxy interval refresh failed".to_string()),
@@ -1507,8 +1607,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         }
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     } else if let Some(run) = task_run.as_ref() {
-                        finish_system_task_run_batched(
-                    state.as_ref(),
+                        let _ = finish_system_task_run_reliably(
+                            state.as_ref(),
+                            Some(&cancel),
                             run,
                             SystemTaskStatus::Success,
                             Some("forward proxy interval refresh completed".to_string()),

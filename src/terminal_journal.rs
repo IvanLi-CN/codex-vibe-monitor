@@ -12,11 +12,12 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::{
-    BatchedSystemTaskFinish, BatchedTerminalInvocationWrite, ProxyCaptureRecord,
-    api_invocation_from_runtime_record, startup_backfill_tasks_for_terminal,
+    BatchedSystemTaskFinish, BatchedTerminalInvocationWrite, ProxyCaptureRecord, SystemTaskKind,
+    SystemTaskStatus, api_invocation_from_runtime_record, startup_backfill_tasks_for_terminal,
 };
 
 pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
+const SYSTEM_TASK_QUARANTINE_COMPACTION_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const TERMINAL_JOURNAL_SYNC_INTERVAL: Duration = Duration::from_millis(20);
 const TERMINAL_JOURNAL_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -93,6 +94,29 @@ struct ShutdownTerminalRecoveryLine {
     record: Option<ProxyCaptureRecord>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct SystemTaskRecoveryLine {
+    run_id: i64,
+    #[serde(default)]
+    acknowledged: bool,
+    #[serde(default)]
+    task_kind: String,
+    #[serde(default)]
+    trigger_kind: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    finished_at: String,
+    #[serde(default)]
+    duration_ms: i64,
+    #[serde(default)]
+    error: Option<String>,
+}
+
 #[derive(Debug)]
 struct JournalSegment {
     path: PathBuf,
@@ -145,6 +169,8 @@ pub(crate) struct TerminalJournal {
     replay_blocked: bool,
     shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
     system_task_quarantine_ids: HashSet<i64>,
+    replayed_system_task_ids: HashSet<i64>,
+    deferred_system_task_finishes: VecDeque<BatchedSystemTaskFinish>,
     last_sync_at: Instant,
     last_checkpoint_at: Instant,
     overflowed: bool,
@@ -234,11 +260,14 @@ impl TerminalJournal {
             .with_context(|| format!("failed to open system-task quarantine {}", path.display()))?;
         let mut appended = false;
         let mut newly_indexed_ids = Vec::new();
+        let mut newly_deferred_finishes = Vec::new();
         for finish in finishes {
             if !self.system_task_quarantine_ids.insert(finish.run_id) {
                 continue;
             }
             newly_indexed_ids.push(finish.run_id);
+            self.replayed_system_task_ids.insert(finish.run_id);
+            newly_deferred_finishes.push((*finish).clone());
             let entry = QuarantineEntry {
                 run_id: finish.run_id,
                 task_kind: finish.task_kind.as_str(),
@@ -253,12 +282,14 @@ impl TerminalJournal {
             if let Err(err) = serde_json::to_writer(&mut file, &entry) {
                 for run_id in newly_indexed_ids {
                     self.system_task_quarantine_ids.remove(&run_id);
+                    self.replayed_system_task_ids.remove(&run_id);
                 }
                 return Err(err).context("failed to append system-task quarantine");
             }
             if let Err(err) = file.write_all(b"\n") {
                 for run_id in newly_indexed_ids {
                     self.system_task_quarantine_ids.remove(&run_id);
+                    self.replayed_system_task_ids.remove(&run_id);
                 }
                 return Err(err).context("failed to append system-task quarantine delimiter");
             }
@@ -267,9 +298,145 @@ impl TerminalJournal {
         if appended && let Err(err) = file.sync_data() {
             for run_id in newly_indexed_ids {
                 self.system_task_quarantine_ids.remove(&run_id);
+                self.replayed_system_task_ids.remove(&run_id);
             }
             return Err(err).context("failed to sync system-task quarantine");
         }
+        for finish in newly_deferred_finishes {
+            self.deferred_system_task_finishes.push_back(finish);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn take_system_task_finishes(&mut self, max: usize) -> Vec<BatchedSystemTaskFinish> {
+        self.deferred_system_task_finishes
+            .drain(..self.deferred_system_task_finishes.len().min(max))
+            .collect()
+    }
+
+    pub(crate) fn remove_deferred_system_task_finishes(&mut self, run_ids: &[i64]) {
+        let run_ids = run_ids.iter().copied().collect::<HashSet<_>>();
+        self.deferred_system_task_finishes
+            .retain(|finish| !run_ids.contains(&finish.run_id));
+    }
+
+    pub(crate) fn acknowledge_system_task_finishes(&mut self, run_ids: &[i64]) -> Result<()> {
+        let acknowledged = run_ids
+            .iter()
+            .copied()
+            .filter(|run_id| self.replayed_system_task_ids.contains(run_id))
+            .collect::<Vec<_>>();
+        if acknowledged.is_empty() {
+            return Ok(());
+        }
+        let path = self.directory.join("system-task-quarantine.jsonl");
+        append_system_task_acknowledgements(&path, &acknowledged)?;
+        let shutdown_path = self.directory.join("shutdown-system-task-quarantine.jsonl");
+        if shutdown_path.exists() {
+            // Shutdown recovery is read alongside the regular quarantine file. Keep an ACK in
+            // that source too, otherwise regular-file compaction can erase the only ACK evidence
+            // and replay the same task finish after the next restart.
+            append_system_task_acknowledgements(&shutdown_path, &acknowledged)?;
+        }
+        let acknowledged_ids = acknowledged.into_iter().collect::<HashSet<_>>();
+        self.replayed_system_task_ids
+            .retain(|run_id| !acknowledged_ids.contains(run_id));
+        self.deferred_system_task_finishes
+            .retain(|finish| !acknowledged_ids.contains(&finish.run_id));
+        if let Err(err) = self.compact_system_task_quarantine_if_due() {
+            warn!(error = %err, "failed to compact system-task quarantine journal");
+        }
+        Ok(())
+    }
+
+    fn compact_system_task_quarantine_if_due(&mut self) -> Result<()> {
+        let path = self.directory.join("system-task-quarantine.jsonl");
+        let shutdown_path = self.directory.join("shutdown-system-task-quarantine.jsonl");
+        let size = fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            .max(
+                fs::metadata(&shutdown_path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+            );
+        if size < SYSTEM_TASK_QUARANTINE_COMPACTION_BYTES {
+            return Ok(());
+        }
+        // Rebuild from durable recovery files instead of relying on the in-memory deferred queue.
+        // Deterministic failures deliberately remove their payload from memory while retaining
+        // the journal record for the next restart; compaction must preserve those records too.
+        let recovery_paths = [path.clone(), shutdown_path.clone()];
+        let recovery_finishes = load_system_task_finishes(&recovery_paths);
+        let recovery_ids = recovery_finishes
+            .iter()
+            .map(|finish| finish.run_id)
+            .collect::<HashSet<_>>();
+
+        let temp_path = path.with_extension("jsonl.tmp");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temp_path)
+            .with_context(|| {
+                format!(
+                    "failed to open system-task quarantine temp file {}",
+                    temp_path.display()
+                )
+            })?;
+        for finish in &recovery_finishes {
+            serde_json::to_writer(
+                &mut file,
+                &SystemTaskRecoveryLine {
+                    run_id: finish.run_id,
+                    acknowledged: false,
+                    task_kind: finish.task_kind.as_str().to_string(),
+                    trigger_kind: finish.trigger_kind.clone(),
+                    status: finish.status.as_str().to_string(),
+                    summary: finish.summary.clone(),
+                    detail: finish.detail.clone(),
+                    finished_at: finish.finished_at.clone(),
+                    duration_ms: finish.duration_ms,
+                    error: None,
+                },
+            )
+            .context("failed to encode compacted system-task quarantine entry")?;
+            file.write_all(b"\n")
+                .context("failed to append compacted system-task quarantine delimiter")?;
+        }
+        file.sync_data()
+            .context("failed to sync compacted system-task quarantine")?;
+        fs::rename(&temp_path, &path).with_context(|| {
+            format!(
+                "failed to replace system-task quarantine with compacted file {}",
+                path.display()
+            )
+        })?;
+        if shutdown_path.exists() {
+            let shutdown_temp_path = shutdown_path.with_extension("jsonl.tmp");
+            let shutdown_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&shutdown_temp_path)
+                .with_context(|| {
+                    format!(
+                        "failed to open shutdown system-task quarantine temp file {}",
+                        shutdown_temp_path.display()
+                    )
+                })?;
+            shutdown_file
+                .sync_data()
+                .context("failed to sync compacted shutdown system-task quarantine")?;
+            fs::rename(&shutdown_temp_path, &shutdown_path).with_context(|| {
+                format!(
+                    "failed to replace shutdown system-task quarantine with compacted file {}",
+                    shutdown_path.display()
+                )
+            })?;
+        }
+        self.system_task_quarantine_ids = recovery_ids;
         Ok(())
     }
 
@@ -502,8 +669,18 @@ impl TerminalJournal {
             pending_by_key.insert(key, Vec::new());
             deferred_writes.push_back(terminal);
         }
-        let system_task_quarantine_ids =
-            load_system_task_quarantine_ids(&directory.join("system-task-quarantine.jsonl"));
+        let system_task_quarantine_ids = load_system_task_quarantine_ids(&[
+            directory.join("system-task-quarantine.jsonl"),
+            directory.join("shutdown-system-task-quarantine.jsonl"),
+        ]);
+        let deferred_system_task_finishes = load_system_task_finishes(&[
+            directory.join("system-task-quarantine.jsonl"),
+            directory.join("shutdown-system-task-quarantine.jsonl"),
+        ]);
+        let replayed_system_task_ids = deferred_system_task_finishes
+            .iter()
+            .map(|finish| finish.run_id)
+            .collect();
         let journal = Self {
             directory,
             current_file: open_append_file(&current_path)?,
@@ -517,6 +694,8 @@ impl TerminalJournal {
             replay_blocked: false,
             shutdown_recovery_pending,
             system_task_quarantine_ids,
+            replayed_system_task_ids,
+            deferred_system_task_finishes,
             last_sync_at: Instant::now(),
             last_checkpoint_at: Instant::now(),
             overflowed: pending_bytes >= TERMINAL_JOURNAL_MAX_BYTES,
@@ -1076,28 +1255,131 @@ fn append_shutdown_terminal_ack(
     Ok(())
 }
 
-fn load_system_task_quarantine_ids(path: &Path) -> HashSet<i64> {
-    let Ok(file) = File::open(path) else {
-        return HashSet::new();
-    };
-    let mut reader = BufReader::new(file);
+fn load_system_task_quarantine_ids(paths: &[PathBuf]) -> HashSet<i64> {
     let mut ids = HashSet::new();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let Ok(read) = reader.read_line(&mut line) else {
-            break;
+    for path in paths {
+        let Ok(file) = File::open(path) else {
+            continue;
         };
-        if read == 0 {
-            break;
-        }
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
-            && let Some(run_id) = value.get("run_id").and_then(serde_json::Value::as_i64)
-        {
-            ids.insert(run_id);
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let Ok(read) = reader.read_line(&mut line) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                && let Some(run_id) = value.get("run_id").and_then(serde_json::Value::as_i64)
+            {
+                ids.insert(run_id);
+            }
         }
     }
     ids
+}
+
+fn append_system_task_acknowledgements(path: &Path, run_ids: &[i64]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open system-task quarantine {}", path.display()))?;
+    for run_id in run_ids {
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({ "run_id": run_id, "acknowledged": true }),
+        )
+        .context("failed to encode system-task quarantine acknowledgement")?;
+        file.write_all(b"\n")
+            .context("failed to append system-task quarantine acknowledgement")?;
+    }
+    file.sync_data()
+        .context("failed to sync system-task quarantine acknowledgement")?;
+    Ok(())
+}
+
+fn load_system_task_finishes(paths: &[PathBuf]) -> VecDeque<BatchedSystemTaskFinish> {
+    let mut entries = HashMap::<i64, (Option<BatchedSystemTaskFinish>, bool)>::new();
+    for path in paths {
+        let Ok(file) = File::open(path) else {
+            continue;
+        };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let Ok(read) = reader.read_line(&mut line) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            let Ok(value) = serde_json::from_str::<SystemTaskRecoveryLine>(&line) else {
+                continue;
+            };
+            if value.acknowledged {
+                entries.insert(value.run_id, (None, true));
+                continue;
+            }
+            let (Some(task_kind), Some(status)) = (
+                parse_system_task_kind(&value.task_kind),
+                parse_system_task_status(&value.status),
+            ) else {
+                continue;
+            };
+            if entries
+                .get(&value.run_id)
+                .is_some_and(|(_, acknowledged)| *acknowledged)
+            {
+                continue;
+            }
+            entries.insert(
+                value.run_id,
+                (
+                    Some(BatchedSystemTaskFinish {
+                        run_id: value.run_id,
+                        task_kind,
+                        trigger_kind: value.trigger_kind,
+                        status,
+                        summary: value.summary,
+                        detail: value.detail,
+                        finished_at: value.finished_at,
+                        duration_ms: value.duration_ms,
+                    }),
+                    false,
+                ),
+            );
+        }
+    }
+    entries
+        .into_values()
+        .filter_map(|(finish, acknowledged)| (!acknowledged).then_some(finish).flatten())
+        .collect()
+}
+
+fn parse_system_task_kind(value: &str) -> Option<SystemTaskKind> {
+    match value {
+        "retention_archive" => Some(SystemTaskKind::RetentionArchive),
+        "startup_backfill" => Some(SystemTaskKind::StartupBackfill),
+        "hourly_rollup_bootstrap" => Some(SystemTaskKind::HourlyRollupBootstrap),
+        "forward_proxy_subscription_refresh" => {
+            Some(SystemTaskKind::ForwardProxySubscriptionRefresh)
+        }
+        _ => None,
+    }
+}
+
+fn parse_system_task_status(value: &str) -> Option<SystemTaskStatus> {
+    match value {
+        "running" => Some(SystemTaskStatus::Running),
+        "success" => Some(SystemTaskStatus::Success),
+        "failed" => Some(SystemTaskStatus::Failed),
+        "skipped" => Some(SystemTaskStatus::Skipped),
+        _ => None,
+    }
 }
 
 fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecovery {
@@ -1478,6 +1760,174 @@ mod tests {
         );
         let reopened = TerminalJournal::open(&database_path).expect("reopen compacted recovery");
         assert_eq!(reopened.stats().replay_count, 0);
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn system_task_recovery_replays_across_restart_and_acknowledges() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-system-task-recovery-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let finish = BatchedSystemTaskFinish {
+            run_id: 701,
+            task_kind: SystemTaskKind::StartupBackfill,
+            trigger_kind: "startup".to_string(),
+            status: SystemTaskStatus::Skipped,
+            summary: Some("cancelled".to_string()),
+            detail: Some("shutdown requested".to_string()),
+            finished_at: "2026-07-29T00:00:01Z".to_string(),
+            duration_ms: 25,
+        };
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal
+            .quarantine_system_task_finish(&finish, "test recovery")
+            .expect("persist system-task recovery");
+        drop(journal);
+
+        let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
+        let replay = recovered.take_system_task_finishes(1);
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].run_id, finish.run_id);
+        assert_eq!(replay[0].status, finish.status);
+        recovered
+            .acknowledge_system_task_finishes(&[finish.run_id])
+            .expect("acknowledge system-task recovery");
+        assert!(recovered.take_system_task_finishes(1).is_empty());
+        drop(recovered);
+
+        let mut reopened =
+            TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
+        assert!(reopened.take_system_task_finishes(1).is_empty());
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn shutdown_system_task_recovery_replays_and_acknowledges_after_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-shutdown-system-task-recovery-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let finish = BatchedSystemTaskFinish {
+            run_id: 702,
+            task_kind: SystemTaskKind::HourlyRollupBootstrap,
+            trigger_kind: "startup".to_string(),
+            status: SystemTaskStatus::Skipped,
+            summary: Some("cancelled".to_string()),
+            detail: None,
+            finished_at: "2026-07-29T00:00:02Z".to_string(),
+            duration_ms: 40,
+        };
+        TerminalJournal::quarantine_shutdown_batch_at_database_path(
+            &database_path,
+            &[],
+            &[&finish],
+            "shutdown recovery",
+        )
+        .expect("persist shutdown system-task recovery");
+
+        let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
+        assert_eq!(recovered.take_system_task_finishes(1).len(), 1);
+        recovered
+            .acknowledge_system_task_finishes(&[finish.run_id])
+            .expect("acknowledge shutdown system-task recovery");
+        drop(recovered);
+
+        let mut reopened =
+            TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
+        assert!(reopened.take_system_task_finishes(1).is_empty());
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn shutdown_system_task_ack_survives_regular_quarantine_compaction() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-shutdown-system-task-compaction-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let finish = BatchedSystemTaskFinish {
+            run_id: 702,
+            task_kind: SystemTaskKind::HourlyRollupBootstrap,
+            trigger_kind: "startup".to_string(),
+            status: SystemTaskStatus::Skipped,
+            summary: Some("cancelled".to_string()),
+            detail: None,
+            finished_at: "2026-07-29T00:00:02Z".to_string(),
+            duration_ms: 40,
+        };
+        TerminalJournal::quarantine_shutdown_batch_at_database_path(
+            &database_path,
+            &[],
+            &[&finish],
+            "shutdown recovery",
+        )
+        .expect("persist shutdown system-task recovery");
+
+        let directory = terminal_journal_directory(&database_path);
+        let ordinary_path = directory.join("system-task-quarantine.jsonl");
+        let mut ordinary = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&ordinary_path)
+            .expect("open ordinary system-task quarantine");
+        for run_id in 10_000_i64..130_000_i64 {
+            serde_json::to_writer(
+                &mut ordinary,
+                &serde_json::json!({ "run_id": run_id, "acknowledged": true }),
+            )
+            .expect("encode ordinary acknowledgement filler");
+            ordinary
+                .write_all(b"\n")
+                .expect("append ordinary acknowledgement filler");
+        }
+        ordinary
+            .sync_data()
+            .expect("sync ordinary acknowledgement filler");
+        drop(ordinary);
+        assert!(
+            fs::metadata(&ordinary_path)
+                .expect("stat ordinary system-task quarantine")
+                .len()
+                >= SYSTEM_TASK_QUARANTINE_COMPACTION_BYTES
+        );
+
+        let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
+        assert_eq!(
+            recovered
+                .take_system_task_finishes(1)
+                .first()
+                .map(|finish| finish.run_id),
+            Some(finish.run_id)
+        );
+        recovered
+            .acknowledge_system_task_finishes(&[finish.run_id])
+            .expect("acknowledge shutdown system-task recovery");
+        drop(recovered);
+
+        let shutdown_path = directory.join("shutdown-system-task-quarantine.jsonl");
+        assert!(
+            fs::read_to_string(&shutdown_path)
+                .expect("read compacted shutdown recovery")
+                .trim()
+                .is_empty()
+        );
+        let reopened = TerminalJournal::open(&database_path).expect("reopen compacted journal");
+        assert!(
+            reopened
+                .deferred_system_task_finishes
+                .iter()
+                .all(|entry| entry.run_id != finish.run_id)
+        );
 
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
