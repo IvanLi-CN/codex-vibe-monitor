@@ -1250,16 +1250,13 @@ async fn load_summary_archive_snapshot_backfill_candidates(
 }
 
 /// A prior attempt may have committed every V2 page and then failed before promoting the final
-/// proof marker.  The typed terminal outcome must not hide such a verifiable page set forever:
-/// promotion is a metadata-only check, while malformed pages remain quarantined by the existing
-/// terminal-gap rules.
-async fn promote_verified_summary_snapshot_page_sets(
+/// proof marker.  Retryable outcomes may still promote that page set, while typed terminal
+/// outcomes remain quarantined until a new manifest identity produces a fresh page set.
+async fn load_summary_archive_snapshot_v2_promotion_candidates(
     pool: &Pool<Sqlite>,
     limit: i64,
-    started_at: Instant,
-    max_elapsed: Duration,
-) -> Result<usize> {
-    let candidates = sqlx::query_as::<_, (i64, String)>(
+) -> Result<Vec<(i64, String)>> {
+    sqlx::query_as::<_, (i64, String)>(
         "SELECT snapshot.archive_batch_id, snapshot.manifest_sha256 \
          FROM summary_archive_snapshot AS snapshot \
          LEFT JOIN summary_archive_snapshot_v2_proof AS proof \
@@ -1270,7 +1267,16 @@ async fn promote_verified_summary_snapshot_page_sets(
           AND outcome.manifest_sha256 = snapshot.manifest_sha256 \
          WHERE snapshot.format_version = ?1 \
            AND proof.archive_batch_id IS NULL \
-           AND (outcome.archive_batch_id IS NULL OR outcome.disposition <> 'complete') \
+           AND (outcome.archive_batch_id IS NULL OR (
+               outcome.disposition <> 'complete'
+               AND NOT (
+                   outcome.disposition = 'unavailable'
+                   AND outcome.failure_kind IN (
+                       'verification_failed', 'manifest_sha_mismatch',
+                       'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                   )
+               )
+           )) \
          GROUP BY snapshot.archive_batch_id, snapshot.manifest_sha256 \
          ORDER BY snapshot.archive_batch_id ASC \
          LIMIT ?2",
@@ -1279,7 +1285,16 @@ async fn promote_verified_summary_snapshot_page_sets(
     .bind(limit.max(1))
     .fetch_all(pool)
     .await
-    .context("load unpromoted Summary Snapshot V2 page sets")?;
+    .context("load unpromoted Summary Snapshot V2 page sets")
+}
+
+async fn promote_verified_summary_snapshot_page_sets(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+    started_at: Instant,
+    max_elapsed: Duration,
+) -> Result<usize> {
+    let candidates = load_summary_archive_snapshot_v2_promotion_candidates(pool, limit).await?;
     let mut promoted = 0;
     for (archive_batch_id, manifest_sha256) in candidates {
         if started_at.elapsed() >= max_elapsed {
@@ -4651,6 +4666,73 @@ mod tests {
             .expect("load obligation candidates");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].sha256, "stale-complete");
+    }
+
+    #[tokio::test]
+    async fn terminal_verification_failure_skips_v2_promotion_until_manifest_sha_changes() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (1, 'codex_invocations', '2026-09',
+                     '/missing/terminal-proof.sqlite.gz', 'terminal-proof', 1,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed terminal manifest");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_backfill_outcome
+             (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at)
+             VALUES (1, 'terminal-proof', 'unavailable', 'verification_failed', datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed terminal verification outcome");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot
+             (archive_batch_id, manifest_sha256, page_index, coverage_start, coverage_end,
+              row_count, payload, payload_bytes, snapshot_sha256, format_version)
+             VALUES (1, 'terminal-proof', 0, datetime('now', '-1 day'), datetime('now'),
+                     1, ?1, 1, 'invalid-page-hash', ?2)",
+        )
+        .bind(vec![0_u8])
+        .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+        .execute(&pool)
+        .await
+        .expect("seed invalid V2 page");
+
+        let candidates = load_summary_archive_snapshot_v2_promotion_candidates(&pool, 1)
+            .await
+            .expect("load terminal proof promotion candidates");
+        assert!(candidates.is_empty());
+
+        sqlx::query("UPDATE archive_batches SET sha256 = 'replacement-proof' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("replace manifest identity");
+        sqlx::query(
+            "UPDATE summary_archive_snapshot
+             SET manifest_sha256 = 'replacement-proof', snapshot_sha256 = 'replacement-page-hash'
+             WHERE archive_batch_id = 1 AND manifest_sha256 = 'terminal-proof'",
+        )
+        .execute(&pool)
+        .await
+        .expect("replace snapshot identity");
+        let candidates = load_summary_archive_snapshot_v2_promotion_candidates(&pool, 1)
+            .await
+            .expect("load replacement manifest candidate");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].1, "replacement-proof");
     }
 
     #[tokio::test]
