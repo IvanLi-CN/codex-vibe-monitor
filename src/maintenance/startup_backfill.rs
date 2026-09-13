@@ -1536,6 +1536,23 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate).await
 }
 
+async fn begin_startup_backfill_audit(
+    state: &Arc<AppState>,
+    cancel: &CancellationToken,
+) -> Result<Option<SystemTaskRunHandle>> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(None),
+        result = begin_system_task_run_admitted(
+            state.as_ref(),
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+            SystemTaskKind::StartupBackfill,
+            "event_or_due",
+            Some("startup backfill maintenance changed data or failed".to_string()),
+        ) => result.map(Some),
+    }
+}
+
 async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -1669,67 +1686,69 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     }
 
     if (ran_actionable_task || had_failure) && !cancel.is_cancelled() {
-        // The audit row is non-critical bookkeeping. Never register a blocking P2 waiter here:
-        // this supervisor can run alongside interactive writes and must yield when the
-        // coordinator is busy. The durable task/progress rows above remain the source of truth.
+        // The audit row is non-critical bookkeeping. Do not hold a pressure slot while the
+        // P2 admission waits: if cancellation wins, leave the row for the next pass. The durable
+        // task/progress rows above remain the source of truth.
         let gate = crate::db_pressure::global_db_pressure_gate();
-        if let Ok(_pressure_permit) = gate.try_begin_background("startup_backfill_audit") {
-            let task_run = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return StartupBackfillMaintenancePass {
-                    ran_actionable_task,
-                    had_failure,
-                },
-                result = try_begin_system_task_run_with_admission(
-                    state.as_ref(),
-                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-                    SystemTaskKind::StartupBackfill,
-                    "event_or_due",
-                    Some("startup backfill maintenance changed data or failed".to_string()),
-                ) => result,
-            };
-            if let Ok(Some(run)) = task_run {
-                let audit_status = if had_failure {
-                    SystemTaskStatus::Failed
-                } else if had_deferred_task {
-                    SystemTaskStatus::Skipped
-                } else {
-                    SystemTaskStatus::Success
-                };
-                let audit_summary = if had_failure {
-                    "startup backfill maintenance pass completed with failures"
-                } else if had_deferred_task {
-                    "startup backfill maintenance pass deferred work for a later run"
-                } else {
-                    "startup backfill maintenance pass completed"
-                };
-                if !finish_system_task_run_reliably(
-                    state.as_ref(),
-                    Some(cancel),
-                    &run,
-                    audit_status,
-                    Some(audit_summary.to_string()),
-                    None,
-                )
-                .await
-                {
-                    warn!(
-                        task_kind = run.task_kind.as_str(),
-                        trigger_kind = %run.trigger_kind,
-                        "failed to durably finalize startup backfill maintenance audit"
-                    );
+        match gate.try_begin_background("startup_backfill_audit") {
+            Ok(pressure_permit) => {
+                // Do not hold the background slot while waiting for the process-wide write
+                // coordinator. P1/interactive writes can still preempt this P2 audit waiter.
+                drop(pressure_permit);
+                let task_run = begin_startup_backfill_audit(&state, cancel).await;
+                match task_run {
+                    Ok(Some(run)) => {
+                        let audit_status = if had_failure {
+                            SystemTaskStatus::Failed
+                        } else if had_deferred_task {
+                            SystemTaskStatus::Skipped
+                        } else {
+                            SystemTaskStatus::Success
+                        };
+                        let audit_summary = if had_failure {
+                            "startup backfill maintenance pass completed with failures"
+                        } else if had_deferred_task {
+                            "startup backfill maintenance pass deferred work for a later run"
+                        } else {
+                            "startup backfill maintenance pass completed"
+                        };
+                        if !finish_system_task_run_reliably(
+                            state.as_ref(),
+                            Some(cancel),
+                            &run,
+                            audit_status,
+                            Some(audit_summary.to_string()),
+                            None,
+                        )
+                        .await
+                        {
+                            warn!(
+                                task_kind = run.task_kind.as_str(),
+                                trigger_kind = %run.trigger_kind,
+                                "failed to durably finalize startup backfill maintenance audit"
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        debug!(
+                            defer_reason = "cancelled",
+                            "startup backfill maintenance audit cancelled before SQLite access"
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            "failed to record startup backfill maintenance audit start"
+                        );
+                    }
                 }
-            } else {
+            }
+            Err(reason) => {
                 debug!(
-                    defer_reason = "coordinator_priority",
+                    defer_reason = %reason,
                     "startup backfill maintenance audit deferred before SQLite access"
                 );
             }
-        } else {
-            debug!(
-                defer_reason = "database_pressure",
-                "startup backfill maintenance audit deferred before SQLite access"
-            );
         }
     } else if !had_deferred_task {
         // Idle passes deliberately do not write system_task_runs, avoiding an audit workload
