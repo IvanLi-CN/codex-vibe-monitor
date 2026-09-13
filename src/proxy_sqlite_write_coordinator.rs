@@ -383,6 +383,7 @@ impl ProxySqliteWriteCoordinator {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ProxySqliteWritePermit {
     coordinator: Arc<ProxySqliteWriteCoordinator>,
     class: ProxySqliteWriteClass,

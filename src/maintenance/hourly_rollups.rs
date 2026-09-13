@@ -3217,6 +3217,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     scope: HourlyRollupRefreshScope,
 ) {
     let gate = crate::db_pressure::global_db_pressure_gate();
+    let _guard = hourly_rollup_sync_lock.lock().await;
     let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
         Ok(permit) => permit,
         Err(deny_reason) => {
@@ -3228,7 +3229,20 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
             return;
         }
     };
-    let _guard = hourly_rollup_sync_lock.lock().await;
+    let _write_permit =
+        match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        {
+            Some(permit) => permit,
+            None => {
+                debug!(
+                    reason,
+                    defer_reason = "coordinator_priority",
+                    "background hourly rollup refresh skipped before SQLite access"
+                );
+                return;
+            }
+        };
 
     if let Err(err) = refresh_hourly_rollups_for_read_surfaces_with_scope(pool, scope).await {
         gate.record_error("hourly_rollup_refresh", &err);
@@ -3253,6 +3267,7 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
     reason: &'static str,
 ) -> ActiveAccountActivityV2RepairResult {
     let gate = crate::db_pressure::global_db_pressure_gate();
+    let _guard = hourly_rollup_sync_lock.lock().await;
     let _permit = match gate.try_begin_background("account_activity_v2_priority_repair") {
         Ok(permit) => permit,
         Err(deny_reason) => {
@@ -3265,7 +3280,21 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
             return ActiveAccountActivityV2RepairResult::Deferred;
         }
     };
-    let _guard = hourly_rollup_sync_lock.lock().await;
+    let _write_permit =
+        match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        {
+            Some(permit) => permit,
+            None => {
+                debug!(
+                    reason,
+                    defer_reason = "coordinator_priority",
+                    wake_reason = "active_window_coverage_check",
+                    "active Dashboard coverage repair deferred before SQLite access"
+                );
+                return ActiveAccountActivityV2RepairResult::Deferred;
+            }
+        };
     match repair_active_account_activity_v2_coverage(pool).await {
         Ok(outcome) => ActiveAccountActivityV2RepairResult::Repaired(outcome),
         Err(err) => {

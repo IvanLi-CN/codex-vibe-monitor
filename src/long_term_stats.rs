@@ -1676,6 +1676,12 @@ enum LongTermProjectionFlushOutcome {
 }
 
 #[derive(Debug)]
+struct LongTermProjectionWritePermit {
+    _pressure: Option<crate::db_pressure::DbBackgroundPermit>,
+    _write: Option<crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit>,
+}
+
+#[derive(Debug)]
 struct LongTermProjectionWriteControl<'a> {
     shutdown: Option<&'a CancellationToken>,
     gate: Option<&'a crate::db_pressure::DbPressureGate>,
@@ -2022,10 +2028,10 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         pool: &'p Pool<Sqlite>,
     ) -> Result<(
         sqlx::Transaction<'p, Sqlite>,
-        Option<crate::db_pressure::DbBackgroundPermit>,
+        Option<LongTermProjectionWritePermit>,
     )> {
         self.check()?;
-        let permit = if let Some(gate) = self.gate {
+        let pressure_permit = if let Some(gate) = self.gate {
             let result = if let Some(shutdown) = self.shutdown {
                 tokio::select! {
                     _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
@@ -2044,6 +2050,23 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             Some(result.map_err(|reason| {
                 anyhow!("long-term projection write deferred by database pressure: {reason}")
             })?)
+        } else {
+            None
+        };
+        let write_permit = if self.gate.is_some() {
+            let coordinator =
+                crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+            match coordinator.try_acquire(
+                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+            ) {
+                Some(permit) => Some(permit),
+                None => {
+                    drop(pressure_permit);
+                    bail!(
+                        "long-term projection write deferred by database pressure: P2 write admission is not available"
+                    );
+                }
+            }
         } else {
             None
         };
@@ -2069,13 +2092,21 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         } else {
             pool.begin().await?
         };
-        Ok((transaction, permit))
+        Ok((
+            transaction,
+            (pressure_permit.is_some() || write_permit.is_some()).then_some(
+                LongTermProjectionWritePermit {
+                    _pressure: pressure_permit,
+                    _write: write_permit,
+                },
+            ),
+        ))
     }
 
     async fn commit(
         &self,
         transaction: sqlx::Transaction<'_, Sqlite>,
-        permit: Option<crate::db_pressure::DbBackgroundPermit>,
+        permit: Option<LongTermProjectionWritePermit>,
     ) -> Result<()> {
         if let Some(shutdown) = self.shutdown {
             tokio::select! {
@@ -4064,7 +4095,7 @@ async fn load_long_term_projection_cursor_with_control(
 
     let pressure_permit = control.try_begin_background()?;
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let _write_permit = coordinator
+    let write_permit = coordinator
         .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
         .ok_or_else(|| {
             anyhow!(
@@ -4103,7 +4134,15 @@ async fn load_long_term_projection_cursor_with_control(
     .bind(LONG_TERM_PROJECTION_CONSUMER)
     .execute(&mut *tx)
     .await?;
-    control.commit(tx, pressure_permit).await?;
+    control
+        .commit(
+            tx,
+            Some(LongTermProjectionWritePermit {
+                _pressure: pressure_permit,
+                _write: Some(write_permit),
+            }),
+        )
+        .await?;
     Ok(control
         .await_sqlite(
             sqlx::query_as::<_, LongTermProjectionCursorRow>(
