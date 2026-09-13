@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.10",
+  "base_stable_version": "2.71.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-13T20:41:43Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f36240a39972d9c16e88561dc9362f702085a3b8",
+  "pr_number": 925,
+  "pr_title": "fix(summary): quarantine terminal V2 proof retries",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.10",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.10",
+  "target_sha": "8520d9ca33a680385541cfd94b0c09a847bef50f",
+  "type_label": "type:patch"
+}
