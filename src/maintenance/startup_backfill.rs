@@ -1542,7 +1542,7 @@ async fn begin_startup_backfill_audit(
 ) -> Result<Option<SystemTaskRunHandle>> {
     tokio::select! {
         biased;
-        _ = cancel.cancelled() => return Ok(None),
+        _ = cancel.cancelled() => Ok(None),
         result = begin_system_task_run_admitted(
             state.as_ref(),
             crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
