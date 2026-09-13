@@ -1892,20 +1892,25 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         finished_at,
         duration_ms,
     };
-    if !state
-        .sqlite_batch_writer
-        .quarantine_system_task_finish(&finish, "task-history finish admitted for durable recovery")
-    {
+    let journaled = state.sqlite_batch_writer.quarantine_system_task_finish(
+        &finish,
+        "task-history finish admitted for durable recovery",
+    );
+    if !journaled {
         warn!(
             run_id = handle.id,
             task_kind = handle.task_kind.as_str(),
-            "task-history finish could not be journaled before enqueue"
+            durability_mode = "memory_fallback",
+            "task-history finish journal unavailable; enqueueing with reduced durability"
         );
+    }
+    let enqueued = state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::SystemTaskFinish(finish));
+    if !enqueued {
         return false;
     }
-    state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::SystemTaskFinish(finish))
+    true
 }
 
 pub(crate) async fn fetch_system_status(

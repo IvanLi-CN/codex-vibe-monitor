@@ -1691,6 +1691,35 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_task_history_s
 }
 
 #[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_retries_coordinator_contention_promptly() {
+    let state = test_state_from_config(test_config(), false).await;
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let write_permit = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let task_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'hourly_rollup_bootstrap'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("read bootstrap task count while coordinator is occupied");
+    assert_eq!(task_count, 0);
+
+    drop(write_permit);
+    wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "running").await;
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
+        .await
+        .expect("bootstrap should stop after cancellation")
+        .expect("bootstrap task should join after cancellation");
+    state.pool.close().await;
+}
+
+#[tokio::test]
 async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_during_shutdown_lock()
  {
     let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(

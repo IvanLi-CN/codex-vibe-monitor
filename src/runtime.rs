@@ -1140,14 +1140,16 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => return,
-                        _ = tokio::time::sleep(Duration::from_secs(
-                            BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                        )) => continue,
+                        _ = tokio::time::sleep(
+                            STARTUP_HOURLY_ROLLUP_TASK_HISTORY_COORDINATOR_RETRY_INTERVAL,
+                        ) => continue,
                     }
                 };
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
+                        drop(write_permit);
+                        drop(pressure_permit);
                         finish_orphaned_startup_hourly_rollup_bootstrap_task(
                             state.as_ref(),
                             &cancel,
