@@ -3856,6 +3856,72 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
 }
 
 #[tokio::test]
+async fn stale_capability_observations_cannot_overwrite_newer_results() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Fenced Capability Observations").await;
+    let newer = "2026-09-13T10:00:01.000Z";
+    let older = "2026-09-13T10:00:00.000Z";
+
+    record_capability_observation_with_observed_at(
+        &pool,
+        account_id,
+        UpstreamCapabilityAxis::ResponseEndpoint,
+        CapabilitySupport::Supported,
+        Some("newer success"),
+        Some(newer),
+    )
+    .await
+    .expect("record newer capability observation");
+    record_capability_observation_with_observed_at(
+        &pool,
+        account_id,
+        UpstreamCapabilityAxis::ResponseEndpoint,
+        CapabilitySupport::Unsupported,
+        Some("older failure"),
+        Some(older),
+    )
+    .await
+    .expect("record stale capability observation");
+
+    record_compact_support_observation_with_observed_at(
+        &pool,
+        account_id,
+        COMPACT_SUPPORT_STATUS_SUPPORTED,
+        Some("newer success"),
+        Some(newer),
+    )
+    .await
+    .expect("record newer compact observation");
+    record_compact_support_observation_with_observed_at(
+        &pool,
+        account_id,
+        COMPACT_SUPPORT_STATUS_UNSUPPORTED,
+        Some("older failure"),
+        Some(older),
+    )
+    .await
+    .expect("record stale compact observation");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load fenced observation row")
+        .expect("fenced observation row exists");
+    assert_eq!(
+        row.response_endpoint_capability.as_deref(),
+        Some(CapabilitySupport::Supported.as_str())
+    );
+    assert_eq!(
+        row.response_endpoint_capability_observed_at.as_deref(),
+        Some(newer)
+    );
+    assert_eq!(
+        row.compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_SUPPORTED)
+    );
+    assert_eq!(row.compact_support_observed_at.as_deref(), Some(newer));
+}
+
+#[tokio::test]
 async fn image_intent_validation_failure_does_not_learn_unsupported_capability() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Image Validation Failure Keeps Unknown").await;

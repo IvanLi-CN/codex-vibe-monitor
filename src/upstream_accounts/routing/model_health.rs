@@ -638,6 +638,9 @@ pub(crate) async fn clear_cache_hit_protection_state(
     pool: &Pool<Sqlite>,
     reason_code: &str,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let rows = sqlx::query_as::<_, ModelRouteRow>(
         "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE last_failure_kind = ?1 OR cache_concurrency_limit IS NOT NULL OR cache_recovery_limit IS NOT NULL OR cache_low_hit_streak != 0 OR cache_cooldown_level != 0 OR cache_last_hit_rate_percent IS NOT NULL OR cache_usage_missing_since IS NOT NULL",
@@ -841,6 +844,9 @@ pub(crate) async fn observe_model_route_cache_hit(
     cache_input_tokens: Option<i64>,
     active_concurrency: i64,
 ) -> Result<ModelRouteCacheObservationOutcome> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(ModelRouteCacheObservationOutcome::default());
     }
@@ -1402,6 +1408,17 @@ pub(crate) async fn observe_model_route_seen(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    observe_model_route_seen_admitted(pool, account_id, model).await
+}
+
+pub(crate) async fn observe_model_route_seen_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    model: Option<&str>,
+) -> Result<()> {
     let Some(model) = model.map(str::trim) else {
         return Ok(());
     };
@@ -1490,6 +1507,19 @@ pub(crate) async fn persist_priority_handoff_event(
     model: &str,
     reason_code: &str,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    persist_priority_handoff_event_admitted(pool, account_id, attempt_id, model, reason_code).await
+}
+
+pub(crate) async fn persist_priority_handoff_event_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: Option<i64>,
+    model: &str,
+    reason_code: &str,
+) -> Result<()> {
     let (action, result) = match reason_code {
         PRIORITY_HANDOFF_SUCCEEDED_REASON => (
             UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED,
@@ -1556,6 +1586,24 @@ async fn persist_cache_hit_route_event(
 }
 
 pub(crate) async fn record_model_route_success_from_attempt(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: i64,
+    request_started_at: Option<&str>,
+) -> Result<bool> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_model_route_success_from_attempt_admitted(
+        pool,
+        account_id,
+        attempt_id,
+        request_started_at,
+    )
+    .await
+}
+
+pub(crate) async fn record_model_route_success_from_attempt_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
     attempt_id: i64,
@@ -1794,6 +1842,31 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
     failure_kind: Option<&str>,
     request_started_at: Option<&str>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_model_route_failure_from_attempt_with_start_admitted(
+        pool,
+        account_id,
+        attempt_id,
+        status,
+        error_message,
+        failure_kind,
+        request_started_at,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub(crate) async fn record_model_route_failure_from_attempt_with_start_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: i64,
+    status: StatusCode,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    request_started_at: Option<&str>,
+) -> Result<bool> {
     record_model_route_failure_from_attempt_inner(
         pool,
         account_id,
@@ -1806,7 +1879,6 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
         None,
     )
     .await
-    .map(|_| ())
 }
 
 #[expect(

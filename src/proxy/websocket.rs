@@ -2226,7 +2226,14 @@ impl WsUsageTracker {
                 && let Some((reason_code, http_status)) = ws_terminal_temporary_classification(text)
                 && let Some(attempt_id) = self.attempt_id
                 && self.account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-                && let Err(err) = record_api_key_temporary_model_failure_or_diagnostic(
+            {
+                let _write_permit =
+                    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                        .acquire(
+                            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy,
+                        )
+                        .await;
+                if let Err(err) = record_api_key_temporary_model_failure_or_diagnostic(
                     &state.pool,
                     self.account.account_id,
                     self.trace.sticky_key.as_deref(),
@@ -2238,13 +2245,14 @@ impl WsUsageTracker {
                     Some(attempt_id),
                 )
                 .await
-            {
-                warn!(
-                    invoke_id = %self.trace.invoke_id,
-                    account_id = self.account.account_id,
-                    error = %err,
-                    "failed to record websocket model route terminal failure"
-                );
+                {
+                    warn!(
+                        invoke_id = %self.trace.invoke_id,
+                        account_id = self.account.account_id,
+                        error = %err,
+                        "failed to record websocket model route terminal failure"
+                    );
+                }
             }
             return;
         };
@@ -3040,8 +3048,11 @@ pub(crate) async fn persist_ws_usage_event(
     let is_failed_terminal_event = !is_completed_terminal_event;
     let failure_kind = ws_terminal_event_failure_kind(&event);
     if let Some(attempt_id) = attempt_id {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
         if is_completed_terminal_event {
-            record_model_route_success_from_attempt(
+            record_model_route_success_from_attempt_admitted(
                 &state.pool,
                 account.account_id,
                 attempt_id,
@@ -3065,7 +3076,7 @@ pub(crate) async fn persist_ws_usage_event(
                 )
                 .await?;
             } else {
-                record_model_route_failure_from_attempt_with_start(
+                record_model_route_failure_from_attempt_with_start_admitted(
                     &state.pool,
                     account.account_id,
                     attempt_id,

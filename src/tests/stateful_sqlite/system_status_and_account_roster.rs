@@ -445,6 +445,10 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert!(payload["process"]["unattributedAnonBytes"].is_u64());
     assert!(payload["allocator"]["mallocArenaMax"].is_string());
     assert_eq!(payload["writerAccounting"]["state"], "healthy");
+    assert!(payload["databasePressure"]["pressureEvents"].is_u64());
+    assert!(payload["databasePressure"]["sqliteBusyEvents"].is_u64());
+    assert!(payload["databasePressure"]["sqliteLockedEvents"].is_u64());
+    assert!(payload["databasePressure"]["poolAcquireTimeoutEvents"].is_u64());
     assert_eq!(payload["dashboardProjection"]["mode"], "auto");
     assert_eq!(payload["dashboardProjection"]["livePathDbReadCount"], 0);
     assert!(payload["dashboardProjection"]["buildCount"].is_u64());

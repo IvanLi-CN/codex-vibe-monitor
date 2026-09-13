@@ -714,6 +714,9 @@ pub(crate) async fn update_pool_upstream_request_attempt_model(
     let Some(attempt_id) = attempt_id else {
         return Ok(());
     };
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let model = model.map(str::trim);
     sqlx::query(
         r#"
@@ -742,6 +745,9 @@ pub(crate) async fn annotate_pool_upstream_request_attempt_model_mapping(
     let Some(attempt_id) = pending.attempt_id else {
         return Ok(());
     };
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
@@ -882,9 +888,12 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
     .await
     {
         Ok(attempt_id) => {
-            if let Err(err) =
-                observe_model_route_seen(pool, upstream_account_id, trace.request_model.as_deref())
-                    .await
+            if let Err(err) = observe_model_route_seen_admitted(
+                pool,
+                upstream_account_id,
+                trace.request_model.as_deref(),
+            )
+            .await
             {
                 warn!(
                     account_id = upstream_account_id,

@@ -671,8 +671,10 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     success: bool,
     cooldown: bool,
 ) {
-    complete_priority_handoff_from_attempt_inner(pool, attempt_id, success, cooldown, false, None)
-        .await;
+    complete_priority_handoff_from_attempt_inner(
+        pool, attempt_id, success, cooldown, false, None, false,
+    )
+    .await;
 }
 
 async fn complete_priority_handoff_from_attempt_inner(
@@ -682,6 +684,7 @@ async fn complete_priority_handoff_from_attempt_inner(
     cooldown: bool,
     defer_failure: bool,
     model_route_recovered: Option<bool>,
+    persist_admitted: bool,
 ) {
     let Some(attempt_id) = attempt_id else {
         return;
@@ -743,12 +746,13 @@ async fn complete_priority_handoff_from_attempt_inner(
                         cooldown,
                     );
                     if let Some(reason_code) = reason_code
-                        && let Err(error) = super::model_health::persist_priority_handoff_event(
+                        && let Err(error) = persist_priority_handoff_event_for_completion(
                             pool,
                             context.account_id,
                             Some(attempt_id),
                             context.model_key.as_str(),
                             reason_code,
+                            persist_admitted,
                         )
                         .await
                     {
@@ -799,12 +803,13 @@ async fn complete_priority_handoff_from_attempt_inner(
                 false,
             );
             if let Some(reason_code) = reason_code
-                && let Err(error) = super::model_health::persist_priority_handoff_event(
+                && let Err(error) = persist_priority_handoff_event_for_completion(
                     pool,
                     context.account_id,
                     Some(attempt_id),
                     context.model_key.as_str(),
                     reason_code,
+                    persist_admitted,
                 )
                 .await
             {
@@ -831,12 +836,13 @@ async fn complete_priority_handoff_from_attempt_inner(
                 cooldown,
             );
             if let Some(reason_code) = reason_code
-                && let Err(error) = super::model_health::persist_priority_handoff_event(
+                && let Err(error) = persist_priority_handoff_event_for_completion(
                     pool,
                     context.account_id,
                     Some(attempt_id),
                     context.model_key.as_str(),
                     reason_code,
+                    persist_admitted,
                 )
                 .await
             {
@@ -912,8 +918,8 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke(
     success: bool,
     cooldown: bool,
 ) {
-    complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
-        pool, attempt_id, invoke_id, success, cooldown, None,
+    complete_priority_handoff_from_attempt_or_invoke_inner(
+        pool, attempt_id, invoke_id, success, cooldown, None, false,
     )
     .await;
 }
@@ -926,6 +932,69 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke_with_model_
     cooldown: bool,
     model_route_recovered: Option<bool>,
 ) {
+    complete_priority_handoff_from_attempt_or_invoke_inner(
+        pool,
+        attempt_id,
+        invoke_id,
+        success,
+        cooldown,
+        model_route_recovered,
+        false,
+    )
+    .await;
+}
+
+pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke_admitted(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
+    success: bool,
+    cooldown: bool,
+) {
+    complete_priority_handoff_from_attempt_or_invoke_inner(
+        pool, attempt_id, invoke_id, success, cooldown, None, true,
+    )
+    .await;
+}
+
+async fn persist_priority_handoff_event_for_completion(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: Option<i64>,
+    model: &str,
+    reason_code: &str,
+    admitted: bool,
+) -> Result<()> {
+    if admitted {
+        super::model_health::persist_priority_handoff_event_admitted(
+            pool,
+            account_id,
+            attempt_id,
+            model,
+            reason_code,
+        )
+        .await
+    } else {
+        super::model_health::persist_priority_handoff_event(
+            pool,
+            account_id,
+            attempt_id,
+            model,
+            reason_code,
+        )
+        .await
+    }
+}
+
+async fn complete_priority_handoff_from_attempt_or_invoke_inner(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
+    success: bool,
+    cooldown: bool,
+    model_route_recovered: Option<bool>,
+    persist_admitted: bool,
+) {
     if let Some(attempt_id) = attempt_id {
         complete_priority_handoff_from_attempt_inner(
             pool,
@@ -934,6 +1003,7 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke_with_model_
             cooldown,
             true,
             model_route_recovered,
+            persist_admitted,
         )
         .await;
         return;
@@ -961,12 +1031,13 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke_with_model_
             false,
         );
         if let Some(reason_code) = reason_code
-            && let Err(error) = super::model_health::persist_priority_handoff_event(
+            && let Err(error) = persist_priority_handoff_event_for_completion(
                 pool,
                 context.account_id,
                 None,
                 context.model_key.as_str(),
                 reason_code,
+                persist_admitted,
             )
             .await
         {

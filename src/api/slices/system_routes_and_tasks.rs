@@ -83,6 +83,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) process: SystemRuntimePressureProcess,
     pub(crate) allocator: SystemRuntimePressureAllocator,
     pub(crate) writer_accounting: PendingQueueAccountingSnapshot,
+    pub(crate) database_pressure: crate::db_pressure::DbPressureSnapshot,
     pub(crate) proxy_sqlite_write_coordinator:
         crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
     pub(crate) dashboard_projection: RuntimeProjectionHealthSnapshot,
@@ -134,6 +135,7 @@ fn runtime_pressure_state(
 pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
     let memory = state.memory_diagnostics.runtime_pressure_snapshot();
     let writer_accounting = state.sqlite_batch_writer.accounting_snapshot();
+    let database_pressure = crate::db_pressure::global_db_pressure_gate().snapshot();
     let proxy_sqlite_write_coordinator =
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .snapshot()
@@ -186,6 +188,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             && terminal_projection.last_persisted_row_id
                 > terminal_projection.timeseries_cursor_row_id);
     let writer_pressure_active = writer_accounting.p2_deferred_age_ms > 0
+        || database_pressure.pressure_cooldown_remaining_ms > 0
         || proxy_sqlite_write_coordinator.p1_waiter_count > 0
         || proxy_sqlite_write_coordinator.interactive_waiter_count > 0
         || proxy_sqlite_write_coordinator.p2_waiter_count > 0
@@ -228,6 +231,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             malloc_arena_max: memory.malloc_arena_max,
         },
         writer_accounting,
+        database_pressure,
         proxy_sqlite_write_coordinator,
         dashboard_projection,
         delivery,

@@ -531,6 +531,38 @@ It follows the operation's bounded error backoff and is distinct from a pressure
 defer.
 _Avoid_: pressure defer, successful no-op
 
+**Runtime SQLite Write Admission**:
+The single process-local turn that classifies and orders a short main-database write as P1
+terminal, interactive proxy, derived, or maintenance work. It is independent from a SQLx pool
+connection and is not held while performing network or file I/O.
+_Avoid_: connection-pool slot, long-lived task lock, generic background permit
+
+**P1 Terminal Write**:
+The durable completion or final failure record for an accepted proxy invocation. It dominates
+every other Runtime SQLite Write Admission class and must not be discarded for derived work.
+_Avoid_: best-effort batch, maintenance write
+
+**Interactive Proxy Write**:
+A short durable state change needed while routing or processing a proxy request. It follows P1
+terminal work but precedes derived and maintenance work.
+_Avoid_: background write, terminal batch
+
+**Derived Write**:
+A rebuildable projection or index change whose inputs are already durable. It may defer whenever
+P1 terminal or Interactive Proxy Write work is waiting.
+_Avoid_: terminal persistence, request-time read fallback
+
+**Maintenance Write**:
+A bounded retention, repair, or housekeeping update. It runs after the higher-priority Runtime
+SQLite Write Admission classes, with explicit fairness only when no P1 work is waiting.
+_Avoid_: interactive write, unlimited maintenance job
+
+**Database Pressure Incident**:
+A classified `SQLITE_BUSY`, `SQLITE_LOCKED`, or pool-acquisition timeout that starts the
+background cooldown. It carries operational timing and class evidence only, never SQL text,
+bound values, proxy payloads, or account identifiers.
+_Avoid_: generic database error, request trace
+
 ## Validation and delivery contracts
 
 **Project Test Entrypoint**:
