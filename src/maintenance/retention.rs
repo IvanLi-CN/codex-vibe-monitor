@@ -1640,8 +1640,9 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             let touched_anything = summary.touched_anything();
             if touched_anything && !summary.dry_run {
-                let task_run = begin_system_task_run(
-                    &state.pool,
+                let task_run = begin_system_task_run_admitted(
+                    state.as_ref(),
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
                     SystemTaskKind::RetentionArchive,
                     trigger,
                     Some("retention maintenance completed a write pass".to_string()),
@@ -1708,8 +1709,9 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 .record_error("data_retention_maintenance", &err);
             retention_record_error("data_retention_maintenance", &err);
             if !state.config.retention_dry_run {
-                let task_run = begin_system_task_run(
-                    &state.pool,
+                let task_run = begin_system_task_run_admitted(
+                    state.as_ref(),
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
                     SystemTaskKind::RetentionArchive,
                     trigger,
                     Some("retention maintenance failed".to_string()),

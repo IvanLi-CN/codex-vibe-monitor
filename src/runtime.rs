@@ -1098,278 +1098,276 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     tokio::spawn(async move {
         let started_at = Instant::now();
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
-        let task_start_window = format_utc_iso_millis(Utc::now() - ChronoDuration::seconds(1));
         let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-        // Task history is best-effort bookkeeping. Admit it only when both gates are immediately
-        // available; the bootstrap itself will retry its real work below without creating a
-        // pressure-window write or waiting behind an interactive writer.
-        let task_run = match pressure_gate
-            .try_begin_background("startup_hourly_rollup_bootstrap_task_history")
-        {
-            Ok(pressure_permit) => match coordinator.try_acquire(
-                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            ) {
-                Some(write_permit) => {
-                    let result = tokio::select! {
+        loop {
+            // Task history is admitted and recorded before waiting for the synchronization lock,
+            // but both permits are released immediately so a lock wait cannot occupy the only
+            // background pressure slot.
+            let task_run = loop {
+                let pressure_permit = match pressure_gate
+                    .try_begin_background("startup_hourly_rollup_bootstrap_task_history")
+                {
+                    Ok(permit) => permit,
+                    Err(reason) => {
+                        let retry_after = match reason {
+                            crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                                remaining_ms,
+                            } => Duration::from_millis(remaining_ms.max(1)),
+                            crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                                Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)
+                            }
+                        };
+                        info!(
+                            defer_reason = %reason,
+                            retry_after_ms = retry_after.as_millis() as u64,
+                            "background startup hourly rollup bootstrap task history deferred"
+                        );
+                        tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(retry_after) => continue,
+                        }
+                    }
+                };
+                let Some(write_permit) = coordinator.try_acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                ) else {
+                    drop(pressure_permit);
+                    tokio::select! {
                         biased;
-                        _ = cancel.cancelled() => None,
-                        result = begin_system_task_run(
-                            &state.pool,
-                            SystemTaskKind::HourlyRollupBootstrap,
-                            "startup",
-                            Some("background hourly rollup bootstrap started".to_string()),
-                        ) => match result {
-                            Ok(task_run) => Some(task_run),
-                            Err(err) => {
-                                warn!(
-                                    error = %err,
-                                    "failed to record background startup hourly rollup bootstrap start"
-                                );
-                                None
-                            }
-                        },
-                    };
-                    drop(write_permit);
-                    drop(pressure_permit);
-                    result
-                }
-                None => {
-                    drop(pressure_permit);
-                    info!(
-                        defer_reason = "coordinator_priority",
-                        "background startup hourly rollup bootstrap task history deferred"
-                    );
-                    None
-                }
-            },
-            Err(reason) => {
-                info!(
-                    defer_reason = %reason,
-                    "background startup hourly rollup bootstrap task history deferred"
-                );
-                None
-            }
-        };
-        let (_permit, _write_permit) = loop {
-            match pressure_gate.try_begin_background("startup_hourly_rollup_bootstrap") {
-                Ok(permit) => {
-                    match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-                        .try_acquire(
-                            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-                        ) {
-                        Some(write_permit) => break (permit, write_permit),
-                        None => {
-                            drop(permit);
-                            info!(
-                                retry_after_ms = Duration::from_secs(
-                                    BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                                )
-                                .as_millis()
-                                    as u64,
-                                defer_reason = "coordinator_priority",
-                                "background startup hourly rollup bootstrap deferred by SQLite write admission"
-                            );
-                            tokio::select! {
-                                biased;
-                                _ = cancel.cancelled() => {
-                                    info!(
-                                        elapsed_ms = started_at.elapsed().as_millis() as u64,
-                                        "background startup hourly rollup bootstrap cancelled while waiting for SQLite write admission"
-                                    );
-                                    finish_orphaned_startup_hourly_rollup_bootstrap_task(
-                                        state.as_ref(),
-                                        &cancel,
-                                        &task_start_window,
-                                    ).await;
-                                    return;
-                                }
-                                _ = tokio::time::sleep(Duration::from_secs(
-                                    BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                                )) => {}
-                            }
-                            continue;
+                        _ = cancel.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(
+                            BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                        )) => continue,
+                    }
+                };
+                let result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    result = crate::api::begin_system_task_run(
+                        &state.pool,
+                        SystemTaskKind::HourlyRollupBootstrap,
+                        "startup",
+                        Some("background hourly rollup bootstrap started".to_string()),
+                    ) => result,
+                };
+                drop(write_permit);
+                drop(pressure_permit);
+                match result {
+                    Ok(task_run) => break task_run,
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            "failed to record background startup hourly rollup bootstrap start; retrying"
+                        );
+                        tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(
+                                BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                            )) => {}
                         }
                     }
                 }
-                Err(deny_reason) => {
-                    let retry_after = match &deny_reason {
-                        crate::db_pressure::DbPressureDenyReason::PressureCooldown {
-                            remaining_ms,
-                        } => Duration::from_millis((*remaining_ms).max(1)),
-                        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                            Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)
-                        }
-                    };
+            };
+            // The task-history admission is released before waiting for this lock. The actual
+            // rollup work reacquires both gates only after the lock is owned.
+            let rollup_guard = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
                     info!(
-                        deny_reason = %deny_reason,
-                        retry_after_ms = retry_after.as_millis() as u64,
-                        "background startup hourly rollup bootstrap deferred by database pressure"
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "background startup hourly rollup bootstrap cancelled before acquiring its synchronization lock"
                     );
+                    finish_runtime_startup_hourly_rollup_bootstrap_task(
+                        state.as_ref(),
+                        &cancel,
+                        Some(&task_run),
+                        SystemTaskStatus::Skipped,
+                        "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
+                        None,
+                    ).await;
+                    return;
+                }
+                guard = state.hourly_rollup_sync_lock.lock() => guard,
+            };
+            let (pressure_permit, write_permit) = loop {
+                let pressure_permit = match pressure_gate
+                    .try_begin_background("startup_hourly_rollup_bootstrap")
+                {
+                    Ok(permit) => permit,
+                    Err(reason) => {
+                        let retry_after = match reason {
+                            crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                                remaining_ms,
+                            } => Duration::from_millis(remaining_ms.max(1)),
+                            crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                                Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)
+                            }
+                        };
+                        tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => {
+                                drop(rollup_guard);
+                                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                                    state.as_ref(),
+                                    &cancel,
+                                    Some(&task_run),
+                                    SystemTaskStatus::Skipped,
+                                    "background hourly rollup bootstrap cancelled before reacquiring SQLite write admission",
+                                    None,
+                                ).await;
+                                return;
+                            }
+                            _ = tokio::time::sleep(retry_after) => continue,
+                        }
+                    }
+                };
+                let Some(write_permit) = coordinator.try_acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                ) else {
+                    drop(pressure_permit);
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled() => {
-                            info!(
-                                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                                "background startup hourly rollup bootstrap cancelled while waiting for database pressure admission"
-                            );
-                            finish_orphaned_startup_hourly_rollup_bootstrap_task(
+                            drop(rollup_guard);
+                            finish_runtime_startup_hourly_rollup_bootstrap_task(
                                 state.as_ref(),
                                 &cancel,
-                                &task_start_window,
+                                Some(&task_run),
+                                SystemTaskStatus::Skipped,
+                                "background hourly rollup bootstrap cancelled before reacquiring SQLite write admission",
+                                None,
                             ).await;
                             return;
                         }
-                        _ = tokio::time::sleep(retry_after) => {}
+                        _ = tokio::time::sleep(Duration::from_secs(
+                            BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                        )) => continue,
                     }
-                }
-            }
-        };
-        // The admission used to record the task start must not span the synchronization
-        // lock wait. Reacquire only after the lock is owned so queued interactive writes can
-        // preempt this background bootstrap while it is waiting for the lock.
-        drop(_write_permit);
-        let rollup_guard = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
+                };
+                break (pressure_permit, write_permit);
+            };
+
+            let hourly_rollups_started_at = Instant::now();
+            let hourly_rollups = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                _ = coordinator.wait_for_p2_preemption() => None,
+                result = bootstrap_hourly_rollups_for_runtime_startup(
+                    &state.pool,
+                    Some(state.config.invocation_max_days),
+                ) => Some(result),
+            };
+            let Some(hourly_rollups) = hourly_rollups else {
+                drop(write_permit);
+                drop(pressure_permit);
+                drop(rollup_guard);
                 info!(
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    "background startup hourly rollup bootstrap cancelled before acquiring its synchronization lock"
+                    "background startup hourly rollup bootstrap cancelled during hourly rollup repair"
                 );
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state.as_ref(),
                     &cancel,
-                    task_run.as_ref(),
+                    Some(&task_run),
                     SystemTaskStatus::Skipped,
-                    "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
+                    "background hourly rollup bootstrap cancelled during hourly rollup repair",
                     None,
-                ).await;
-                return;
-            }
-            guard = state.hourly_rollup_sync_lock.lock() => guard,
-        };
-        let _write_permit = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
+                )
+                .await;
+                tokio::time::sleep(Duration::from_secs(
+                    BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                ))
+                .await;
+                continue;
+            };
+            if let Err(err) = hourly_rollups {
+                drop(write_permit);
+                drop(pressure_permit);
+                drop(rollup_guard);
+                pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state.as_ref(),
                     &cancel,
-                    task_run.as_ref(),
-                    SystemTaskStatus::Skipped,
-                    "background hourly rollup bootstrap cancelled before reacquiring SQLite write admission",
-                    None,
-                ).await;
+                    Some(&task_run),
+                    SystemTaskStatus::Failed,
+                    "background hourly rollup bootstrap failed; existing rollups remain available",
+                    Some(err.to_string()),
+                )
+                .await;
+                warn!(
+                    error = %err,
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "background startup hourly rollup bootstrap failed; keeping existing rollups"
+                );
                 return;
             }
-            permit = coordinator.acquire(
-                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            ) => permit,
-        };
-
-        let hourly_rollups_started_at = Instant::now();
-        let hourly_rollups = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => None,
-            _ = coordinator.wait_for_p2_preemption() => None,
-            result = bootstrap_hourly_rollups_for_runtime_startup(
-                &state.pool,
-                Some(state.config.invocation_max_days),
-            ) => Some(result),
-        };
-        let Some(hourly_rollups) = hourly_rollups else {
-            drop(_write_permit);
-            drop(rollup_guard);
+            let hourly_rollups_elapsed_ms = hourly_rollups_started_at.elapsed().as_millis() as u64;
             info!(
-                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                "background startup hourly rollup bootstrap cancelled during hourly rollup repair"
+                elapsed_ms = hourly_rollups_elapsed_ms,
+                "background startup hourly rollup bootstrap completed hourly rollup repair"
             );
-            finish_runtime_startup_hourly_rollup_bootstrap_task(
-                state.as_ref(),
-                &cancel,
-                task_run.as_ref(),
-                SystemTaskStatus::Skipped,
-                "background hourly rollup bootstrap cancelled during hourly rollup repair",
-                None,
-            )
-            .await;
-            return;
-        };
-        if let Err(err) = hourly_rollups {
-            drop(_write_permit);
-            drop(rollup_guard);
-            pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
-            finish_runtime_startup_hourly_rollup_bootstrap_task(
-                state.as_ref(),
-                &cancel,
-                task_run.as_ref(),
-                SystemTaskStatus::Failed,
-                "background hourly rollup bootstrap failed; existing rollups remain available",
-                Some(err.to_string()),
-            )
-            .await;
-            warn!(
-                error = %err,
-                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                "background startup hourly rollup bootstrap failed; keeping existing rollups"
-            );
-            return;
-        }
-        let hourly_rollups_elapsed_ms = hourly_rollups_started_at.elapsed().as_millis() as u64;
-        info!(
-            elapsed_ms = hourly_rollups_elapsed_ms,
-            "background startup hourly rollup bootstrap completed hourly rollup repair"
-        );
 
-        let summary_rollups_started_at = Instant::now();
-        let summary_rollups = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => None,
-            _ = coordinator.wait_for_p2_preemption() => None,
-            result = ensure_invocation_summary_rollups_ready_best_effort(&state.pool) => Some(result),
-        };
-        drop(rollup_guard);
-        let Some(summary_rollups) = summary_rollups else {
-            drop(_write_permit);
-            info!(
-                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                "background startup hourly rollup bootstrap cancelled during summary rollup repair"
-            );
+            let summary_rollups_started_at = Instant::now();
+            let summary_rollups = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                _ = coordinator.wait_for_p2_preemption() => None,
+                result = ensure_invocation_summary_rollups_ready_best_effort(&state.pool) => Some(result),
+            };
+            drop(rollup_guard);
+            let Some(summary_rollups) = summary_rollups else {
+                drop(write_permit);
+                drop(pressure_permit);
+                info!(
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "background startup hourly rollup bootstrap cancelled during summary rollup repair"
+                );
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    &cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap cancelled during summary rollup repair",
+                    None,
+                )
+                .await;
+                tokio::time::sleep(Duration::from_secs(
+                    BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                ))
+                .await;
+                continue;
+            };
+            if let Err(err) = summary_rollups {
+                drop(write_permit);
+                drop(pressure_permit);
+                pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    &cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Failed,
+                    "background hourly rollup bootstrap failed; existing rollups remain available",
+                    Some(err.to_string()),
+                )
+                .await;
+                warn!(
+                    error = %err,
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "background startup hourly rollup bootstrap failed; keeping existing rollups"
+                );
+                return;
+            }
+            drop(write_permit);
+            drop(pressure_permit);
+            let summary_rollups_elapsed_ms =
+                summary_rollups_started_at.elapsed().as_millis() as u64;
+            let elapsed_ms = started_at.elapsed().as_millis() as u64;
             finish_runtime_startup_hourly_rollup_bootstrap_task(
-                state.as_ref(),
-                &cancel,
-                task_run.as_ref(),
-                SystemTaskStatus::Skipped,
-                "background hourly rollup bootstrap cancelled during summary rollup repair",
-                None,
-            )
-            .await;
-            return;
-        };
-        if let Err(err) = summary_rollups {
-            drop(_write_permit);
-            pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
-            finish_runtime_startup_hourly_rollup_bootstrap_task(
-                state.as_ref(),
-                &cancel,
-                task_run.as_ref(),
-                SystemTaskStatus::Failed,
-                "background hourly rollup bootstrap failed; existing rollups remain available",
-                Some(err.to_string()),
-            )
-            .await;
-            warn!(
-                error = %err,
-                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                "background startup hourly rollup bootstrap failed; keeping existing rollups"
-            );
-            return;
-        }
-        drop(_write_permit);
-        let summary_rollups_elapsed_ms = summary_rollups_started_at.elapsed().as_millis() as u64;
-        let elapsed_ms = started_at.elapsed().as_millis() as u64;
-        finish_runtime_startup_hourly_rollup_bootstrap_task(
             state.as_ref(),
             &cancel,
-            task_run.as_ref(),
+            Some(&task_run),
             SystemTaskStatus::Success,
             &format!(
                 "background hourly rollup bootstrap completed: hourly_rollups_ms={hourly_rollups_elapsed_ms} summary_rollups_ms={summary_rollups_elapsed_ms}"
@@ -1377,75 +1375,15 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             None,
         )
         .await;
-        info!(
-            elapsed_ms,
-            hourly_rollups_elapsed_ms,
-            summary_rollups_elapsed_ms,
-            "background startup hourly rollup bootstrap completed"
-        );
+            info!(
+                elapsed_ms,
+                hourly_rollups_elapsed_ms,
+                summary_rollups_elapsed_ms,
+                "background startup hourly rollup bootstrap completed"
+            );
+            break;
+        }
     })
-}
-
-async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
-    state: &AppState,
-    cancel: &CancellationToken,
-    started_at_from: &str,
-) {
-    let deadline = Instant::now() + Duration::from_millis(250);
-    loop {
-        let task = sqlx::query_as::<_, (i64, String)>(
-            r#"
-            SELECT id, trigger_kind
-            FROM system_task_runs
-            WHERE task_kind = ?1
-              AND trigger_kind = 'startup'
-              AND status = ?2
-              AND summary = 'background hourly rollup bootstrap started'
-              AND started_at >= ?3
-            ORDER BY id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
-        .bind(SystemTaskStatus::Running.as_str())
-        .bind(started_at_from)
-        .fetch_optional(&state.pool)
-        .await;
-
-        match task {
-            Ok(Some((id, trigger_kind))) => {
-                let task_run = SystemTaskRunHandle {
-                    id,
-                    task_kind: SystemTaskKind::HourlyRollupBootstrap,
-                    trigger_kind,
-                    started_at: Instant::now(),
-                };
-                finish_runtime_startup_hourly_rollup_bootstrap_task(
-                    state,
-                    cancel,
-                    Some(&task_run),
-                    SystemTaskStatus::Skipped,
-                    "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
-                    None,
-                )
-                .await;
-                return;
-            }
-            Ok(None) => {}
-            Err(err) => {
-                debug!(
-                    error = %err,
-                    "failed to inspect for an orphaned startup hourly rollup bootstrap task"
-                );
-                return;
-            }
-        }
-
-        if Instant::now() >= deadline {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
 }
 
 pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
@@ -1556,8 +1494,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             info!("forward proxy maintenance skipped because shutdown is already in progress");
             return;
         }
-        let startup_run = begin_system_task_run(
-            &state.pool,
+        let startup_run = begin_system_task_run_admitted(
+            state.as_ref(),
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
             SystemTaskKind::ForwardProxySubscriptionRefresh,
             "startup",
             Some("forward proxy subscription refresh started".to_string()),
@@ -1602,8 +1541,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    let task_run = begin_system_task_run(
-                        &state.pool,
+                    let task_run = begin_system_task_run_admitted(
+                        state.as_ref(),
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
                         SystemTaskKind::ForwardProxySubscriptionRefresh,
                         "interval",
                         Some("forward proxy interval refresh started".to_string()),

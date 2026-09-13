@@ -1668,6 +1668,34 @@ pub(crate) async fn begin_system_task_run(
     })
 }
 
+pub(crate) async fn begin_system_task_run_admitted(
+    state: &AppState,
+    write_class: crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass,
+    task_kind: SystemTaskKind,
+    trigger_kind: impl Into<String>,
+    summary: Option<String>,
+) -> Result<SystemTaskRunHandle> {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let _write_permit = coordinator.acquire(write_class).await;
+    begin_system_task_run(&state.pool, task_kind, trigger_kind, summary).await
+}
+
+pub(crate) async fn try_begin_system_task_run_with_admission(
+    state: &AppState,
+    write_class: crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass,
+    task_kind: SystemTaskKind,
+    trigger_kind: impl Into<String>,
+    summary: Option<String>,
+) -> Result<Option<SystemTaskRunHandle>> {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let Some(_write_permit) = coordinator.try_acquire(write_class) else {
+        return Ok(None);
+    };
+    begin_system_task_run(&state.pool, task_kind, trigger_kind, summary)
+        .await
+        .map(Some)
+}
+
 pub(crate) async fn finish_system_task_run(
     pool: &Pool<Sqlite>,
     handle: &SystemTaskRunHandle,
@@ -1724,7 +1752,19 @@ pub(crate) async fn finish_system_task_run_batched(
         return;
     }
 
-    finish_system_task_run(&state.pool, handle, status, summary, detail).await;
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let _write_permit = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .await;
+    if !finish_system_task_run(&state.pool, handle, status, summary.clone(), detail.clone()).await
+        && !try_enqueue_system_task_run_finish(state, handle, status, summary, detail)
+    {
+        warn!(
+            task_kind = handle.task_kind.as_str(),
+            trigger_kind = %handle.trigger_kind,
+            "failed to enqueue system task run finish after coordinated direct update failure"
+        );
+    }
 }
 
 pub(crate) fn try_enqueue_system_task_run_finish(

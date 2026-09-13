@@ -2337,8 +2337,9 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
             .map(|endpoint| endpoint.key)
             .collect::<HashSet<_>>()
     };
-    let task_run = begin_system_task_run(
-        &state.pool,
+    let task_run = begin_system_task_run_admitted(
+        state.as_ref(),
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy,
         SystemTaskKind::ForwardProxySubscriptionRefresh,
         "manual",
         Some("forward proxy manual refresh started".to_string()),

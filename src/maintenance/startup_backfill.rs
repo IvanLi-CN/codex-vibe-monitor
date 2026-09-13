@@ -1579,7 +1579,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     }
 
     if ran_actionable_task {
-        refresh_hourly_rollups_for_read_surfaces_best_effort(
+        had_deferred_task |= refresh_hourly_rollups_for_read_surfaces_best_effort(
             &state.pool,
             state.hourly_rollup_sync_lock.as_ref(),
             "startup backfill maintenance pass",
@@ -1600,20 +1600,32 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 {
                     let live_start_epoch =
                         shanghai_retention_cutoff(state.config.invocation_max_days).timestamp();
-                    if let Err(err) =
-                        maintain_parallel_work_rollups(&state.pool, Some(live_start_epoch)).await
-                    {
-                        had_failure = true;
-                        gate.record_error("parallel_work_rollup_maintenance", &err);
-                        warn!(error = %err, "parallel-work rollup maintenance pass failed");
-                    }
+                    let coordinator =
+                        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+                    let maintenance_deferred = tokio::select! {
+                        _ = coordinator.wait_for_p2_preemption() => {
+                            debug!("parallel-work rollup maintenance yielded to higher-priority SQLite writes");
+                            true
+                        }
+                        result = maintain_parallel_work_rollups(&state.pool, Some(live_start_epoch)) => {
+                            if let Err(err) = result {
+                                had_failure = true;
+                                gate.record_error("parallel_work_rollup_maintenance", &err);
+                                warn!(error = %err, "parallel-work rollup maintenance pass failed");
+                            }
+                            false
+                        }
+                    };
+                    had_deferred_task |= maintenance_deferred;
                 } else {
+                    had_deferred_task = true;
                     debug!(
                         defer_reason = "coordinator_priority",
                         "parallel-work rollup maintenance deferred before SQLite access"
                     );
                 }
             } else {
+                had_deferred_task = true;
                 debug!(
                     defer_reason = "database_pressure",
                     "parallel-work rollup maintenance deferred before SQLite access"
@@ -1628,36 +1640,37 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
         // coordinator is busy. The durable task/progress rows above remain the source of truth.
         let gate = crate::db_pressure::global_db_pressure_gate();
         if let Ok(_pressure_permit) = gate.try_begin_background("startup_backfill_audit") {
-            let coordinator =
-                crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-            if let Some(_write_permit) = coordinator.try_acquire(
+            let task_run = try_begin_system_task_run_with_admission(
+                state.as_ref(),
                 crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            ) {
-                let task_run = begin_system_task_run(
-                    &state.pool,
-                    SystemTaskKind::StartupBackfill,
-                    "event_or_due",
-                    Some("startup backfill maintenance changed data or failed".to_string()),
+                SystemTaskKind::StartupBackfill,
+                "event_or_due",
+                Some("startup backfill maintenance changed data or failed".to_string()),
+            )
+            .await;
+            if let Ok(Some(run)) = task_run {
+                let audit_status = if had_failure {
+                    SystemTaskStatus::Failed
+                } else if had_deferred_task {
+                    SystemTaskStatus::Skipped
+                } else {
+                    SystemTaskStatus::Success
+                };
+                let audit_summary = if had_failure {
+                    "startup backfill maintenance pass completed with failures"
+                } else if had_deferred_task {
+                    "startup backfill maintenance pass deferred work for a later run"
+                } else {
+                    "startup backfill maintenance pass completed"
+                };
+                finish_system_task_run_batched(
+                    state.as_ref(),
+                    &run,
+                    audit_status,
+                    Some(audit_summary.to_string()),
+                    None,
                 )
                 .await;
-                if let Ok(run) = task_run {
-                    finish_system_task_run_batched(
-                        state.as_ref(),
-                        &run,
-                        if had_failure {
-                            SystemTaskStatus::Failed
-                        } else {
-                            SystemTaskStatus::Success
-                        },
-                        Some(if had_failure {
-                            "startup backfill maintenance pass completed with failures".to_string()
-                        } else {
-                            "startup backfill maintenance pass completed".to_string()
-                        }),
-                        None,
-                    )
-                    .await;
-                }
             } else {
                 debug!(
                     defer_reason = "coordinator_priority",

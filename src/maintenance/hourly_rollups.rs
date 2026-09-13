@@ -3215,7 +3215,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     hourly_rollup_sync_lock: &Mutex<()>,
     reason: &'static str,
     scope: HourlyRollupRefreshScope,
-) {
+) -> bool {
     let gate = crate::db_pressure::global_db_pressure_gate();
     let _guard = hourly_rollup_sync_lock.lock().await;
     let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
@@ -3226,7 +3226,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
                 deny_reason = %deny_reason,
                 "background hourly rollup refresh skipped because database pressure gate is closed"
             );
-            return;
+            return true;
         }
     };
     let _write_permit =
@@ -3240,11 +3240,19 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
                     defer_reason = "coordinator_priority",
                     "background hourly rollup refresh skipped before SQLite access"
                 );
-                return;
+                return true;
             }
         };
 
-    if let Err(err) = refresh_hourly_rollups_for_read_surfaces_with_scope(pool, scope).await {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let refresh_result = tokio::select! {
+        _ = coordinator.wait_for_p2_preemption() => {
+            debug!(reason, "background hourly rollup refresh yielded to higher-priority SQLite writes");
+            return true;
+        }
+        result = refresh_hourly_rollups_for_read_surfaces_with_scope(pool, scope) => result,
+    };
+    if let Err(err) = refresh_result {
         gate.record_error("hourly_rollup_refresh", &err);
         warn!(
             error = %err,
@@ -3252,6 +3260,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
             "background hourly rollup refresh failed; keeping existing rollups for read surfaces"
         );
     }
+    false
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3295,7 +3304,15 @@ pub(crate) async fn repair_active_account_activity_v2_coverage_best_effort(
                 return ActiveAccountActivityV2RepairResult::Deferred;
             }
         };
-    match repair_active_account_activity_v2_coverage(pool).await {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let repair_result = tokio::select! {
+        _ = coordinator.wait_for_p2_preemption() => {
+            debug!(reason, wake_reason = "active_window_coverage_check", "active Dashboard coverage repair yielded to higher-priority SQLite writes");
+            return ActiveAccountActivityV2RepairResult::Deferred;
+        }
+        result = repair_active_account_activity_v2_coverage(pool) => result,
+    };
+    match repair_result {
         Ok(outcome) => ActiveAccountActivityV2RepairResult::Repaired(outcome),
         Err(err) => {
             gate.record_error("account_activity_v2_priority_repair", &err);
