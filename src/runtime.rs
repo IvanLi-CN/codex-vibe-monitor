@@ -1276,11 +1276,16 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     None,
                 )
                 .await;
-                tokio::time::sleep(Duration::from_secs(
-                    BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                ))
-                .await;
-                continue;
+                if cancel.is_cancelled() {
+                    return;
+                }
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(
+                        BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                    )) => continue,
+                }
             };
             if let Err(err) = hourly_rollups {
                 drop(write_permit);
@@ -1333,11 +1338,16 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     None,
                 )
                 .await;
-                tokio::time::sleep(Duration::from_secs(
-                    BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                ))
-                .await;
-                continue;
+                if cancel.is_cancelled() {
+                    return;
+                }
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(
+                        BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                    )) => continue,
+                }
             };
             if let Err(err) = summary_rollups {
                 drop(write_permit);
@@ -1395,88 +1405,22 @@ pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     detail: Option<String>,
 ) {
     if let Some(task_run) = task_run {
-        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-        let Some(_write_permit) = coordinator
-            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        else {
-            if !try_enqueue_system_task_run_finish(
-                state,
-                task_run,
-                status,
-                Some(summary.to_string()),
-                detail.clone(),
-            ) {
-                warn!(
-                    task_kind = task_run.task_kind.as_str(),
-                    trigger_kind = %task_run.trigger_kind,
-                    "failed to enqueue startup hourly rollup bootstrap task-history finish while SQLite write admission was busy"
-                );
-            }
-            return;
-        };
-        let summary = Some(summary.to_string());
-        let finish = finish_system_task_run(
-            &state.pool,
+        let finished = finish_system_task_run_reliably(
+            state,
+            Some(cancel),
             task_run,
             status,
-            summary.clone(),
-            detail.clone(),
-        );
-        if cancel.is_cancelled() {
-            let finished = tokio::time::timeout(
-                STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT,
-                finish,
-            )
-            .await;
-            if !matches!(finished, Ok(true)) {
-                warn!(
-                    task_kind = task_run.task_kind.as_str(),
-                    trigger_kind = %task_run.trigger_kind,
-                    timeout_ms = STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT.as_millis() as u64,
-                    deferred = try_enqueue_system_task_run_finish(
-                        state,
-                        task_run,
-                        status,
-                        summary,
-                        detail,
-                    ),
-                    "deferred startup hourly rollup bootstrap task-history finish during shutdown"
-                );
-            }
-        } else {
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    warn!(
-                        task_kind = task_run.task_kind.as_str(),
-                        trigger_kind = %task_run.trigger_kind,
-                        deferred = try_enqueue_system_task_run_finish(
-                            state,
-                            task_run,
-                            status,
-                            summary,
-                            detail,
-                        ),
-                        "cancelled startup hourly rollup bootstrap task-history finish during shutdown"
-                    );
-                }
-                finished = finish => {
-                    if !finished {
-                        warn!(
-                            task_kind = task_run.task_kind.as_str(),
-                            trigger_kind = %task_run.trigger_kind,
-                            deferred = try_enqueue_system_task_run_finish(
-                                state,
-                                task_run,
-                                status,
-                                summary,
-                                detail,
-                            ),
-                            "deferred startup hourly rollup bootstrap task-history finish after direct update failure"
-                        );
-                    }
-                }
-            }
+            Some(summary.to_string()),
+            detail,
+        )
+        .await;
+        if !finished {
+            warn!(
+                task_kind = task_run.task_kind.as_str(),
+                trigger_kind = %task_run.trigger_kind,
+                timeout_ms = STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT.as_millis() as u64,
+                "failed to durably finalize startup hourly rollup bootstrap task-history after bounded retries"
+            );
         }
     }
 }

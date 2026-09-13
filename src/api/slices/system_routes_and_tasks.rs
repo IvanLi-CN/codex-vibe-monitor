@@ -1748,23 +1748,134 @@ pub(crate) async fn finish_system_task_run_batched(
     summary: Option<String>,
     detail: Option<String>,
 ) {
-    if try_enqueue_system_task_run_finish(state, handle, status, summary.clone(), detail.clone()) {
-        return;
-    }
-
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let _write_permit = coordinator
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        .await;
-    if !finish_system_task_run(&state.pool, handle, status, summary.clone(), detail.clone()).await
-        && !try_enqueue_system_task_run_finish(state, handle, status, summary, detail)
-    {
+    if !finish_system_task_run_reliably(state, None, handle, status, summary, detail).await {
         warn!(
             task_kind = handle.task_kind.as_str(),
             trigger_kind = %handle.trigger_kind,
-            "failed to enqueue system task run finish after coordinated direct update failure"
+            "failed to durably finalize system task run after bounded retries"
         );
     }
+}
+
+const SYSTEM_TASK_FINISH_RETRY_ATTEMPTS: usize = 20;
+const SYSTEM_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+pub(crate) async fn finish_system_task_run_reliably(
+    state: &AppState,
+    cancel: Option<&CancellationToken>,
+    handle: &SystemTaskRunHandle,
+    status: SystemTaskStatus,
+    summary: Option<String>,
+    detail: Option<String>,
+) -> bool {
+    for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        if cancel.is_some()
+            && let Some(write_permit) = coordinator.try_acquire(
+                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+            )
+        {
+            let finish = finish_system_task_run(
+                &state.pool,
+                handle,
+                status,
+                summary.clone(),
+                detail.clone(),
+            );
+            let finished = if let Some(cancel) = cancel {
+                if cancel.is_cancelled() {
+                    tokio::time::timeout(
+                        STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT,
+                        finish,
+                    )
+                    .await
+                    .ok()
+                    .is_some_and(|result| result)
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => false,
+                        result = finish => result,
+                    }
+                }
+            } else {
+                finish.await
+            };
+            drop(write_permit);
+            if finished {
+                return true;
+            }
+        }
+
+        if try_enqueue_system_task_run_finish(
+            state,
+            handle,
+            status,
+            summary.clone(),
+            detail.clone(),
+        ) {
+            return true;
+        }
+
+        let write_permit = if let Some(cancel) = cancel {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => coordinator.try_acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                ),
+                permit = coordinator.acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                ) => Some(permit),
+            }
+        } else {
+            Some(
+                coordinator
+                    .acquire(
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                    )
+                    .await,
+            )
+        };
+
+        if let Some(write_permit) = write_permit {
+            let finish = finish_system_task_run(
+                &state.pool,
+                handle,
+                status,
+                summary.clone(),
+                detail.clone(),
+            );
+            let finished = if let Some(cancel) = cancel {
+                if cancel.is_cancelled() {
+                    tokio::time::timeout(
+                        STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT,
+                        finish,
+                    )
+                    .await
+                    .ok()
+                    .is_some_and(|result| result)
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => false,
+                        result = finish => result,
+                    }
+                }
+            } else {
+                finish.await
+            };
+            drop(write_permit);
+            if finished {
+                return true;
+            }
+        }
+
+        if attempt < SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+            tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL).await;
+        }
+    }
+
+    false
 }
 
 pub(crate) fn try_enqueue_system_task_run_finish(
