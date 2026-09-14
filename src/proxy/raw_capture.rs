@@ -1691,114 +1691,37 @@ pub(crate) async fn run_backfill_with_retry(
 
 pub(crate) async fn current_proxy_cost_backfill_snapshot_max_id(
     pool: &Pool<Sqlite>,
-    attempt_version: &str,
-    requested_tier_price_version: &str,
-    response_tier_price_version: &str,
 ) -> Result<i64> {
     Ok(sqlx::query_scalar(
         r#"
-        WITH base AS (
-            SELECT
-                inv.id,
-                inv.cost,
-                inv.price_version,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
-                    THEN json_extract(inv.payload, '$.requestedServiceTier')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requested_service_tier') = 'text'
-                    THEN json_extract(inv.payload, '$.requested_service_tier')
-                END AS requested_service_tier,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billingServiceTier') = 'text'
-                    THEN json_extract(inv.payload, '$.billingServiceTier')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billing_service_tier') = 'text'
-                    THEN json_extract(inv.payload, '$.billing_service_tier')
-                END AS billing_service_tier,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.serviceTier') = 'text'
-                    THEN json_extract(inv.payload, '$.serviceTier')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.service_tier') = 'text'
-                    THEN json_extract(inv.payload, '$.service_tier')
-                END AS service_tier,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamAccountKind') = 'text'
-                    THEN json_extract(inv.payload, '$.upstreamAccountKind')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_account_kind') = 'text'
-                    THEN json_extract(inv.payload, '$.upstream_account_kind')
-                END AS snapshot_upstream_account_kind,
-                acc.kind AS live_upstream_account_kind,
-                CASE
-                  WHEN acc.created_at IS NOT NULL
-                    AND TRIM(CAST(acc.created_at AS TEXT)) != ''
-                    AND inv.occurred_at IS NOT NULL
-                    AND TRIM(CAST(inv.occurred_at AS TEXT)) != ''
-                    AND julianday(acc.created_at) <= julianday(inv.occurred_at)
-                    AND (
-                        acc.updated_at IS NULL
-                        OR TRIM(CAST(acc.updated_at AS TEXT)) = ''
-                        OR julianday(acc.updated_at) <= julianday(inv.occurred_at)
-                    )
-                  THEN 1
-                  ELSE 0
-                END AS live_upstream_account_snapshot_safe
-            FROM codex_invocations inv
-            LEFT JOIN pool_upstream_accounts acc
-              ON acc.id = CASE
-                  WHEN json_valid(inv.payload)
-                    THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
-                END
-            WHERE inv.source = ?1
-              AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'warning_success', 'failed')
-              AND inv.model IS NOT NULL
-              AND (
-                  COALESCE(inv.input_tokens, 0) > 0
-                  OR COALESCE(inv.output_tokens, 0) > 0
-                  OR COALESCE(inv.cache_input_tokens, 0) > 0
-                  OR COALESCE(inv.reasoning_tokens, 0) > 0
-              )
-        ),
-        cost_candidates AS (
-            SELECT
-                *,
-                CASE
-                  WHEN LOWER(TRIM(COALESCE(
-                        snapshot_upstream_account_kind,
-                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
-                        ''
-                    ))) = ?4
-                    AND TRIM(COALESCE(requested_service_tier, '')) != ''
-                  THEN 1
-                  ELSE 0
-                END AS uses_requested_tier_strategy
-            FROM base
-        )
         SELECT COALESCE(MAX(id), 0)
-        FROM cost_candidates
-        WHERE (
-            uses_requested_tier_strategy = 1
-            AND (
-                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(requested_service_tier, '')))
-                OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
-                OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?3))
-            )
-        )
-        OR (
-            uses_requested_tier_strategy = 0
-            AND (
-                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
-                OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
-                OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?5))
-            )
-        )
+        FROM codex_invocations
         "#,
     )
-    .bind(SOURCE_PROXY)
-    .bind(attempt_version)
-    .bind(requested_tier_price_version)
-    .bind(API_KEYS_BILLING_ACCOUNT_KIND)
-    .bind(response_tier_price_version)
     .fetch_one(pool)
     .await?)
+}
+
+fn backfill_value_differs(current: Option<&str>, expected: Option<&str>) -> bool {
+    current
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        != expected
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+}
+
+fn proxy_cost_backfill_candidate_needs_update(
+    candidate: &ProxyCostBackfillCandidate,
+    update: &ProxyCostBackfillUpdate,
+) -> bool {
+    backfill_value_differs(
+        candidate.billing_service_tier.as_deref(),
+        update.billing_service_tier.as_deref(),
+    ) || candidate.price_version != update.price_version
+        || candidate.cost.is_some() != update.cost.is_some()
 }
 
 pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
@@ -1807,8 +1730,6 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
     snapshot_max_id: i64,
     catalog: &PricingCatalog,
     attempt_version: &str,
-    requested_tier_price_version: &str,
-    response_tier_price_version: &str,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<ProxyCostBackfillSummary>> {
@@ -1957,10 +1878,10 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                     *,
                     CASE
                       WHEN LOWER(TRIM(COALESCE(
-                            snapshot_upstream_account_kind,
-                            CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
-                            ''
-                        ))) = ?6
+                        snapshot_upstream_account_kind,
+                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
+                        ''
+                    ))) = ?4
                         AND TRIM(COALESCE(requested_service_tier, '')) != ''
                       THEN 1
                       ELSE 0
@@ -1975,6 +1896,9 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 cache_input_tokens,
                 reasoning_tokens,
                 total_tokens,
+                cost,
+                price_version,
+                billing_service_tier,
                 requested_service_tier,
                 service_tier,
                 snapshot_upstream_account_kind,
@@ -1983,38 +1907,20 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 live_upstream_account_kind,
                 live_upstream_account_snapshot_safe
             FROM cost_candidates
-            WHERE (
-                uses_requested_tier_strategy = 1
-                AND (
-                    LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(requested_service_tier, '')))
-                    OR (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
-                    OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?5))
-                )
-            )
-            OR (
-                uses_requested_tier_strategy = 0
-                AND (
-                    LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
-                    OR (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
-                    OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?7))
-                )
-            )
             ORDER BY id ASC
-            LIMIT ?8
+            LIMIT ?5
             "#,
         )
         .bind(SOURCE_PROXY)
         .bind(last_seen_id)
         .bind(snapshot_max_id)
-        .bind(attempt_version)
-        .bind(requested_tier_price_version)
         .bind(API_KEYS_BILLING_ACCOUNT_KIND)
-        .bind(response_tier_price_version)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
 
         if candidates.is_empty() {
+            last_seen_id = last_seen_id.max(snapshot_max_id);
             break;
         }
 
@@ -2065,19 +1971,12 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 billing_service_tier.as_deref(),
                 pricing_mode,
             );
-            if cost.is_none() || !cost_estimated {
-                summary.skipped_unpriced_model += 1;
-                push_backfill_sample(
-                    &mut samples,
-                    format!("id={} model={} reason=unpriced_model", candidate.id, model),
-                );
-            }
             let persisted_price_version = if cost_estimated && cost.is_some() {
                 price_version
             } else {
                 Some(attempt_version.to_string())
             };
-            updates.push(ProxyCostBackfillUpdate {
+            let update = ProxyCostBackfillUpdate {
                 id: candidate.id,
                 cost,
                 cost_estimated,
@@ -2085,7 +1984,18 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 billing_service_tier,
                 upstream_account_kind,
                 upstream_base_url_host,
-            });
+            };
+            if !proxy_cost_backfill_candidate_needs_update(&candidate, &update) {
+                continue;
+            }
+            if cost.is_none() || !cost_estimated {
+                summary.skipped_unpriced_model += 1;
+                push_backfill_sample(
+                    &mut samples,
+                    format!("id={} model={} reason=unpriced_model", candidate.id, model),
+                );
+            }
+            updates.push(update);
         }
 
         if !updates.is_empty() {

@@ -6,25 +6,13 @@ pub(crate) async fn backfill_proxy_missing_costs(
     catalog: &PricingCatalog,
 ) -> Result<ProxyCostBackfillSummary> {
     let attempt_version = pricing_backfill_attempt_version(catalog);
-    let requested_tier_price_version =
-        proxy_price_version(&catalog.version, ProxyPricingMode::RequestedTier);
-    let response_tier_price_version =
-        proxy_price_version(&catalog.version, ProxyPricingMode::ResponseTier);
-    let snapshot_max_id = current_proxy_cost_backfill_snapshot_max_id(
-        pool,
-        &attempt_version,
-        &requested_tier_price_version,
-        &response_tier_price_version,
-    )
-    .await?;
+    let snapshot_max_id = current_proxy_cost_backfill_snapshot_max_id(pool).await?;
     Ok(backfill_proxy_missing_costs_from_cursor(
         pool,
         0,
         snapshot_max_id,
         catalog,
         &attempt_version,
-        &requested_tier_price_version,
-        &response_tier_price_version,
         None,
         None,
     )
@@ -40,18 +28,12 @@ pub(crate) async fn backfill_proxy_missing_costs_up_to_id(
     catalog: &PricingCatalog,
     attempt_version: &str,
 ) -> Result<ProxyCostBackfillSummary> {
-    let requested_tier_price_version =
-        proxy_price_version(&catalog.version, ProxyPricingMode::RequestedTier);
-    let response_tier_price_version =
-        proxy_price_version(&catalog.version, ProxyPricingMode::ResponseTier);
     Ok(backfill_proxy_missing_costs_from_cursor(
         pool,
         0,
         snapshot_max_id,
         catalog,
         attempt_version,
-        &requested_tier_price_version,
-        &response_tier_price_version,
         None,
         None,
     )
