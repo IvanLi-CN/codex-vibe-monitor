@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "persistent-state-migrations": {
+      "source": "IvanLi-CN/style-playbook-skills",
+      "sourceType": "github",
+      "skillPath": "skills/policies/persistent-state-migrations/SKILL.md",
+      "computedHash": "a1e4b35f0d09ec8c15f8bffd137ce162d15ea857aeb8e0b2e0d42397814ce93f"
+    },
+    "semver-change-governance": {
+      "source": "IvanLi-CN/style-playbook-skills",
+      "sourceType": "github",
+      "skillPath": "skills/policies/semver-change-governance/SKILL.md",
+      "computedHash": "26eee27bcb0d08d9a3da9723bb9a8fb0d72c28cba3b0cedb5f80889d5426be5e"
+    }
+  }
+}
