@@ -38528,6 +38528,9 @@ mod request_compression_query_tests {
             "RollingDelta must not enter full live admission"
         );
         clear_summary_projection_test_interleave();
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
+            .await
+            .expect("historical coverage supervisor must publish all-time proof");
 
         state.pool.close().await;
         for window in ["current", "1d", "7d", "30d", "today"] {
@@ -39277,8 +39280,9 @@ mod request_compression_query_tests {
             SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
         );
         let refresh_state = state.clone();
-        let refresh =
-            tokio::spawn(async move { refresh_summary_snapshots(refresh_state.as_ref()).await });
+        let refresh = tokio::spawn(async move {
+            SummaryCoverageRecoverySupervisor::run(refresh_state.as_ref()).await
+        });
 
         tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
             .await
@@ -39477,9 +39481,11 @@ mod request_compression_query_tests {
             .expect("record non-usage archive replay coverage");
         }
 
-        refresh_summary_snapshots(state.as_ref()).await.expect(
-            "refresh publishes independent exact selections with the archive gap localized",
-        );
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
+            .await
+            .expect(
+                "recovery publishes independent exact selections with the archive gap localized",
+            );
         state.pool.close().await;
 
         let response = fetch_summary(State(state), Query(query)).await;
