@@ -363,7 +363,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     }
   }, [options?.limit, options?.upstreamAccountId, sse.data, supportsPureSse, window]);
 
-  const summary = supportsPureSse ? (sse.data ?? initialCachedSummary?.stats ?? null) : httpSummary;
+  const summary = supportsPureSse
+    ? (sse.data ?? (sse.error == null ? (initialCachedSummary?.stats ?? null) : null))
+    : httpSummary;
   const isLoading = supportsPureSse ? sse.isLoading && summary == null : httpLoading;
   const error = supportsPureSse ? sse.error : httpError;
   const refresh = supportsPureSse ? sse.refresh : loadHttpSummary;

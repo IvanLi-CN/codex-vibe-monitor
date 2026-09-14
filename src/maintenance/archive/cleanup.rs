@@ -2636,32 +2636,23 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     cursor_id: i64,
     max_elapsed: Duration,
 ) -> Result<LegacyDetailMirrorRecoveryWindowResult> {
-    let mut candidates = load_legacy_detail_mirror_recovery_candidates(
+    let candidates = load_legacy_detail_mirror_recovery_candidates(
         pool,
         cursor_id,
         None,
         LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT,
     )
     .await?;
-    let mut wrapped = false;
-    if candidates.is_empty() && cursor_id > 0 {
-        candidates = load_legacy_detail_mirror_recovery_candidates(
-            pool,
-            0,
-            None,
-            LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT,
-        )
-        .await?;
-        wrapped = !candidates.is_empty();
-    }
     if candidates.is_empty() {
         return Ok(LegacyDetailMirrorRecoveryWindowResult {
-            next_cursor_id: 0,
+            // Keep the completed-cycle cursor so an idle pass does not immediately scan the
+            // same archive identities again.
+            next_cursor_id: cursor_id,
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
             hit_budget: false,
-            wrapped,
+            wrapped: false,
         });
     }
 
@@ -2720,7 +2711,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         inspected_path_count,
         changed_path_count,
         hit_budget,
-        wrapped,
+        wrapped: false,
     })
 }
 

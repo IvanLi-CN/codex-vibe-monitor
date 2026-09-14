@@ -1279,6 +1279,7 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
         invokeId: activeInvokeId,
       }),
       (event) => {
+        if (event.type === "unavailable") return;
         const payloadInvokeId = activeInvokeId;
         const payloadAttempts = event.payload;
         const activeVisibleInvokeId = activeExpandedInvokeIdRef.current;

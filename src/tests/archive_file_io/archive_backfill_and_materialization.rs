@@ -143,6 +143,48 @@ async fn legacy_summary_snapshot_backfill_materializes_v2_before_raw_source_loss
 }
 
 #[tokio::test]
+async fn legacy_detail_mirror_clean_cycle_idles_until_archive_completion_wake() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("legacy-detail-mirror-clean-cycle").await;
+    let first_path = temp_dir.join("legacy-detail-mirror-first.sqlite.gz");
+    sqlx::query(
+        "INSERT INTO archive_batches
+         (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+         VALUES (1, 'codex_invocations', '2026-08', ?1, 'first', 0, 'completed', 'unknown')",
+    )
+    .bind(first_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed completed legacy mirror candidate");
+
+    let clean = reconcile_legacy_detail_mirrors_startup_window(&pool, 1, Duration::from_secs(1))
+        .await
+        .expect("finish a clean legacy mirror cycle");
+    assert_eq!(clean.candidate_count, 0);
+    assert_eq!(clean.next_cursor_id, 1);
+    assert!(!clean.wrapped);
+
+    let second_path = temp_dir.join("legacy-detail-mirror-second.sqlite.gz");
+    sqlx::query(
+        "INSERT INTO archive_batches
+         (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+         VALUES (2, 'codex_invocations', '2026-08', ?1, 'second', 0, 'completed', 'unknown')",
+    )
+    .bind(second_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed a newly completed unknown archive");
+    let wake_candidate = reconcile_legacy_detail_mirrors_startup_window(&pool, 1, Duration::ZERO)
+        .await
+        .expect("bound the pass after an archive completion wake");
+    assert_eq!(wake_candidate.candidate_count, 1);
+    assert!(wake_candidate.hit_budget);
+    assert!(!wake_candidate.wrapped);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn summary_snapshot_v2_backfill_uses_occurred_at_id_order() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("summary-snapshot-v2-time-order").await;

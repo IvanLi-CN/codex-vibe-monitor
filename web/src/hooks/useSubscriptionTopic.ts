@@ -29,7 +29,15 @@ export function useSubscriptionTopic<T>(
     descriptor && enabled && getCachedTopicState<T>(descriptor)?.payload != null ? "cache" : null,
   );
   const [isLoading, setIsLoading] = useState(() =>
-    Boolean(descriptor && enabled && getCachedTopicState<T>(descriptor)?.payload == null),
+    Boolean(
+      descriptor &&
+        enabled &&
+        getCachedTopicState<T>(descriptor)?.payload == null &&
+        getCachedTopicState<T>(descriptor)?.error == null,
+    ),
+  );
+  const [error, setError] = useState<string | null>(() =>
+    descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.error ?? null) : null,
   );
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: descriptorKey is the canonical topic identity and avoids redundant subscriptions for equivalent descriptors.
@@ -41,6 +49,7 @@ export function useSubscriptionTopic<T>(
       setLastKind(null);
       setDeliverySource(null);
       setIsLoading(false);
+      setError(null);
       return;
     }
     const cached = getCachedTopicState<T>(descriptor);
@@ -49,14 +58,26 @@ export function useSubscriptionTopic<T>(
     setLastReceivedAt(cached?.receivedAt ?? null);
     setLastKind(cached?.lastKind ?? null);
     setDeliverySource(cached?.payload != null ? "cache" : null);
-    setIsLoading(cached?.payload == null);
+    setIsLoading(cached?.payload == null && cached?.error == null);
+    setError(cached?.error ?? null);
     const unsubscribe = subscribeToTopic<T>(descriptor, (event) => {
+      if (event.type === "unavailable") {
+        setData(null);
+        setDataDescriptorKey(descriptorKey);
+        setLastReceivedAt(null);
+        setLastKind(null);
+        setDeliverySource(null);
+        setError(event.errorCode);
+        setIsLoading(false);
+        return;
+      }
       const nextCached = getCachedTopicState<T>(descriptor);
       setData(event.payload);
       setDataDescriptorKey(descriptorKey);
       setLastReceivedAt(nextCached?.receivedAt ?? Date.now());
       setLastKind(event.type);
       setDeliverySource(event.deliverySource ?? "network");
+      setError(null);
       setIsLoading(false);
     });
     return unsubscribe;
@@ -80,7 +101,7 @@ export function useSubscriptionTopic<T>(
     lastKind: isCurrentDescriptor ? lastKind : null,
     deliverySource: isCurrentDescriptor ? deliverySource : null,
     isLoading: enabled ? (isCurrentDescriptor ? isLoading : true) : false,
-    error: null as string | null,
+    error: isCurrentDescriptor ? error : null,
     refresh,
   };
 }

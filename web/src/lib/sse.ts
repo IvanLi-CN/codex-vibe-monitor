@@ -72,6 +72,18 @@ export interface SubscriptionTopicEnvelope<T = unknown> {
   deliverySource?: "cache" | "network";
 }
 
+export interface SubscriptionTopicUnavailableEnvelope {
+  type: "unavailable";
+  topic: SubscriptionTopicDescriptor;
+  topicKey: string;
+  schemaEpoch: string;
+  errorCode: "unavailable";
+}
+
+export type SubscriptionTopicEvent<T = unknown> =
+  | SubscriptionTopicEnvelope<T>
+  | SubscriptionTopicUnavailableEnvelope;
+
 export interface SubscriptionTopicState<T = unknown> {
   descriptor: SubscriptionTopicDescriptor;
   topicKey: string | null;
@@ -80,9 +92,10 @@ export interface SubscriptionTopicState<T = unknown> {
   payload: T | null;
   lastKind: SubscriptionTopicEnvelope["type"] | null;
   receivedAt: number | null;
+  error: string | null;
 }
 
-type TopicListener<T = unknown> = (event: SubscriptionTopicEnvelope<T>) => void;
+type TopicListener<T = unknown> = (event: SubscriptionTopicEvent<T>) => void;
 type StatusListener = (status: SseStatus) => void;
 type DiagnosticsListener = (diagnostics: SseDiagnostics) => void;
 type OpenListener = () => void;
@@ -415,7 +428,7 @@ function disableSse(outcome: SseTerminalOutcome = "disabled") {
 function handleMessage(event: MessageEvent<string>) {
   try {
     const raw = JSON.parse(event.data) as
-      | (Partial<SubscriptionTopicEnvelope> & {
+      | (Partial<SubscriptionTopicEvent> & {
           topic_key?: string;
           schema_epoch?: string;
         })
@@ -425,25 +438,64 @@ function handleMessage(event: MessageEvent<string>) {
     }
     const topicKey = raw.topicKey ?? raw.topic_key;
     const schemaEpoch = raw.schemaEpoch ?? raw.schema_epoch;
+    if (!topicKey || !schemaEpoch) {
+      return;
+    }
+    const descriptor = normalizeIncomingDescriptor(raw.topic);
+    const descriptorKey = getTopicDescriptorKey(descriptor);
+    const receivedAt = Date.now();
+    if (raw.type === "unavailable") {
+      if (raw.errorCode !== "unavailable") return;
+      const unavailable: SubscriptionTopicUnavailableEnvelope = {
+        type: "unavailable",
+        topic: descriptor,
+        topicKey,
+        schemaEpoch,
+        errorCode: "unavailable",
+      };
+      topicCache.set(descriptorKey, {
+        descriptor,
+        topicKey,
+        schemaEpoch,
+        cursor: null,
+        payload: null,
+        lastKind: null,
+        receivedAt,
+        error: unavailable.errorCode,
+      });
+      forcedSnapshotDescriptors.delete(descriptorKey);
+      emitDiagnostics({ lastMessageAt: receivedAt });
+      const entry = topicEntries.get(descriptorKey);
+      entry?.listeners.forEach((listener) => {
+        try {
+          listener(unavailable);
+        } catch (error) {
+          console.error("Failed to dispatch subscription topic event", error);
+        }
+      });
+      activityListeners.forEach((listener) => {
+        try {
+          listener();
+        } catch {
+          // ignore activity listener failures
+        }
+      });
+      return;
+    }
     if (
       (raw.type !== "snapshot" && raw.type !== "replay" && raw.type !== "live") ||
-      !topicKey ||
-      !schemaEpoch ||
       typeof raw.cursor !== "number"
     ) {
       return;
     }
     const payload: SubscriptionTopicEnvelope = {
       type: raw.type,
-      topic: raw.topic,
+      topic: descriptor,
       topicKey,
       schemaEpoch,
       cursor: raw.cursor,
       payload: raw.payload,
     };
-    const descriptor = normalizeIncomingDescriptor(payload.topic);
-    const descriptorKey = getTopicDescriptorKey(descriptor);
-    const receivedAt = Date.now();
     const nextState: TopicCacheEntry = {
       descriptor,
       topicKey: payload.topicKey,
@@ -452,6 +504,7 @@ function handleMessage(event: MessageEvent<string>) {
       payload: payload.payload,
       lastKind: payload.type,
       receivedAt,
+      error: null,
     };
     topicCache.set(descriptorKey, nextState);
     forcedSnapshotDescriptors.delete(descriptorKey);
@@ -688,7 +741,20 @@ export function subscribeToTopic<T = unknown>(
     }
   }
   const cached = topicCache.get(key);
-  if (cached?.payload != null && cached.topicKey && cached.cursor != null && cached.schemaEpoch) {
+  if (cached?.error === "unavailable" && cached.topicKey && cached.schemaEpoch) {
+    listener({
+      type: "unavailable",
+      topic: normalized,
+      topicKey: cached.topicKey,
+      schemaEpoch: cached.schemaEpoch,
+      errorCode: "unavailable",
+    });
+  } else if (
+    cached?.payload != null &&
+    cached.topicKey &&
+    cached.cursor != null &&
+    cached.schemaEpoch
+  ) {
     listener({
       type: cached.lastKind ?? "snapshot",
       topic: normalized,

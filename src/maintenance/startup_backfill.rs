@@ -132,22 +132,26 @@ impl StartupBackfillScheduler {
         self.record_next_due(task, retry_at);
     }
 
-    fn take_pressure_deferred_tasks(&self) -> Vec<StartupBackfillTask> {
-        let tasks = self
-            .pressure_deferred_tasks
-            .lock()
-            .map(|mut tasks| std::mem::take(&mut *tasks))
-            .unwrap_or_default();
-        if let Ok(mut next_due) = self.next_due.lock() {
-            for task in &tasks {
-                next_due.remove(task);
-            }
-        }
-        StartupBackfillTask::ordered_tasks()
+    fn take_pressure_deferred_tasks(&self, now: DateTime<Utc>) -> Vec<StartupBackfillTask> {
+        let Ok(mut pressure_tasks) = self.pressure_deferred_tasks.lock() else {
+            return Vec::new();
+        };
+        let Ok(mut next_due) = self.next_due.lock() else {
+            return Vec::new();
+        };
+        let tasks = StartupBackfillTask::ordered_tasks()
             .iter()
             .copied()
-            .filter(|task| tasks.contains(task))
-            .collect()
+            .filter(|task| {
+                pressure_tasks.contains(task)
+                    && next_due.get(task).is_some_and(|deadline| *deadline <= now)
+            })
+            .collect::<Vec<_>>();
+        for task in &tasks {
+            pressure_tasks.remove(task);
+            next_due.remove(task);
+        }
+        tasks
     }
 
     fn record_task_result(&self, task: StartupBackfillTask, failed: bool, deferred: bool) {
@@ -2558,7 +2562,7 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     if cancel.is_cancelled() {
         return;
     }
-    let tasks = STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks();
+    let tasks = STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks(Utc::now());
     if tasks.is_empty() {
         return;
     }
@@ -2742,7 +2746,7 @@ mod startup_backfill_tests {
     }
 
     #[tokio::test]
-    async fn pressure_eligibility_change_dispatches_a_deferred_task_before_its_deadline() {
+    async fn pressure_eligibility_change_preserves_background_busy_deadline() {
         let scheduler = Arc::new(StartupBackfillScheduler::default());
         let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
             1,
@@ -2769,7 +2773,7 @@ mod startup_backfill_tests {
             wake_gate
                 .wait_for_eligibility_change(observed_eligibility)
                 .await;
-            wake_scheduler.take_pressure_deferred_tasks()
+            wake_scheduler.take_pressure_deferred_tasks(Utc::now())
         });
         tokio::task::yield_now().await;
         assert!(
@@ -2778,14 +2782,20 @@ mod startup_backfill_tests {
         );
 
         drop(permit);
-        assert_eq!(
+        assert!(
             tokio::time::timeout(Duration::from_secs(1), wake)
                 .await
                 .expect("permit release must wake the deferred task before its deadline")
-                .expect("eligibility waiter must not panic"),
-            vec![task]
+                .expect("eligibility waiter must not panic")
+                .is_empty(),
+            "eligibility changes must not bypass the fallback deadline"
         );
-        assert_eq!(scheduler.next_due(), None);
+        assert_eq!(scheduler.next_due(), Some(deadline));
+        assert_eq!(
+            scheduler.take_pressure_deferred_tasks(deadline),
+            vec![task],
+            "the deferred task becomes eligible exactly at its deadline"
+        );
     }
 
     #[test]

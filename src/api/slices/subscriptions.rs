@@ -163,6 +163,15 @@ pub(crate) enum SubscriptionEventEnvelope {
         cursor: u64,
         payload: Value,
     },
+    Unavailable {
+        topic: SubscriptionTopicDescriptor,
+        #[serde(rename = "topicKey")]
+        topic_key: String,
+        #[serde(rename = "schemaEpoch")]
+        schema_epoch: String,
+        #[serde(rename = "errorCode")]
+        error_code: &'static str,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,11 +183,12 @@ pub(crate) struct SubscriptionStreamQuery {
     pub(crate) reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopicFrameKind {
     Snapshot,
     Replay,
     Live,
+    Unavailable,
 }
 
 #[derive(Debug)]
@@ -198,6 +208,7 @@ impl SerializedTopicFrame {
             TopicFrameKind::Snapshot => Bytes::from_static(b"data: {\"type\":\"snapshot"),
             TopicFrameKind::Replay => Bytes::from_static(b"data: {\"type\":\"replay"),
             TopicFrameKind::Live => Bytes::from_static(b"data: {\"type\":\"live"),
+            TopicFrameKind::Unavailable => Bytes::from_static(b"data: {\"type\":\"unavailable"),
         };
         [
             prefix,
@@ -3483,6 +3494,7 @@ pub(crate) enum TopicInitDisposition {
     ResumeCaughtUp,
     SnapshotNoResume,
     SnapshotResumeMiss,
+    Unavailable,
 }
 
 impl TopicInitDisposition {
@@ -3492,6 +3504,7 @@ impl TopicInitDisposition {
             Self::ResumeCaughtUp => "resume_caught_up",
             Self::SnapshotNoResume => "snapshot_no_resume",
             Self::SnapshotResumeMiss => "snapshot_resume_miss",
+            Self::Unavailable => "unavailable",
         }
     }
 }
@@ -5488,9 +5501,36 @@ impl SubscriptionHub {
                     .get(&topic_key)
                     .is_none_or(|cached| cached.dirty)
             };
-            let cached = self
-                .ensure_cached_topic(state.clone(), topic.clone())
-                .await?;
+            let cached = match self.ensure_cached_topic(state.clone(), topic.clone()).await {
+                Ok(cached) => cached,
+                Err(ApiError::Unavailable(_)) => {
+                    // Summary is exact-or-unavailable. Keep this expected projection gap local
+                    // to its topic so another Dashboard topic can still hydrate on the same SSE
+                    // connection. The frame deliberately carries no payload or cursor.
+                    initial.push(PreparedTopicFrame {
+                        frame: Arc::new(serialize_unavailable_topic_frame(
+                            topic.descriptor(),
+                            topic_key.clone(),
+                            topic.schema_epoch(),
+                        )?),
+                        kind: TopicFrameKind::Unavailable,
+                    });
+                    if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. }) {
+                        self.schedule_summary_topic_refresh(state.clone(), topic.clone(), 1)
+                            .await?;
+                    }
+                    outcomes.push(TopicInitOutcome {
+                        topic_key,
+                        disposition: TopicInitDisposition::Unavailable,
+                        replay_event_count: 0,
+                        replay_bytes: 0,
+                        cursor: 0,
+                        miss_reason: None,
+                    });
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             let resume_cursor = resume_by_topic_key.get(&topic_key);
             let continuity_reset = resume_cursor
                 .zip(cached.continuity_reset_cursor)
@@ -5679,6 +5719,14 @@ impl SubscriptionHub {
                     > 0,
             )
         };
+        if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. })
+            && !has_active_owner
+            && existing.as_ref().is_some_and(|cached| cached.dirty)
+        {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary topic has an unproven projection gap"
+            )));
+        }
         if let Some(existing) = existing
             && ((has_active_owner
                 && existing.dirty
@@ -13051,6 +13099,28 @@ fn serialize_topic_frame(
         descriptor,
         fingerprint,
         payload_bytes: Bytes::from(payload_bytes),
+        envelope_metadata_bytes,
+    })
+}
+
+fn serialize_unavailable_topic_frame(
+    descriptor: SubscriptionTopicDescriptor,
+    topic_key: String,
+    schema_epoch: String,
+) -> Result<SerializedTopicFrame, ApiError> {
+    let descriptor_json = serde_json::to_string(&descriptor)?;
+    let topic_key_json = serde_json::to_string(&topic_key)?;
+    let schema_epoch_json = serde_json::to_string(&schema_epoch)?;
+    let envelope_metadata_bytes = Bytes::from(format!(
+        r#"","topic":{descriptor_json},"topicKey":{topic_key_json},"schemaEpoch":{schema_epoch_json},"errorCode":"unavailable""#
+    ));
+    Ok(SerializedTopicFrame {
+        topic_key,
+        schema_epoch,
+        cursor: 0,
+        descriptor,
+        fingerprint: 0,
+        payload_bytes: Bytes::new(),
         envelope_metadata_bytes,
     })
 }
@@ -23270,6 +23340,69 @@ mod tests {
                 miss_reason: None,
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn subscription_connection_isolates_unavailable_summary_from_dashboard_activity() {
+        let state =
+            crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap())
+                .await;
+        let hub = SubscriptionHub::new();
+        let summary = summary_topic();
+        let activity = SubscriptionTopic::DashboardActivityCurrent {
+            range: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            recent_limit: 16,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let activity_key = activity.cache_key().expect("activity topic key");
+        hub.state.lock().await.topics.insert(
+            activity_key,
+            seeded_cached_topic(activity.clone(), &[4], Utc::now()),
+        );
+        state.pool.close().await;
+
+        let prepared = hub
+            .prepare_connection(
+                state,
+                vec![summary.descriptor(), activity.descriptor()],
+                Vec::new(),
+            )
+            .await
+            .expect("unavailable Summary must not fail the whole connection");
+
+        assert_eq!(prepared.initial.len(), 2);
+        assert_eq!(
+            prepared.outcomes[0].disposition,
+            TopicInitDisposition::Unavailable
+        );
+        assert_eq!(prepared.outcomes[0].cursor, 0);
+        assert_eq!(
+            prepared.outcomes[1].disposition,
+            TopicInitDisposition::SnapshotNoResume
+        );
+        assert!(
+            !prepared
+                .last_sent_cursors
+                .contains_key(&summary.cache_key().expect("summary topic key"))
+        );
+        let unavailable = prepared
+            .initial
+            .iter()
+            .find(|frame| frame.kind == TopicFrameKind::Unavailable)
+            .expect("Summary unavailable frame");
+        let wire = unavailable
+            .frame
+            .event_chunks(TopicFrameKind::Unavailable)
+            .concat();
+        let envelope: Value =
+            serde_json::from_slice(&wire[6..wire.len() - 2]).expect("unavailable wire envelope");
+        assert_eq!(envelope["type"], "unavailable");
+        assert_eq!(envelope["errorCode"], "unavailable");
+        assert!(envelope.get("payload").is_none());
+        assert!(envelope.get("cursor").is_none());
+        assert_eq!(envelope["topic"]["topic"], "stats.summary.current");
     }
 
     #[tokio::test]
