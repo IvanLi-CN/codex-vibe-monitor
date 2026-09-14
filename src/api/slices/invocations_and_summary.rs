@@ -11563,14 +11563,15 @@ impl SummaryCoverageRecoverySupervisor {
                 )
                 .await
                 {
-                    Ok(turn) => match turn.next_turn {
-                        SummaryCoverageRecoveryNextTurn::Immediate => {
-                            reservation = turn.reservation;
-                            unpublished_startup_pages = unpublished_startup_pages.saturating_add(1);
-                            tokio::task::yield_now().await;
-                        }
-                        SummaryCoverageRecoveryNextTurn::Idle => return Ok(turn.next_turn),
-                    },
+                    Ok(turn) => {
+                        let next_turn = turn.next_turn;
+                        let Some(next_reservation) = turn.reservation else {
+                            return Ok(next_turn);
+                        };
+                        reservation = Some(next_reservation);
+                        unpublished_startup_pages = unpublished_startup_pages.saturating_add(1);
+                        tokio::task::yield_now().await;
+                    }
                     Err(error)
                         if error
                             .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
