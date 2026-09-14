@@ -486,8 +486,265 @@ async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempoten
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("second cost backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.scanned, 1);
     assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn proxy_cost_backfill_settled_history_advances_cursor_to_id_high_water() {
+    let pool = test_current_schema_pool().await;
+    insert_proxy_cost_backfill_row(
+        &pool,
+        "proxy-cost-backfill-settled-high-water",
+        Some("gpt-5.2"),
+        Some(1_000),
+        Some(500),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET cost = ?1,
+            cost_estimated = 1,
+            price_version = ?2,
+            payload = ?3
+        WHERE invoke_id = ?4
+        "#,
+    )
+    .bind(0.0035_f64)
+    .bind("unit-cost-backfill@response-tier")
+    .bind(r#"{"serviceTier":"default","billingServiceTier":"default"}"#)
+    .bind("proxy-cost-backfill-settled-high-water")
+    .execute(&pool)
+    .await
+    .expect("settle high-water proxy cost row");
+
+    let high_water = current_proxy_cost_backfill_snapshot_max_id(&pool)
+        .await
+        .expect("read cost backfill high water");
+    let catalog = PricingCatalog {
+        version: "unit-cost-backfill".to_string(),
+        models: HashMap::from([(
+            "gpt-5.2".to_string(),
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 3.0,
+                cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let attempt_version = pricing_backfill_attempt_version(&catalog);
+    let outcome = backfill_proxy_missing_costs_from_cursor(
+        &pool,
+        0,
+        high_water,
+        &catalog,
+        &attempt_version,
+        None,
+        None,
+    )
+    .await
+    .expect("settled history should complete the high-water range");
+
+    assert_eq!(outcome.summary.scanned, 1);
+    assert_eq!(outcome.summary.updated, 0);
+    assert_eq!(outcome.next_cursor_id, high_water);
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-cost-backfill-settled-high-water")
+    .fetch_one(&pool)
+    .await
+    .expect("query settled high-water row");
+    assert_eq!(
+        row.try_get::<Option<f64>, _>("cost").expect("read cost"),
+        Some(0.0035)
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read price_version")
+            .as_deref(),
+        Some("unit-cost-backfill@response-tier")
+    );
+}
+
+#[tokio::test]
+async fn proxy_cost_backfill_bounded_scan_reprices_stale_rows_and_advances_across_settled_rows() {
+    let pool = test_current_schema_pool().await;
+    insert_proxy_cost_backfill_row(
+        &pool,
+        "proxy-cost-backfill-bounded-settled",
+        Some("gpt-5.2"),
+        Some(1_000),
+        Some(500),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET cost = ?1,
+            cost_estimated = 1,
+            price_version = ?2,
+            payload = ?3
+        WHERE invoke_id = ?4
+        "#,
+    )
+    .bind(0.0035_f64)
+    .bind("unit-cost-backfill@response-tier")
+    .bind(r#"{"serviceTier":"default","billingServiceTier":"default"}"#)
+    .bind("proxy-cost-backfill-bounded-settled")
+    .execute(&pool)
+    .await
+    .expect("settle bounded proxy cost row");
+    insert_proxy_cost_backfill_row(
+        &pool,
+        "proxy-cost-backfill-bounded-stale",
+        Some("gpt-5.2"),
+        Some(1_000),
+        Some(500),
+    )
+    .await;
+
+    let high_water = current_proxy_cost_backfill_snapshot_max_id(&pool)
+        .await
+        .expect("read bounded cost backfill high water");
+    let catalog = PricingCatalog {
+        version: "unit-cost-backfill".to_string(),
+        models: HashMap::from([(
+            "gpt-5.2".to_string(),
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 3.0,
+                cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let attempt_version = pricing_backfill_attempt_version(&catalog);
+    let outcome = backfill_proxy_missing_costs_from_cursor(
+        &pool,
+        0,
+        high_water,
+        &catalog,
+        &attempt_version,
+        None,
+        None,
+    )
+    .await
+    .expect("bounded cost backfill should traverse settled and stale rows");
+
+    assert_eq!(outcome.summary.scanned, 2);
+    assert_eq!(outcome.summary.updated, 1);
+    assert_eq!(outcome.next_cursor_id, high_water);
+    let stale_row =
+        sqlx::query("SELECT cost, price_version FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("proxy-cost-backfill-bounded-stale")
+            .fetch_one(&pool)
+            .await
+            .expect("query repriced bounded row");
+    assert_eq!(
+        stale_row
+            .try_get::<Option<f64>, _>("cost")
+            .expect("read repriced cost"),
+        Some(0.0035)
+    );
+    assert_eq!(
+        stale_row
+            .try_get::<Option<String>, _>("price_version")
+            .expect("read repriced price_version")
+            .as_deref(),
+        Some("unit-cost-backfill@response-tier")
+    );
+}
+
+#[tokio::test]
+async fn proxy_cost_backfill_versioned_progress_recomputes_historical_rows() {
+    let pool = test_current_schema_pool().await;
+    insert_proxy_cost_backfill_row(
+        &pool,
+        "proxy-cost-backfill-versioned-history",
+        Some("gpt-5.2"),
+        Some(1_000),
+        Some(500),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET cost = ?1,
+            cost_estimated = 1,
+            price_version = ?2,
+            payload = ?3
+        WHERE invoke_id = ?4
+        "#,
+    )
+    .bind(0.001_f64)
+    .bind("old-pricing@response-tier")
+    .bind(r#"{"serviceTier":"default","billingServiceTier":"default"}"#)
+    .bind("proxy-cost-backfill-versioned-history")
+    .execute(&pool)
+    .await
+    .expect("seed historical versioned cost row");
+
+    let catalog = PricingCatalog {
+        version: "new-pricing".to_string(),
+        models: HashMap::from([(
+            "gpt-5.2".to_string(),
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 3.0,
+                cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let old_task_name = startup_backfill_task_progress_key_for_catalog(
+        StartupBackfillTask::ProxyCost,
+        &PricingCatalog {
+            version: "old-pricing".to_string(),
+            models: catalog.models.clone(),
+        },
+    );
+    let new_task_name =
+        startup_backfill_task_progress_key_for_catalog(StartupBackfillTask::ProxyCost, &catalog);
+    assert_ne!(old_task_name, new_task_name);
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("new pricing version should reprice historical rows");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    let row = sqlx::query("SELECT cost, price_version FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("proxy-cost-backfill-versioned-history")
+        .fetch_one(&pool)
+        .await
+        .expect("query repriced versioned row");
+    assert_eq!(
+        row.try_get::<Option<f64>, _>("cost")
+            .expect("read versioned cost"),
+        Some(0.0035)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read versioned price_version")
+            .as_deref(),
+        Some("new-pricing@response-tier")
+    );
 }
 
 #[tokio::test]
@@ -590,7 +847,7 @@ async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billi
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("standard row backfill should become idempotent");
-    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.scanned, 1);
     assert_eq!(summary_second.updated, 0);
 }
 
@@ -673,7 +930,7 @@ async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_ti
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("stale standard billing tier row should become idempotent");
-    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.scanned, 1);
     assert_eq!(summary_second.updated, 0);
 }
 
@@ -1488,7 +1745,7 @@ async fn backfill_proxy_missing_costs_skips_rows_already_settled_with_requested_
     let summary = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("settled requested-tier rows should remain idempotent");
-    assert_eq!(summary.scanned, 0);
+    assert_eq!(summary.scanned, 1);
     assert_eq!(summary.updated, 0);
 }
 
@@ -1575,7 +1832,7 @@ async fn backfill_proxy_missing_costs_skips_missing_model_or_usage_and_retries_u
     let summary_same_version = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("same-version cost backfill should skip attempted unpriced rows");
-    assert_eq!(summary_same_version.scanned, 0);
+    assert_eq!(summary_same_version.scanned, 1);
     assert_eq!(summary_same_version.updated, 0);
 
     let updated_catalog_same_version = PricingCatalog {
