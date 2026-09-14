@@ -5720,6 +5720,7 @@ impl SubscriptionHub {
             )
         };
         if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. })
+            && !has_active_owner
             && existing.as_ref().is_some_and(|cached| cached.dirty)
         {
             return Err(ApiError::unavailable(anyhow!(
