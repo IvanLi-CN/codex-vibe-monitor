@@ -11364,20 +11364,9 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
                 .await?;
         }
     }
-    // Historical coverage is durable recovery work, not demand-driven query work. A 30-day
-    // proof must keep progressing even while no client happens to hold an `all` subscription.
-    if let Err(error) = SummaryCoverageRecoverySupervisor::run(state).await {
-        if error
-            .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
-            .is_some()
-        {
-            debug!(
-                "summary historical coverage recovery observed a generation change; keeping rolling projection"
-            );
-        } else {
-            warn!(error = ?error, "summary historical coverage recovery deferred; keeping fresh rolling projection");
-        }
-    }
+    // Historical coverage is owned exclusively by the independent supervisor. Snapshot cadence
+    // keeps this path limited to the availability-critical rolling Projection and must never
+    // trigger durable V2 proof, archive, checkpoint, or finalization I/O.
     Ok(())
 }
 
@@ -38925,7 +38914,7 @@ mod request_compression_query_tests {
             .subscription_hub
             .note_summary_http_interest(true)
             .await;
-        refresh_summary_snapshots(state.as_ref())
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
             .await
             .expect("publish exact all-time projection");
         let Json(before) = fetch_summary(
@@ -40198,10 +40187,9 @@ mod request_compression_query_tests {
             SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
         );
         let state_for_recovery = state.clone();
-        let recovery =
-            tokio::spawn(
-                async move { refresh_summary_snapshots(state_for_recovery.as_ref()).await },
-            );
+        let recovery = tokio::spawn(async move {
+            SummaryCoverageRecoverySupervisor::run(state_for_recovery.as_ref()).await
+        });
         tokio::pin!(recovery);
         tokio::time::timeout(Duration::from_secs(5), &mut recovery)
             .await
@@ -40249,7 +40237,7 @@ mod request_compression_query_tests {
         .await
         .expect("seed recent legacy archive manifest");
 
-        refresh_summary_snapshots(state.as_ref())
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
             .await
             .expect("run recovery without an all-time HTTP or SSE owner");
 
@@ -40262,6 +40250,94 @@ mod request_compression_query_tests {
         .expect("supervisor must record its independent recovery outcome");
         assert_eq!(outcome, "missing_source");
         state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_snapshot_refresh_does_not_run_durable_coverage_recovery() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-snapshot-owner-live', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed rolling Summary source");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish rolling Summary projection");
+
+        let archive_bucket_start = Utc
+            .timestamp_opt(
+                align_bucket_epoch((Utc::now() - ChronoDuration::days(2)).timestamp(), 3_600, 0),
+                0,
+            )
+            .single()
+            .expect("valid snapshot owner archive bucket");
+        let coverage_start = crate::stats::db_occurred_at_lower_bound(archive_bucket_start);
+        let coverage_end =
+            crate::db_occurred_at_upper_bound(archive_bucket_start + ChronoDuration::hours(1));
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at) \
+             VALUES ('codex_invocations', '2026-09', \
+                     '/definitely/missing/summary-snapshot-owner.sqlite.gz', 'summary-snapshot-owner', 1, \
+                     'completed', ?1, ?2)",
+        )
+        .bind(coverage_start)
+        .bind(coverage_end)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical Summary manifest");
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+
+        let (result, v2_window_calls) = SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS
+            .scope(Cell::new(0), async {
+                let result = refresh_summary_snapshots(state.as_ref()).await;
+                let calls = SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS
+                    .try_with(Cell::get)
+                    .expect("V2 window counter scope");
+                (result, calls)
+            })
+            .await;
+        result.expect("Summary owner refresh must keep rolling projection available");
+        assert_eq!(
+            v2_window_calls, 0,
+            "snapshot owner refresh must not invoke durable historical recovery"
+        );
+
+        let outcome_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM summary_archive_snapshot_backfill_outcome \
+             WHERE manifest_sha256 = 'summary-snapshot-owner'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("inspect historical backfill outcomes");
+        assert_eq!(
+            outcome_count, 0,
+            "snapshot owner refresh must not persist a durable recovery outcome"
+        );
+        state.pool.close().await;
+
+        let Json(current) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("rolling projection remains available from memory");
+        assert_eq!(current.total_count, 1);
+        assert_eq!(current.total_tokens, 17);
     }
 
     #[test]
@@ -40936,10 +41012,9 @@ mod request_compression_query_tests {
             SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
         );
         let state_for_recovery = state.clone();
-        let recovery =
-            tokio::spawn(
-                async move { refresh_summary_snapshots(state_for_recovery.as_ref()).await },
-            );
+        let recovery = tokio::spawn(async move {
+            SummaryCoverageRecoverySupervisor::run(state_for_recovery.as_ref()).await
+        });
         tokio::pin!(recovery);
         tokio::select! {
             result = &mut recovery => {

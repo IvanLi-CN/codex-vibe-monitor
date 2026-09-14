@@ -22608,7 +22608,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         .subscription_hub
         .note_summary_http_interest(true)
         .await;
-    refresh_summary_snapshots(state.as_ref())
+    SummaryCoverageRecoverySupervisor::run(state.as_ref())
         .await
         .expect("advance the first all-time staged checkpoint page");
     let first_checkpoint = sqlx::query_as::<_, (i64, i64, i64)>(
@@ -22679,7 +22679,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         .subscription_hub
         .note_summary_http_interest(true)
         .await;
-    refresh_summary_snapshots(state.as_ref())
+    SummaryCoverageRecoverySupervisor::run(state.as_ref())
         .await
         .expect("restart staged checkpoint at the later manifest generation");
     let reset_checkpoint = sqlx::query_as::<_, (i64, i64, i64)>(
@@ -22702,7 +22702,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
             .subscription_hub
             .note_summary_http_interest(true)
             .await;
-        refresh_summary_snapshots(state.as_ref())
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
             .await
             .expect("resume bounded staged all-time recovery");
         let checkpoint = sqlx::query_as::<_, (i64, i64, i64, i64)>(
