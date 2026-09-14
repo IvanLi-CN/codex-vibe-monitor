@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use std::{fs, io};
 use tracing::{debug, info};
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(test)]
@@ -7215,6 +7217,7 @@ impl SummaryProjectionBuildMode {
 #[cfg(test)]
 tokio::task_local! {
     static SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize;
+    static SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS: Cell<usize>;
 }
 
 fn summary_projection_exact_record_limit() -> usize {
@@ -11384,6 +11387,44 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
 /// builder is intentionally never used here: archive raw hydration belongs to this supervisor.
 pub(crate) struct SummaryCoverageRecoverySupervisor;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum SummaryCoverageRecoveryNextTurn {
+    Immediate,
+    Idle,
+}
+
+#[derive(Debug)]
+struct SummaryCoverageRecoveryTurn {
+    next_turn: SummaryCoverageRecoveryNextTurn,
+    reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+}
+
+fn summary_coverage_recovery_next_turn_delay(
+    next_turn: SummaryCoverageRecoveryNextTurn,
+) -> Duration {
+    match next_turn {
+        SummaryCoverageRecoveryNextTurn::Immediate => Duration::ZERO,
+        SummaryCoverageRecoveryNextTurn::Idle => SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
+    }
+}
+
+fn summary_coverage_recovery_requires_second_v2_turn(
+    result: &SummaryArchiveSnapshotBackfillWindowResult,
+) -> bool {
+    result.candidate_count > 0
+        || result.pending_obligation_count > 0
+        || result.hit_budget
+        || result.materialized_archive_batches > 0
+        || result.unavailable_archive_batches > 0
+}
+
+#[cfg(test)]
+fn note_summary_coverage_v2_window() {
+    let _ = SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS.try_with(|calls| {
+        calls.set(calls.get().saturating_add(1));
+    });
+}
+
 async fn summary_all_time_checkpoint_publication_required(
     state: &AppState,
     checkpoint: &SummaryAllTimeProjectionCheckpointRow,
@@ -11472,22 +11513,24 @@ async fn summary_all_time_checkpoint_publication_required(
 
 impl SummaryCoverageRecoverySupervisor {
     pub(crate) async fn run(state: &AppState) -> Result<()> {
-        Self::run_with_priority_reservation(state, None).await
+        Self::run_with_priority_reservation(state, None)
+            .await
+            .map(|_| ())
     }
 
-    pub(crate) async fn run_with_startup_priority_reservation(
+    async fn run_with_startup_priority_reservation(
         state: &AppState,
         reservation: crate::db_pressure::DbBackgroundPriorityReservation,
-    ) -> Result<()> {
+    ) -> Result<SummaryCoverageRecoveryNextTurn> {
         Self::run_with_priority_reservation(state, Some(reservation)).await
     }
 
     async fn run_with_priority_reservation(
         state: &AppState,
         reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
-    ) -> Result<()> {
+    ) -> Result<SummaryCoverageRecoveryNextTurn> {
         let Ok(_singleflight) = state.subscription_hub.try_lock_summary_coverage_recovery() else {
-            return Ok(());
+            return Ok(SummaryCoverageRecoveryNextTurn::Idle);
         };
         Self::run_with_priority_reservation_locked(state, reservation).await
     }
@@ -11495,7 +11538,7 @@ impl SummaryCoverageRecoverySupervisor {
     async fn run_with_priority_reservation_locked(
         state: &AppState,
         mut reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
-    ) -> Result<()> {
+    ) -> Result<SummaryCoverageRecoveryNextTurn> {
         let drain_startup_coverage = reservation.is_some();
         let mut unpublished_startup_pages = 0usize;
         let recovery = async {
@@ -11520,12 +11563,14 @@ impl SummaryCoverageRecoverySupervisor {
                 )
                 .await
                 {
-                    Ok(Some(next_reservation)) => {
-                        reservation = Some(next_reservation);
-                        unpublished_startup_pages = unpublished_startup_pages.saturating_add(1);
-                        tokio::task::yield_now().await;
-                    }
-                    Ok(None) => return Ok(()),
+                    Ok(turn) => match turn.next_turn {
+                        SummaryCoverageRecoveryNextTurn::Immediate => {
+                            reservation = turn.reservation;
+                            unpublished_startup_pages = unpublished_startup_pages.saturating_add(1);
+                            tokio::task::yield_now().await;
+                        }
+                        SummaryCoverageRecoveryNextTurn::Idle => return Ok(turn.next_turn),
+                    },
                     Err(error)
                         if error
                             .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
@@ -11569,7 +11614,7 @@ impl SummaryCoverageRecoverySupervisor {
         reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
         _drain_startup_coverage: bool,
         publish_overlay: bool,
-    ) -> Result<Option<crate::db_pressure::DbBackgroundPriorityReservation>> {
+    ) -> Result<SummaryCoverageRecoveryTurn> {
         // Admission deliberately precedes every checkpoint, manifest, and archive operation.
         // Pressure is scheduler-only: a denied pass neither reads nor writes recovery progress.
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
@@ -11601,7 +11646,10 @@ impl SummaryCoverageRecoverySupervisor {
                     reason = %reason,
                     "summary historical coverage recovery deferred before durable progress access"
                 );
-                return Ok(None);
+                return Ok(SummaryCoverageRecoveryTurn {
+                    next_turn: SummaryCoverageRecoveryNextTurn::Idle,
+                    reservation: None,
+                });
             }
         };
         let started_at = Instant::now();
@@ -11609,6 +11657,8 @@ impl SummaryCoverageRecoverySupervisor {
         // page- and time-bounded, and committed cursor/hash progress is immediately eligible
         // for the next turn. Do not let a broad all-time checkpoint consume the only recovery
         // permit while a recent selection still lacks its authority.
+        #[cfg(test)]
+        note_summary_coverage_v2_window();
         let priority_backfill = backfill_summary_archive_snapshots_v2_window(
             &state.pool,
             SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
@@ -11686,7 +11736,10 @@ impl SummaryCoverageRecoverySupervisor {
             // 30-second cadence does not turn a finite recovery set into an hour-long drain.
             // The database-pressure permit is still released at this boundary, so every source
             // page stays bounded and pressure refusal can stop the loop safely.
-            return Ok(Some(pressure_gate.reserve_priority_background()));
+            return Ok(SummaryCoverageRecoveryTurn {
+                next_turn: SummaryCoverageRecoveryNextTurn::Immediate,
+                reservation: Some(pressure_gate.reserve_priority_background()),
+            });
         }
         // A completed global checkpoint is independently exact. Do not make its first
         // publication wait for the account-scope manifest/rollup pass below: large account
@@ -11757,11 +11810,21 @@ impl SummaryCoverageRecoverySupervisor {
             );
         }
 
-        let backfill = backfill_summary_archive_snapshots_v2_window(
-            &state.pool,
-            SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
-        )
-        .await?;
+        let backfill = if summary_coverage_recovery_requires_second_v2_turn(&priority_backfill) {
+            #[cfg(test)]
+            note_summary_coverage_v2_window();
+            backfill_summary_archive_snapshots_v2_window(
+                &state.pool,
+                SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
+            )
+            .await?
+        } else {
+            debug!(
+                stage = "historical_coverage_snapshot_backfill",
+                "summary idle recovery skipped redundant second V2 window"
+            );
+            priority_backfill
+        };
         info!(
             stage = "historical_coverage_snapshot_backfill",
             elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -11837,7 +11900,14 @@ impl SummaryCoverageRecoverySupervisor {
                 Err(error) => return Err(error),
             }
         }
-        Ok(None)
+        Ok(SummaryCoverageRecoveryTurn {
+            next_turn: if summary_coverage_recovery_requires_second_v2_turn(&backfill) {
+                SummaryCoverageRecoveryNextTurn::Immediate
+            } else {
+                SummaryCoverageRecoveryNextTurn::Idle
+            },
+            reservation: None,
+        })
     }
 }
 
@@ -11865,27 +11935,37 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
     startup_priority: crate::db_pressure::DbBackgroundPriorityReservation,
 ) {
     tokio::spawn(async move {
-        if let Err(error) =
-            SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
+        let mut next_turn =
+            match SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
                 state.as_ref(),
                 startup_priority,
             )
             .await
-        {
-            warn!(error = ?error, "initial summary historical coverage recovery deferred");
-        }
-
-        let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
-        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            {
+                Ok(next_turn) => next_turn,
+                Err(error) => {
+                    warn!(error = ?error, "initial summary historical coverage recovery deferred");
+                    SummaryCoverageRecoveryNextTurn::Idle
+                }
+            };
         loop {
+            let delay = summary_coverage_recovery_next_turn_delay(next_turn);
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,
-                _ = cadence.tick() => {
-                    if let Err(error) = SummaryCoverageRecoverySupervisor::run(state.as_ref()).await {
-                        warn!(error = ?error, "summary historical coverage recovery deferred");
-                    }
-                }
+                _ = tokio::time::sleep(delay) => {}
             }
+            next_turn = match SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                state.as_ref(),
+                None,
+            )
+            .await
+            {
+                Ok(next_turn) => next_turn,
+                Err(error) => {
+                    warn!(error = ?error, "summary historical coverage recovery deferred");
+                    SummaryCoverageRecoveryNextTurn::Idle
+                }
+            };
         }
     });
 }
@@ -40205,6 +40285,82 @@ mod request_compression_query_tests {
             summary_coverage_overlay_requires_full_reduction(false, false, false),
             "the first overlay publication has no incremental base"
         );
+    }
+
+    #[test]
+    fn summary_coverage_recovery_idle_cadence_waits_ten_seconds() {
+        assert_eq!(
+            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Immediate),
+            Duration::ZERO,
+            "startup and pending recovery turns must remain immediate"
+        );
+        assert_eq!(
+            summary_coverage_recovery_next_turn_delay(SummaryCoverageRecoveryNextTurn::Idle),
+            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
+            "idle durable recovery must use the ten-second floor"
+        );
+        assert_eq!(
+            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn summary_coverage_recovery_follow_up_remains_enabled_when_work_exists() {
+        for result in [
+            SummaryArchiveSnapshotBackfillWindowResult {
+                candidate_count: 1,
+                ..SummaryArchiveSnapshotBackfillWindowResult::default()
+            },
+            SummaryArchiveSnapshotBackfillWindowResult {
+                pending_obligation_count: 1,
+                ..SummaryArchiveSnapshotBackfillWindowResult::default()
+            },
+            SummaryArchiveSnapshotBackfillWindowResult {
+                hit_budget: true,
+                ..SummaryArchiveSnapshotBackfillWindowResult::default()
+            },
+            SummaryArchiveSnapshotBackfillWindowResult {
+                materialized_archive_batches: 1,
+                ..SummaryArchiveSnapshotBackfillWindowResult::default()
+            },
+            SummaryArchiveSnapshotBackfillWindowResult {
+                unavailable_archive_batches: 1,
+                ..SummaryArchiveSnapshotBackfillWindowResult::default()
+            },
+        ] {
+            assert!(summary_coverage_recovery_requires_second_v2_turn(&result));
+        }
+        assert!(!summary_coverage_recovery_requires_second_v2_turn(
+            &SummaryArchiveSnapshotBackfillWindowResult::default()
+        ));
+    }
+
+    #[tokio::test]
+    async fn summary_coverage_supervisor_idle_pass_skips_second_v2_window() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+
+        let (result, v2_window_calls) = SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS
+            .scope(Cell::new(0), async {
+                let result = SummaryCoverageRecoverySupervisor::run(state.as_ref()).await;
+                let calls = SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS
+                    .try_with(Cell::get)
+                    .expect("V2 window counter scope");
+                (result, calls)
+            })
+            .await;
+        result.expect("idle recovery pass");
+        assert_eq!(
+            v2_window_calls, 1,
+            "an idle recovery pass must issue only its initial V2 probe"
+        );
+        state.pool.close().await;
     }
 
     #[tokio::test]
