@@ -171,6 +171,7 @@ export function useInvocationRecordsRealtime({
 
     const topic = buildInvocationsTopic(limit, filters);
     const unsubscribe = subscribeToTopic<ListResponse>(topic, (event) => {
+      if (event.type === "unavailable") return;
       const current = getRecordsRef.current();
       const currentKeySet = new Set(current.map((record) => invocationStableKey(record)));
       const nextRecords = allowVisibleInsertions

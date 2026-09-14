@@ -21,6 +21,7 @@ export function useUpdateAvailable() {
   useEffect(() => {
     const topic = buildTopicDescriptor("app.version");
     const unsubscribe = subscribeToTopic<VersionResponse>(topic, (event) => {
+      if (event.type === "unavailable") return;
       const next = event.payload.backend ?? null;
       if (!next) return;
       const initial = initialVersionRef.current;

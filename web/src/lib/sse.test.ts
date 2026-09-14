@@ -97,6 +97,68 @@ afterEach(() => {
 });
 
 describe("sse topic registry", () => {
+  it("keeps an unavailable topic isolated from healthy topic snapshots", async () => {
+    const sse = await loadSseModule();
+    const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {
+      window: "current",
+    });
+    const activityTopic = sse.buildTopicDescriptor("dashboard.activity.current", {
+      range: "today",
+    });
+    const summaryListener = vi.fn();
+    const activityListener = vi.fn();
+
+    const unsubscribeSummary = sse.subscribeToTopic(summaryTopic, summaryListener);
+    const unsubscribeActivity = sse.subscribeToTopic(activityTopic, activityListener);
+    const connection = FakeEventSource.instances.at(-1)!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "unavailable",
+          topic: summaryTopic,
+          topicKey: "summary-current",
+          schemaEpoch: "stats.summary.current/v1",
+          errorCode: "unavailable",
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: activityTopic,
+          topicKey: "dashboard-activity-current",
+          schemaEpoch: "dashboard.activity.current/v3",
+          cursor: 3,
+          payload: { range: "today" },
+        }),
+      }),
+    );
+
+    expect(summaryListener).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "unavailable", errorCode: "unavailable" }),
+    );
+    expect(activityListener).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "snapshot", payload: { range: "today" } }),
+    );
+    expect(sse.getCachedTopicState(summaryTopic)).toMatchObject({
+      payload: null,
+      cursor: null,
+      error: "unavailable",
+    });
+    expect(sse.getCachedTopicState(activityTopic)).toMatchObject({
+      payload: { range: "today" },
+      cursor: 3,
+      error: null,
+    });
+
+    unsubscribeActivity();
+    unsubscribeSummary();
+  });
+
   it("rebuilds the connection when a topic is added or removed and preserves remaining cursors", async () => {
     const sse = await loadSseModule();
     const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {

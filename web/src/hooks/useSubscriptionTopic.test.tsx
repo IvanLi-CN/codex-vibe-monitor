@@ -29,6 +29,7 @@ function HookHarness(props: {
     lastKind: "snapshot" | "replay" | "live" | null;
     deliverySource: "cache" | "network" | null;
     isLoading: boolean;
+    error: string | null;
     refresh: () => void;
   }) => void;
 }) {
@@ -40,6 +41,7 @@ function HookHarness(props: {
       lastKind: result.lastKind,
       deliverySource: result.deliverySource,
       isLoading: result.isLoading,
+      error: result.error,
       refresh: result.refresh,
     });
   }, [
@@ -62,6 +64,7 @@ function renderHookHarness(props: {
     lastKind: "snapshot" | "replay" | "live" | null;
     deliverySource: "cache" | "network" | null;
     isLoading: boolean;
+    error: string | null;
     refresh: () => void;
   }) => void;
 }) {
@@ -145,6 +148,62 @@ describe("useSubscriptionTopic", () => {
       params: { window: "current" },
     });
     expect(renders.at(-1)?.isLoading).toBe(true);
+  });
+
+  it("clears loading and data for an unavailable topic until a fresh snapshot arrives", () => {
+    const renders: Array<{
+      data: { total: number } | null;
+      isLoading: boolean;
+      error: string | null;
+    }> = [];
+    let listener:
+      | ((
+          event:
+            | { type: "snapshot"; payload: { total: number } }
+            | { type: "unavailable"; errorCode: "unavailable" },
+        ) => void)
+      | null = null;
+    sseMocks.getCachedTopicState.mockReturnValue(null);
+    sseMocks.getTopicDescriptorKey.mockReturnValue("summary");
+    sseMocks.subscribeToTopic.mockImplementation(
+      (
+        _descriptor: unknown,
+        nextListener: (
+          event:
+            | { type: "snapshot"; payload: { total: number } }
+            | { type: "unavailable"; errorCode: "unavailable" },
+        ) => void,
+      ) => {
+        listener = nextListener;
+        return () => {};
+      },
+    );
+
+    renderHookHarness({
+      descriptor: { topic: "stats.summary.current" },
+      onRender: (snapshot) => {
+        renders.push(snapshot);
+      },
+    });
+    expect(renders.at(-1)).toMatchObject({ data: null, isLoading: true, error: null });
+
+    act(() => {
+      listener?.({ type: "unavailable", errorCode: "unavailable" });
+    });
+    expect(renders.at(-1)).toMatchObject({
+      data: null,
+      isLoading: false,
+      error: "unavailable",
+    });
+
+    act(() => {
+      listener?.({ type: "snapshot", payload: { total: 12 } });
+    });
+    expect(renders.at(-1)).toMatchObject({
+      data: { total: 12 },
+      isLoading: false,
+      error: null,
+    });
   });
 
   it("stays disabled when descriptor is absent or the hook is disabled", () => {

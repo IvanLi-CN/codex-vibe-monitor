@@ -1949,6 +1949,7 @@ async fn run_data_retention_maintenance_inner(
             pool,
             &[
                 StartupBackfillTask::UpstreamActivityArchives,
+                StartupBackfillTask::LegacyDetailMirrors,
                 StartupBackfillTask::HistoricalRollups,
             ],
             if pruned.1 > 0 {

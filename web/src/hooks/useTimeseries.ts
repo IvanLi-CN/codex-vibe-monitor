@@ -1110,7 +1110,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     }
   }, [normalizedOptions, range, sse.data, supportsPureSse]);
 
-  const data = supportsPureSse ? (sse.data ?? initialCachedTimeseries?.data ?? null) : httpData;
+  const data = supportsPureSse
+    ? (sse.data ?? (sse.error == null ? (initialCachedTimeseries?.data ?? null) : null))
+    : httpData;
   const isLoading = supportsPureSse ? sse.isLoading && data == null : httpLoading;
   const error = supportsPureSse ? sse.error : httpError;
   const refresh = supportsPureSse ? sse.refresh : loadHttpTimeseries;
