@@ -7218,6 +7218,7 @@ impl SummaryProjectionBuildMode {
 tokio::task_local! {
     static SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize;
     static SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS: Cell<usize>;
+    static SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS: Cell<usize>;
 }
 
 fn summary_projection_exact_record_limit() -> usize {
@@ -11414,6 +11415,13 @@ fn note_summary_coverage_v2_window() {
     });
 }
 
+#[cfg(test)]
+fn note_summary_coverage_checkpoint_advance() {
+    let _ = SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS.try_with(|calls| {
+        calls.set(calls.get().saturating_add(1));
+    });
+}
+
 async fn summary_all_time_checkpoint_publication_required(
     state: &AppState,
     checkpoint: &SummaryAllTimeProjectionCheckpointRow,
@@ -11736,15 +11744,15 @@ impl SummaryCoverageRecoverySupervisor {
         // rosters can legitimately take more than the bounded finalization turn while the
         // global `all` response is already proven. The publication function performs its own
         // live/coverage fence check before the immutable swap.
-        if let Some(global_checkpoint) =
-            load_summary_all_time_projection_checkpoint(&state.pool).await?
+        let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool).await?;
+        if let Some(global_checkpoint) = checkpoint.as_ref()
             && global_checkpoint.global_ready()
-            && summary_all_time_checkpoint_publication_required(state, &global_checkpoint).await?
+            && summary_all_time_checkpoint_publication_required(state, global_checkpoint).await?
         {
             let publication_started_at = Instant::now();
             match tokio::time::timeout(
                 SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
-                publish_summary_all_time_projection_checkpoint(state, global_checkpoint),
+                publish_summary_all_time_projection_checkpoint(state, global_checkpoint.clone()),
             )
             .await
             {
@@ -11758,6 +11766,23 @@ impl SummaryCoverageRecoverySupervisor {
                 }
             }
         }
+        if !summary_coverage_recovery_requires_second_v2_turn(&priority_backfill)
+            && let Some(checkpoint) = checkpoint.as_ref()
+            && checkpoint.global_ready()
+            && checkpoint.account_ready()
+            && !summary_all_time_checkpoint_publication_required(state, checkpoint).await?
+        {
+            debug!(
+                stage = "historical_coverage_projection_finalize",
+                "summary idle recovery skipped unchanged ready checkpoint"
+            );
+            return Ok(SummaryCoverageRecoveryTurn {
+                next_turn: SummaryCoverageRecoveryNextTurn::Idle,
+                reservation: None,
+            });
+        }
+        #[cfg(test)]
+        note_summary_coverage_checkpoint_advance();
         let checkpoint = tokio::time::timeout(
             SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
             advance_summary_all_time_projection_checkpoint(state),
@@ -40657,7 +40682,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_coverage_supervisor_does_not_republish_unchanged_ready_checkpoint() {
+    async fn summary_coverage_supervisor_idle_ready_checkpoint_skips_checkpoint_advance() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -40668,35 +40693,98 @@ mod request_compression_query_tests {
         SummaryCoverageRecoverySupervisor::run(state.as_ref())
             .await
             .expect("publish ready all-time checkpoint");
-        sqlx::query(
-            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("create publication interleave gate");
-        let interleave = install_summary_projection_test_interleave_at(
-            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+        let (result, v2_window_calls, checkpoint_advance_calls) =
+            SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS
+                .scope(Cell::new(0), async {
+                    SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS
+                        .scope(Cell::new(0), async {
+                            let result =
+                                SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                                    state.as_ref(),
+                                    None,
+                                )
+                                .await;
+                            let v2_window_calls = SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS
+                                .try_with(Cell::get)
+                                .expect("V2 window counter scope");
+                            let checkpoint_advance_calls =
+                                SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS
+                                    .try_with(Cell::get)
+                                    .expect("checkpoint advance counter scope");
+                            (result, v2_window_calls, checkpoint_advance_calls)
+                        })
+                        .await
+                })
+                .await;
+        let next_turn = result.expect("idle recovery pass");
+        assert_eq!(next_turn, SummaryCoverageRecoveryNextTurn::Idle);
+        assert_eq!(v2_window_calls, 1, "idle recovery must issue one V2 probe");
+        assert_eq!(
+            checkpoint_advance_calls, 0,
+            "idle recovery must not advance an unchanged ready checkpoint"
         );
-        let recovery_state = state.clone();
-        let recovery = tokio::spawn(async move {
-            SummaryCoverageRecoverySupervisor::run(recovery_state.as_ref()).await
-        });
-        tokio::pin!(recovery);
-        tokio::select! {
-            result = &mut recovery => {
-                result
-                    .expect("join unchanged recovery pass")
-                    .expect("unchanged recovery pass must remain a no-op");
-            }
-            _ = interleave.wait_for_writer() => {
-                interleave.resume_build();
-                let _ = recovery.await;
-                clear_summary_projection_test_interleave();
-                panic!("an unchanged ready checkpoint must not republish the Projection");
-            }
-        }
-        clear_summary_projection_test_interleave();
-        assert_eq!(interleave.build_attempts(), 0);
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_coverage_supervisor_idle_checkpoint_republishes_when_required() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
+            .await
+            .expect("publish ready all-time checkpoint");
+
+        let mut projection = Arc::unwrap_or_clone(
+            state
+                .subscription_hub
+                .summary_projection()
+                .await
+                .expect("load published Summary projection"),
+        );
+        projection.all_time_refreshed_at =
+            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
+        state
+            .subscription_hub
+            .store_summary_projection(projection)
+            .await;
+
+        let (result, checkpoint_advance_calls) = SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS
+            .scope(Cell::new(0), async {
+                let result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                    state.as_ref(),
+                    None,
+                )
+                .await;
+                let checkpoint_advance_calls = SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS
+                    .try_with(Cell::get)
+                    .expect("checkpoint advance counter scope");
+                (result, checkpoint_advance_calls)
+            })
+            .await;
+        assert_eq!(
+            result.expect("stale all-time publication pass"),
+            SummaryCoverageRecoveryNextTurn::Idle
+        );
+        assert_eq!(
+            checkpoint_advance_calls, 0,
+            "republishing a ready checkpoint must not restart checkpoint advancement"
+        );
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("load republished Summary projection");
+        assert!(
+            projection
+                .all_time_refreshed_at
+                .is_some_and(|refreshed_at| refreshed_at.elapsed() < SUMMARY_SNAPSHOT_MAX_STALE),
+            "stale all-time projection must be refreshed before the idle short circuit"
+        );
         state.pool.close().await;
     }
 
