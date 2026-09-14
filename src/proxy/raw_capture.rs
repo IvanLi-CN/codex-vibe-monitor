@@ -1703,14 +1703,10 @@ pub(crate) async fn current_proxy_cost_backfill_snapshot_max_id(
 }
 
 fn backfill_value_differs(current: Option<&str>, expected: Option<&str>) -> bool {
-    current
+    !current
         .map(str::trim)
         .unwrap_or_default()
-        .to_ascii_lowercase()
-        != expected
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_ascii_lowercase()
+        .eq_ignore_ascii_case(expected.map(str::trim).unwrap_or_default())
 }
 
 fn proxy_cost_backfill_candidate_needs_update(
