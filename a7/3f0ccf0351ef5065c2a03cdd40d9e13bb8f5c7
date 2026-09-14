@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.13",
+  "base_stable_version": "2.71.12",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-14T09:03:34Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.13",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8c5de93d7418cbc7f0ee99009607c042190f9d06",
+  "pr_number": 928,
+  "pr_title": "fix(maintenance): bound proxy cost backfill scans",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.13",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.13",
+  "target_sha": "a73f0ccf0351ef5065c2a03cdd40d9e13bb8f5c7",
+  "type_label": "type:patch"
+}
