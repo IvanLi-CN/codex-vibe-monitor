@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-14T19:49:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2550171614102a0779d0c1147d22d071ff86ee47",
+  "pr_number": 931,
+  "pr_title": "chore(policy): install migration governance skills",
+  "registry": "ghcr.io",
+  "release_bump": "docs",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "9f6f134850a584d466ae7dbb68caa9f697a63540",
+  "type_label": "type:docs"
+}
