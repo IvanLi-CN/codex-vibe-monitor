@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.12",
+  "base_stable_version": "2.71.11",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-14T06:28:35Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.12",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "37aa0147c1e84029981bfbe70dab3b7af4b5a41d",
+  "pr_number": 927,
+  "pr_title": "fix(summary): keep durable recovery on a single owner",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.12",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.12",
+  "target_sha": "209087e7b42a04b120dcd5bfd00efbb577483d31",
+  "type_label": "type:patch"
+}
