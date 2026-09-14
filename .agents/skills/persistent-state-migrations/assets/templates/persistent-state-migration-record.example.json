@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "<durable-state change description>",
+    "release_unit_description": "<release unit description>",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "<state retained across program versions>",
+    "storage_implementation": "<not assumed>",
+    "source_compatibility_range": {
+      "from_program_versions": "<supported source program range>",
+      "to_program_version": "<candidate program version>",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "<schema or structural change>",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "<current-data manipulation or not applicable>",
+        "order": 2,
+        "depends_on": [
+          "ddl-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "<historical-data backfill or transformation or not applicable>",
+        "order": 3,
+        "depends_on": [
+          "ddl-001",
+          "dml-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-001",
+      "dml-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "<per-operation observable signal>"
+    ],
+    "pause_points": [
+      "<safe point between operations>"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "public API is nonbreaking",
+        "candidate-written state works in every supported earlier program within the same Minor",
+        "deployed migration identity is recognized without rewrite"
+      ]
+    },
+    "minor": {
+      "required_test_evidence": [
+        "public API remains compatible within the Major",
+        "candidate reads and writes supported earlier-Minor state",
+        "earlier-Minor programs are not required to read newly migrated state",
+        "a forward-repair version handles state left by a stopped faulty release"
+      ]
+    },
+    "major": {
+      "required_test_evidence": [
+        "current program upgrades and uses state from the immediately preceding Major",
+        "direct major skipping is rejected or routed through an explicit intermediate upgrade",
+        "a forward-repair version handles state left by a stopped faulty release"
+      ]
+    }
+  }
+}

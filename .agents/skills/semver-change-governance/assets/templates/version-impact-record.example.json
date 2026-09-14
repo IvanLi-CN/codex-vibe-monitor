@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "<change description>",
+    "release_unit_description": "<release unit description>",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "<planned compatibility rationale before implementation>",
+      "assessed_at": "<RFC 3339 timestamp>",
+      "evidence": []
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "<new surface, changed assumption, or none>"
+      },
+      "reasoning": "<current compatibility rationale>",
+      "reassessed_at": "<RFC 3339 timestamp>",
+      "evidence": []
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "<release-ready compatibility rationale>",
+      "verified_at": "<RFC 3339 timestamp>",
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "<none, compatible, or breaking>",
+      "supported_consumer_range": "<supported consumer range>",
+      "evidence": []
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "<state that survives program versions or not applicable>",
+      "source_program_compatibility_range": "<program versions whose compatibility was evaluated>",
+      "evidence": []
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "<record identifier>"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": []
+  }
+}
