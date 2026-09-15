@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.16",
+  "base_stable_version": "2.71.15",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-15T04:44:45Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.16",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "faa59c3d150c57ec0116cb77a91b9dfc56ddb564",
+  "pr_number": 932,
+  "pr_title": "fix(summary): bound historical identity admission",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.16",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.16",
+  "target_sha": "b310efbb84bfc7f966056f8f0c70054fd206bfbf",
+  "type_label": "type:patch"
+}
