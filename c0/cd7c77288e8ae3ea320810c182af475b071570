@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.15",
+  "base_stable_version": "2.71.14",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-15T03:17:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.15",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a595357d2eaa9d87b4d19a00dcc00556f22bbd02",
+  "pr_number": 930,
+  "pr_title": "fix(summary): skip idle checkpoint advancement",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.15",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.15",
+  "target_sha": "c0cd7c77288e8ae3ea320810c182af475b071570",
+  "type_label": "type:patch"
+}
