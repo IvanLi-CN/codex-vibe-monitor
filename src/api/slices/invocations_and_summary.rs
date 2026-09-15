@@ -15034,17 +15034,16 @@ async fn load_summary_v2_archive_totals_excluding(
     pool: &Pool<Sqlite>,
     excluded_source_identities: &HashSet<SummarySourceIdentity>,
 ) -> Result<SummaryV2ArchiveTotals> {
-    let archives = sqlx::query_as::<_, SummaryV2ArchiveManifest>(
-        "SELECT id, sha256, historical_rollups_materialized_at, coverage_start_at, coverage_end_at, month_key, file_path
-         FROM archive_batches
-         WHERE dataset = 'codex_invocations' AND status = 'completed'
-           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    // Materialized archives are represented by the compact rollup baseline in the all-time
+    // finalizer. Only V2-proof identities can contribute archive rows here, so avoid loading and
+    // iterating every historical manifest when the proof set is empty or sparse.
+    let proof_identities = load_summary_v2_archive_proof_identities(pool).await?;
+    load_summary_v2_archive_totals_for_proof_identities(
+        pool,
+        &proof_identities,
+        excluded_source_identities,
     )
-    .fetch_all(pool)
     .await
-    .context("summary V2 archive totals manifest lookup failed")?;
-    load_summary_v2_archive_totals_from_archives(pool, archives, excluded_source_identities, &[])
-        .await
 }
 
 async fn load_summary_v2_archive_proof_identities(
