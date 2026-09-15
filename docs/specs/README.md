@@ -92,6 +92,8 @@
 | -     | 上游账号模型映射                                                          | active    | `upstream-account-model-mapping/SPEC.md`                   | `upstream-account-model-mapping/IMPLEMENTATION.md`                   | topic anchor: account pool / model mapping / routing cache   |
 | -     | API Key 优先级迁移准入控制                                                | active    | `priority-handoff-admission/SPEC.md`                       | `priority-handoff-admission/IMPLEMENTATION.md`                       | topic anchor: API Key / routing / sticky priority handoff    |
 
+| - | 全源码结构质量合同 | active | `source-quality-contract/SPEC.md` | `source-quality-contract/IMPLEMENTATION.md` | topic anchor: source quality / AST boundaries / CI gates |
+
 ## Archived Sources
 
 - Historical specs: `docs/archive/specs/`

@@ -1,0 +1,38 @@
+name: Initiative Source Quality
+
+on:
+  push:
+    branches:
+      - prd/source-quality-contract
+
+concurrency:
+  group: initiative-source-quality-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  initiative-source-structure-check:
+    name: initiative-source-structure-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify Bootstrap Spec surfaces
+        run: |
+          set -euo pipefail
+          test -f docs/specs/source-quality-contract/SPEC.md
+          test -f docs/specs/source-quality-contract/IMPLEMENTATION.md
+          test -f docs/specs/source-quality-contract/HISTORY.md
+          grep -Fq 'REQ-SQC-001' docs/specs/source-quality-contract/SPEC.md
+          grep -Fq 'VER-SQC-006' docs/specs/source-quality-contract/SPEC.md
+          grep -Fq '## Related ADRs' docs/specs/source-quality-contract/SPEC.md
+          grep -Fxq 'None' <(sed -n '/^## Related ADRs$/,/^## /p' docs/specs/source-quality-contract/SPEC.md | tail -n +2)
+
+      - name: Verify clean Bootstrap patch
+        run: git diff-tree --check --no-commit-id -r "$GITHUB_SHA"
