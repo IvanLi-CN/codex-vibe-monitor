@@ -7196,6 +7196,10 @@ impl std::error::Error for SummaryProjectionAllTimeGenerationChanged {}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SummaryProjectionBuildMode {
     Bootstrap,
+    // A cold Bootstrap which could not finish bounded historical admission. This mode publishes
+    // only the live/rollup proof and leaves the older boundary range explicitly unavailable for
+    // the independent coverage supervisor to repair.
+    BootstrapFallback,
     // A published rolling baseline can consume the hub-owned committed terminal journal
     // without re-admitting the complete live source.
     RollingDelta,
@@ -7214,10 +7218,18 @@ impl SummaryProjectionBuildMode {
     }
 }
 
+fn summary_projection_bootstrap_fallback_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("summary projection build exceeded")
+        || message.contains("summary projection")
+            && (message.contains("exceeded bounded") || message.contains("admission exceeded"))
+}
+
 #[cfg(test)]
 tokio::task_local! {
     static SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize;
     static SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS: Cell<usize>;
+    static SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS: Cell<usize>;
     static SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS: Cell<usize>;
     static SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS: Cell<usize>;
 }
@@ -11355,6 +11367,26 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
         // publication on the Bootstrap deadline instead of downgrading it to the shorter
         // Rolling deadline used only after an immutable projection exists.
         hydrate_summary_snapshots(state).await?;
+    } else if let Some(fallback_fence) = state
+        .subscription_hub
+        .summary_bootstrap_fallback_fence()
+        .await
+    {
+        let current_fence = load_summary_projection_generation_fence(state).await?;
+        if fallback_fence == current_fence {
+            // The fallback already published every source which can be proved within the
+            // bounded cold-start budget. Keep the local unavailable range in place until a
+            // durable source fence changes; do not re-enter boundary/archive hydration.
+            let _ = renew_summary_projection_freshness_if_generation_matches(state).await?;
+        } else {
+            state
+                .subscription_hub
+                .clear_summary_bootstrap_fallback_fence()
+                .await;
+            // A new live/manifest/coverage fence is a new admission identity. Give Bootstrap
+            // exactly one chance to replace the fallback before the supervisor catches up.
+            hydrate_summary_snapshots(state).await?;
+        }
     } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {
         // Coverage revisions are reconciled by the historical supervisor and published through
         // its immutable overlay. If the live terminal tail did not move, keep recent selections
@@ -11427,6 +11459,13 @@ fn note_summary_coverage_checkpoint_advance() {
 fn note_summary_projection_historical_identity_hydration(rows: usize) {
     let _ = SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS.try_with(|count| {
         count.set(count.get().saturating_add(rows));
+    });
+}
+
+#[cfg(test)]
+fn note_summary_projection_boundary_archive_hydration() {
+    let _ = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS.try_with(|calls| {
+        calls.set(calls.get().saturating_add(1));
     });
 }
 
@@ -12719,6 +12758,9 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
         SummaryProjectionBuildMode::Bootstrap
         | SummaryProjectionBuildMode::RollingDelta
         | SummaryProjectionBuildMode::Rolling => SUMMARY_PROJECTION_BUILD_DEADLINE,
+        SummaryProjectionBuildMode::BootstrapFallback => {
+            unreachable!("BootstrapFallback is only used after an admission failure")
+        }
         SummaryProjectionBuildMode::AllTime => {
             unreachable!("AllTime is owned by coverage supervisor")
         }
@@ -12804,22 +12846,47 @@ async fn refresh_summary_snapshots_with_deadline(
         .read_model
         .settled_terminal_sequence;
     let build_started_at = Instant::now();
+    let fallback_previous_all_time = previous_all_time.clone();
     let build = build_summary_projection(
         state,
         mode,
         previous_all_time,
         durable_terminal_sequence_watermark,
     );
-    let projection = match (mode, deadline) {
+    let build_result = match (mode, deadline) {
         (
             SummaryProjectionBuildMode::HistoricalLiveCoverage
             | SummaryProjectionBuildMode::AllTime,
             Some(deadline),
-        ) => await_summary_projection_all_time_build(state, build, deadline).await?,
+        ) => await_summary_projection_all_time_build(state, build, deadline).await,
         (_, Some(deadline)) => tokio::time::timeout(deadline, build)
             .await
-            .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))??,
-        (_, None) => build.await?,
+            .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))
+            .and_then(|result| result),
+        (_, None) => build.await,
+    };
+    let (projection, used_bootstrap_fallback) = match build_result {
+        Ok(projection) => (projection, false),
+        Err(error)
+            if matches!(mode, SummaryProjectionBuildMode::Bootstrap)
+                && summary_projection_bootstrap_fallback_error(&error) =>
+        {
+            warn!(
+                error = ?error,
+                "summary Bootstrap admission did not finish; publishing bounded fallback"
+            );
+            (
+                build_summary_projection(
+                    state,
+                    SummaryProjectionBuildMode::BootstrapFallback,
+                    fallback_previous_all_time,
+                    durable_terminal_sequence_watermark,
+                )
+                .await?,
+                true,
+            )
+        }
+        Err(error) => return Err(error),
     };
     info!(
         ?mode,
@@ -12827,6 +12894,40 @@ async fn refresh_summary_snapshots_with_deadline(
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build snapshot generation fence accepted"
     );
+    if used_bootstrap_fallback {
+        // The fallback is specifically used when the primary pool is under pressure. Do not
+        // immediately re-enter that pool for an IMMEDIATE publication transaction: the immutable
+        // snapshot already supplied the source fence, and the coverage supervisor will reconcile
+        // any durable change before it publishes historical proof.
+        if !state
+            .subscription_hub
+            .store_summary_projection_if_revision(projection, expected_projection_revision)
+            .await
+        {
+            debug!(
+                ?mode,
+                "summary Bootstrap fallback publication lost its immutable base race"
+            );
+            return Ok(());
+        }
+        let generation_fence = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .map(|projection| projection.generation_fence());
+        if let Some(generation_fence) = generation_fence {
+            state
+                .subscription_hub
+                .mark_summary_bootstrap_fallback_fence(generation_fence)
+                .await;
+        }
+        debug!(
+            ?mode,
+            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+            "summary Bootstrap fallback published without a durable write transaction"
+        );
+        return Ok(());
+    }
     // Serialize the final fence read and immutable hub swap against coverage trigger commits.
     // Without this short IMMEDIATE transaction, a proof/revoke can land between these two
     // operations and leave a stale all-time response published under the old fence.
@@ -12856,17 +12957,35 @@ async fn refresh_summary_snapshots_with_deadline(
         publication_transaction.rollback().await?;
         return Ok(());
     }
-    if !state
+    let published = state
         .subscription_hub
         .store_summary_projection_if_revision(projection, expected_projection_revision)
-        .await
-    {
+        .await;
+    if !published {
         debug!(
             ?mode,
             "summary projection build discarded because its immutable base was replaced"
         );
         publication_transaction.commit().await?;
         return Ok(());
+    }
+    if used_bootstrap_fallback {
+        let generation_fence = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .map(|projection| projection.generation_fence());
+        if let Some(generation_fence) = generation_fence {
+            state
+                .subscription_hub
+                .mark_summary_bootstrap_fallback_fence(generation_fence)
+                .await;
+        }
+    } else {
+        state
+            .subscription_hub
+            .clear_summary_bootstrap_fallback_fence()
+            .await;
     }
     publication_transaction.commit().await?;
     debug!(
@@ -17831,6 +17950,7 @@ async fn build_summary_projection_once(
             previous_unavailable_unmaterialized_archive_account_current_ranges,
         persisted_live_terminal_invoke_ids: previous_persisted_live_terminal_invoke_ids,
     } = previous_all_time.unwrap_or_default();
+    let bootstrap_fallback = matches!(mode, SummaryProjectionBuildMode::BootstrapFallback);
     let all_time_was_fully_rebuilt = mode.includes_all_time()
         && summary_projection_manifest_admission_retry_is_due(
             previous_all_time_manifest_admission_blocked_at,
@@ -17889,7 +18009,8 @@ async fn build_summary_projection_once(
         .await?;
     let current_archive_admission_exceeded =
         current_archive_admission.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES;
-    let mut current_source_unavailable = false;
+    let mut current_source_unavailable = bootstrap_fallback
+        && (current_archive_admission_exceeded || !current_archive_admission.is_empty());
     let mut current_source_unavailable_from_rank = None::<usize>;
     let mut current_account_source_unavailable_from_rank = HashMap::<i64, usize>::new();
     let mut paged_boundary_manifest_unknown_coverage_ranges = Vec::<ExactUtcRange>::new();
@@ -18192,7 +18313,12 @@ async fn build_summary_projection_once(
             .values()
             .flat_map(|account_ids| account_ids.iter().copied()),
     );
-    known_account_ids.extend(load_summary_projection_durable_account_ids(pool).await?);
+    if !bootstrap_fallback {
+        // Archive-only accounts belong to the unavailable historical range during fallback.
+        // Avoid reopening the unbounded durable account admission which may be the very budget
+        // failure that caused cold Bootstrap to fall back.
+        known_account_ids.extend(load_summary_projection_durable_account_ids(pool).await?);
+    }
     known_account_ids.extend(
         hourly_rollup_totals
             .keys()
@@ -18217,27 +18343,36 @@ async fn build_summary_projection_once(
         start: archive_start,
         end,
     };
+    #[cfg(test)]
+    if !bootstrap_fallback {
+        note_summary_projection_boundary_archive_hydration();
+    }
     info!(
         ?mode,
         stage = "boundary_manifest_admission",
         "summary projection build stage started"
     );
-    let boundary_archive_admission =
+    let boundary_archive_admission = if bootstrap_fallback {
+        Vec::new()
+    } else {
         crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
             pool,
             Some((archive_start, end)),
             SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
         )
-        .await?;
+        .await?
+    };
     info!(
         ?mode,
         stage = "boundary_manifest_admission",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build stage completed"
     );
-    let (archives, paged_boundary_manifest_high_watermark_id) = if boundary_archive_admission.len()
-        > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES
-    {
+    let (archives, paged_boundary_manifest_high_watermark_id) = if bootstrap_fallback {
+        // The fallback must never reopen boundary manifests after the bounded Bootstrap
+        // deadline. Historical proof is owned by the independent coverage supervisor.
+        (Vec::new(), None)
+    } else if boundary_archive_admission.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
         let Some(coverage) =
             summary_projection_overflowed_boundary_manifest_coverage(pool, exact_horizon).await?
         else {
@@ -18377,6 +18512,17 @@ async fn build_summary_projection_once(
     } else {
         Vec::new()
     };
+    if bootstrap_fallback && archive_start < live_start {
+        // The recent live/rollup horizon is still built exactly. Only the older boundary
+        // history which timed out admission is fail-closed until the coverage supervisor proves
+        // it, keeping a cold start useful without manufacturing a partial aggregate.
+        let bootstrap_gap = ExactUtcRange {
+            start: archive_start,
+            end: live_start,
+        };
+        unavailable_unmaterialized_archive_exact_ranges.push(bootstrap_gap);
+        unavailable_unmaterialized_archive_account_exact_ranges.push(bootstrap_gap);
+    }
     if !paged_boundary_manifest_unknown_coverage_ranges.is_empty() {
         // A legacy manifest without exact bounds remains fail-closed, but its `month_key` still
         // proves the finite archive partition it can affect. Never let an old unknown partition
@@ -19048,7 +19194,8 @@ async fn build_summary_projection_once(
     // tail that still needs resident admission; scanning the whole historical table here made a
     // cold production bootstrap exceed its 30-second contract even when the lagging tail had
     // only a handful of rows.
-    if historical_live_range.start < historical_live_range.end
+    if !bootstrap_fallback
+        && historical_live_range.start < historical_live_range.end
         && rollup_live_cursor < live_high_watermark_id
         // The current index is the higher-priority bounded prefix.  Once that prefix itself
         // overflows, retaining older historical rows would consume the same finite admission
@@ -19155,6 +19302,9 @@ async fn build_summary_projection_once(
         }
     }
     for range in exact_live_ranges {
+        if bootstrap_fallback {
+            break;
+        }
         if recent_index_overflow_at.is_some_and(|overflow_at| range.start <= overflow_at) {
             // The recent index already proves that this range reaches omitted live history. Do
             // not spend the remaining resident budget rereading rows that cannot make the range
@@ -19268,7 +19418,13 @@ async fn build_summary_projection_once(
     }
     let mut historical_live_coverage = None;
     if historical_live_range.start < historical_live_range.end {
-        if mode.requires_full_historical_live_coverage() {
+        if bootstrap_fallback {
+            historical_live_coverage = Some(SummaryProjectionHistoricalLiveCoverage {
+                range: historical_live_range,
+                high_watermark_id: live_high_watermark_id,
+                reconciliation_required: true,
+            });
+        } else if mode.requires_full_historical_live_coverage() {
             info!(
                 ?mode,
                 stage = "historical_live_coverage",
@@ -19988,7 +20144,8 @@ async fn build_summary_projection_once(
     // candidate. Read that bounded file source during hydration, not from HTTP, and keep only
     // its raw candidates in the separate current view. Unmaterialized archives remain an
     // explicit current-source gap because their latest-N order is not proven by rollups.
-    let current_materialized_archives = if current_archive_admission_exceeded {
+    let current_materialized_archives = if bootstrap_fallback || current_archive_admission_exceeded
+    {
         Vec::new()
     } else {
         current_archive_admission
@@ -21101,12 +21258,16 @@ async fn build_summary_projection_once(
         unrepresented_current_archive_ranges,
         current_archive_latest_coverage_end,
         current_archive_has_unknown_coverage,
-    ) = load_summary_projection_unrepresented_current_archive_coverage(
-        pool,
-        &current_complete_archive_paths,
-        exact_horizon,
-    )
-    .await?;
+    ) = if bootstrap_fallback {
+        (Vec::new(), None, false)
+    } else {
+        load_summary_projection_unrepresented_current_archive_coverage(
+            pool,
+            &current_complete_archive_paths,
+            exact_horizon,
+        )
+        .await?
+    };
     unavailable_unmaterialized_archive_current_ranges.extend(unrepresented_current_archive_ranges);
     let current_selection_cutoff_epoch = {
         let mut timestamps = current_records
@@ -41597,7 +41758,8 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_cold_retry_uses_bootstrap_deadline() {
+    async fn summary_projection_bootstrap_timeout_publishes_recent_exact_projection_and_local_gap()
+    {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -41634,85 +41796,182 @@ mod request_compression_query_tests {
                 clear_summary_projection_test_interleave();
                 result
                     .expect("join cold Bootstrap timeout")
-                    .expect_err("cold Bootstrap must time out while its historical stage is paused");
+                    .expect("Bootstrap timeout must publish its bounded fallback");
                 panic!("cold Bootstrap must reach the deterministic timeout stage");
             }
         }
         initial
             .await
             .expect("join timed-out Bootstrap")
-            .expect_err("timed-out Bootstrap must not publish");
+            .expect("timed-out Bootstrap must publish its bounded fallback");
         clear_summary_projection_test_interleave();
         assert!(
-            state.subscription_hub.summary_projection().await.is_none(),
-            "a timed-out Bootstrap must leave the hub without a Projection"
-        );
-
-        let retry_interleave = install_summary_projection_test_interleave_for_stages(&[
-            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
-            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
-        ]);
-        let retry_state = state.clone();
-        let retry =
-            tokio::spawn(async move { refresh_summary_snapshots(retry_state.as_ref()).await });
-        tokio::pin!(retry);
-        tokio::select! {
-            _ = retry_interleave.wait_for_writer() => {}
-            result = &mut retry => {
-                clear_summary_projection_test_interleave();
-                result
-                    .expect("join cold retry")
-                    .expect("cold retry must not fail before selecting a build mode");
-                panic!("a cold maintenance retry must select Bootstrap, not Rolling");
-            }
-        }
-        retry_interleave.resume_build();
-        tokio::select! {
-            _ = retry_interleave.wait_for_writer() => {}
-            result = &mut retry => {
-                clear_summary_projection_test_interleave();
-                result
-                    .expect("join cold retry")
-                    .expect("cold retry must not fail before Projection publication");
-                panic!("cold Bootstrap retry must reach the publication tail");
-            }
-        }
-        retry_interleave.resume_build();
-        retry
-            .await
-            .expect("join cold Bootstrap retry")
-            .expect("cold Bootstrap retry must publish a Projection");
-        clear_summary_projection_test_interleave();
-        assert_eq!(
-            retry_interleave.build_attempts(),
-            2,
-            "the cold retry must reach Bootstrap coverage and publication in order",
-        );
-        assert_eq!(
-            retry_interleave.build_modes(),
-            vec![
-                SummaryProjectionBuildMode::Bootstrap,
-                SummaryProjectionBuildMode::Bootstrap,
-            ],
-            "a cold retry must remain Bootstrap through the publication tail",
+            state.subscription_hub.summary_projection().await.is_some(),
+            "a timed-out Bootstrap must publish a bounded Projection"
         );
 
         state.pool.close().await;
-        for window in ["current", "1d", "7d", "30d", "today"] {
-            let _ = fetch_summary(
-                State(state.clone()),
-                Query(SummaryQuery {
-                    window: Some(window.to_string()),
-                    limit: Some(50),
-                    time_zone: Some("Asia/Shanghai".to_string()),
-                    upstream_account_id: None,
-                }),
-            )
-            .await
-            .unwrap_or_else(|error| {
-                panic!("{window} must be served from the published memory Projection: {error:?}")
-            });
+        let Json(current) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(50),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("current must be served from the fallback Projection");
+        assert_eq!(
+            current.total_count, 1,
+            "current remains exact from the bounded live source"
+        );
+        let Json(recent) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: Some(50),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("recent rolling selection must be served from memory");
+        assert_eq!(
+            recent.total_count, 0,
+            "recent rolling selection remains exact"
+        );
+        let historical = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: Some(50),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect_err("the timed-out historical range must remain unavailable");
+        assert!(
+            matches!(historical, ApiError::Unavailable(_)),
+            "historical fallback error must be explicit: {historical:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_unchanged_bootstrap_fence_skips_repeated_hydration_until_source_changes()
+     {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-bootstrap-fence', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical source");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create Bootstrap interleave gate");
+
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        let initial_state = state.clone();
+        let initial = tokio::spawn(async move {
+            hydrate_summary_snapshots_with_deadline(initial_state.as_ref(), Duration::from_secs(1))
+                .await
+        });
+        tokio::pin!(initial);
+        tokio::select! {
+            _ = interleave.wait_for_writer() => {}
+            result = &mut initial => {
+                clear_summary_projection_test_interleave();
+                result.expect("join Bootstrap fallback").expect("Bootstrap fallback");
+                panic!("Bootstrap must reach the deterministic timeout stage");
+            }
         }
+        initial
+            .await
+            .expect("join Bootstrap fallback")
+            .expect("Bootstrap fallback");
+        clear_summary_projection_test_interleave();
+
+        let (first_result, first_hydrations) =
+            SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
+                .scope(Cell::new(0), async {
+                    let result = refresh_summary_snapshots(state.as_ref()).await;
+                    let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
+                        .try_with(Cell::get)
+                        .expect("boundary hydration counter scope");
+                    (result, calls)
+                })
+                .await;
+        first_result.expect("unchanged fallback fence refresh");
+        assert_eq!(
+            first_hydrations, 0,
+            "unchanged fallback fence must skip hydration"
+        );
+
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-bootstrap-fence-new', ?1, 'proxy', 'success', 19, 1.5, '{}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(Utc::now()))
+        .execute(&state.pool)
+        .await
+        .expect("seed new live source fence");
+        let (changed_result, changed_hydrations) =
+            SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
+                .scope(Cell::new(0), async {
+                    let result = refresh_summary_snapshots(state.as_ref()).await;
+                    let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
+                        .try_with(Cell::get)
+                        .expect("boundary hydration counter scope");
+                    (result, calls)
+                })
+                .await;
+        changed_result.expect("changed source fence refresh");
+        assert_eq!(
+            changed_hydrations, 1,
+            "a changed source fence must reopen one bounded Bootstrap admission"
+        );
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_projection_unexpected_bootstrap_error_is_not_suppressed() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query("DROP TABLE upstream_account_stats_hourly")
+            .execute(&state.pool)
+            .await
+            .expect("drop rollup table to force an unexpected Bootstrap error");
+
+        let error = hydrate_summary_snapshots_with_deadline(&state, Duration::from_secs(1))
+            .await
+            .expect_err("schema errors must propagate instead of publishing a fallback");
+        assert!(
+            error.to_string().contains("summary projection")
+                || error.to_string().contains("no such table"),
+            "unexpected Bootstrap error must remain visible: {error:?}"
+        );
+        assert!(
+            state.subscription_hub.summary_projection().await.is_none(),
+            "unexpected Bootstrap errors must not publish a Projection"
+        );
+        state.pool.close().await;
     }
 
     #[tokio::test]

@@ -1374,7 +1374,7 @@ async fn runtime_drain_joins_pending_startup_hydration_after_http_readiness() {
 }
 
 #[tokio::test]
-async fn summary_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
+async fn summary_startup_hydration_publishes_bounded_fallback_under_sqlite_pressure() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "startup-summary-hydration-deadline",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
@@ -1391,19 +1391,22 @@ async fn summary_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
         );
     }
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        hydrate_summary_snapshots_with_deadline(state.as_ref(), Duration::from_secs(4)),
-    )
-    .await
-    .expect("summary hydration must finish its bounded attempt under SQLite pressure")
-    .expect_err("saturated SQLite pool should fail the bounded summary hydration attempt");
-    assert!(
-        result.to_string().contains("exceeded"),
-        "summary hydration should report its finite build deadline: {result:#}"
-    );
-
+    let hydration_state = state.clone();
+    let hydration = tokio::spawn(async move {
+        hydrate_summary_snapshots_with_deadline(hydration_state.as_ref(), Duration::from_secs(4))
+            .await
+    });
+    tokio::time::sleep(Duration::from_secs(5)).await;
     drop(held_connections);
+    tokio::time::timeout(Duration::from_secs(20), hydration)
+        .await
+        .expect("summary hydration must finish its bounded fallback after pressure clears")
+        .expect("join summary hydration fallback")
+        .expect("summary hydration fallback should publish without an internal error");
+    assert!(
+        state.subscription_hub.summary_projection().await.is_some(),
+        "saturated SQLite pool should still publish the bounded recent fallback"
+    );
     state.pool.close().await;
     let _ = fs::remove_dir_all(&temp_dir);
 }
