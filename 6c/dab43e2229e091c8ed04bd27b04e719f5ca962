@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.17",
+  "base_stable_version": "2.71.16",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-15T11:29:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.17",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "bd00eec5ef489b78c5bf9968b49cf96de6a39fea",
+  "pr_number": 933,
+  "pr_title": "test(ci): stabilize stateful summary regressions",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.17",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.17",
+  "target_sha": "6cdab43e2229e091c8ed04bd27b04e719f5ca962",
+  "type_label": "type:patch"
+}
