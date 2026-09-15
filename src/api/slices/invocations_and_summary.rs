@@ -13714,6 +13714,35 @@ async fn summary_all_time_manifest_v2_coverage_complete(
     pool: &Pool<Sqlite>,
     high_watermark_id: i64,
 ) -> Result<bool> {
+    // Avoid the correlated page/row-count validation when the proof table cannot possibly cover
+    // the admitted manifest set. This is the common staged-recovery path: a bounded aggregate
+    // keeps the final empty-page check cheap, while the detailed validation below still rejects
+    // forged markers once every manifest advertises a matching proof identity.
+    let (manifest_count, proof_count) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE((
+             SELECT COUNT(*)
+             FROM summary_archive_snapshot_v2_proof AS proof
+             INNER JOIN archive_batches AS proof_batches
+               ON proof_batches.id = proof.archive_batch_id
+              AND proof_batches.sha256 = proof.manifest_sha256
+             WHERE proof_batches.dataset = 'codex_invocations'
+               AND proof_batches.status = 'completed'
+               AND COALESCE(proof_batches.summary_source_kind, 'unknown') <> 'live_mirror'
+               AND proof_batches.id <= ?1
+         ), 0)
+         FROM archive_batches AS batches
+         WHERE batches.dataset = 'codex_invocations'
+           AND batches.status = 'completed'
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+           AND batches.id <= ?1",
+    )
+    .bind(high_watermark_id)
+    .fetch_one(pool)
+    .await
+    .context("summary all-time Snapshot V2 coverage count check failed")?;
+    if proof_count != manifest_count {
+        return Ok(false);
+    }
     let duplicate_paths = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM (
              SELECT file_path FROM archive_batches

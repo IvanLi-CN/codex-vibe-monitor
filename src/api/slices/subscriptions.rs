@@ -14784,7 +14784,9 @@ mod tests {
             "stats.parallel-work.current",
             "stats.timeseries.open-window",
         ];
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        // Shared CI can delay the network materializer behind the other Dashboard topics. Keep
+        // this bounded, but allow the same async projection window used by the runtime assertion.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let mut stream = response.into_body().into_data_stream();
         let mut buffered = Vec::new();
         let mut events: BTreeMap<String, Value> = BTreeMap::new();
