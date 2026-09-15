@@ -7217,6 +7217,7 @@ impl SummaryProjectionBuildMode {
 #[cfg(test)]
 tokio::task_local! {
     static SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize;
+    static SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS: Cell<usize>;
     static SUMMARY_COVERAGE_TEST_V2_WINDOW_CALLS: Cell<usize>;
     static SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS: Cell<usize>;
 }
@@ -11419,6 +11420,13 @@ fn note_summary_coverage_v2_window() {
 fn note_summary_coverage_checkpoint_advance() {
     let _ = SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS.try_with(|calls| {
         calls.set(calls.get().saturating_add(1));
+    });
+}
+
+#[cfg(test)]
+fn note_summary_projection_historical_identity_hydration(rows: usize) {
+    let _ = SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS.try_with(|count| {
+        count.set(count.get().saturating_add(rows));
     });
 }
 
@@ -26295,23 +26303,28 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         }
     }
 
-    let mut terminal_count_query =
-        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM codex_invocations WHERE id <= ");
-    terminal_count_query
+    // The complete identity path below is only safe when the entire historical population fits
+    // in the resident budget. Probe the same population with a hard limit rather than counting
+    // only the unrolled tail; otherwise a zero tail admits an unbounded historical fetch.
+    let mut terminal_identity_probe = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM codex_invocations WHERE id <= ",
+    );
+    terminal_identity_probe
         .push_bind(high_watermark_id)
-        .push(" AND id > ")
-        .push_bind(rollup_live_cursor)
         .push(" AND occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_upper_bound(range.end))
-        .push(TERMINAL_WHERE);
-    let terminal_count = terminal_count_query
+        .push(TERMINAL_WHERE)
+        .push(" LIMIT ")
+        .push_bind((summary_projection_exact_record_limit() + 1) as i64)
+        .push(")");
+    let terminal_identity_count = terminal_identity_probe
         .build_query_scalar::<i64>()
         .fetch_one(pool)
         .await
-        .context("summary projection historical terminal count hydration failed")?;
-    if terminal_count <= summary_projection_exact_record_limit() as i64 {
+        .context("summary projection historical terminal identity admission failed")?;
+    if terminal_identity_count <= summary_projection_exact_record_limit() as i64 {
         // Preserve the complete identity proof for the common bounded case. Existing overlays
         // then disappear as soon as their durable compact bucket is published, exactly as they
         // did before the production-scale path was introduced.
@@ -26330,6 +26343,8 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             .fetch_all(pool)
             .await
             .context("summary projection historical terminal identity hydration failed")?;
+        #[cfg(test)]
+        note_summary_projection_historical_identity_hydration(rows.len());
         for row in rows {
             let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
                 continue;
@@ -26353,7 +26368,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     // memory so a freshly published compact bucket can consume an already-persisted delta without
     // retaining every historical identity.
     let pending_terminal_identity_refs =
-        if terminal_count > summary_projection_exact_record_limit() as i64 {
+        if terminal_identity_count > summary_projection_exact_record_limit() as i64 {
             pending_terminal_identities.iter().collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -42231,6 +42246,103 @@ mod request_compression_query_tests {
         .await;
         assert!(matches!(account, Err(ApiError::Unavailable(_))));
         state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_projection_full_historical_identity_admission_uses_bounded_population() {
+        with_summary_projection_test_exact_record_limit(8, async {
+            let state = crate::tests::test_state_with_openai_base(
+                url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+            )
+            .await;
+            let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+            sqlx::query(
+                "WITH RECURSIVE rows(value) AS (\
+                     SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1\
+                 )\
+                 INSERT INTO codex_invocations\
+                 (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)\
+                 SELECT 'summary-bounded-identity-' || value, ?2, 'proxy', 'success', 1, 0.1, '{}', '', 'full'\
+                 FROM rows",
+            )
+            .bind(9_i64)
+            .bind(&historical_at)
+            .execute(&state.pool)
+            .await
+            .expect("seed historical terminal identity population");
+            let high_watermark_id: i64 =
+                sqlx::query_scalar("SELECT MAX(id) FROM codex_invocations")
+                    .fetch_one(&state.pool)
+                    .await
+                    .expect("load historical identity high watermark");
+            let bucket = align_bucket_epoch(
+                parse_to_utc_datetime(&historical_at)
+                    .expect("parse historical identity timestamp")
+                    .timestamp(),
+                3_600,
+                0,
+            );
+            sqlx::query(
+                "INSERT INTO invocation_rollup_hourly\
+                 (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost)\
+                 VALUES (?1, 'proxy', 9, 9, 0, 9, 0.9, 0)",
+            )
+            .bind(bucket)
+            .execute(&state.pool)
+            .await
+            .expect("seed complete global rollup");
+            sqlx::query(
+                "INSERT INTO upstream_account_usage_breakdown_hourly\
+                 (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort,\
+                  request_count, output_tokens, cost_output, has_cost)\
+                 VALUES (?1, 'proxy', 'none', 'gpt-5', 'high', 9, 9, 0.9, 1)",
+            )
+            .bind(bucket)
+            .execute(&state.pool)
+            .await
+            .expect("seed complete global usage rollup");
+            sqlx::query(
+                "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)\
+                 VALUES ('codex_invocations_summary_rollup_v2_live_cursor', ?1, datetime('now'))\
+                 ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id, updated_at = excluded.updated_at",
+            )
+            .bind(high_watermark_id)
+            .execute(&state.pool)
+            .await
+            .expect("advance global live cursor beyond historical identities");
+
+            let (result, hydrated_rows) =
+                SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS
+                    .scope(Cell::new(0), async {
+                        let result = hydrate_summary_snapshots(state.as_ref()).await;
+                        let hydrated_rows = SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS
+                            .try_with(Cell::get)
+                            .expect("historical identity hydration counter scope");
+                        (result, hydrated_rows)
+                    })
+                    .await;
+            result.expect("bounded historical identity admission must hydrate");
+            assert_eq!(
+                hydrated_rows, 0,
+                "a zero tail must not admit the over-budget historical identity population"
+            );
+            state.pool.close().await;
+
+            let Json(response) = fetch_summary(
+                State(state),
+                Query(SummaryQuery {
+                    window: Some("7d".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .expect("compact rollup must keep the covered historical Summary exact");
+            assert_eq!(response.total_count, 9);
+            assert_eq!(response.total_tokens, 9);
+        })
+        .await;
     }
 
     #[tokio::test]
