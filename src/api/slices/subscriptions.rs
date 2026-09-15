@@ -772,6 +772,10 @@ struct SubscriptionHubState {
     // zero and reconstructs the bounded durable tail before any RollingDelta refresh.
     summary_source_change_cursor: u64,
     summary_live_tail_readiness: SummaryLiveTailReadiness,
+    // A cold Bootstrap fallback records the durable source fence which made its historical
+    // admission unavailable. This is process-local retry suppression; coverage recovery still
+    // owns the durable proof and a changed fence reopens Bootstrap admission.
+    summary_bootstrap_fallback_fence: Option<SummaryProjectionGenerationFence>,
     // All-time coverage can lag independently of rolling coverage. Keep its replay budget
     // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
     summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
@@ -4259,6 +4263,23 @@ impl SubscriptionHub {
         let mut projection = (**projection).clone();
         projection.mark_historical_live_recovery_required();
         state.summary_projection = Some(Arc::new(projection));
+    }
+
+    pub(crate) async fn mark_summary_bootstrap_fallback_fence(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) {
+        self.state.lock().await.summary_bootstrap_fallback_fence = Some(generation_fence);
+    }
+
+    pub(crate) async fn clear_summary_bootstrap_fallback_fence(&self) {
+        self.state.lock().await.summary_bootstrap_fallback_fence = None;
+    }
+
+    pub(crate) async fn summary_bootstrap_fallback_fence(
+        &self,
+    ) -> Option<SummaryProjectionGenerationFence> {
+        self.state.lock().await.summary_bootstrap_fallback_fence
     }
 
     pub(crate) async fn revoke_summary_projection_stale_coverage(
