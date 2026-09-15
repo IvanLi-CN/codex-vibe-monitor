@@ -7523,6 +7523,23 @@ fn summary_projection_delta_identity_key(delta: &DashboardActivityTerminalDelta)
     )
 }
 
+fn decode_summary_projection_pending_terminal_identity(
+    identity: &str,
+) -> Option<(i64, &str, &str)> {
+    let mut fields = identity.split('\0');
+    let row_id = fields
+        .next()?
+        .parse::<i64>()
+        .ok()
+        .filter(|row_id| *row_id > 0)?;
+    let occurred_at = fields.next().filter(|value| !value.is_empty())?;
+    let invoke_id = fields.next().filter(|value| !value.is_empty())?;
+    fields
+        .next()
+        .is_none()
+        .then_some((row_id, occurred_at, invoke_id))
+}
+
 fn summary_projection_record_insert_key(
     records: &HashMap<String, SummaryProjectionRecord>,
     record: &SummaryProjectionRecord,
@@ -26564,16 +26581,22 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     // retaining every historical identity.
     let pending_terminal_identity_refs =
         if terminal_identity_count > summary_projection_exact_record_limit() as i64 {
-            pending_terminal_identities.iter().collect::<Vec<_>>()
+            pending_terminal_identities
+                .iter()
+                .filter_map(|identity| {
+                    decode_summary_projection_pending_terminal_identity(identity).map(
+                        |(row_id, occurred_at, invoke_id)| {
+                            (row_id, occurred_at.to_string(), invoke_id.to_string())
+                        },
+                    )
+                })
+                .take(250)
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
     for identities in pending_terminal_identity_refs.chunks(250) {
-        let selected_identities = identities
-            .iter()
-            .filter_map(|identity| identity.split_once('\0'))
-            .collect::<Vec<_>>();
-        if selected_identities.is_empty() {
+        if identities.is_empty() {
             continue;
         }
         let mut identity_query = QueryBuilder::<Sqlite>::new(
@@ -26585,25 +26608,29 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             .push_bind(db_occurred_at_lower_bound(range.start))
             .push(" AND occurred_at < ")
             .push_bind(db_occurred_at_upper_bound(range.end))
-            .push(" AND (");
-        for (index, &(invoke_id, occurred_at)) in selected_identities.iter().enumerate() {
+            .push(" AND id IN (");
+        for (index, (row_id, _, _)) in identities.iter().enumerate() {
             if index > 0 {
-                identity_query.push(" OR ");
+                identity_query.push(", ");
             }
-            identity_query
-                .push("(invoke_id = ")
-                .push_bind(invoke_id)
-                .push(" AND occurred_at = ")
-                .push_bind(occurred_at)
-                .push(")");
+            identity_query.push_bind(*row_id);
         }
-        identity_query.push(")");
+        identity_query.push(") ").push(TERMINAL_WHERE);
         let rows = identity_query
             .build_query_as::<SummaryProjectionHistoricalLiveTerminalRow>()
             .fetch_all(pool)
             .await
             .context("summary projection historical terminal identity hydration failed")?;
         for row in rows {
+            let matches_requested_identity =
+                identities.iter().any(|(row_id, occurred_at, invoke_id)| {
+                    row.id == *row_id
+                        && row.occurred_at == *occurred_at
+                        && row.invoke_id == *invoke_id
+                });
+            if !matches_requested_identity {
+                continue;
+            }
             if matches!(
                 normalized_runtime_text(row.status.as_deref()).as_str(),
                 "pending" | "running"
@@ -42634,6 +42661,108 @@ mod request_compression_query_tests {
             .expect("compact rollup must keep the covered historical Summary exact");
             assert_eq!(response.total_count, 9);
             assert_eq!(response.total_tokens, 9);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn summary_projection_overflow_pending_identity_uses_primary_key_lookup() {
+        with_summary_projection_test_exact_record_limit(1, async {
+            let state = crate::tests::test_state_with_openai_base(
+                url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+            )
+            .await;
+            let occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+            for (invoke_id, status) in [
+                ("summary-overflow-pending", "success"),
+                ("summary-overflow-other", "success"),
+                ("summary-overflow-running", "running"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO codex_invocations \
+                     (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+                     VALUES (?1, ?2, 'proxy', ?3, 1, 0.1, '{}', '', 'full')",
+                )
+                .bind(invoke_id)
+                .bind(&occurred_at)
+                .bind(status)
+                .execute(&state.pool)
+                .await
+                .expect("seed overflow terminal identity");
+            }
+            let pending_row_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM codex_invocations WHERE invoke_id = 'summary-overflow-pending'",
+            )
+            .fetch_one(&state.pool)
+            .await
+            .expect("load pending terminal row id");
+            let running_row_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM codex_invocations WHERE invoke_id = 'summary-overflow-running'",
+            )
+            .fetch_one(&state.pool)
+            .await
+            .expect("load running row id");
+            let high_watermark_id: i64 =
+                sqlx::query_scalar("SELECT MAX(id) FROM codex_invocations")
+                    .fetch_one(&state.pool)
+                    .await
+                    .expect("load terminal high watermark");
+            let occurred_at_utc = parse_to_utc_datetime(&occurred_at).expect("parse occurred_at");
+            let bucket = align_bucket_epoch(occurred_at_utc.timestamp(), 3_600, 0);
+            let range = ExactUtcRange {
+                start: occurred_at_utc - ChronoDuration::hours(1),
+                end: occurred_at_utc + ChronoDuration::hours(1),
+            };
+            let totals = StatsTotals {
+                total_count: 2,
+                success_count: 2,
+                total_tokens: 2,
+                total_cost: 0.2,
+                ..StatsTotals::default()
+            };
+            let usage = UsageBreakdownResponse {
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                output_tokens: 2,
+                costs: None,
+                models: Vec::new(),
+            };
+            let mut unavailable_global_buckets = BTreeSet::from([bucket]);
+            let mut unavailable_account_buckets = HashMap::new();
+            let mut covered_terminal_ids = HashSet::new();
+            let pending_terminal_identities = HashSet::from([
+                format!(
+                    "{pending_row_id}\0{occurred_at}\0summary-overflow-pending"
+                ),
+                "summary-overflow-pending\0malformed".to_string(),
+                format!("{pending_row_id}\0{occurred_at}\0changed-invoke-id"),
+                format!("{running_row_id}\0{occurred_at}\0summary-overflow-running"),
+            ]);
+
+            mark_summary_projection_uncovered_historical_live_ranges(
+                &state.pool,
+                range,
+                high_watermark_id,
+                high_watermark_id,
+                Some(high_watermark_id),
+                &HashMap::from([((bucket, None), totals)]),
+                &HashMap::from([((bucket, None), usage)]),
+                &BTreeSet::new(),
+                &pending_terminal_identities,
+                &mut unavailable_global_buckets,
+                &mut unavailable_account_buckets,
+                &mut covered_terminal_ids,
+            )
+            .await
+            .expect("overflow pending identity lookup should succeed");
+
+            assert!(covered_terminal_ids.contains(&summary_projection_source_identity_key(
+                pending_row_id,
+                "summary-overflow-pending",
+                &occurred_at,
+            )));
+            assert_eq!(covered_terminal_ids.len(), 1);
+            state.pool.close().await;
         })
         .await;
     }

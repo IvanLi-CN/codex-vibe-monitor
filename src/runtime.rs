@@ -2,6 +2,14 @@ use super::*;
 
 const STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const STARTUP_HOT_READ_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(30);
+const STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX: Duration = Duration::from_secs(300);
+
+pub(crate) fn next_startup_hourly_rollup_p2_preemption_retry(current: Duration) -> Duration {
+    current
+        .checked_mul(2)
+        .unwrap_or(STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX)
+        .min(STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX)
+}
 
 pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
     state: Arc<AppState>,
@@ -1103,6 +1111,9 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
         // Using the exact lower bound avoids losing a row when SQLite admission takes longer
         // than the old one-second grace window during shutdown.
         let task_start_window = format_utc_iso_millis(Utc::now());
+        let initial_p2_preemption_retry =
+            Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS);
+        let mut p2_preemption_retry = initial_p2_preemption_retry;
         loop {
             // Task history is admitted and recorded before waiting for the synchronization lock,
             // but both permits are released immediately so a lock wait cannot occupy the only
@@ -1292,12 +1303,13 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 if cancel.is_cancelled() {
                     return;
                 }
+                let retry_after = p2_preemption_retry;
+                p2_preemption_retry =
+                    next_startup_hourly_rollup_p2_preemption_retry(p2_preemption_retry);
                 tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(
-                        BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                    )) => continue,
+                    _ = tokio::time::sleep(retry_after) => continue,
                 }
             };
             if let Err(err) = hourly_rollups {
@@ -1354,12 +1366,13 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 if cancel.is_cancelled() {
                     return;
                 }
+                let retry_after = p2_preemption_retry;
+                p2_preemption_retry =
+                    next_startup_hourly_rollup_p2_preemption_retry(p2_preemption_retry);
                 tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(
-                        BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
-                    )) => continue,
+                    _ = tokio::time::sleep(retry_after) => continue,
                 }
             };
             if let Err(err) = summary_rollups {

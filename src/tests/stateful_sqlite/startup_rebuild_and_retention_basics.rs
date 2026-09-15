@@ -1722,6 +1722,39 @@ async fn background_startup_hourly_rollup_bootstrap_retries_coordinator_contenti
     state.pool.close().await;
 }
 
+#[test]
+fn background_startup_hourly_rollup_bootstrap_backs_off_after_p2_preemption() {
+    let mut retry_after = Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS);
+    let mut observed = Vec::new();
+    for _ in 0..7 {
+        observed.push(retry_after);
+        retry_after = crate::runtime::next_startup_hourly_rollup_p2_preemption_retry(retry_after);
+    }
+
+    assert_eq!(
+        observed,
+        vec![
+            Duration::from_secs(15),
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_secs(240),
+            Duration::from_secs(300),
+            Duration::from_secs(300),
+        ]
+    );
+    assert_eq!(
+        crate::runtime::next_startup_hourly_rollup_p2_preemption_retry(Duration::from_secs(300)),
+        Duration::from_secs(300),
+        "the capped delay must remain bounded"
+    );
+    assert_eq!(
+        Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS),
+        Duration::from_secs(15),
+        "a fresh successful bootstrap starts the next lifecycle at the initial delay"
+    );
+}
+
 #[tokio::test]
 async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_during_shutdown_lock()
  {
