@@ -12894,6 +12894,40 @@ async fn refresh_summary_snapshots_with_deadline(
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build snapshot generation fence accepted"
     );
+    if used_bootstrap_fallback {
+        // The fallback is specifically used when the primary pool is under pressure. Do not
+        // immediately re-enter that pool for an IMMEDIATE publication transaction: the immutable
+        // snapshot already supplied the source fence, and the coverage supervisor will reconcile
+        // any durable change before it publishes historical proof.
+        if !state
+            .subscription_hub
+            .store_summary_projection_if_revision(projection, expected_projection_revision)
+            .await
+        {
+            debug!(
+                ?mode,
+                "summary Bootstrap fallback publication lost its immutable base race"
+            );
+            return Ok(());
+        }
+        let generation_fence = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .map(|projection| projection.generation_fence());
+        if let Some(generation_fence) = generation_fence {
+            state
+                .subscription_hub
+                .mark_summary_bootstrap_fallback_fence(generation_fence)
+                .await;
+        }
+        debug!(
+            ?mode,
+            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+            "summary Bootstrap fallback published without a durable write transaction"
+        );
+        return Ok(());
+    }
     // Serialize the final fence read and immutable hub swap against coverage trigger commits.
     // Without this short IMMEDIATE transaction, a proof/revoke can land between these two
     // operations and leave a stale all-time response published under the old fence.
