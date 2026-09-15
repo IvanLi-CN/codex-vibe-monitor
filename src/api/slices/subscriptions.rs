@@ -4307,7 +4307,12 @@ impl SubscriptionHub {
             .iter()
             .map(|entry| &entry.delta)
             .chain(state.summary_delta_journal.replayed_entries.iter())
-            .map(|entry| format!("{}\0{}", entry.invoke_id, entry.occurred_at))
+            .map(|entry| {
+                entry.persisted_row_id.map_or_else(
+                    || format!("{}\0{}", entry.invoke_id, entry.occurred_at),
+                    |row_id| format!("{row_id}\0{}\0{}", entry.occurred_at, entry.invoke_id),
+                )
+            })
             .collect()
     }
 
