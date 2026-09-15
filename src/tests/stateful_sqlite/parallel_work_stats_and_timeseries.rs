@@ -22556,6 +22556,20 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         .await
         .expect("record complete rollup replay coverage");
     }
+    // These historical manifests model identities already quarantined by a prior bounded
+    // recovery pass. Keep the fixture focused on the admission/checkpoint path instead of
+    // issuing thousands of individual terminal outcome writes while the stateful shards run.
+    sqlx::query(
+        "INSERT INTO summary_archive_snapshot_backfill_outcome \
+         (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at) \
+         SELECT id, sha256, 'unavailable', 'verification_failed', datetime('now', '+365 days') \
+         FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND file_path GLOB '/tmp/summary-manifest-admission-*.sqlite.gz'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed terminal outcomes for quarantined historical manifests");
     let live_id = sqlx::query(
         "INSERT INTO codex_invocations \
          (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \

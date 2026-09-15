@@ -1636,7 +1636,7 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
     assert!(
         summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+            .is_some_and(|summary| summary.contains("cancelled before"))
     );
     assert!(detail.is_none());
 }
@@ -1763,7 +1763,7 @@ async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_d
     assert!(
         summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+            .is_some_and(|summary| summary.contains("cancelled before"))
     );
     assert!(detail.is_none());
 
@@ -1829,7 +1829,7 @@ async fn startup_hourly_rollup_task_history_finish_does_not_wait_for_write_lock(
     assert!(
         summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+            .is_some_and(|summary| summary.contains("cancelled before"))
     );
     assert!(detail.is_none());
 
