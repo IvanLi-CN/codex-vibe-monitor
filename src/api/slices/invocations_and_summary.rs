@@ -15195,6 +15195,11 @@ async fn load_summary_v2_archive_totals_from_archives(
     excluded_source_identities: &HashSet<SummarySourceIdentity>,
     boundary_ranges: &[ExactUtcRange],
 ) -> Result<SummaryV2ArchiveTotals> {
+    // Finalization only consumes identities which already have a V2 proof marker.  The normal
+    // backfill path performs lazy promotion before this reducer runs, so probing every missing
+    // marker through `summary_archive_snapshot_has_final_proof` would needlessly attempt a
+    // BEGIN IMMEDIATE for each quarantined or not-yet-processed archive.
+    let proof_identities = load_summary_v2_archive_proof_identities(pool).await?;
     let mut totals = SummaryV2ArchiveTotals::default();
     for (
         archive_batch_id,
@@ -15236,8 +15241,9 @@ async fn load_summary_v2_archive_totals_from_archives(
         // compact rollups already provide its aggregate totals. Check it before the materialized
         // fast path: otherwise a verified Snapshot could never remove the old boundary
         // unavailable proof, leaving a selection permanently unavailable after recovery.
-        if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
-            .await?
+        if !proof_identities.contains(&(archive_batch_id, manifest_sha256.clone()))
+            || !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
+                .await?
         {
             continue;
         }
