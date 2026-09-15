@@ -13714,6 +13714,35 @@ async fn summary_all_time_manifest_v2_coverage_complete(
     pool: &Pool<Sqlite>,
     high_watermark_id: i64,
 ) -> Result<bool> {
+    // Avoid the correlated page/row-count validation when the proof table cannot possibly cover
+    // the admitted manifest set. This is the common staged-recovery path: a bounded aggregate
+    // keeps the final empty-page check cheap, while the detailed validation below still rejects
+    // forged markers once every manifest advertises a matching proof identity.
+    let (manifest_count, proof_count) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE((
+             SELECT COUNT(*)
+             FROM summary_archive_snapshot_v2_proof AS proof
+             INNER JOIN archive_batches AS proof_batches
+               ON proof_batches.id = proof.archive_batch_id
+              AND proof_batches.sha256 = proof.manifest_sha256
+             WHERE proof_batches.dataset = 'codex_invocations'
+               AND proof_batches.status = 'completed'
+               AND COALESCE(proof_batches.summary_source_kind, 'unknown') <> 'live_mirror'
+               AND proof_batches.id <= ?1
+         ), 0)
+         FROM archive_batches AS batches
+         WHERE batches.dataset = 'codex_invocations'
+           AND batches.status = 'completed'
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+           AND batches.id <= ?1",
+    )
+    .bind(high_watermark_id)
+    .fetch_one(pool)
+    .await
+    .context("summary all-time Snapshot V2 coverage count check failed")?;
+    if proof_count != manifest_count {
+        return Ok(false);
+    }
     let duplicate_paths = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM (
              SELECT file_path FROM archive_batches
@@ -15005,17 +15034,16 @@ async fn load_summary_v2_archive_totals_excluding(
     pool: &Pool<Sqlite>,
     excluded_source_identities: &HashSet<SummarySourceIdentity>,
 ) -> Result<SummaryV2ArchiveTotals> {
-    let archives = sqlx::query_as::<_, SummaryV2ArchiveManifest>(
-        "SELECT id, sha256, historical_rollups_materialized_at, coverage_start_at, coverage_end_at, month_key, file_path
-         FROM archive_batches
-         WHERE dataset = 'codex_invocations' AND status = 'completed'
-           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    // Materialized archives are represented by the compact rollup baseline in the all-time
+    // finalizer. Only V2-proof identities can contribute archive rows here, so avoid loading and
+    // iterating every historical manifest when the proof set is empty or sparse.
+    let proof_identities = load_summary_v2_archive_proof_identities(pool).await?;
+    load_summary_v2_archive_totals_for_proof_identities(
+        pool,
+        &proof_identities,
+        excluded_source_identities,
     )
-    .fetch_all(pool)
     .await
-    .context("summary V2 archive totals manifest lookup failed")?;
-    load_summary_v2_archive_totals_from_archives(pool, archives, excluded_source_identities, &[])
-        .await
 }
 
 async fn load_summary_v2_archive_proof_identities(
@@ -15166,6 +15194,11 @@ async fn load_summary_v2_archive_totals_from_archives(
     excluded_source_identities: &HashSet<SummarySourceIdentity>,
     boundary_ranges: &[ExactUtcRange],
 ) -> Result<SummaryV2ArchiveTotals> {
+    // Finalization only consumes identities which already have a V2 proof marker.  The normal
+    // backfill path performs lazy promotion before this reducer runs, so probing every missing
+    // marker through `summary_archive_snapshot_has_final_proof` would needlessly attempt a
+    // BEGIN IMMEDIATE for each quarantined or not-yet-processed archive.
+    let proof_identities = load_summary_v2_archive_proof_identities(pool).await?;
     let mut totals = SummaryV2ArchiveTotals::default();
     for (
         archive_batch_id,
@@ -15207,8 +15240,9 @@ async fn load_summary_v2_archive_totals_from_archives(
         // compact rollups already provide its aggregate totals. Check it before the materialized
         // fast path: otherwise a verified Snapshot could never remove the old boundary
         // unavailable proof, leaving a selection permanently unavailable after recovery.
-        if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
-            .await?
+        if !proof_identities.contains(&(archive_batch_id, manifest_sha256.clone()))
+            || !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
+                .await?
         {
             continue;
         }
