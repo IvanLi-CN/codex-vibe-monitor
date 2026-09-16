@@ -1,0 +1,506 @@
+:root,
+[data-theme="vibe-light"] {
+  color-scheme: light;
+  --color-base-100: 98.7% 0.006 255;
+  --color-base-200: 95.2% 0.01 255;
+  --color-base-300: 90.1% 0.015 257;
+  --color-base-content: 27.2% 0.02 260;
+  --color-primary: 57.5% 0.195 258;
+  --color-primary-content: 97.4% 0.011 258;
+  --color-secondary: 61.5% 0.118 188;
+  --color-secondary-content: 96.2% 0.014 188;
+  --color-accent: 67.7% 0.154 68;
+  --color-accent-content: 24.6% 0.052 58;
+  --color-neutral: 30.8% 0.02 258;
+  --color-neutral-content: 94.8% 0.006 258;
+  --color-info: 69.5% 0.152 236;
+  --color-info-content: 97% 0.014 236;
+  --color-success: 70.2% 0.167 154;
+  --color-success-content: 24.6% 0.046 154;
+  --color-warning: 80.4% 0.167 82;
+  --color-warning-content: 29.8% 0.061 58;
+  --color-error: 66.2% 0.218 26;
+  --color-error-content: 96.4% 0.013 26;
+  --tone-ink-primary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 34%,
+    oklch(var(--color-primary)) 66%
+  );
+  --tone-ink-secondary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 38%,
+    oklch(var(--color-secondary)) 62%
+  );
+  --tone-ink-accent: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 62%,
+    oklch(var(--color-accent)) 38%
+  );
+  --tone-ink-info: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 38%,
+    oklch(var(--color-info)) 62%
+  );
+  --tone-ink-success: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 42%,
+    oklch(var(--color-success)) 58%
+  );
+  --tone-ink-warning: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 64%,
+    oklch(var(--color-warning)) 36%
+  );
+  --tone-ink-error: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 54%,
+    oklch(var(--color-error)) 46%
+  );
+  --chip-neutral-surface: oklch(96% 0.012 258);
+  --chip-neutral-border: oklch(76% 0.025 258);
+  --chip-neutral-ink: oklch(38% 0.025 258);
+  --chip-secondary-surface: oklch(95% 0.02 195);
+  --chip-secondary-border: oklch(70% 0.08 195);
+  --chip-secondary-ink: oklch(37% 0.08 195);
+  --chip-primary-surface: oklch(95% 0.03 232);
+  --chip-primary-border: oklch(70% 0.12 232);
+  --chip-primary-ink: oklch(36% 0.12 232);
+  --chip-accent-surface: oklch(95% 0.035 78);
+  --chip-accent-border: oklch(70% 0.12 78);
+  --chip-accent-ink: oklch(40% 0.13 78);
+  --chip-info-surface: oklch(95% 0.03 220);
+  --chip-info-border: oklch(70% 0.1 220);
+  --chip-info-ink: oklch(36% 0.1 220);
+  --chip-success-surface: oklch(95% 0.035 154);
+  --chip-success-border: oklch(68% 0.12 154);
+  --chip-success-ink: oklch(37% 0.12 154);
+  --chip-warning-surface: oklch(95% 0.04 75);
+  --chip-warning-border: oklch(68% 0.13 75);
+  --chip-warning-ink: oklch(39% 0.13 75);
+  --chip-error-surface: oklch(95% 0.035 25);
+  --chip-error-border: oklch(68% 0.12 25);
+  --chip-error-ink: oklch(38% 0.13 25);
+  --chip-sky-surface: oklch(96% 0.03 220);
+  --chip-sky-border: oklch(70% 0.11 220);
+  --chip-sky-ink: oklch(36% 0.11 220);
+  --chip-cyan-surface: oklch(96% 0.035 195);
+  --chip-cyan-border: oklch(70% 0.12 195);
+  --chip-cyan-ink: oklch(36% 0.11 195);
+  --chip-blue-surface: oklch(96% 0.03 250);
+  --chip-blue-border: oklch(70% 0.12 250);
+  --chip-blue-ink: oklch(35% 0.12 250);
+  --chip-indigo-surface: oklch(96% 0.035 275);
+  --chip-indigo-border: oklch(70% 0.12 275);
+  --chip-indigo-ink: oklch(36% 0.11 275);
+  --chip-violet-surface: oklch(96% 0.035 300);
+  --chip-violet-border: oklch(70% 0.12 300);
+  --chip-violet-ink: oklch(37% 0.11 300);
+  --chip-fuchsia-surface: oklch(96% 0.04 330);
+  --chip-fuchsia-border: oklch(70% 0.12 330);
+  --chip-fuchsia-ink: oklch(38% 0.12 330);
+  --chip-teal-surface: oklch(96% 0.035 175);
+  --chip-teal-border: oklch(68% 0.12 175);
+  --chip-teal-ink: oklch(36% 0.11 175);
+  --chip-emerald-surface: oklch(96% 0.035 155);
+  --chip-emerald-border: oklch(68% 0.12 155);
+  --chip-emerald-ink: oklch(36% 0.11 155);
+  --chip-amber-surface: oklch(96% 0.04 80);
+  --chip-amber-border: oklch(68% 0.13 80);
+  --chip-amber-ink: oklch(38% 0.13 80);
+  --chip-orange-surface: oklch(96% 0.04 50);
+  --chip-orange-border: oklch(68% 0.13 50);
+  --chip-orange-ink: oklch(38% 0.13 50);
+  --radius-selector: 1.9rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+  --app-bg-top: #f3f7ff;
+  --app-bg-bottom: #e8eef6;
+  --app-bg-orb-1: rgba(37, 99, 235, 0.22);
+  --app-bg-orb-2: rgba(20, 184, 166, 0.2);
+  --app-grid-color: rgba(100, 116, 139, 0.15);
+  --app-shell-max-width: 1660px;
+  --app-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.86) 82%,
+    oklch(var(--color-base-200) / 0.72) 18%
+  );
+  --app-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
+  --app-surface-shadow: 0 18px 40px rgba(15, 23, 42, 0.09);
+
+  --dialog-overlay-bg: rgba(15, 23, 42, 0.16);
+  --dialog-overlay-blur: 2px;
+  --dialog-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.98) 90%,
+    oklch(var(--color-base-200) / 0.84) 10%
+  );
+  --dialog-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 28%, transparent);
+  --dialog-surface-shadow: 0 32px 90px rgba(15, 23, 42, 0.16);
+  --invocation-detail-hero-bg: linear-gradient(
+    180deg,
+    oklch(var(--color-base-100) / 0.96),
+    color-mix(in oklab, oklch(var(--color-base-100) / 0.9) 82%, oklch(var(--color-primary) / 0.18))
+  );
+  --invocation-detail-hero-border: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 20%,
+    transparent
+  );
+  --invocation-detail-hero-shadow: 0 10px 24px
+    color-mix(in oklab, oklch(var(--color-neutral)) 8%, transparent);
+  --invocation-detail-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.84) 88%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-card-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 46%,
+    oklch(var(--color-primary) / 0.12)
+  );
+  --invocation-detail-card-shadow: none;
+  --invocation-detail-timeline-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.62) 92%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-timeline-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 42%,
+    transparent
+  );
+  --invocation-detail-timeline-shadow: none;
+  --invocation-detail-marker-halo: oklch(var(--color-base-100) / 0.92);
+  --invocation-detail-subsurface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.92) 94%,
+    oklch(var(--color-primary) / 0.05)
+  );
+  --invocation-detail-subsurface-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 34%,
+    transparent
+  );
+  --invocation-detail-subsurface-border-active: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 16%,
+    transparent
+  );
+  --invocation-detail-rail-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.78) 96%,
+    oklch(var(--color-primary) / 0.05)
+  );
+  --invocation-detail-fact-chip-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.88) 94%,
+    oklch(var(--color-primary) / 0.05)
+  );
+  --working-conversation-card-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.96),
+    rgba(239, 246, 255, 0.94)
+  );
+  --working-conversation-card-border: rgba(148, 163, 184, 0.28);
+  --working-conversation-slot-bg: rgba(255, 255, 255, 0.74);
+  --working-conversation-slot-border: rgba(148, 163, 184, 0.16);
+}
+
+[data-theme="vibe-dark"] {
+  color-scheme: dark;
+  --color-base-100: 24.5% 0.019 258;
+  --color-base-200: 18.4% 0.016 258;
+  --color-base-300: 32.1% 0.019 258;
+  --color-base-content: 93.6% 0.013 258;
+  --color-primary: 76.3% 0.133 232;
+  --color-primary-content: 20.8% 0.04 232;
+  --color-secondary: 79.1% 0.113 189;
+  --color-secondary-content: 22.6% 0.04 189;
+  --color-accent: 81.4% 0.149 84;
+  --color-accent-content: 25.3% 0.051 68;
+  --color-neutral: 29.2% 0.025 259;
+  --color-neutral-content: 91.8% 0.01 259;
+  --color-info: 77.1% 0.125 234;
+  --color-info-content: 21.9% 0.032 234;
+  --color-success: 78.4% 0.16 155;
+  --color-success-content: 23.1% 0.043 155;
+  --color-warning: 84.9% 0.163 83;
+  --color-warning-content: 26.4% 0.054 62;
+  --color-error: 75.5% 0.176 24;
+  --color-error-content: 23.4% 0.048 24;
+  --tone-ink-primary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 56%,
+    oklch(var(--color-primary)) 44%
+  );
+  --tone-ink-secondary: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 58%,
+    oklch(var(--color-secondary)) 42%
+  );
+  --tone-ink-accent: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 62%,
+    oklch(var(--color-accent)) 38%
+  );
+  --tone-ink-info: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 56%,
+    oklch(var(--color-info)) 44%
+  );
+  --tone-ink-success: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 58%,
+    oklch(var(--color-success)) 42%
+  );
+  --tone-ink-warning: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 64%,
+    oklch(var(--color-warning)) 36%
+  );
+  --tone-ink-error: color-mix(
+    in oklab,
+    oklch(var(--color-base-content)) 58%,
+    oklch(var(--color-error)) 42%
+  );
+  --chip-neutral-surface: oklch(31% 0.02 258);
+  --chip-neutral-border: oklch(52% 0.035 258);
+  --chip-neutral-ink: oklch(84% 0.018 258);
+  --chip-secondary-surface: oklch(31% 0.025 195);
+  --chip-secondary-border: oklch(54% 0.08 195);
+  --chip-secondary-ink: oklch(82% 0.08 195);
+  --chip-primary-surface: oklch(31% 0.03 232);
+  --chip-primary-border: oklch(54% 0.1 232);
+  --chip-primary-ink: oklch(82% 0.1 232);
+  --chip-accent-surface: oklch(32% 0.035 78);
+  --chip-accent-border: oklch(55% 0.1 78);
+  --chip-accent-ink: oklch(84% 0.11 78);
+  --chip-info-surface: oklch(31% 0.03 220);
+  --chip-info-border: oklch(54% 0.09 220);
+  --chip-info-ink: oklch(82% 0.09 220);
+  --chip-success-surface: oklch(31% 0.035 154);
+  --chip-success-border: oklch(53% 0.1 154);
+  --chip-success-ink: oklch(82% 0.11 154);
+  --chip-warning-surface: oklch(32% 0.04 75);
+  --chip-warning-border: oklch(55% 0.11 75);
+  --chip-warning-ink: oklch(84% 0.12 75);
+  --chip-error-surface: oklch(31% 0.035 25);
+  --chip-error-border: oklch(54% 0.1 25);
+  --chip-error-ink: oklch(82% 0.11 25);
+  --chip-sky-surface: oklch(31% 0.03 220);
+  --chip-sky-border: oklch(54% 0.1 220);
+  --chip-sky-ink: oklch(82% 0.11 220);
+  --chip-cyan-surface: oklch(31% 0.035 195);
+  --chip-cyan-border: oklch(54% 0.1 195);
+  --chip-cyan-ink: oklch(82% 0.11 195);
+  --chip-blue-surface: oklch(31% 0.03 250);
+  --chip-blue-border: oklch(54% 0.1 250);
+  --chip-blue-ink: oklch(82% 0.11 250);
+  --chip-indigo-surface: oklch(31% 0.035 275);
+  --chip-indigo-border: oklch(54% 0.1 275);
+  --chip-indigo-ink: oklch(82% 0.11 275);
+  --chip-violet-surface: oklch(31% 0.035 300);
+  --chip-violet-border: oklch(54% 0.1 300);
+  --chip-violet-ink: oklch(82% 0.11 300);
+  --chip-fuchsia-surface: oklch(31% 0.04 330);
+  --chip-fuchsia-border: oklch(54% 0.1 330);
+  --chip-fuchsia-ink: oklch(82% 0.12 330);
+  --chip-teal-surface: oklch(31% 0.035 175);
+  --chip-teal-border: oklch(53% 0.1 175);
+  --chip-teal-ink: oklch(82% 0.11 175);
+  --chip-emerald-surface: oklch(31% 0.035 155);
+  --chip-emerald-border: oklch(53% 0.1 155);
+  --chip-emerald-ink: oklch(82% 0.11 155);
+  --chip-amber-surface: oklch(32% 0.04 80);
+  --chip-amber-border: oklch(55% 0.11 80);
+  --chip-amber-ink: oklch(84% 0.12 80);
+  --chip-orange-surface: oklch(32% 0.04 50);
+  --chip-orange-border: oklch(55% 0.11 50);
+  --chip-orange-ink: oklch(84% 0.12 50);
+  --radius-selector: 1.9rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 1;
+  --noise: 0;
+  --app-bg-top: #081428;
+  --app-bg-bottom: #10213a;
+  --app-bg-orb-1: rgba(56, 189, 248, 0.22);
+  --app-bg-orb-2: rgba(45, 212, 191, 0.18);
+  --app-grid-color: rgba(148, 163, 184, 0.18);
+  --app-shell-max-width: 1660px;
+  --app-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.84) 80%,
+    oklch(var(--color-base-200) / 0.76) 20%
+  );
+  --app-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
+  --app-surface-shadow: 0 20px 54px rgba(2, 6, 23, 0.55);
+
+  --dialog-overlay-bg: rgba(2, 6, 23, 0.58);
+  --dialog-overlay-blur: 6px;
+  --dialog-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.9) 84%,
+    oklch(var(--color-base-200) / 0.82) 16%
+  );
+  --dialog-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 26%, transparent);
+  --dialog-surface-shadow: 0 36px 110px rgba(2, 6, 23, 0.62);
+  --invocation-detail-hero-bg: linear-gradient(
+    180deg,
+    color-mix(in oklab, oklch(var(--color-base-200)) 72%, oklch(var(--color-base-100))),
+    color-mix(in oklab, oklch(var(--color-base-200)) 62%, oklch(var(--color-primary) / 0.26))
+  );
+  --invocation-detail-hero-border: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 24%,
+    transparent
+  );
+  --invocation-detail-hero-shadow: 0 12px 28px color-mix(in oklab, black 24%, transparent);
+  --invocation-detail-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.78) 84%,
+    oklch(var(--color-primary) / 0.18)
+  );
+  --invocation-detail-card-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 32%,
+    oklch(var(--color-primary) / 0.16)
+  );
+  --invocation-detail-card-shadow: none;
+  --invocation-detail-timeline-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.74) 88%,
+    oklch(var(--color-primary) / 0.12)
+  );
+  --invocation-detail-timeline-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 28%,
+    transparent
+  );
+  --invocation-detail-timeline-shadow: none;
+  --invocation-detail-marker-halo: oklch(var(--color-base-200) / 0.94);
+  --invocation-detail-subsurface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.88) 92%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-subsurface-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 22%,
+    transparent
+  );
+  --invocation-detail-subsurface-border-active: color-mix(
+    in oklab,
+    oklch(var(--color-primary)) 24%,
+    transparent
+  );
+  --invocation-detail-rail-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.72) 94%,
+    oklch(var(--color-primary) / 0.08)
+  );
+  --invocation-detail-fact-chip-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.84) 94%,
+    oklch(var(--color-primary) / 0.06)
+  );
+  --working-conversation-card-bg: linear-gradient(
+    180deg,
+    rgba(12, 19, 29, 0.98),
+    rgba(14, 21, 32, 0.96)
+  );
+  --working-conversation-card-border: rgba(148, 163, 184, 0.12);
+  --working-conversation-slot-bg: rgba(248, 250, 252, 0.06);
+  --working-conversation-slot-border: rgba(255, 255, 255, 0.06);
+}
+
+:root,
+[data-theme="vibe-light"],
+[data-theme="vibe-dark"] {
+  --surface-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.9) 82%,
+    oklch(var(--color-base-200) / 0.66) 18%
+  );
+  --surface-card-border: color-mix(in oklab, oklch(var(--color-base-300)) 26%, transparent);
+  --surface-card-shadow: 0 10px 24px
+    color-mix(in oklab, oklch(var(--color-neutral)) 7%, transparent);
+  --surface-subtle-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.8) 84%,
+    oklch(var(--color-base-200) / 0.58) 16%
+  );
+  --surface-subtle-border: color-mix(in oklab, oklch(var(--color-base-300)) 22%, transparent);
+  --surface-inset-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.54) 78%,
+    oklch(var(--color-base-100) / 0.4) 22%
+  );
+  --surface-inset-border: color-mix(in oklab, oklch(var(--color-base-300)) 18%, transparent);
+  --field-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.96) 88%,
+    oklch(var(--color-base-200) / 0.7) 12%
+  );
+  --field-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 26%, transparent);
+  --menu-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.98) 90%,
+    oklch(var(--color-base-200) / 0.78) 10%
+  );
+  --menu-surface-border: color-mix(in oklab, oklch(var(--color-base-300)) 28%, transparent);
+  --dialog-chrome-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.92) 84%,
+    oklch(var(--color-base-200) / 0.7) 16%
+  );
+  --dialog-chrome-border: color-mix(in oklab, oklch(var(--color-base-300)) 24%, transparent);
+  --destructive-callout-surface-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-200) / 0.76) 88%,
+    oklch(var(--color-error) / 0.1) 12%
+  );
+  --destructive-callout-surface-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 40%,
+    oklch(var(--color-error) / 0.18) 60%
+  );
+  --destructive-callout-icon-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.36) 74%,
+    oklch(var(--color-error) / 0.18) 26%
+  );
+  --destructive-callout-icon-border: oklch(var(--color-error) / 0.38);
+  --destructive-callout-list-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100) / 0.78) 92%,
+    oklch(var(--color-error) / 0.06) 8%
+  );
+  --destructive-callout-list-border: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 22%,
+    oklch(var(--color-error) / 0.12) 78%
+  );
+  --destructive-callout-separator: color-mix(
+    in oklab,
+    oklch(var(--color-base-300)) 18%,
+    transparent
+  );
+  --destructive-callout-bullet-halo: oklch(var(--color-error) / 0.14);
+}
+
+[data-theme="vibe-dark"] {
+  --surface-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100)) 82%,
+    oklch(var(--color-base-200)) 18%
+  );
+}
