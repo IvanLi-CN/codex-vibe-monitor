@@ -11832,8 +11832,8 @@ impl SummaryCoverageRecoverySupervisor {
         }
         if !summary_coverage_recovery_requires_second_v2_turn(&priority_backfill)
             && let Some(checkpoint) = checkpoint.as_ref()
-            && checkpoint.global_ready()
-            && checkpoint.account_ready()
+            && checkpoint.global_settled()
+            && checkpoint.account_settled()
             && !summary_all_time_checkpoint_publication_required(state, checkpoint).await?
         {
             debug!(
@@ -14139,6 +14139,24 @@ impl SummaryAllTimeProjectionCheckpointRow {
             && self.account_rollup_complete != 0
             && self.usage_rollup_complete != 0
             && self.account_usage_unavailable == 0
+    }
+
+    // A terminal unavailable scope is still settled for the current source fence. It must stay
+    // range-local unavailable, but it must not keep reopening the same durable checkpoint page.
+    fn global_settled(&self) -> bool {
+        self.global_ready()
+            || (self.global_manifest_complete != 0
+                && self.global_rollup_complete != 0
+                && self.usage_rollup_complete != 0
+                && self.global_usage_unavailable != 0)
+    }
+
+    fn account_settled(&self) -> bool {
+        self.account_ready()
+            || (self.account_manifest_complete != 0
+                && self.account_rollup_complete != 0
+                && self.usage_rollup_complete != 0
+                && (self.account_unavailable != 0 || self.account_usage_unavailable != 0))
     }
 
     fn global_totals(&self) -> StatsTotals {
@@ -40959,6 +40977,50 @@ mod request_compression_query_tests {
         assert_eq!(
             checkpoint_advance_calls, 0,
             "idle recovery must not advance an unchanged ready checkpoint"
+        );
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_coverage_supervisor_idle_settled_unavailable_checkpoint_skips_advance() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
+            .await
+            .expect("publish ready all-time checkpoint");
+        sqlx::query(
+            "UPDATE summary_all_time_projection_checkpoint SET account_unavailable = 1, account_rollup_complete = 1, account_manifest_complete = 1, usage_rollup_complete = 1 WHERE scope = ?1",
+        )
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&state.pool)
+        .await
+        .expect("mark account scope terminal unavailable");
+
+        let (result, checkpoint_advance_calls) = SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS
+            .scope(Cell::new(0), async {
+                let result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                    state.as_ref(),
+                    None,
+                )
+                .await;
+                let checkpoint_advance_calls = SUMMARY_COVERAGE_TEST_CHECKPOINT_ADVANCE_CALLS
+                    .try_with(Cell::get)
+                    .expect("checkpoint advance counter scope");
+                (result, checkpoint_advance_calls)
+            })
+            .await;
+        assert_eq!(
+            result.expect("terminal unavailable recovery pass"),
+            SummaryCoverageRecoveryNextTurn::Idle
+        );
+        assert_eq!(
+            checkpoint_advance_calls, 0,
+            "terminal unavailable scope must not restart a settled checkpoint"
         );
         state.pool.close().await;
     }

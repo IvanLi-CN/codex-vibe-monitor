@@ -2207,6 +2207,74 @@ async fn ensure_schema_steady_state_does_not_rebuild_large_derived_invocation_st
     );
 }
 
+#[tokio::test]
+async fn invocation_records_request_id_filter_uses_normalized_expression_index() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema test pool");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let (index_sql, marker): (Option<String>, i64) = sqlx::query_as(
+        "SELECT (SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_codex_invocations_invoke_id_filter_id'), (SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'invoke_id_filter_expression_index_v1')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invoke_id expression index migration state");
+    let index_sql = index_sql.expect("normalized invoke_id expression index exists");
+    assert!(index_sql.contains("LOWER(TRIM(COALESCE(invoke_id, '')))"));
+    assert_eq!(marker, 1, "expression index migration is recorded once");
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, raw_response) VALUES ('  MiXeD-Request  ', datetime('now'), 'cli', 'success', '{}'), ('other-request', datetime('now'), 'cli', 'success', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed request ids");
+    let matches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE LOWER(TRIM(COALESCE(invoke_id, ''))) = ?1 AND id <= ?2",
+    )
+    .bind("mixed-request")
+    .bind(i64::MAX)
+    .fetch_one(&pool)
+    .await
+    .expect("run normalized request id query");
+    assert_eq!(
+        matches, 1,
+        "request id matching remains case/space insensitive"
+    );
+
+    let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT id FROM codex_invocations WHERE LOWER(TRIM(COALESCE(invoke_id, ''))) = ?1 AND id <= ?2 ORDER BY id",
+    )
+    .bind("mixed-request")
+    .bind(i64::MAX)
+    .fetch_all(&pool)
+    .await
+    .expect("explain normalized request id query");
+    assert!(
+        plan.iter()
+            .any(|(_, _, _, detail)| detail.contains("idx_codex_invocations_invoke_id_filter_id")),
+        "bounded normalized request id lookup must use the expression index: {plan:?}"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn ensure_schema_adds_invoke_id_filter_expression_index() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema test pool");
+    ensure_schema(&pool).await.expect("ensure schema");
+    let index_exists: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_codex_invocations_invoke_id_filter_id')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check normalized invoke_id expression index");
+    assert_eq!(index_exists, 1);
+    pool.close().await;
+}
+
 pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
