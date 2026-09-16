@@ -1617,7 +1617,6 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
     let bootstrap_handle =
         spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
     wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "running").await;
-
     state.shutdown.cancel();
     tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
         .await
@@ -1636,7 +1635,8 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
     assert!(
         summary
             .as_deref()
-            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+            .is_some_and(|summary| summary.contains("cancelled before acquiring")),
+        "unexpected cancellation task result: status={status:?}, summary={summary:?}, detail={detail:?}"
     );
     assert!(detail.is_none());
 }

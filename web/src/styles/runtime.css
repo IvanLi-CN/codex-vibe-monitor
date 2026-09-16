@@ -1,0 +1,132 @@
+body {
+  @apply bg-base-200 text-base-content antialiased;
+  font-family:
+    "IBM Plex Sans", "Avenir Next", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  background-image:
+    radial-gradient(circle at 12% -8%, var(--app-bg-orb-1), transparent 45%),
+    radial-gradient(circle at 88% 4%, var(--app-bg-orb-2), transparent 40%),
+    linear-gradient(180deg, var(--app-bg-top) 0%, var(--app-bg-bottom) 62%),
+    linear-gradient(var(--app-grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--app-grid-color) 1px, transparent 1px);
+  background-size:
+    auto,
+    auto,
+    auto,
+    28px 28px,
+    28px 28px;
+  background-position:
+    center,
+    center,
+    center,
+    0 0,
+    0 0;
+  background-attachment: fixed;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+@media (max-width: 768px) {
+  body {
+    background-color: oklch(var(--color-base-200));
+    background-image: none;
+    background-attachment: initial;
+  }
+}
+
+[data-motion-surface] {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 220ms ease;
+}
+
+@keyframes invocation-phase-requesting-flight {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: translate3d(-1px, 1px, 0) scale(0.94);
+  }
+
+  45% {
+    opacity: 1;
+    transform: translate3d(2px, -2px, 0) scale(1.08);
+  }
+
+  70% {
+    opacity: 0.86;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.animate-invocation-phase-requesting {
+  animation: invocation-phase-requesting-flight 1.05s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+@keyframes invocation-account-routing-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.invocation-account-routing-in-progress {
+  animation: invocation-account-routing-breathe 1.8s ease-in-out infinite;
+  will-change: opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-motion-surface] {
+    transition: none;
+  }
+
+  .animate-invocation-phase-requesting,
+  .invocation-account-routing-in-progress {
+    animation: none;
+  }
+}
+
+/* Align Storybook docs surfaces with the app theme instead of the default white canvas. */
+.sbdocs.sbdocs-wrapper {
+  background: transparent;
+  color: oklch(var(--color-base-content));
+}
+
+.sbdocs.sbdocs-content {
+  color: oklch(var(--color-base-content));
+}
+
+.sbdocs .sbdocs-title,
+.sbdocs h1,
+.sbdocs h2,
+.sbdocs h3,
+.sbdocs h4,
+.sbdocs h5,
+.sbdocs h6,
+.sbdocs p,
+.sbdocs li,
+.sbdocs td,
+.sbdocs th,
+.sbdocs code,
+.sbdocs span {
+  color: inherit;
+}
+
+.sbdocs .sbdocs-preview {
+  border: 1px solid var(--app-surface-border);
+  border-radius: 1.25rem;
+  background: var(--app-surface-bg);
+  box-shadow: var(--app-surface-shadow);
+  backdrop-filter: blur(10px);
+}
+
+.sbdocs .docs-story {
+  background: transparent;
+}

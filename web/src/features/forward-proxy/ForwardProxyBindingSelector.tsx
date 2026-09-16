@@ -3,12 +3,12 @@ import { Chip } from "../../components/ui/chip";
 import type { ForwardProxyBindingNode } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
-import { ForwardProxyRequestTrendChart } from "./ForwardProxyRequestTrendChart";
 import {
   canonicalizeForwardProxyBindingKeys,
   normalizeForwardProxyBindingKeys,
   resolveForwardProxyBindingOptions,
 } from "./forwardProxyBindingSelectorUtils";
+import { ProxyOptionTrafficChart } from "./ProxyOptionTrafficChart";
 
 export type ForwardProxyBindingSelectorLabels = {
   automatic?: string;
@@ -33,108 +33,6 @@ function toggleForwardProxyBindingKey(keys: string[], target: string): string[] 
     return keys.filter((key) => key !== target);
   }
   return [...keys, target];
-}
-
-function sumProxyTraffic(node: ForwardProxyBindingNode) {
-  const buckets = Array.isArray(node.last24h) ? node.last24h : [];
-  return buckets.reduce(
-    (acc, bucket) => {
-      acc.success += bucket.successCount;
-      acc.failure += bucket.failureCount;
-      return acc;
-    },
-    { success: 0, failure: 0 },
-  );
-}
-
-function ProxyOptionTrafficChart({
-  node,
-  scaleMax,
-  label,
-  successLabel,
-  failureLabel,
-  emptyLabel,
-  totalLabel,
-  ariaLabel,
-  interactionHint,
-  localeTag,
-}: {
-  node: ForwardProxyBindingNode;
-  scaleMax: number;
-  label: string;
-  successLabel: string;
-  failureLabel: string;
-  emptyLabel: string;
-  totalLabel: string;
-  ariaLabel: string;
-  interactionHint: string;
-  localeTag: string;
-}) {
-  const buckets = useMemo(() => (Array.isArray(node.last24h) ? node.last24h : []), [node.last24h]);
-  const totals = useMemo(() => sumProxyTraffic(node), [node]);
-  const windowBadgeLabel = useMemo(() => {
-    if (/24/.test(label)) return "24H";
-    return label;
-  }, [label]);
-
-  return (
-    <div className="flex w-full flex-col justify-center gap-0.5 sm:min-w-[15.5rem] sm:max-w-[15.5rem] sm:self-center">
-      <div className="flex h-4 items-center justify-between gap-2">
-        <Chip
-          size="micro"
-          tone="secondary"
-          role="img"
-          className="h-4 min-w-[2.25rem] justify-center px-1.5 text-[9px] uppercase tracking-[0.12em]"
-          title={label}
-          aria-label={label}
-        >
-          {windowBadgeLabel}
-        </Chip>
-        <div className="flex items-center gap-1.5 text-[10px] font-semibold leading-none tabular-nums">
-          <span
-            role="img"
-            className="inline-flex items-center gap-1 text-success"
-            aria-label={`${successLabel} ${totals.success}`}
-            title={`${successLabel} ${totals.success}`}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
-            <span>{totals.success}</span>
-          </span>
-          <span
-            role="img"
-            className="inline-flex items-center gap-1 text-error"
-            aria-label={`${failureLabel} ${totals.failure}`}
-            title={`${failureLabel} ${totals.failure}`}
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-error" aria-hidden />
-            <span>{totals.failure}</span>
-          </span>
-        </div>
-      </div>
-
-      {buckets.length === 0 ? (
-        <div className="mt-0.5 flex h-8 items-center justify-center rounded-xl border border-dashed border-base-300/80 bg-base-100/70 px-3 text-[11px] text-base-content/50">
-          {emptyLabel}
-        </div>
-      ) : (
-        <ForwardProxyRequestTrendChart
-          buckets={buckets}
-          scaleMax={scaleMax}
-          localeTag={localeTag}
-          tooltipLabels={{
-            success: successLabel,
-            failure: failureLabel,
-            total: totalLabel,
-          }}
-          ariaLabel={`${node.displayName} ${ariaLabel}`}
-          interactionHint={interactionHint}
-          variant="dialog"
-          className="mt-0.5"
-          dataChartKind="proxy-binding-request-trend"
-        />
-      )}
-    </div>
-  );
 }
 
 export function ForwardProxyBindingSelector({
@@ -232,104 +130,146 @@ export function ForwardProxyBindingSelector({
           data-testid="proxy-binding-options-scroll-region"
         >
           <div className="grid gap-2">
-            {options.map((node) => {
-              const selected = canonicalSelectedKeys.includes(node.key);
-              const optionDisabled = disabled || (!selected && !node.selectable);
-              const badgeLabel = node.missing
-                ? (labels?.missing ?? "Missing")
-                : !node.selectable
-                  ? (labels?.unavailable ?? "Unavailable")
-                  : null;
-              return (
-                <button
-                  key={node.key}
-                  type="button"
-                  disabled={optionDisabled}
-                  onClick={() => {
-                    if (!onChange) return;
-                    onChange(toggleForwardProxyBindingKey(canonicalSelectedKeys, node.key));
-                  }}
-                  className={cn(
-                    "grid gap-2 rounded-xl border px-3 py-2 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_15.5rem] sm:items-center sm:gap-3",
-                    selected
-                      ? "border-primary/45 bg-primary/10"
-                      : "border-base-300/80 bg-base-100/75",
-                    optionDisabled ? "cursor-not-allowed opacity-60" : "hover:border-primary/40",
-                  )}
-                >
-                  <div className="flex min-w-0 flex-1 items-center gap-3">
-                    <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-base-300/80 bg-base-100">
-                      {selected ? (
-                        <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden />
-                      ) : null}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <span
-                        className="block min-w-0 truncate text-sm font-medium text-base-content"
-                        title={node.displayName}
-                      >
-                        {node.displayName}
-                      </span>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Chip
-                          size="micro"
-                          tone="secondary"
-                          className="shrink-0 px-1.5 font-mono uppercase tracking-[0.08em]"
-                        >
-                          {node.protocolLabel}
-                        </Chip>
-                        {node.identityHint ? (
-                          <Chip
-                            size="micro"
-                            tone="neutral"
-                            className="shrink-0 px-1.5 font-mono tracking-[0.08em]"
-                            title={node.identityHint}
-                          >
-                            {node.identityHint}
-                          </Chip>
-                        ) : null}
-                        {badgeLabel ? (
-                          <Chip
-                            size="micro"
-                            tone={node.missing ? "error" : "warning"}
-                            className="shrink-0 px-2 uppercase tracking-[0.08em]"
-                          >
-                            {badgeLabel}
-                          </Chip>
-                        ) : null}
-                        {node.penalized ? (
-                          <Chip
-                            size="micro"
-                            tone="warning"
-                            className="shrink-0 px-2 uppercase tracking-[0.08em]"
-                          >
-                            {labels?.penalized ?? "Penalized"}
-                          </Chip>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                  <ProxyOptionTrafficChart
-                    node={node}
-                    scaleMax={chartScaleMax}
-                    label={labels?.chartLabel ?? "24h request trend"}
-                    successLabel={labels?.chartSuccess ?? "ok"}
-                    failureLabel={labels?.chartFailure ?? "fail"}
-                    emptyLabel={labels?.chartEmpty ?? "No 24h data"}
-                    totalLabel={labels?.chartTotal ?? "total"}
-                    ariaLabel={labels?.chartAriaLabel ?? "Last 24h request volume chart"}
-                    interactionHint={
-                      labels?.chartInteractionHint ??
-                      "Hover or tap for details. Focus the chart and use arrow keys to switch points."
-                    }
-                    localeTag={labels?.chartLocaleTag ?? "en-US"}
-                  />
-                </button>
-              );
-            })}
+            {options.map((node) => (
+              <ForwardProxyBindingOption
+                key={node.key}
+                node={node}
+                selected={canonicalSelectedKeys.includes(node.key)}
+                disabled={disabled}
+                scaleMax={chartScaleMax}
+                labels={labels}
+                selectedKeys={canonicalSelectedKeys}
+                onChange={onChange}
+              />
+            ))}
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ForwardProxyBindingOption({
+  node,
+  selected,
+  disabled,
+  scaleMax,
+  labels,
+  selectedKeys,
+  onChange,
+}: {
+  node: NonNullable<ReturnType<typeof resolveForwardProxyBindingOptions>>[number];
+  selected: boolean;
+  disabled: boolean;
+  scaleMax: number;
+  labels?: ForwardProxyBindingSelectorLabels;
+  selectedKeys: string[];
+  onChange?: (value: string[]) => void;
+}) {
+  const optionDisabled = disabled || (!selected && !node.selectable);
+  const badgeLabel = node.missing
+    ? (labels?.missing ?? "Missing")
+    : !node.selectable
+      ? (labels?.unavailable ?? "Unavailable")
+      : null;
+
+  return (
+    <button
+      type="button"
+      disabled={optionDisabled}
+      onClick={() => {
+        if (onChange) onChange(toggleForwardProxyBindingKey(selectedKeys, node.key));
+      }}
+      className={cn(
+        "grid gap-2 rounded-xl border px-3 py-2 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_15.5rem] sm:items-center sm:gap-3",
+        selected ? "border-primary/45 bg-primary/10" : "border-base-300/80 bg-base-100/75",
+        optionDisabled ? "cursor-not-allowed opacity-60" : "hover:border-primary/40",
+      )}
+    >
+      <ForwardProxyBindingOptionIdentity
+        node={node}
+        selected={selected}
+        badgeLabel={badgeLabel}
+        penalizedLabel={labels?.penalized ?? "Penalized"}
+      />
+      <ProxyOptionTrafficChart
+        node={node}
+        scaleMax={scaleMax}
+        label={labels?.chartLabel ?? "24h request trend"}
+        successLabel={labels?.chartSuccess ?? "ok"}
+        failureLabel={labels?.chartFailure ?? "fail"}
+        emptyLabel={labels?.chartEmpty ?? "No 24h data"}
+        totalLabel={labels?.chartTotal ?? "total"}
+        ariaLabel={labels?.chartAriaLabel ?? "Last 24h request volume chart"}
+        interactionHint={
+          labels?.chartInteractionHint ??
+          "Hover or tap for details. Focus the chart and use arrow keys to switch points."
+        }
+        localeTag={labels?.chartLocaleTag ?? "en-US"}
+      />
+    </button>
+  );
+}
+
+function ForwardProxyBindingOptionIdentity({
+  node,
+  selected,
+  badgeLabel,
+  penalizedLabel,
+}: {
+  node: NonNullable<ReturnType<typeof resolveForwardProxyBindingOptions>>[number];
+  selected: boolean;
+  badgeLabel: string | null;
+  penalizedLabel: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-base-300/80 bg-base-100">
+        {selected ? (
+          <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden />
+        ) : null}
+      </div>
+      <div className="min-w-0 flex-1">
+        <span
+          className="block min-w-0 truncate text-sm font-medium text-base-content"
+          title={node.displayName}
+        >
+          {node.displayName}
+        </span>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <Chip
+            size="micro"
+            tone="secondary"
+            className="shrink-0 px-1.5 font-mono uppercase tracking-[0.08em]"
+          >
+            {node.protocolLabel}
+          </Chip>
+          {node.identityHint ? (
+            <Chip
+              size="micro"
+              tone="neutral"
+              className="shrink-0 px-1.5 font-mono tracking-[0.08em]"
+              title={node.identityHint}
+            >
+              {node.identityHint}
+            </Chip>
+          ) : null}
+          {badgeLabel ? (
+            <Chip
+              size="micro"
+              tone={node.missing ? "error" : "warning"}
+              className="shrink-0 px-2 uppercase tracking-[0.08em]"
+            >
+              {badgeLabel}
+            </Chip>
+          ) : null}
+          {node.penalized ? (
+            <Chip size="micro" tone="warning" className="shrink-0 px-2 uppercase tracking-[0.08em]">
+              {penalizedLabel}
+            </Chip>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

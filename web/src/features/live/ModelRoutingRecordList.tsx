@@ -130,6 +130,91 @@ function DetailItem({ label, children }: { label: string; children: ReactNode })
   );
 }
 
+function RecordRowDetails({
+  record,
+  audit,
+  reason,
+  result,
+  t,
+}: {
+  record: ModelRoutingTimelineRecord;
+  audit: ModelRoutingTimelineRecord["routingSelectionAudit"];
+  reason: string;
+  result: string;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  return (
+    <div className="ml-8 mt-1.5 grid gap-x-4 gap-y-1.5 border-l border-base-300/70 bg-base-200/45 px-3 py-2 text-xs text-base-content/75 sm:grid-cols-2">
+      <DetailItem label={t("live.routing.record.reason")}>{reason}</DetailItem>
+      <DetailItem label={t("live.routing.record.result")}>
+        {result}
+        {record.totalLatencyMs != null ? ` · ${Math.round(record.totalLatencyMs)} ms` : ""}
+      </DetailItem>
+      {record.routingSource ? (
+        <DetailItem label={t("live.routing.record.source")}>
+          {routeSourceLabel(record.routingSource, t)}
+        </DetailItem>
+      ) : null}
+      {record.modelRouteFailureCount != null ? (
+        <DetailItem label={t("live.routing.record.failureCount")}>
+          {record.modelRouteFailureCount}
+        </DetailItem>
+      ) : null}
+      {audit ? (
+        <div className="sm:col-span-2">
+          <DetailItem label={t("live.routing.record.comparison")}>
+            {routeProtocolLabel(audit.winnerReasonCode, t)} ·{" "}
+            {t("live.routing.record.eligible", { count: audit.eligibleCandidateCount })}
+            {audit.comparedAccountId != null
+              ? ` · ${
+                  audit.comparedAccountName?.trim()
+                    ? t("live.routing.record.comparedName", {
+                        account: audit.comparedAccountName.trim(),
+                      })
+                    : t("live.routing.record.comparedId", {
+                        accountId: audit.comparedAccountId,
+                      })
+                }`
+              : ""}
+            {audit.excludedCandidates.length > 0
+              ? ` · ${t("live.routing.record.excluded", {
+                  count: audit.excludedCandidates.length,
+                })}: ${audit.excludedCandidates
+                  .map(
+                    (candidate) =>
+                      `${accountLabel(candidate.accountId, candidate.accountName)} (${routeProtocolLabel(candidate.reasonCode, t)})`,
+                  )
+                  .join(", ")}`
+              : ""}
+          </DetailItem>
+        </div>
+      ) : null}
+      {audit?.handoffAdmission ? (
+        <DetailItem label={t("live.routing.record.handoffAdmission")}>
+          {handoffAdmissionLabel(audit.handoffAdmission, t)}
+        </DetailItem>
+      ) : null}
+      {record.modelRouteStateBefore || record.modelRouteStateAfter ? (
+        <DetailItem label={t("live.routing.record.transition")}>
+          {routeProtocolLabel(record.modelRouteStateBefore, t)} →{" "}
+          {routeProtocolLabel(record.modelRouteStateAfter, t)}
+        </DetailItem>
+      ) : null}
+      {record.modelRoutePriorityBefore || record.modelRoutePriorityAfter ? (
+        <DetailItem label={t("live.routing.record.priorityTransition")}>
+          {routeProtocolLabel(record.modelRoutePriorityBefore, t)} →{" "}
+          {routeProtocolLabel(record.modelRoutePriorityAfter, t)}
+        </DetailItem>
+      ) : null}
+      {record.modelRouteCooldownUntil ? (
+        <DetailItem label={t("live.routing.record.cooldownUntil")}>
+          {formatBeijing(record.modelRouteCooldownUntil)}
+        </DetailItem>
+      ) : null}
+    </div>
+  );
+}
+
 function RecordRow({
   record,
   expanded,
@@ -217,76 +302,7 @@ function RecordRow({
         ) : null}
       </div>
       {expanded ? (
-        <div className="ml-8 mt-1.5 grid gap-x-4 gap-y-1.5 border-l border-base-300/70 bg-base-200/45 px-3 py-2 text-xs text-base-content/75 sm:grid-cols-2">
-          <DetailItem label={t("live.routing.record.reason")}>{reason}</DetailItem>
-          <DetailItem label={t("live.routing.record.result")}>
-            {result}
-            {record.totalLatencyMs != null ? ` · ${Math.round(record.totalLatencyMs)} ms` : ""}
-          </DetailItem>
-          {record.routingSource ? (
-            <DetailItem label={t("live.routing.record.source")}>
-              {routeSourceLabel(record.routingSource, t)}
-            </DetailItem>
-          ) : null}
-          {record.modelRouteFailureCount != null ? (
-            <DetailItem label={t("live.routing.record.failureCount")}>
-              {record.modelRouteFailureCount}
-            </DetailItem>
-          ) : null}
-          {audit ? (
-            <div className="sm:col-span-2">
-              <DetailItem label={t("live.routing.record.comparison")}>
-                {routeProtocolLabel(audit.winnerReasonCode, t)} ·{" "}
-                {t("live.routing.record.eligible", {
-                  count: audit.eligibleCandidateCount,
-                })}
-                {audit.comparedAccountId != null
-                  ? ` · ${
-                      audit.comparedAccountName?.trim()
-                        ? t("live.routing.record.comparedName", {
-                            account: audit.comparedAccountName.trim(),
-                          })
-                        : t("live.routing.record.comparedId", {
-                            accountId: audit.comparedAccountId,
-                          })
-                    }`
-                  : ""}
-                {audit.excludedCandidates.length > 0
-                  ? ` · ${t("live.routing.record.excluded", {
-                      count: audit.excludedCandidates.length,
-                    })}: ${audit.excludedCandidates
-                      .map(
-                        (candidate) =>
-                          `${accountLabel(candidate.accountId, candidate.accountName)} (${routeProtocolLabel(candidate.reasonCode, t)})`,
-                      )
-                      .join(", ")}`
-                  : ""}
-              </DetailItem>
-            </div>
-          ) : null}
-          {audit?.handoffAdmission ? (
-            <DetailItem label={t("live.routing.record.handoffAdmission")}>
-              {handoffAdmissionLabel(audit.handoffAdmission, t)}
-            </DetailItem>
-          ) : null}
-          {record.modelRouteStateBefore || record.modelRouteStateAfter ? (
-            <DetailItem label={t("live.routing.record.transition")}>
-              {routeProtocolLabel(record.modelRouteStateBefore, t)} →{" "}
-              {routeProtocolLabel(record.modelRouteStateAfter, t)}
-            </DetailItem>
-          ) : null}
-          {record.modelRoutePriorityBefore || record.modelRoutePriorityAfter ? (
-            <DetailItem label={t("live.routing.record.priorityTransition")}>
-              {routeProtocolLabel(record.modelRoutePriorityBefore, t)} →{" "}
-              {routeProtocolLabel(record.modelRoutePriorityAfter, t)}
-            </DetailItem>
-          ) : null}
-          {record.modelRouteCooldownUntil ? (
-            <DetailItem label={t("live.routing.record.cooldownUntil")}>
-              {formatBeijing(record.modelRouteCooldownUntil)}
-            </DetailItem>
-          ) : null}
-        </div>
+        <RecordRowDetails record={record} audit={audit} reason={reason} result={result} t={t} />
       ) : null}
     </div>
   );

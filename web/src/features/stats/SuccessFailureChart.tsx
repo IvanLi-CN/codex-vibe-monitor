@@ -57,6 +57,29 @@ interface SuccessFailureTooltipContentProps {
   axisText: string;
 }
 
+interface SuccessFailureChartViewProps {
+  chartData: ChartDatum[];
+  chartColors: ReturnType<typeof chartBaseTokens> &
+    ReturnType<typeof chartStatusTokens> & { firstTokenAvg: string };
+  numberFormatter: Intl.NumberFormat;
+  percentFormatter: Intl.NumberFormat;
+  latencyMsFormatter: Intl.NumberFormat;
+  localeTag: string;
+  noValueLabel: string;
+  tooltipLabels: SuccessFailureTooltipLabels;
+  tooltipDefaultIndex?: number;
+  tooltipActive?: boolean;
+  animate: boolean;
+  t: ReturnType<typeof useTranslation>["t"];
+}
+
+interface SuccessFailureTooltipRendererProps
+  extends Omit<SuccessFailureTooltipContentProps, "datum" | "label"> {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: unknown }>;
+  label?: unknown;
+}
+
 function formatSuccessRate(
   value: number | null,
   formatter: Intl.NumberFormat,
@@ -149,6 +172,118 @@ export function SuccessFailureTooltipContent({
   );
 }
 
+function SuccessFailureTooltipRenderer({
+  active,
+  payload,
+  label,
+  ...contentProps
+}: SuccessFailureTooltipRendererProps) {
+  const datum = payload?.[0]?.payload as ChartDatum | undefined;
+  if (!active || !datum || typeof label !== "string") return null;
+  return <SuccessFailureTooltipContent {...contentProps} label={label} datum={datum} />;
+}
+
+function SuccessFailureChartView({
+  chartData,
+  chartColors,
+  numberFormatter,
+  percentFormatter,
+  latencyMsFormatter,
+  localeTag,
+  noValueLabel,
+  tooltipLabels,
+  tooltipDefaultIndex,
+  tooltipActive,
+  animate,
+  t,
+}: SuccessFailureChartViewProps) {
+  const tooltipProps = {
+    labels: tooltipLabels,
+    noValueLabel,
+    numberFormatter,
+    percentFormatter,
+    latencyMsFormatter,
+    localeTag,
+    tooltipBg: chartColors.tooltipBg,
+    tooltipBorder: chartColors.tooltipBorder,
+    axisText: chartColors.axisText,
+  };
+  return (
+    <div className="h-96 w-full">
+      <ResponsiveContainer>
+        <ComposedChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
+          <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+          <XAxis
+            dataKey="label"
+            minTickGap={32}
+            angle={-15}
+            dy={8}
+            height={60}
+            interval="preserveStartEnd"
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
+          />
+          <YAxis
+            yAxisId="count"
+            orientation="left"
+            tickFormatter={(v) => numberFormatter.format(v as number)}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
+          />
+          <YAxis
+            yAxisId="latency"
+            orientation="right"
+            tickFormatter={(v) =>
+              formatLatencyMs(v as number, latencyMsFormatter, localeTag, noValueLabel)
+            }
+            width={96}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
+          />
+          <Tooltip
+            active={tooltipActive}
+            defaultIndex={tooltipDefaultIndex}
+            content={(props) => <SuccessFailureTooltipRenderer {...props} {...tooltipProps} />}
+          />
+          <Legend wrapperStyle={{ color: chartColors.axisText }} />
+          <Bar
+            yAxisId="count"
+            dataKey="success"
+            name={t("stats.cards.success")}
+            stackId="count"
+            fill={chartColors.success}
+            radius={[0, 0, 4, 4]}
+            isAnimationActive={animate}
+          />
+          <Bar
+            yAxisId="count"
+            dataKey="failure"
+            name={t("stats.cards.failures")}
+            stackId="count"
+            fill={chartColors.failure}
+            radius={[4, 4, 0, 0]}
+            isAnimationActive={animate}
+          />
+          <Line
+            yAxisId="latency"
+            type="monotone"
+            dataKey="firstTokenAvgMs"
+            name={t("stats.successFailure.legend.firstByteAvg")}
+            stroke={chartColors.firstTokenAvg}
+            strokeWidth={2}
+            dot={false}
+            connectNulls={false}
+            isAnimationActive={animate}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export function SuccessFailureChart({
   points,
   isLoading,
@@ -219,96 +354,20 @@ export function SuccessFailureChart({
   };
 
   return (
-    <div className="h-96 w-full">
-      <ResponsiveContainer>
-        <ComposedChart data={chartData} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
-          <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
-          <XAxis
-            dataKey="label"
-            minTickGap={32}
-            angle={-15}
-            dy={8}
-            height={60}
-            interval="preserveStartEnd"
-            axisLine={{ stroke: chartColors.gridLine }}
-            tickLine={{ stroke: chartColors.gridLine }}
-            tick={{ fill: chartColors.axisText, fontSize: 12 }}
-          />
-          <YAxis
-            yAxisId="count"
-            orientation="left"
-            tickFormatter={(v) => numberFormatter.format(v as number)}
-            axisLine={{ stroke: chartColors.gridLine }}
-            tickLine={{ stroke: chartColors.gridLine }}
-            tick={{ fill: chartColors.axisText, fontSize: 12 }}
-          />
-          <YAxis
-            yAxisId="latency"
-            orientation="right"
-            tickFormatter={(v) =>
-              formatLatencyMs(v as number, latencyMsFormatter, localeTag, noValueLabel)
-            }
-            width={96}
-            axisLine={{ stroke: chartColors.gridLine }}
-            tickLine={{ stroke: chartColors.gridLine }}
-            tick={{ fill: chartColors.axisText, fontSize: 12 }}
-          />
-          <Tooltip
-            active={tooltipActive}
-            defaultIndex={tooltipDefaultIndex}
-            content={({ active, payload, label }) => {
-              const datum = payload?.[0]?.payload as ChartDatum | undefined;
-              if (!active || !datum || typeof label !== "string") return null;
-              return (
-                <SuccessFailureTooltipContent
-                  label={label}
-                  datum={datum}
-                  labels={tooltipLabels}
-                  noValueLabel={noValueLabel}
-                  numberFormatter={numberFormatter}
-                  percentFormatter={percentFormatter}
-                  latencyMsFormatter={latencyMsFormatter}
-                  localeTag={localeTag}
-                  tooltipBg={chartColors.tooltipBg}
-                  tooltipBorder={chartColors.tooltipBorder}
-                  axisText={chartColors.axisText}
-                />
-              );
-            }}
-          />
-          <Legend wrapperStyle={{ color: chartColors.axisText }} />
-          <Bar
-            yAxisId="count"
-            dataKey="success"
-            name={t("stats.cards.success")}
-            stackId="count"
-            fill={chartColors.success}
-            radius={[0, 0, 4, 4]}
-            isAnimationActive={animate}
-          />
-          <Bar
-            yAxisId="count"
-            dataKey="failure"
-            name={t("stats.cards.failures")}
-            stackId="count"
-            fill={chartColors.failure}
-            radius={[4, 4, 0, 0]}
-            isAnimationActive={animate}
-          />
-          <Line
-            yAxisId="latency"
-            type="monotone"
-            dataKey="firstTokenAvgMs"
-            name={t("stats.successFailure.legend.firstByteAvg")}
-            stroke={chartColors.firstTokenAvg}
-            strokeWidth={2}
-            dot={false}
-            connectNulls={false}
-            isAnimationActive={animate}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
+    <SuccessFailureChartView
+      chartData={chartData}
+      chartColors={chartColors}
+      numberFormatter={numberFormatter}
+      percentFormatter={percentFormatter}
+      latencyMsFormatter={latencyMsFormatter}
+      localeTag={localeTag}
+      noValueLabel={noValueLabel}
+      tooltipLabels={tooltipLabels}
+      tooltipDefaultIndex={tooltipDefaultIndex}
+      tooltipActive={tooltipActive}
+      animate={animate}
+      t={t}
+    />
   );
 }
 

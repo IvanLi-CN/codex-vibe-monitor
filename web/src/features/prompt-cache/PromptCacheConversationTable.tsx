@@ -1,25 +1,5 @@
-import {
-  Fragment,
-  type PointerEvent as ReactPointerEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  Bar,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Chip } from "../../components/ui/chip";
@@ -31,16 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import {
-  type FloatingSurfaceTheme,
-  floatingSurfaceStyle,
-} from "../../components/ui/floating-surface";
 import { Input } from "../../components/ui/input";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
-import { SelectField } from "../../components/ui/select-field";
+import { SelectField, type SelectFieldOption } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import {
-  type InvocationHistoryOverviewTopicPayload,
   resolveConversationDetailScope,
   useConversationDetailTopics,
 } from "../../hooks/useConversationDetailTopics";
@@ -53,7 +28,6 @@ import type {
   ForwardProxyBindingNode,
   InvocationRecordsQuery,
   InvocationRecordsResponse,
-  InvocationRecordsSummaryResponse,
   PoolRoutingSelectionAudit,
   PoolRoutingSelectionScoreSnapshot,
   PromptCacheConversation,
@@ -69,19 +43,15 @@ import type {
 } from "../../lib/api";
 import {
   fetchInvocationRecords,
-  fetchInvocationRecordsSummary,
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversationOperationEvents,
   fetchUpstreamAccounts,
   resetPromptCacheConversationAffinity,
   updatePromptCacheConversationBinding,
 } from "../../lib/api";
-import { chartBaseTokens, chartStatusTokens, metricAccent } from "../../lib/chartTheme";
-import { resolvePromptCacheInvocationOutcome } from "../../lib/conversationRequestPoint";
 import { invocationStableKey } from "../../lib/invocation";
 import { mergeInvocationRecordCollections } from "../../lib/invocationLiveMerge";
 import { buildInvocationFromPromptCachePreview } from "../../lib/promptCacheLive";
-import type { ThemeMode } from "../../theme";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import {
   EffectiveRoutingRuleCard,
@@ -92,6 +62,7 @@ import { InvocationCardList } from "../invocations/InvocationTable";
 import { AppIcon } from "../shared/AppIcon";
 import { ConversationSparkline } from "./KeyedConversationTable";
 import { FALLBACK_CELL, findVisibleConversationChartMax } from "./keyedConversationChart";
+import { PromptCacheConversationActivityOverview } from "./PromptCacheActivityOverview";
 
 interface PromptCacheConversationTableProps {
   stats: PromptCacheConversationsResponse | null;
@@ -105,31 +76,21 @@ interface PromptCacheConversationTableProps {
   historyQueryForConversationKey?: (conversationKey: string) => Partial<InvocationRecordsQuery>;
 }
 
-type PromptCacheConversationStickyRoute = NonNullable<
-  PromptCacheConversationBindingResponse["stickyRoutes"]
->[number];
-
 type ConversationHistoryQueryBuilder = NonNullable<
   PromptCacheConversationTableProps["historyQueryForConversationKey"]
 >;
+
+type PromptCacheConversationStickyRoute = NonNullable<
+  PromptCacheConversationBindingResponse["stickyRoutes"]
+>[number];
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
 const PROMPT_CACHE_OPERATION_EVENT_PAGE_SIZE = 20;
-const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
-const PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX = 96;
-const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
-const CONVERSATION_ACTIVITY_WHEEL_THRESHOLD = 2;
-const CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY = 0.0018;
-const CONVERSATION_ACTIVITY_WHEEL_PAN_INTENSITY = 0.012;
-const CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_THRESHOLD_PX = 8;
-const CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_RATIO = 1.45;
-const CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO = 0.72;
 
-type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history";
-type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
-type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
+const PROMPT_CACHE_HISTORY_TOP_INSERT_THRESHOLD_PX = 96;
+
 type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
 export type PromptCacheConversationDrawerTab =
   | "overview"
@@ -183,15 +144,6 @@ function isOlderBindingSnapshot(
     ? nextTimestamp < confirmedTimestamp
     : false;
 }
-
-const CONVERSATION_ACTIVITY_METRICS: Array<{
-  key: ConversationActivityMetric;
-  labelKey: string;
-}> = [
-  { key: "totalCount", labelKey: "metric.totalCount" },
-  { key: "totalCost", labelKey: "metric.totalCost" },
-  { key: "totalTokens", labelKey: "metric.totalTokens" },
-];
 
 const PROMPT_CACHE_OPERATION_FILTER_OPTIONS: Array<{
   value: PromptCacheConversationOperationFilter;
@@ -954,1342 +906,321 @@ function PromptCacheConversationInvocationTable({
   );
 }
 
-function resolveConversationActivityRange(range: ConversationActivityRange) {
-  if (range === "history") return {};
+type ConversationOperationTranslation = (
+  key: string,
+  values?: Record<string, string | number>,
+) => string;
 
-  const now = new Date();
-  if (range === "today") {
-    return {
-      from: startOfLocalDay(now).toISOString(),
-      to: now.toISOString(),
-    };
-  }
-  if (range === "yesterday") {
-    const end = startOfLocalDay(now);
-    const start = new Date(end);
-    start.setDate(start.getDate() - 1);
-    return {
-      from: start.toISOString(),
-      to: end.toISOString(),
-    };
-  }
-  const durationMs = range === "7d" ? 7 * 86_400_000 : 86_400_000;
-  return {
-    from: new Date(now.getTime() - durationMs).toISOString(),
-    to: now.toISOString(),
-  };
-}
-
-function startOfLocalDay(value: Date) {
-  const next = new Date(value);
-  next.setHours(0, 0, 0, 0);
-  return next;
-}
-
-function formatCompactNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
-  return formatter.format(value);
-}
-
-function formatDurationMs(value: number | null | undefined, formatter: Intl.NumberFormat) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
-  const seconds = value / 1000;
-  const maximumFractionDigits = Math.abs(seconds) >= 10 ? 1 : 2;
-  return `${formatter.format(Number(seconds.toFixed(maximumFractionDigits)))} s`;
-}
-
-function getConversationActivityValue(record: ApiInvocation, metric: ConversationActivityMetric) {
-  if (metric === "totalCost") return record.cost ?? 0;
-  if (metric === "totalTokens") return record.totalTokens ?? 0;
-  return 1;
-}
-
-interface ConversationActivityBucket {
-  index: number;
-  label: string;
-  tooltipLabel: string;
-  success: number;
-  failure: number;
-  failureNegative: number;
-  inFlight: number;
-  neutral: number;
-  totalCount: number;
-  totalCost: number;
-  totalTokens: number;
-  totalMs: number;
-  totalMsSamples: number;
-  avgTotalMs: number | null;
-}
-
-interface ConversationActivityBucketSet {
-  buckets: ConversationActivityBucket[];
-  rangeStartMs: number;
-  rangeEndMs: number;
-}
-
-function resolveDocumentThemeMode(): ThemeMode {
-  if (typeof document === "undefined") return "light";
-  const theme =
-    document.body.getAttribute("data-theme") ??
-    document.documentElement.getAttribute("data-theme") ??
-    "";
-  const normalizedTheme = theme.toLowerCase();
-  if (normalizedTheme.includes("dark")) return "dark";
-  if (normalizedTheme.includes("light")) return "light";
-  const colorMode =
-    document.body.getAttribute("data-color-mode") ??
-    document.documentElement.getAttribute("data-color-mode");
-  if (colorMode === "dark" || colorMode === "light") return colorMode;
-  return "light";
-}
-
-function resolveDocumentFloatingSurfaceTheme(): FloatingSurfaceTheme {
-  return resolveDocumentThemeMode() === "dark" ? "vibe-dark" : "vibe-light";
-}
-
-interface ConversationActivityViewport {
-  startIndex: number;
-  endIndex: number;
-}
-
-function clampConversationActivityValue(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function normalizeConversationActivityViewport(
-  viewport: ConversationActivityViewport,
-  pointCount: number,
-): ConversationActivityViewport {
-  if (pointCount <= 0) {
-    return { startIndex: 0, endIndex: 0 };
-  }
-
-  const maxIndex = pointCount - 1;
-  const minSpan = Math.min(CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS, pointCount);
-  const currentSpan = Math.max(
-    minSpan,
-    Math.min(pointCount, viewport.endIndex - viewport.startIndex + 1),
-  );
-  const startIndex = clampConversationActivityValue(
-    Math.round(viewport.startIndex),
-    0,
-    Math.max(0, pointCount - currentSpan),
-  );
-
-  return {
-    startIndex,
-    endIndex: Math.min(maxIndex, startIndex + currentSpan - 1),
-  };
-}
-
-function shiftConversationActivityViewport(
-  viewport: ConversationActivityViewport,
-  pointCount: number,
-  deltaIndexes: number,
-): ConversationActivityViewport {
-  const span = viewport.endIndex - viewport.startIndex + 1;
-  return normalizeConversationActivityViewport(
-    {
-      startIndex: viewport.startIndex + deltaIndexes,
-      endIndex: viewport.startIndex + deltaIndexes + span - 1,
-    },
-    pointCount,
-  );
-}
-
-function isSameConversationActivityViewport(
-  left: ConversationActivityViewport,
-  right: ConversationActivityViewport,
-) {
-  return left.startIndex === right.startIndex && left.endIndex === right.endIndex;
-}
-
-function zoomConversationActivityViewport(
-  viewport: ConversationActivityViewport,
-  pointCount: number,
-  zoomDelta: number,
-  anchorRatio: number,
-): ConversationActivityViewport {
-  if (pointCount <= 0) return viewport;
-
-  const currentSpan = viewport.endIndex - viewport.startIndex + 1;
-  const nextSpan = clampConversationActivityValue(
-    Math.round(currentSpan * Math.exp(zoomDelta)),
-    Math.min(CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS, pointCount),
-    pointCount,
-  );
-  const safeAnchorRatio = clampConversationActivityValue(anchorRatio, 0, 1);
-  const anchorIndex = viewport.startIndex + (currentSpan - 1) * safeAnchorRatio;
-  const nextStart = Math.round(anchorIndex - (nextSpan - 1) * safeAnchorRatio);
-
-  return normalizeConversationActivityViewport(
-    {
-      startIndex: nextStart,
-      endIndex: nextStart + nextSpan - 1,
-    },
-    pointCount,
-  );
-}
-
-function buildConversationActivityBuckets({
-  records,
-  range,
-  metric,
-  localeTag,
-  rangeStartMs,
-  rangeEndMs,
+function ConversationOperationEventHeader({
+  event,
+  t,
 }: {
-  records: ApiInvocation[];
-  range: ConversationActivityRange;
-  metric: ConversationActivityMetric;
-  localeTag: string;
-  rangeStartMs?: number | null;
-  rangeEndMs?: number | null;
-}): ConversationActivityBucketSet {
-  const now = new Date();
-  const rangeBounds = resolveConversationActivityRange(range);
-  let startMs =
-    typeof rangeStartMs === "number" && Number.isFinite(rangeStartMs)
-      ? rangeStartMs
-      : rangeBounds.from
-        ? Date.parse(rangeBounds.from)
-        : Number.POSITIVE_INFINITY;
-  let endMs =
-    typeof rangeEndMs === "number" && Number.isFinite(rangeEndMs)
-      ? rangeEndMs
-      : rangeBounds.to
-        ? Date.parse(rangeBounds.to)
-        : Number.NEGATIVE_INFINITY;
-
-  if (range === "history") {
-    for (const record of records) {
-      const occurredAt = Date.parse(record.occurredAt);
-      if (!Number.isFinite(occurredAt)) continue;
-      startMs = Math.min(startMs, occurredAt);
-      endMs = Math.max(endMs, occurredAt);
-    }
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
-      endMs = now.getTime();
-      startMs = endMs - 86_400_000;
-    }
-  }
-
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-    if (
-      range === "history" &&
-      Number.isFinite(startMs) &&
-      Number.isFinite(endMs) &&
-      startMs === endMs
-    ) {
-      endMs = startMs + 60_000;
-    } else {
-      endMs = now.getTime();
-      startMs = endMs - 86_400_000;
-    }
-  }
-
-  const targetBuckets =
-    endMs - startMs <= 86_400_000
-      ? Math.ceil((endMs - startMs) / 60_000) + 1
-      : range === "today" || range === "yesterday"
-        ? 24
-        : range === "1d"
-          ? 24
-          : 720;
-  const bucketMs = Math.max(60_000, Math.ceil((endMs - startMs) / targetBuckets));
-  const bucketCount = Math.max(1, Math.ceil((endMs - startMs) / bucketMs));
-  const labelFormatter = new Intl.DateTimeFormat(localeTag, {
-    month: range === "history" || range === "7d" ? "2-digit" : undefined,
-    day: range === "history" || range === "7d" ? "2-digit" : undefined,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    hourCycle: "h23",
-  });
-  const buckets: ConversationActivityBucket[] = Array.from({ length: bucketCount }, (_, index) => {
-    const bucketStart = startMs + index * bucketMs;
-    return {
-      index,
-      label: labelFormatter.format(new Date(bucketStart)),
-      tooltipLabel: labelFormatter.format(new Date(bucketStart)),
-      success: 0,
-      failure: 0,
-      failureNegative: 0,
-      inFlight: 0,
-      neutral: 0,
-      totalCount: 0,
-      totalCost: 0,
-      totalTokens: 0,
-      totalMs: 0,
-      totalMsSamples: 0,
-      avgTotalMs: null,
-    };
-  });
-
-  for (const record of records) {
-    const occurredAt = Date.parse(record.occurredAt);
-    if (!Number.isFinite(occurredAt) || occurredAt < startMs || occurredAt > endMs) {
-      continue;
-    }
-    const index = Math.min(
-      buckets.length - 1,
-      Math.max(0, Math.floor((occurredAt - startMs) / bucketMs)),
-    );
-    const bucket = buckets[index];
-    if (!bucket) continue;
-    const outcome = resolvePromptCacheInvocationOutcome(record);
-    const metricValue = getConversationActivityValue(record, metric);
-    if (outcome === "success") bucket.success += metricValue;
-    else if (outcome === "failure") bucket.failure += metricValue;
-    else if (outcome === "in_flight") bucket.inFlight += metricValue;
-    else bucket.neutral += metricValue;
-    bucket.totalCount += 1;
-    bucket.totalCost += record.cost ?? 0;
-    bucket.totalTokens += record.totalTokens ?? 0;
-    if (typeof record.tTotalMs === "number" && Number.isFinite(record.tTotalMs)) {
-      bucket.totalMs += record.tTotalMs;
-      bucket.totalMsSamples += 1;
-    }
-  }
-
-  for (const bucket of buckets) {
-    bucket.failureNegative = bucket.failure > 0 ? -bucket.failure : 0;
-    bucket.avgTotalMs = bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : null;
-  }
-
-  return { buckets, rangeStartMs: startMs, rangeEndMs: endMs };
+  event: PromptCacheConversationOperationEvent;
+  t: ConversationOperationTranslation;
+}) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex flex-wrap gap-2">
+          {event.infoTypes.map((infoType) => (
+            <Chip
+              key={`${event.id}-${infoType}`}
+              tone={conversationOperationInfoTypeChipTone(infoType)}
+            >
+              {conversationOperationInfoTypeLabel(infoType, t)}
+            </Chip>
+          ))}
+          <Chip tone={conversationOperationOriginChipTone(event.origin)}>
+            {conversationOperationOriginLabel(event.origin, t)}
+          </Chip>
+          {event.routingScope ? (
+            <Chip tone="secondary">
+              {event.routingScope.kind === "all"
+                ? t("live.conversations.drawer.operations.modelScope.all")
+                : t("live.conversations.drawer.operations.modelScope.model", {
+                    model: event.routingScope.modelKey ?? FALLBACK_CELL,
+                  })}
+            </Chip>
+          ) : null}
+        </div>
+        {event.routingScope?.kind === "model" &&
+        event.routingScope.requestModel &&
+        event.routingScope.requestModel !== event.routingScope.modelKey ? (
+          <p className="font-mono text-[11px] text-base-content/55">
+            {t("live.conversations.drawer.operations.requestModel", {
+              model: event.routingScope.requestModel,
+            })}
+          </p>
+        ) : null}
+        <p className="break-words text-sm font-semibold text-base-content">
+          {conversationOperationActionLabel(event.action, event.headline, t)}
+        </p>
+      </div>
+      <span className="text-xs text-base-content/58">
+        {formatConversationOperationOccurredAt(event.occurredAt)}
+      </span>
+    </div>
+  );
 }
 
-interface ConversationActivityTooltipPayloadEntry {
-  payload?: ConversationActivityBucket;
+function ConversationOperationEventChanges({
+  event,
+  t,
+}: {
+  event: PromptCacheConversationOperationEvent;
+  t: ConversationOperationTranslation;
+}) {
+  return (
+    <>
+      {event.changedFields.length > 0 ? (
+        <p className="text-xs text-base-content/70">
+          {t("live.conversations.drawer.operations.changedFields", {
+            fields: event.changedFields
+              .map((field) => conversationOperationChangedFieldLabel(field, t))
+              .join(" / "),
+          })}
+        </p>
+      ) : null}
+      {event.bindingBefore || event.bindingAfter ? (
+        <p className="text-xs text-base-content/72">
+          {t("live.conversations.drawer.operations.bindingTransition", {
+            from: conversationOperationBindingSnapshotLabel(event.bindingBefore, t),
+            to: conversationOperationBindingSnapshotLabel(event.bindingAfter, t),
+          })}
+        </p>
+      ) : null}
+      {event.stickyBefore || event.stickyAfter ? (
+        <p className="text-xs text-base-content/72">
+          {t("live.conversations.drawer.operations.stickyTransition", {
+            from: conversationOperationStickySnapshotLabel(event.stickyBefore, t),
+            to: conversationOperationStickySnapshotLabel(event.stickyAfter, t),
+          })}
+        </p>
+      ) : null}
+      {(event.stickyTransitions?.length ?? 0) > 0 ? (
+        <div className="space-y-1 rounded border border-base-content/10 bg-base-200/35 p-2 text-xs text-base-content/72">
+          {(event.stickyTransitions ?? []).map((transition) => (
+            <p key={`${event.id}-${transition.modelKey ?? "all"}`}>
+              {t("live.conversations.drawer.operations.modelTransition", {
+                model:
+                  transition.modelKey ?? t("live.conversations.drawer.operations.modelScope.all"),
+                from: conversationOperationStickySnapshotLabel(transition.before, t),
+                to: conversationOperationStickySnapshotLabel(transition.after, t),
+              })}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
 }
 
-interface ConversationActivityBarShapeProps {
-  x?: number | string;
-  y?: number | string;
-  width?: number | string;
-  height?: number | string;
-  fill?: string;
+function ConversationOperationRoutingAudit({
+  audit,
+  t,
+}: {
+  audit: NonNullable<
+    NonNullable<PromptCacheConversationOperationEvent["routingContext"]>["routingSelectionAudit"]
+  >;
+  t: ConversationOperationTranslation;
+}) {
+  return (
+    <div className="space-y-1 rounded border border-info/25 bg-info/5 p-2">
+      <p className="font-medium text-base-content">
+        {t("table.poolAttempts.routingDecision.summary", {
+          account: audit.selectedAccountName,
+          count: audit.eligibleCandidateCount,
+        })}
+      </p>
+      <p>{routingSelectionWinnerLabel(audit, t)}</p>
+      {routingSelectionHandoffLabel(audit, t) ? (
+        <p>
+          {t("live.routing.record.handoffAdmission")}: {routingSelectionHandoffLabel(audit, t)}
+        </p>
+      ) : null}
+      {audit.selectedScore ? (
+        <p data-testid="conversation-routing-selection-score">
+          {routingSelectionScoreLabel(audit.selectedAccountName, audit.selectedScore, t)}
+        </p>
+      ) : null}
+      {audit.comparedScore && audit.comparedAccountName ? (
+        <p>{routingSelectionScoreLabel(audit.comparedAccountName, audit.comparedScore, t)}</p>
+      ) : null}
+      {audit.excludedCandidates.map((candidate) => (
+        <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
+          {routingSelectionExclusionLabel(candidate.accountName, candidate.reasonCode, t)}
+        </p>
+      ))}
+    </div>
+  );
 }
 
-function renderAlignedFailureBarShape({
-  x,
-  y,
-  width,
-  height,
-  fill,
-}: ConversationActivityBarShapeProps) {
-  const numericX = Number(x);
-  const numericY = Number(y);
-  const numericWidth = Number(width);
-  const numericHeight = Number(height);
-  if (
-    !Number.isFinite(numericX) ||
-    !Number.isFinite(numericY) ||
-    !Number.isFinite(numericWidth) ||
-    !Number.isFinite(numericHeight) ||
-    numericWidth <= 0 ||
-    numericHeight === 0
-  ) {
+function ConversationOperationRoutingLinks({
+  event,
+  t,
+}: {
+  event: PromptCacheConversationOperationEvent;
+  t: ConversationOperationTranslation;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      {event.routingContext?.causingAttemptId ? (
+        <Link
+          className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+          to={routingAttemptHref(event, event.routingContext.causingAttemptId)}
+        >
+          {t("live.conversations.drawer.operations.routingContext.causeAttempt", {
+            attemptId: event.routingContext.causingAttemptId,
+          })}
+        </Link>
+      ) : null}
+      {event.routingContext?.triggerAttemptId ? (
+        <Link
+          className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+          to={routingAttemptHref(event, event.routingContext.triggerAttemptId)}
+        >
+          {t(
+            event.routingContext.routingSelectionAudit
+              ? "live.conversations.drawer.operations.routingContext.routingDecisionAttempt"
+              : "live.conversations.drawer.operations.routingContext.trigger",
+            { attemptId: event.routingContext.triggerAttemptId },
+          )}
+        </Link>
+      ) : null}
+      {routingInvocationRecordHref(event) ? (
+        <Link
+          className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
+          to={routingInvocationRecordHref(event) ?? "#"}
+          aria-label={t(
+            "live.conversations.drawer.operations.routingContext.invocationRecordLabel",
+            { id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "" },
+          )}
+          title={t("live.conversations.drawer.operations.routingContext.invocationRecordLabel", {
+            id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
+          })}
+        >
+          {t("live.conversations.drawer.operations.routingContext.invocationRecord", {
+            id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
+          })}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+function ConversationOperationEventRouting({
+  event,
+  t,
+}: {
+  event: PromptCacheConversationOperationEvent;
+  t: ConversationOperationTranslation;
+}) {
+  if (!event.infoTypes.includes("routing") || !conversationOperationShowsRoutingReason(event)) {
     return null;
   }
-  const left = Math.min(numericX, numericX + numericWidth);
-  const right = Math.max(numericX, numericX + numericWidth);
-  const top = Math.min(numericY, numericY + numericHeight);
-  const bottom = Math.max(numericY, numericY + numericHeight);
-  const normalizedWidth = right - left;
-  const normalizedHeight = bottom - top;
-  const radius = Math.min(3, normalizedWidth / 2, normalizedHeight / 2);
-
+  const audit = event.routingContext?.routingSelectionAudit;
   return (
-    <path
-      data-conversation-failure-bar-shape="negative"
-      d={[
-        `M${left},${top}`,
-        `H${right}`,
-        `V${bottom - radius}`,
-        `Q${right},${bottom} ${right - radius},${bottom}`,
-        `H${left + radius}`,
-        `Q${left},${bottom} ${left},${bottom - radius}`,
-        "Z",
-      ].join(" ")}
-      fill={fill}
-      stroke="none"
+    <div className="space-y-1 text-xs text-base-content/70">
+      <p>{conversationOperationRoutingReasonLabel(event, t)}</p>
+      {event.routingContext?.routingSource ? (
+        <p>
+          {t("live.conversations.drawer.operations.routingContext.source", {
+            source: t(
+              `live.conversations.drawer.operations.routingContext.sources.${event.routingContext.routingSource}`,
+            ),
+          })}
+        </p>
+      ) : null}
+      {audit ? <ConversationOperationRoutingAudit audit={audit} t={t} /> : null}
+      <ConversationOperationRoutingLinks event={event} t={t} />
+    </div>
+  );
+}
+
+function ConversationOperationEventCard({
+  event,
+  t,
+}: {
+  event: PromptCacheConversationOperationEvent;
+  t: ConversationOperationTranslation;
+}) {
+  return (
+    <article className="space-y-3 rounded-xl border border-base-content/10 bg-base-100/80 p-4">
+      <ConversationOperationEventHeader event={event} t={t} />
+      <ConversationOperationEventChanges event={event} t={t} />
+      <ConversationOperationEventRouting event={event} t={t} />
+      {event.invokeId ? (
+        <p className="break-all font-mono text-[11px] text-base-content/58">
+          {t("live.conversations.drawer.operations.invokeId", { invokeId: event.invokeId })}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function ConversationPolicySelectEditor({
+  value,
+  disabled,
+  ariaLabel,
+  options,
+  onChange,
+}: {
+  value: string;
+  disabled: boolean;
+  ariaLabel: string;
+  options: readonly SelectFieldOption[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <SelectField
+      value={value}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      size="sm"
+      options={options}
+      onValueChange={onChange}
     />
   );
 }
 
-function ConversationActivityTooltipContent({
-  active,
-  label,
-  payload,
-  renderValue,
+function ConversationAvailableModelsEditor({
+  value,
+  disabled,
+  ariaLabel,
+  placeholder,
+  isEmpty,
+  requiredLabel,
+  applyLabel,
+  applyDisabled,
+  onChange,
+  onApply,
 }: {
-  active?: boolean;
-  label?: string | number;
-  payload?: ConversationActivityTooltipPayloadEntry[];
-  renderValue: (
-    bucket: ConversationActivityBucket,
-  ) => Array<{ label: string; value: string; color: string }>;
+  value: string;
+  disabled: boolean;
+  ariaLabel: string;
+  placeholder: string;
+  isEmpty: boolean;
+  requiredLabel: string;
+  applyLabel: string;
+  applyDisabled: boolean;
+  onChange: (value: string) => void;
+  onApply: () => void;
 }) {
-  const bucket = payload?.find((entry) => entry.payload)?.payload;
-  if (!active || !bucket) return null;
-
-  const rows = renderValue(bucket);
-  if (rows.length === 0) return null;
-  const surfaceTheme = resolveDocumentFloatingSurfaceTheme();
-
   return (
-    <div
-      role="tooltip"
-      data-theme={surfaceTheme}
-      data-inline-chart-tooltip="true"
-      className="min-w-[11rem] max-w-[14rem] rounded-xl border px-3 py-2 text-[11px] leading-tight text-base-content"
-      style={{
-        ...floatingSurfaceStyle("neutral", surfaceTheme),
-      }}
-    >
-      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
-        {typeof label === "string" ? label : bucket.tooltipLabel}
-      </div>
-      <div className="mt-2 space-y-1.5">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-start gap-2">
-            <span
-              className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: row.color }}
-              aria-hidden="true"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="text-base-content/62">{row.label}</div>
-              <div className="mt-0.5 font-mono text-[12px] font-semibold tracking-tight text-base-content">
-                {row.value}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ConversationActivityChart({
-  buckets,
-  rangeStartMs,
-  rangeEndMs,
-  metric,
-  loading,
-  numberFormatter,
-  currencyFormatter,
-  t,
-}: {
-  buckets: ConversationActivityBucket[];
-  rangeStartMs: number | null;
-  rangeEndMs: number | null;
-  metric: ConversationActivityMetric;
-  loading: boolean;
-  numberFormatter: Intl.NumberFormat;
-  currencyFormatter: Intl.NumberFormat;
-  t: (key: string, values?: Record<string, string | number>) => string;
-}) {
-  const themeMode = resolveDocumentThemeMode();
-  const [viewport, setViewport] = useState<ConversationActivityViewport>({
-    startIndex: 0,
-    endIndex: Math.max(0, buckets.length - 1),
-  });
-  const viewportRef = useRef<ConversationActivityViewport>(viewport);
-  const viewportIdentity = `${buckets.length}:${buckets[0]?.tooltipLabel ?? "empty"}:${buckets.at(-1)?.tooltipLabel ?? "empty"}`;
-  const viewportIdentityRef = useRef(viewportIdentity);
-  const interactionRef = useRef<HTMLDivElement | null>(null);
-  const wheelListenerElementRef = useRef<HTMLDivElement | null>(null);
-  const dragPreviewLayerRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    currentClientX: number;
-    currentClientY: number;
-    axis: ConversationActivityDragAxis;
-    viewport: ConversationActivityViewport;
-  } | null>(null);
-  const dragPreviewOffsetRef = useRef(0);
-  const dragPreviewFrameRef = useRef<number | null>(null);
-  const wheelPanDeltaRef = useRef(0);
-  const wheelPanFrameRef = useRef<number | null>(null);
-  const wheelZoomDeltaRef = useRef(0);
-  const wheelZoomAnchorRatioRef = useRef(0.5);
-  const wheelZoomFrameRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    viewportRef.current = viewport;
-  }, [viewport]);
-
-  useEffect(() => {
-    setViewport((current) => {
-      if (viewportIdentityRef.current !== viewportIdentity) {
-        viewportIdentityRef.current = viewportIdentity;
-        return normalizeConversationActivityViewport(
-          { startIndex: 0, endIndex: Math.max(0, buckets.length - 1) },
-          buckets.length,
-        );
-      }
-      return normalizeConversationActivityViewport(current, buckets.length);
-    });
-  }, [buckets.length, viewportIdentity]);
-
-  const visibleWindow = normalizeConversationActivityViewport(viewport, buckets.length);
-  const visibleBuckets = buckets.slice(visibleWindow.startIndex, visibleWindow.endIndex + 1);
-  const visibleTotalCount = visibleBuckets.reduce((sum, bucket) => sum + bucket.totalCount, 0);
-  const viewportSpan = visibleWindow.endIndex - visibleWindow.startIndex + 1;
-  const isZoomed = buckets.length > 0 && viewportSpan < buckets.length;
-  const xDomain: [number, number] = [visibleWindow.startIndex, visibleWindow.endIndex];
-  const barSize = useMemo(() => {
-    if (buckets.length <= 0) return 1;
-    const zoomFactor = buckets.length / Math.max(1, viewportSpan);
-    const minimumReadableBarSize = buckets.length <= 60 ? 5 : 1;
-    return clampConversationActivityValue(
-      Math.round(zoomFactor * 0.75),
-      minimumReadableBarSize,
-      10,
-    );
-  }, [buckets.length, viewportSpan]);
-
-  const getAnchorRatio = useCallback((clientX: number) => {
-    const rect = interactionRef.current?.getBoundingClientRect();
-    if (!rect || rect.width <= 0) return 0.5;
-    return clampConversationActivityValue((clientX - rect.left) / rect.width, 0, 1);
-  }, []);
-
-  const scheduleWheelPan = useCallback(
-    (deltaIndexes: number) => {
-      wheelPanDeltaRef.current += deltaIndexes;
-      if (wheelPanFrameRef.current != null) return;
-
-      wheelPanFrameRef.current = window.requestAnimationFrame(() => {
-        wheelPanFrameRef.current = null;
-        const pendingDelta = wheelPanDeltaRef.current;
-        wheelPanDeltaRef.current = 0;
-        if (pendingDelta === 0) return;
-
-        const roundedDelta =
-          Math.round(pendingDelta) ||
-          Math.sign(pendingDelta) *
-            Math.max(
-              1,
-              Math.round(
-                CONVERSATION_ACTIVITY_WHEEL_PAN_INTENSITY *
-                  CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS,
-              ),
-            );
-        setViewport((current) => {
-          const normalized = normalizeConversationActivityViewport(current, buckets.length);
-          const next = shiftConversationActivityViewport(normalized, buckets.length, roundedDelta);
-          return isSameConversationActivityViewport(normalized, next) ? current : next;
-        });
-      });
-    },
-    [buckets.length],
-  );
-
-  const scheduleWheelZoom = useCallback(
-    (deltaY: number, anchorRatio: number) => {
-      wheelZoomDeltaRef.current += deltaY;
-      wheelZoomAnchorRatioRef.current = anchorRatio;
-      if (wheelZoomFrameRef.current != null) return;
-
-      wheelZoomFrameRef.current = window.requestAnimationFrame(() => {
-        wheelZoomFrameRef.current = null;
-        const pendingDelta = wheelZoomDeltaRef.current;
-        const pendingAnchorRatio = wheelZoomAnchorRatioRef.current;
-        wheelZoomDeltaRef.current = 0;
-        if (pendingDelta === 0) return;
-
-        setViewport((current) => {
-          const normalized = normalizeConversationActivityViewport(current, buckets.length);
-          const next = zoomConversationActivityViewport(
-            normalized,
-            buckets.length,
-            pendingDelta * CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY,
-            pendingAnchorRatio,
-          );
-          return isSameConversationActivityViewport(normalized, next) ? current : next;
-        });
-      });
-    },
-    [buckets.length],
-  );
-
-  useEffect(
-    () => () => {
-      if (wheelPanFrameRef.current != null) {
-        window.cancelAnimationFrame(wheelPanFrameRef.current);
-      }
-      if (wheelZoomFrameRef.current != null) {
-        window.cancelAnimationFrame(wheelZoomFrameRef.current);
-      }
-    },
-    [],
-  );
-
-  const handleWheel = useCallback(
-    (event: WheelEvent) => {
-      if (buckets.length <= CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS) return;
-
-      const horizontalIntent =
-        Math.abs(event.deltaX) >= CONVERSATION_ACTIVITY_WHEEL_THRESHOLD &&
-        Math.abs(event.deltaX) >= Math.abs(event.deltaY) &&
-        !event.ctrlKey;
-      const hasZoomIntent = event.ctrlKey || event.metaKey || event.altKey;
-      if (!horizontalIntent && !hasZoomIntent) return;
-
-      event.preventDefault();
-      if (horizontalIntent) {
-        const normalized = normalizeConversationActivityViewport(
-          viewportRef.current,
-          buckets.length,
-        );
-        const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
-        const span = normalized.endIndex - normalized.startIndex + 1;
-        scheduleWheelPan((event.deltaX / Math.max(1, width)) * span);
-        return;
-      }
-
-      scheduleWheelZoom(event.deltaY, getAnchorRatio(event.clientX));
-    },
-    [buckets.length, getAnchorRatio, scheduleWheelPan, scheduleWheelZoom],
-  );
-
-  const setInteractionLayerRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      if (wheelListenerElementRef.current) {
-        wheelListenerElementRef.current.removeEventListener("wheel", handleWheel);
-        wheelListenerElementRef.current = null;
-      }
-
-      interactionRef.current = node;
-      if (!node) return;
-
-      node.addEventListener("wheel", handleWheel, { passive: false });
-      wheelListenerElementRef.current = node;
-    },
-    [handleWheel],
-  );
-
-  const handlePointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0 || buckets.length <= CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS) {
-        return;
-      }
-      dragPreviewOffsetRef.current = 0;
-      if (dragPreviewLayerRef.current) {
-        dragPreviewLayerRef.current.style.transform = "";
-      }
-      const normalized = normalizeConversationActivityViewport(viewport, buckets.length);
-      dragRef.current = {
-        pointerId: event.pointerId,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        currentClientX: event.clientX,
-        currentClientY: event.clientY,
-        axis: "pending",
-        viewport: normalized,
-      };
-      event.currentTarget.setPointerCapture(event.pointerId);
-    },
-    [buckets.length, viewport],
-  );
-
-  const scheduleDragPreview = useCallback(() => {
-    if (dragPreviewFrameRef.current != null) return;
-
-    dragPreviewFrameRef.current = window.requestAnimationFrame(() => {
-      dragPreviewFrameRef.current = null;
-      const drag = dragRef.current;
-      if (!drag) return;
-
-      const previewOffsetPx = drag.currentClientX - drag.startClientX;
-      if (previewOffsetPx === dragPreviewOffsetRef.current) return;
-      dragPreviewOffsetRef.current = previewOffsetPx;
-      if (dragPreviewLayerRef.current) {
-        dragPreviewLayerRef.current.style.transform =
-          previewOffsetPx === 0 ? "" : `translate3d(${previewOffsetPx}px, 0, 0)`;
-      }
-    });
-  }, []);
-
-  const handlePointerMove = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      drag.currentClientX = event.clientX;
-      drag.currentClientY = event.clientY;
-
-      if (drag.axis === "pending") {
-        const deltaX = Math.abs(drag.currentClientX - drag.startClientX);
-        const deltaY = Math.abs(drag.currentClientY - drag.startClientY);
-        const distance = Math.hypot(deltaX, deltaY);
-
-        if (distance < CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_THRESHOLD_PX) return;
-
-        if (deltaX >= deltaY * CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_RATIO) {
-          drag.axis = "horizontal";
-        } else if (deltaY >= deltaX * CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_RATIO) {
-          drag.axis = "vertical";
-          dragRef.current = null;
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-          return;
-        } else if (
-          Math.min(deltaX, deltaY) >=
-          Math.max(deltaX, deltaY) * CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO
-        ) {
-          drag.axis = "free";
-        } else {
-          return;
-        }
-      }
-
-      if (drag.axis === "vertical") return;
-      scheduleDragPreview();
-    },
-    [scheduleDragPreview],
-  );
-
-  const handlePointerEnd = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId) return;
-
-      if (drag.axis === "horizontal" || drag.axis === "free") {
-        const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
-        const span = drag.viewport.endIndex - drag.viewport.startIndex + 1;
-        const deltaIndexes = Math.round(
-          ((drag.startClientX - drag.currentClientX) / Math.max(1, width)) * span,
-        );
-        setViewport((current) => {
-          const next = shiftConversationActivityViewport(
-            drag.viewport,
-            buckets.length,
-            deltaIndexes,
-          );
-          return isSameConversationActivityViewport(
-            normalizeConversationActivityViewport(current, buckets.length),
-            next,
-          )
-            ? current
-            : next;
-        });
-      }
-
-      dragRef.current = null;
-      dragPreviewOffsetRef.current = 0;
-      if (dragPreviewLayerRef.current) {
-        dragPreviewLayerRef.current.style.transform = "";
-      }
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }
-    },
-    [buckets.length],
-  );
-
-  useEffect(
-    () => () => {
-      if (dragPreviewFrameRef.current != null) {
-        window.cancelAnimationFrame(dragPreviewFrameRef.current);
-      }
-    },
-    [],
-  );
-  const chartColors = useMemo(() => {
-    const base = chartBaseTokens(themeMode);
-    const status = chartStatusTokens(themeMode);
-    return {
-      ...base,
-      success: status.success,
-      failure: status.failure,
-      inFlight: metricAccent("totalCount", themeMode),
-      neutral: themeMode === "dark" ? "#94a3b8" : "#64748b",
-      firstByte: themeMode === "dark" ? "#cbd5e1" : "#475569",
-    };
-  }, [themeMode]);
-  const maxCount = Math.max(
-    1,
-    ...visibleBuckets.map((bucket) =>
-      Math.max(bucket.success + bucket.inFlight + bucket.neutral, bucket.failure),
-    ),
-  );
-  const formatMetricValue = (value: number) => {
-    if (metric === "totalCost") return currencyFormatter.format(value);
-    return numberFormatter.format(value);
-  };
-  const countUnit = t("unit.calls");
-  const legendLabels = {
-    success: t("live.conversations.activity.legendSuccess"),
-    failure: t("live.conversations.activity.legendFailure"),
-    inFlight: t("live.conversations.activity.legendInFlight"),
-    neutral: t("live.conversations.activity.legendNeutral"),
-    duration: t("table.details.totalLatency"),
-  };
-  const renderTooltip = (bucket: ConversationActivityBucket) => [
-    {
-      label: legendLabels.success,
-      value:
-        `${formatMetricValue(bucket.success)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
-      color: chartColors.success,
-    },
-    {
-      label: legendLabels.failure,
-      value:
-        `${formatMetricValue(bucket.failure)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
-      color: chartColors.failure,
-    },
-    {
-      label: legendLabels.inFlight,
-      value:
-        `${formatMetricValue(bucket.inFlight)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
-      color: chartColors.inFlight,
-    },
-    {
-      label: legendLabels.neutral,
-      value:
-        `${formatMetricValue(bucket.neutral)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
-      color: chartColors.neutral,
-    },
-    {
-      label: legendLabels.duration,
-      value: bucket.avgTotalMs == null ? "-" : `${numberFormatter.format(bucket.avgTotalMs)} ms`,
-      color: chartColors.firstByte,
-    },
-  ];
-
-  if (loading && buckets.length === 0) {
-    return (
-      <div className="flex h-80 items-center justify-center gap-2 rounded-xl border border-base-300/75 bg-base-200/40 text-sm text-base-content/60">
-        <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-        <span>{t("chart.loadingDetailed")}</span>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="overscroll-x-contain rounded-xl border border-base-300/75 bg-base-200/40 p-4"
-      data-testid="conversation-activity-chart"
-      data-chart-kind="conversation-activity"
-      data-chart-metric={metric}
-      data-visible-start-index={visibleWindow.startIndex}
-      data-visible-end-index={visibleWindow.endIndex}
-      data-visible-span={viewportSpan}
-      data-visible-total-count={visibleTotalCount}
-      data-zoomed={isZoomed ? "true" : "false"}
-      data-chart-range-start={
-        typeof rangeStartMs === "number" && Number.isFinite(rangeStartMs)
-          ? new Date(rangeStartMs).toISOString()
-          : undefined
-      }
-      data-chart-range-end={
-        typeof rangeEndMs === "number" && Number.isFinite(rangeEndMs)
-          ? new Date(rangeEndMs).toISOString()
-          : undefined
-      }
-    >
-      <div
-        ref={setInteractionLayerRef}
-        className="h-80 w-full cursor-grab touch-pan-y overflow-hidden overscroll-x-contain select-none active:cursor-grabbing"
-        role="img"
-        aria-label={t("live.conversations.activity.chartAria")}
-        data-testid="conversation-activity-chart-interaction-layer"
-        data-chart-kind="conversation-activity"
-        data-min-visible-buckets={CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerEnd}
-        onPointerCancel={handlePointerEnd}
-        onLostPointerCapture={handlePointerEnd}
-      >
-        <div
-          ref={dragPreviewLayerRef}
-          data-testid="conversation-activity-chart-drag-layer"
-          className="h-full w-full will-change-transform"
-          style={{ transform: undefined }}
-        >
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart
-              data={visibleBuckets}
-              margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
-              barGap="-100%"
-              stackOffset="sign"
-            >
-              <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
-              <XAxis
-                dataKey="index"
-                type="number"
-                domain={xDomain}
-                minTickGap={28}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-                tickFormatter={(value: number) => {
-                  const bucket =
-                    buckets[Math.max(0, Math.min(buckets.length - 1, Math.round(value)))];
-                  return bucket?.label ?? String(value);
-                }}
-              />
-              <YAxis
-                yAxisId="count"
-                domain={[-maxCount, maxCount]}
-                allowDecimals={false}
-                tickFormatter={(value) => numberFormatter.format(Math.abs(Number(value)))}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <YAxis
-                yAxisId="latency"
-                orientation="right"
-                tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
-                width={72}
-                axisLine={{ stroke: chartColors.gridLine }}
-                tickLine={{ stroke: chartColors.gridLine }}
-                tick={{ fill: chartColors.axisText, fontSize: 12 }}
-              />
-              <Tooltip
-                labelFormatter={(value) => {
-                  const bucket =
-                    buckets[Math.max(0, Math.min(buckets.length - 1, Math.round(Number(value))))];
-                  return bucket?.tooltipLabel ?? String(value);
-                }}
-                content={(props) => (
-                  <ConversationActivityTooltipContent
-                    active={props.active}
-                    label={props.label}
-                    payload={
-                      props.payload as unknown as
-                        | ConversationActivityTooltipPayloadEntry[]
-                        | undefined
-                    }
-                    renderValue={renderTooltip}
-                  />
-                )}
-              />
-              <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
-              <Bar
-                yAxisId="count"
-                dataKey="failureNegative"
-                name={legendLabels.failure}
-                stackId="positive"
-                fill={chartColors.failure}
-                barSize={barSize}
-                radius={[0, 0, 3, 3]}
-                shape={(props: ConversationActivityBarShapeProps) =>
-                  renderAlignedFailureBarShape({
-                    ...props,
-                    fill: chartColors.failure,
-                  })
-                }
-                isAnimationActive={false}
-              />
-              <Bar
-                yAxisId="count"
-                dataKey="success"
-                name={legendLabels.success}
-                stackId="positive"
-                fill={chartColors.success}
-                barSize={barSize}
-                radius={[0, 0, 0, 0]}
-                isAnimationActive={false}
-              />
-              <Bar
-                yAxisId="count"
-                dataKey="inFlight"
-                name={legendLabels.inFlight}
-                stackId="positive"
-                fill={chartColors.inFlight}
-                barSize={barSize}
-                radius={[0, 0, 0, 0]}
-                isAnimationActive={false}
-              />
-              <Bar
-                yAxisId="count"
-                dataKey="neutral"
-                name={legendLabels.neutral}
-                stackId="positive"
-                fill={chartColors.neutral}
-                barSize={barSize}
-                radius={[3, 3, 0, 0]}
-                isAnimationActive={false}
-              />
-              <Line
-                yAxisId="latency"
-                type="monotone"
-                dataKey="avgTotalMs"
-                name={legendLabels.duration}
-                stroke={chartColors.firstByte}
-                strokeOpacity={0.72}
-                strokeWidth={1.25}
-                dot={{
-                  r: 1.25,
-                  strokeWidth: 0,
-                  fill: chartColors.firstByte,
-                  fillOpacity: 0.72,
-                }}
-                connectNulls={false}
-                isAnimationActive={false}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-base-content/70">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-success" />
-            {legendLabels.success}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-error" />
-            {legendLabels.failure}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: chartColors.inFlight }}
-            />
-            {legendLabels.inFlight}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              className="h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: chartColors.neutral }}
-            />
-            {legendLabels.neutral}
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-px w-5 bg-base-content/70" />
-            {legendLabels.duration}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PromptCacheConversationActivityOverview({
-  open,
-  conversationKey,
-  historyQueryForConversationKey,
-  realtimePayload,
-  isRealtimeLoading,
-  allowHttpFallback,
-  t,
-}: {
-  open: boolean;
-  conversationKey: string | null;
-  historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
-  realtimePayload: InvocationHistoryOverviewTopicPayload | null;
-  isRealtimeLoading: boolean;
-  allowHttpFallback: boolean;
-  t: (key: string, values?: Record<string, string | number>) => string;
-}) {
-  const { locale } = useTranslation();
-  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const activeRange: ConversationActivityRange = "history";
-  const [activeMetric, setActiveMetric] = useState<ConversationActivityMetric>("totalCount");
-  const [summary, setSummary] = useState<InvocationRecordsSummaryResponse | null>(null);
-  const [records, setRecords] = useState<ApiInvocation[]>([]);
-  const [chartRangeStartMs, setChartRangeStartMs] = useState<number | null>(null);
-  const [chartRangeEndMs, setChartRangeEndMs] = useState<number | null>(null);
-  const [chartTotal, setChartTotal] = useState(0);
-  const [chartIsSampled, setChartIsSampled] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const fallbackRequestSeqRef = useRef(0);
-
-  const numberFormatter = useMemo(
-    () =>
-      new Intl.NumberFormat(localeTag, {
-        maximumFractionDigits: 2,
-        notation: "compact",
-      }),
-    [localeTag],
-  );
-  const fullNumberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 2 }),
-    [localeTag],
-  );
-  const currencyFormatter = useMemo(
-    () =>
-      new Intl.NumberFormat(localeTag, {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 4,
-      }),
-    [localeTag],
-  );
-
-  useEffect(() => {
-    if (!open || !conversationKey) {
-      setSummary(null);
-      setRecords([]);
-      setChartRangeStartMs(null);
-      setChartRangeEndMs(null);
-      setChartTotal(0);
-      setChartIsSampled(false);
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
-    setSummary(null);
-    setRecords([]);
-    setChartRangeStartMs(null);
-    setChartRangeEndMs(null);
-    setChartTotal(0);
-    setChartIsSampled(false);
-    setError(null);
-    setIsLoading(isRealtimeLoading);
-  }, [conversationKey, isRealtimeLoading, open]);
-
-  useEffect(() => {
-    if (!realtimePayload || allowHttpFallback) return;
-    fallbackRequestSeqRef.current += 1;
-    setSummary(realtimePayload.summary);
-    setRecords(realtimePayload.records);
-    setChartRangeStartMs(
-      realtimePayload.chartRangeStart ? Date.parse(realtimePayload.chartRangeStart) : null,
-    );
-    setChartRangeEndMs(
-      realtimePayload.chartRangeEnd ? Date.parse(realtimePayload.chartRangeEnd) : null,
-    );
-    setChartTotal(realtimePayload.chartTotal);
-    setChartIsSampled(realtimePayload.chartIsSampled);
-    setIsLoading(false);
-    setError(null);
-  }, [allowHttpFallback, realtimePayload]);
-
-  useEffect(() => {
-    if (!open || !conversationKey || !allowHttpFallback) return;
-    const requestSeq = fallbackRequestSeqRef.current + 1;
-    fallbackRequestSeqRef.current = requestSeq;
-    const controller = new AbortController();
-    const baseQuery = historyQueryForConversationKey?.(conversationKey) ?? {
-      promptCacheKey: conversationKey,
-    };
-    const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } = baseQuery;
-    void page;
-    void pageSize;
-    void snapshotId;
-    void sortBy;
-    void sortOrder;
-    void signal;
-    setIsLoading(true);
-    setError(null);
-    void (async () => {
-      const latestFirstPage = await fetchInvocationRecords({
-        ...filters,
-        page: 1,
-        pageSize: PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-        signal: controller.signal,
-      });
-      const firstPage = await fetchInvocationRecords({
-        ...filters,
-        page: 1,
-        pageSize: latestFirstPage.pageSize,
-        snapshotId: latestFirstPage.snapshotId,
-        sortBy: "occurredAt",
-        sortOrder: "desc",
-        signal: controller.signal,
-      });
-      const nextSummary = await fetchInvocationRecordsSummary({
-        ...filters,
-        snapshotId: firstPage.snapshotId,
-        signal: controller.signal,
-      });
-      const records = firstPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS);
-      const pageSize = Math.max(1, firstPage.pageSize);
-      const targetCount = Math.min(
-        PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
-        Math.max(0, firstPage.total),
-      );
-      let page = 2;
-      let previousPageCount = firstPage.records.length;
-      while (records.length < targetCount && previousPageCount >= pageSize) {
-        if (controller.signal.aborted) return;
-        const nextPage = await fetchInvocationRecords({
-          ...filters,
-          page,
-          pageSize,
-          snapshotId: firstPage.snapshotId,
-          sortBy: "occurredAt",
-          sortOrder: "desc",
-          signal: controller.signal,
-        });
-        previousPageCount = nextPage.records.length;
-        records.push(
-          ...nextPage.records.slice(0, PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS - records.length),
-        );
-        page += 1;
-      }
-      const rangeRecords = [...records];
-      if (firstPage.total > records.length) {
-        const oldestPage = Math.max(1, Math.ceil(firstPage.total / pageSize));
-        const oldestResponse = await fetchInvocationRecords({
-          ...filters,
-          page: oldestPage,
-          pageSize,
-          snapshotId: firstPage.snapshotId,
-          sortBy: "occurredAt",
-          sortOrder: "desc",
-          signal: controller.signal,
-        });
-        rangeRecords.push(...oldestResponse.records);
-      }
-      const occurredAt = rangeRecords
-        .map((record) => Date.parse(record.occurredAt))
-        .filter((value) => Number.isFinite(value));
-      return {
-        nextSummary,
-        records,
-        chartRangeStartMs: occurredAt.length > 0 ? Math.min(...occurredAt) : null,
-        chartRangeEndMs: occurredAt.length > 0 ? Math.max(...occurredAt) : null,
-        chartTotal: firstPage.total,
-      };
-    })()
-      .then((response) => {
-        if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
-        if (!response) return;
-        setSummary(response.nextSummary);
-        setRecords(response.records);
-        setChartRangeStartMs(response.chartRangeStartMs);
-        setChartRangeEndMs(response.chartRangeEndMs);
-        setChartTotal(response.chartTotal);
-        setChartIsSampled(response.records.length < response.chartTotal);
-        setIsLoading(false);
-      })
-      .catch((err) => {
-        if (controller.signal.aborted || requestSeq !== fallbackRequestSeqRef.current) return;
-        if (
-          (err instanceof DOMException && err.name === "AbortError") ||
-          (err instanceof Error && err.name === "AbortError")
-        ) {
-          return;
-        }
-        setError(err instanceof Error ? err.message : String(err));
-        setIsLoading(false);
-      });
-    return () => controller.abort();
-  }, [allowHttpFallback, conversationKey, historyQueryForConversationKey, open]);
-
-  const bucketSet = useMemo(
-    () =>
-      buildConversationActivityBuckets({
-        records,
-        range: activeRange,
-        metric: activeMetric,
-        localeTag,
-        rangeStartMs: chartRangeStartMs,
-        rangeEndMs: chartRangeEndMs,
-      }),
-    [activeMetric, chartRangeEndMs, chartRangeStartMs, localeTag, records],
-  );
-
-  const metrics = [
-    {
-      label: t("live.conversations.activity.metricRequests"),
-      value: formatCompactNumber(summary?.totalCount, numberFormatter),
-      toneClass: "text-primary",
-    },
-    {
-      label: t("live.conversations.activity.metricSuccess"),
-      value: formatCompactNumber(summary?.successCount, numberFormatter),
-      toneClass: "text-success",
-    },
-    {
-      label: t("live.conversations.activity.metricFailures"),
-      value: formatCompactNumber(summary?.failureCount, numberFormatter),
-      toneClass: "text-error",
-    },
-    {
-      label: t("live.conversations.activity.metricAborts"),
-      value: formatCompactNumber(summary?.exception.clientAbortCount, numberFormatter),
-      toneClass: "text-warning",
-    },
-    {
-      label: t("live.conversations.activity.metricTokens"),
-      value: formatCompactNumber(summary?.token.totalTokens, numberFormatter),
-      toneClass: "text-info",
-    },
-    {
-      label: t("live.conversations.activity.metricCost"),
-      value: summary == null ? FALLBACK_CELL : currencyFormatter.format(summary.token.totalCost),
-      toneClass: "text-primary",
-    },
-    {
-      label: t("live.conversations.activity.metricAvgDuration"),
-      value: formatDurationMs(summary?.network.avgTotalMs, fullNumberFormatter),
-      toneClass: "text-base-content",
-    },
-  ];
-
-  return (
-    <section className="space-y-3 rounded-xl border border-base-300/70 bg-base-100/55 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <h3 className="text-sm font-semibold">{t("live.conversations.activity.title")}</h3>
-        <SegmentedControl size="compact" role="tablist" aria-label={t("heatmap.metricsToggleAria")}>
-          {CONVERSATION_ACTIVITY_METRICS.map((metric) => (
-            <SegmentedControlItem
-              key={metric.key}
-              active={activeMetric === metric.key}
-              role="tab"
-              aria-selected={activeMetric === metric.key}
-              onClick={() => setActiveMetric(metric.key)}
-            >
-              {t(metric.labelKey)}
-            </SegmentedControlItem>
-          ))}
-        </SegmentedControl>
-      </div>
-      {error ? (
-        <Alert variant="error">
-          <span>{t("records.summary.loadError", { error })}</span>
-        </Alert>
-      ) : null}
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-        {metrics.map((metric) => (
-          <div
-            key={metric.label}
-            className="rounded-lg border border-base-300/60 bg-base-200/25 px-3 py-2"
-          >
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
-              {metric.label}
-            </div>
-            <div className={`mt-1 text-lg font-semibold ${metric.toneClass}`}>
-              {isLoading && summary == null ? "…" : metric.value}
-            </div>
-          </div>
-        ))}
-      </div>
-      <ConversationActivityChart
-        buckets={bucketSet.buckets}
-        rangeStartMs={bucketSet.rangeStartMs}
-        rangeEndMs={bucketSet.rangeEndMs}
-        metric={activeMetric}
-        loading={isLoading}
-        numberFormatter={numberFormatter}
-        currencyFormatter={currencyFormatter}
-        t={t}
+    <div className="space-y-2">
+      <Input
+        value={value}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        placeholder={placeholder}
+        className="h-9"
+        onChange={(event) => onChange(event.target.value)}
       />
-      {chartIsSampled ? (
-        <p className="text-xs text-base-content/60">
-          {t("live.conversations.activity.sampledChart", {
-            loaded: formatCompactNumber(records.length, fullNumberFormatter),
-            total: formatCompactNumber(chartTotal, fullNumberFormatter),
-          })}
-        </p>
-      ) : null}
-    </section>
+      {isEmpty ? <p className="text-xs text-error">{requiredLabel}</p> : null}
+      <Button type="button" size="sm" disabled={applyDisabled} onClick={onApply}>
+        {applyLabel}
+      </Button>
+    </div>
   );
 }
 
@@ -2734,6 +1665,110 @@ export function PromptCacheConversationHistoryDrawer({
     operationsTopic.descriptorKey,
   ]);
 
+  const loadHistoryRecords = useCallback(
+    async ({
+      controller,
+      requestSeq,
+      silent,
+      append,
+      conversationKey,
+    }: {
+      controller: AbortController;
+      requestSeq: number;
+      silent: boolean;
+      append: boolean;
+      conversationKey: string;
+    }) => {
+      const historyFilters = historyQueryForConversationKey?.(conversationKey) ?? {
+        promptCacheKey: conversationKey,
+      };
+      const fetchHistoryPage = (page: number, snapshotId?: number) =>
+        fetchInvocationRecords({
+          ...historyFilters,
+          page,
+          pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          ...(snapshotId != null ? { snapshotId } : {}),
+          signal: controller.signal,
+        });
+      let page = append ? historyNextPageRef.current : 1;
+      let response: InvocationRecordsResponse;
+      let capturedHttpHead: InvocationRecordsResponse | null = null;
+
+      if (append && !historyHttpSnapshotInitializedRef.current) {
+        const latestHttpHead = await fetchHistoryPage(1);
+        if (requestSeq !== requestSeqRef.current) return false;
+        capturedHttpHead = await fetchHistoryPage(1, latestHttpHead.snapshotId);
+        if (requestSeq !== requestSeqRef.current) return false;
+        historySnapshotIdRef.current = capturedHttpHead.snapshotId;
+        historyHttpSnapshotInitializedRef.current = true;
+        page = capturedHttpHead.page;
+        response = capturedHttpHead;
+      } else {
+        response = await fetchHistoryPage(page, append ? historySnapshotIdRef.current : undefined);
+      }
+      if (requestSeq !== requestSeqRef.current) return false;
+
+      const previousSnapshotId = historySnapshotIdRef.current;
+      const previousNextPage = historyNextPageRef.current;
+      const snapshotChanged =
+        silent &&
+        hasHydratedRef.current &&
+        previousSnapshotId != null &&
+        response.snapshotId !== previousSnapshotId;
+      if (historyHttpSnapshotInitializedRef.current) {
+        historySnapshotIdRef.current = response.snapshotId;
+      }
+      const effectiveResponseTotal = Math.max(response.total, liveHistoryTotalRef.current);
+      const responseRecords = capturedHttpHead
+        ? mergeInvocationRecordCollections(capturedHttpHead.records, response.records)
+        : response.records;
+      if (historyHttpSnapshotInitializedRef.current) {
+        for (const record of responseRecords) {
+          frozenHistoryStableKeysRef.current.add(invocationStableKey(record));
+        }
+      }
+      const loaded = snapshotChanged
+        ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
+            0,
+            recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
+          )
+        : append
+          ? mergeInvocationRecordCollections(recordsRef.current, responseRecords)
+          : silent && hasHydratedRef.current
+            ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
+                0,
+                Math.max(recordsRef.current.length, responseRecords.length),
+              )
+            : mergeInvocationRecordCollections(responseRecords, recordsRef.current);
+      recordsRef.current = loaded;
+      historyNextPageRef.current = snapshotChanged
+        ? 2
+        : append || !silent || !hasHydratedRef.current
+          ? page + 1
+          : Math.max(
+              previousNextPage,
+              Math.floor(loaded.length / PROMPT_CACHE_HISTORY_PAGE_SIZE) + 1,
+            );
+      historyHasMoreRef.current =
+        loaded.length < effectiveResponseTotal &&
+        (append ? response.records.length > 0 : loaded.length > 0);
+      setRecords(loaded);
+      setTotal(effectiveResponseTotal);
+
+      if (requestSeq !== requestSeqRef.current) return false;
+      hasHydratedRef.current = true;
+      const loadedStableKeys = new Set(loaded.map(invocationStableKey));
+      setLiveRecords((current) =>
+        current.filter((record) => !loadedStableKeys.has(invocationStableKey(record))),
+      );
+      setError(null);
+      return capturedHttpHead != null && historyHasMoreRef.current;
+    },
+    [historyQueryForConversationKey],
+  );
+
   const runLoad = useCallback(
     async ({ silent = false, append = false }: { silent?: boolean; append?: boolean } = {}) => {
       if (!open || !conversationKey) return;
@@ -2749,99 +1784,14 @@ export function PromptCacheConversationHistoryDrawer({
       if (shouldShowLoading) setIsLoading(true);
       if (append) setIsLoadingMore(true);
       try {
-        const historyFilters = historyQueryForConversationKey?.(conversationKey) ?? {
-          promptCacheKey: conversationKey,
-        };
-        const fetchHistoryPage = (page: number, snapshotId?: number) =>
-          fetchInvocationRecords({
-            ...historyFilters,
-            page,
-            pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            ...(snapshotId != null ? { snapshotId } : {}),
-            signal: controller.signal,
-          });
-        let page = append ? historyNextPageRef.current : 1;
-        let response: InvocationRecordsResponse;
-        let capturedHttpHead: InvocationRecordsResponse | null = null;
-
-        if (append && !historyHttpSnapshotInitializedRef.current) {
-          const latestHttpHead = await fetchHistoryPage(1);
-          if (requestSeq !== requestSeqRef.current) return;
-
-          capturedHttpHead = await fetchHistoryPage(1, latestHttpHead.snapshotId);
-          if (requestSeq !== requestSeqRef.current) return;
-
-          historySnapshotIdRef.current = capturedHttpHead.snapshotId;
-          historyHttpSnapshotInitializedRef.current = true;
-          page = capturedHttpHead.page;
-          response = capturedHttpHead;
-        } else {
-          response = await fetchHistoryPage(
-            page,
-            append ? historySnapshotIdRef.current : undefined,
-          );
-        }
-        if (requestSeq !== requestSeqRef.current) return;
-
-        const previousSnapshotId = historySnapshotIdRef.current;
-        const previousNextPage = historyNextPageRef.current;
-        const snapshotChanged =
-          silent &&
-          hasHydratedRef.current &&
-          previousSnapshotId != null &&
-          response.snapshotId !== previousSnapshotId;
-        if (historyHttpSnapshotInitializedRef.current) {
-          historySnapshotIdRef.current = response.snapshotId;
-        }
-        const effectiveResponseTotal = Math.max(response.total, liveHistoryTotalRef.current);
-        const responseRecords = capturedHttpHead
-          ? mergeInvocationRecordCollections(capturedHttpHead.records, response.records)
-          : response.records;
-        if (historyHttpSnapshotInitializedRef.current) {
-          for (const record of responseRecords) {
-            frozenHistoryStableKeysRef.current.add(invocationStableKey(record));
-          }
-        }
-        const loaded = snapshotChanged
-          ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
-              0,
-              recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
-            )
-          : append
-            ? mergeInvocationRecordCollections(recordsRef.current, responseRecords)
-            : silent && hasHydratedRef.current
-              ? mergeInvocationRecordCollections(responseRecords, recordsRef.current).slice(
-                  0,
-                  Math.max(recordsRef.current.length, responseRecords.length),
-                )
-              : mergeInvocationRecordCollections(responseRecords, recordsRef.current);
-        recordsRef.current = loaded;
-        historyNextPageRef.current = snapshotChanged
-          ? 2
-          : append || !silent || !hasHydratedRef.current
-            ? page + 1
-            : Math.max(
-                previousNextPage,
-                Math.floor(loaded.length / PROMPT_CACHE_HISTORY_PAGE_SIZE) + 1,
-              );
-        historyHasMoreRef.current =
-          loaded.length < effectiveResponseTotal &&
-          (append ? response.records.length > 0 : loaded.length > 0);
-        setRecords(loaded);
-        setTotal(effectiveResponseTotal);
-
-        if (requestSeq !== requestSeqRef.current) return;
-        hasHydratedRef.current = true;
-        const loadedStableKeys = new Set(loaded.map(invocationStableKey));
-        setLiveRecords((current) =>
-          current.filter((record) => !loadedStableKeys.has(invocationStableKey(record))),
-        );
-        if (capturedHttpHead && historyHasMoreRef.current) {
-          pendingLoadRef.current = { append: true, silent: true };
-        }
-        setError(null);
+        const shouldQueueAppend = await loadHistoryRecords({
+          controller,
+          requestSeq,
+          silent,
+          append,
+          conversationKey,
+        });
+        if (shouldQueueAppend) pendingLoadRef.current = { append: true, silent: true };
       } catch (err) {
         if (requestSeq !== requestSeqRef.current) return;
         if (
@@ -2868,7 +1818,7 @@ export function PromptCacheConversationHistoryDrawer({
         }
       }
     },
-    [conversationKey, historyQueryForConversationKey, open],
+    [conversationKey, loadHistoryRecords, open],
   );
 
   const load = useCallback(
@@ -2988,43 +1938,47 @@ export function PromptCacheConversationHistoryDrawer({
     setInlinePolicyErrors({});
   }, [conversationKey, inlinePolicyMutation.hasPending, inlinePolicyMutation.status, open]);
 
+  const resetBindingHydrationState = useCallback(() => {
+    bindingDraftDirtyRef.current = false;
+    setActiveTab("overview");
+    setBinding(null);
+    setBindingKind("none");
+    setBindingGroupName("");
+    setBindingAccountId("");
+    setBindingAccounts([]);
+    setBindingGroups([]);
+    setBindingProxyNodes([]);
+    setBindingLoading(false);
+    setBindingSaving(false);
+    setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+    setBindingError(null);
+    setAllowSwitchUpstreamDraft("inherit");
+    setFastModeDraft("keep_original");
+    setImageToolDraft("keep_original");
+    setCodexImagegenDraft("keep_original");
+    setAvailableModelsMode("inherit");
+    setAvailableModelsDraft("");
+    setForwardProxyKeysDraft([]);
+    setInlinePolicyErrors({});
+    operationsLoadControllerRef.current?.abort();
+    operationEventsRef.current = [];
+    operationsTopicKeyRef.current = null;
+    operationsPageRef.current = 1;
+    operationsTotalRef.current = 0;
+    setOperationEvents([]);
+    setOperationsTotal(0);
+    setOperationsPage(1);
+    setOperationsLoading(false);
+    setOperationsLoadingMore(false);
+    setOperationsError(null);
+    setOperationsFilter("all");
+    setOperationsRoutingModel("any");
+    setOperationsRoutingModelFacets([]);
+  }, []);
+
   useEffect(() => {
     if (!open || !conversationKey) {
-      bindingDraftDirtyRef.current = false;
-      setActiveTab("overview");
-      setBinding(null);
-      setBindingKind("none");
-      setBindingGroupName("");
-      setBindingAccountId("");
-      setBindingAccounts([]);
-      setBindingGroups([]);
-      setBindingProxyNodes([]);
-      setBindingLoading(false);
-      setBindingSaving(false);
-      setBindingOwnerConfirmAllowsRemoteOverwrite(false);
-      setBindingError(null);
-      setAllowSwitchUpstreamDraft("inherit");
-      setFastModeDraft("keep_original");
-      setImageToolDraft("keep_original");
-      setCodexImagegenDraft("keep_original");
-      setAvailableModelsMode("inherit");
-      setAvailableModelsDraft("");
-      setForwardProxyKeysDraft([]);
-      setInlinePolicyErrors({});
-      operationsLoadControllerRef.current?.abort();
-      operationEventsRef.current = [];
-      operationsTopicKeyRef.current = null;
-      operationsPageRef.current = 1;
-      operationsTotalRef.current = 0;
-      setOperationEvents([]);
-      setOperationsTotal(0);
-      setOperationsPage(1);
-      setOperationsLoading(false);
-      setOperationsLoadingMore(false);
-      setOperationsError(null);
-      setOperationsFilter("all");
-      setOperationsRoutingModel("any");
-      setOperationsRoutingModelFacets([]);
+      resetBindingHydrationState();
       return;
     }
 
@@ -3115,6 +2069,7 @@ export function PromptCacheConversationHistoryDrawer({
     inlinePolicyMutation.reconcile,
     isSseUnavailable,
     open,
+    resetBindingHydrationState,
   ]);
 
   useEffect(() => {
@@ -3355,16 +2310,49 @@ export function PromptCacheConversationHistoryDrawer({
     () => buildConversationEffectiveRoutingRule(binding),
     [binding],
   );
+  const availableModelsEditor = useMemo(
+    () => (
+      <ConversationAvailableModelsEditor
+        value={availableModelsDraft}
+        disabled={bindingSaving}
+        ariaLabel={t("live.conversations.drawer.policy.availableModels")}
+        placeholder={t("live.conversations.drawer.policy.availableModelsPlaceholder")}
+        isEmpty={availableModelsOverrideEmpty}
+        requiredLabel={t("live.conversations.drawer.policy.availableModelsRequired")}
+        applyLabel={t("live.conversations.drawer.policy.applyField")}
+        applyDisabled={bindingSaving || availableModelsOverrideList.length === 0}
+        onChange={(value) => {
+          bindingDraftDirtyRef.current = true;
+          setAvailableModelsMode("override");
+          setAvailableModelsDraft(value);
+        }}
+        onApply={() =>
+          void saveConversationInlinePolicy("availableModels", {
+            availableModels: availableModelsOverrideList,
+            availableModelsMode: binding?.availableModelsMode ?? "allowlist",
+          })
+        }
+      />
+    ),
+    [
+      availableModelsDraft,
+      availableModelsOverrideEmpty,
+      availableModelsOverrideList,
+      binding,
+      bindingSaving,
+      saveConversationInlinePolicy,
+      t,
+    ],
+  );
   const conversationRowValueOverrides = useMemo(() => {
     const rowOverrides = buildConversationRowValueOverrides(binding, t);
     rowOverrides.allowCutOut = {
       ...(rowOverrides.allowCutOut ?? {}),
       editor: (
-        <SelectField
+        <ConversationPolicySelectEditor
           value={allowSwitchUpstreamDraft}
           disabled={bindingSaving}
-          aria-label={t("live.conversations.drawer.policy.cutOut")}
-          size="sm"
+          ariaLabel={t("live.conversations.drawer.policy.cutOut")}
           options={[
             {
               value: "true",
@@ -3375,7 +2363,7 @@ export function PromptCacheConversationHistoryDrawer({
               label: t("live.conversations.drawer.policy.cutOutDeny"),
             },
           ]}
-          onValueChange={(value) => {
+          onChange={(value) => {
             setAllowSwitchUpstreamDraft(value as OptionalBooleanDraft);
             void saveConversationInlinePolicy("allowCutOut", {
               allowSwitchUpstream: value === "true",
@@ -3387,13 +2375,12 @@ export function PromptCacheConversationHistoryDrawer({
     rowOverrides.fastModeRewriteMode = {
       ...(rowOverrides.fastModeRewriteMode ?? {}),
       editor: (
-        <SelectField
+        <ConversationPolicySelectEditor
           value={fastModeDraft}
           disabled={bindingSaving}
-          aria-label={t("live.conversations.drawer.policy.fastMode")}
-          size="sm"
+          ariaLabel={t("live.conversations.drawer.policy.fastMode")}
           options={rewriteModeOptions}
-          onValueChange={(value) => {
+          onChange={(value) => {
             setFastModeDraft(value as RewriteModeDraft);
             void saveConversationInlinePolicy("fastModeRewriteMode", {
               fastModeRewriteMode: value as PromptCacheConversationRewriteMode,
@@ -3405,13 +2392,12 @@ export function PromptCacheConversationHistoryDrawer({
     rowOverrides.imageToolRewriteMode = {
       ...(rowOverrides.imageToolRewriteMode ?? {}),
       editor: (
-        <SelectField
+        <ConversationPolicySelectEditor
           value={imageToolDraft}
           disabled={bindingSaving}
-          aria-label={t("live.conversations.drawer.policy.imageTool")}
-          size="sm"
+          ariaLabel={t("live.conversations.drawer.policy.imageTool")}
           options={rewriteModeOptions}
-          onValueChange={(value) => {
+          onChange={(value) => {
             setImageToolDraft(value as RewriteModeDraft);
             void saveConversationInlinePolicy("imageToolRewriteMode", {
               imageToolRewriteMode: value as PromptCacheConversationRewriteMode,
@@ -3423,13 +2409,12 @@ export function PromptCacheConversationHistoryDrawer({
     rowOverrides.codexImagegenRewriteMode = {
       ...(rowOverrides.codexImagegenRewriteMode ?? {}),
       editor: (
-        <SelectField
+        <ConversationPolicySelectEditor
           value={codexImagegenDraft}
           disabled={bindingSaving}
-          aria-label="Codex imagegen"
-          size="sm"
+          ariaLabel="Codex imagegen"
           options={rewriteModeOptions}
-          onValueChange={(value) => {
+          onChange={(value) => {
             setCodexImagegenDraft(value as RewriteModeDraft);
             void saveConversationInlinePolicy("codexImagegenRewriteMode", {
               codexImagegenRewriteMode: value as PromptCacheConversationRewriteMode,
@@ -3440,47 +2425,12 @@ export function PromptCacheConversationHistoryDrawer({
     };
     rowOverrides.availableModels = {
       ...(rowOverrides.availableModels ?? {}),
-      editor: (
-        <div className="space-y-2">
-          <Input
-            value={availableModelsDraft}
-            disabled={bindingSaving}
-            aria-label={t("live.conversations.drawer.policy.availableModels")}
-            placeholder={t("live.conversations.drawer.policy.availableModelsPlaceholder")}
-            className="h-9"
-            onChange={(event) => {
-              bindingDraftDirtyRef.current = true;
-              setAvailableModelsMode("override");
-              setAvailableModelsDraft(event.target.value);
-            }}
-          />
-          {availableModelsOverrideEmpty ? (
-            <p className="text-xs text-error">
-              {t("live.conversations.drawer.policy.availableModelsRequired")}
-            </p>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            disabled={bindingSaving || availableModelsOverrideList.length === 0}
-            onClick={() =>
-              void saveConversationInlinePolicy("availableModels", {
-                availableModels: availableModelsOverrideList,
-                availableModelsMode: binding?.availableModelsMode ?? "allowlist",
-              })
-            }
-          >
-            {t("live.conversations.drawer.policy.applyField")}
-          </Button>
-        </div>
-      ),
+      editor: availableModelsEditor,
     };
     return rowOverrides;
   }, [
     allowSwitchUpstreamDraft,
-    availableModelsDraft,
-    availableModelsOverrideEmpty,
-    availableModelsOverrideList,
+    availableModelsEditor,
     binding,
     fastModeDraft,
     imageToolDraft,
@@ -4169,211 +3119,7 @@ export function PromptCacheConversationHistoryDrawer({
         </div>
       ) : null}
       {operationEvents.map((event) => (
-        <article
-          key={event.id}
-          className="space-y-3 rounded-xl border border-base-content/10 bg-base-100/80 p-4"
-        >
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1 space-y-2">
-              <div className="flex flex-wrap gap-2">
-                {event.infoTypes.map((infoType) => (
-                  <Chip
-                    key={`${event.id}-${infoType}`}
-                    tone={conversationOperationInfoTypeChipTone(infoType)}
-                  >
-                    {conversationOperationInfoTypeLabel(infoType, t)}
-                  </Chip>
-                ))}
-                <Chip tone={conversationOperationOriginChipTone(event.origin)}>
-                  {conversationOperationOriginLabel(event.origin, t)}
-                </Chip>
-                {event.routingScope ? (
-                  <Chip tone="secondary">
-                    {event.routingScope.kind === "all"
-                      ? t("live.conversations.drawer.operations.modelScope.all")
-                      : t("live.conversations.drawer.operations.modelScope.model", {
-                          model: event.routingScope.modelKey ?? FALLBACK_CELL,
-                        })}
-                  </Chip>
-                ) : null}
-              </div>
-              {event.routingScope?.kind === "model" &&
-              event.routingScope.requestModel &&
-              event.routingScope.requestModel !== event.routingScope.modelKey ? (
-                <p className="font-mono text-[11px] text-base-content/55">
-                  {t("live.conversations.drawer.operations.requestModel", {
-                    model: event.routingScope.requestModel,
-                  })}
-                </p>
-              ) : null}
-              <p className="break-words text-sm font-semibold text-base-content">
-                {conversationOperationActionLabel(event.action, event.headline, t)}
-              </p>
-            </div>
-            <span className="text-xs text-base-content/58">
-              {formatConversationOperationOccurredAt(event.occurredAt)}
-            </span>
-          </div>
-          {event.changedFields.length > 0 ? (
-            <p className="text-xs text-base-content/70">
-              {t("live.conversations.drawer.operations.changedFields", {
-                fields: event.changedFields
-                  .map((field) => conversationOperationChangedFieldLabel(field, t))
-                  .join(" / "),
-              })}
-            </p>
-          ) : null}
-          {event.bindingBefore || event.bindingAfter ? (
-            <p className="text-xs text-base-content/72">
-              {t("live.conversations.drawer.operations.bindingTransition", {
-                from: conversationOperationBindingSnapshotLabel(event.bindingBefore, t),
-                to: conversationOperationBindingSnapshotLabel(event.bindingAfter, t),
-              })}
-            </p>
-          ) : null}
-          {event.stickyBefore || event.stickyAfter ? (
-            <p className="text-xs text-base-content/72">
-              {t("live.conversations.drawer.operations.stickyTransition", {
-                from: conversationOperationStickySnapshotLabel(event.stickyBefore, t),
-                to: conversationOperationStickySnapshotLabel(event.stickyAfter, t),
-              })}
-            </p>
-          ) : null}
-          {(event.stickyTransitions?.length ?? 0) > 0 ? (
-            <div className="space-y-1 rounded border border-base-content/10 bg-base-200/35 p-2 text-xs text-base-content/72">
-              {(event.stickyTransitions ?? []).map((transition) => (
-                <p key={`${event.id}-${transition.modelKey ?? "all"}`}>
-                  {t("live.conversations.drawer.operations.modelTransition", {
-                    model:
-                      transition.modelKey ??
-                      t("live.conversations.drawer.operations.modelScope.all"),
-                    from: conversationOperationStickySnapshotLabel(transition.before, t),
-                    to: conversationOperationStickySnapshotLabel(transition.after, t),
-                  })}
-                </p>
-              ))}
-            </div>
-          ) : null}
-          {event.infoTypes.includes("routing") && conversationOperationShowsRoutingReason(event) ? (
-            <div className="space-y-1 text-xs text-base-content/70">
-              <p>{conversationOperationRoutingReasonLabel(event, t)}</p>
-              {event.routingContext?.routingSource ? (
-                <p>
-                  {t("live.conversations.drawer.operations.routingContext.source", {
-                    source: t(
-                      `live.conversations.drawer.operations.routingContext.sources.${event.routingContext.routingSource}`,
-                    ),
-                  })}
-                </p>
-              ) : null}
-              {event.routingContext?.routingSelectionAudit ? (
-                <div className="space-y-1 rounded border border-info/25 bg-info/5 p-2">
-                  <p className="font-medium text-base-content">
-                    {t("table.poolAttempts.routingDecision.summary", {
-                      account: event.routingContext.routingSelectionAudit.selectedAccountName,
-                      count: event.routingContext.routingSelectionAudit.eligibleCandidateCount,
-                    })}
-                  </p>
-                  <p>
-                    {routingSelectionWinnerLabel(event.routingContext.routingSelectionAudit, t)}
-                  </p>
-                  {routingSelectionHandoffLabel(event.routingContext.routingSelectionAudit, t) ? (
-                    <p>
-                      {t("live.routing.record.handoffAdmission")}:{" "}
-                      {routingSelectionHandoffLabel(event.routingContext.routingSelectionAudit, t)}
-                    </p>
-                  ) : null}
-                  {event.routingContext.routingSelectionAudit.selectedScore ? (
-                    <p data-testid="conversation-routing-selection-score">
-                      {routingSelectionScoreLabel(
-                        event.routingContext.routingSelectionAudit.selectedAccountName,
-                        event.routingContext.routingSelectionAudit.selectedScore,
-                        t,
-                      )}
-                    </p>
-                  ) : null}
-                  {event.routingContext.routingSelectionAudit.comparedScore &&
-                  event.routingContext.routingSelectionAudit.comparedAccountName ? (
-                    <p>
-                      {routingSelectionScoreLabel(
-                        event.routingContext.routingSelectionAudit.comparedAccountName,
-                        event.routingContext.routingSelectionAudit.comparedScore,
-                        t,
-                      )}
-                    </p>
-                  ) : null}
-                  {event.routingContext.routingSelectionAudit.excludedCandidates.map(
-                    (candidate) => (
-                      <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
-                        {routingSelectionExclusionLabel(
-                          candidate.accountName,
-                          candidate.reasonCode,
-                          t,
-                        )}
-                      </p>
-                    ),
-                  )}
-                </div>
-              ) : null}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                {event.routingContext?.causingAttemptId ? (
-                  <Link
-                    className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                    to={routingAttemptHref(event, event.routingContext.causingAttemptId)}
-                  >
-                    {t("live.conversations.drawer.operations.routingContext.causeAttempt", {
-                      attemptId: event.routingContext.causingAttemptId,
-                    })}
-                  </Link>
-                ) : null}
-                {event.routingContext?.triggerAttemptId ? (
-                  <Link
-                    className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                    to={routingAttemptHref(event, event.routingContext.triggerAttemptId)}
-                  >
-                    {t(
-                      event.routingContext.routingSelectionAudit
-                        ? "live.conversations.drawer.operations.routingContext.routingDecisionAttempt"
-                        : "live.conversations.drawer.operations.routingContext.triggerAttempt",
-                      {
-                        attemptId: event.routingContext.triggerAttemptId,
-                      },
-                    )}
-                  </Link>
-                ) : null}
-                {routingInvocationRecordHref(event) ? (
-                  <Link
-                    className="inline-flex font-mono text-[11px] text-primary underline underline-offset-2"
-                    to={routingInvocationRecordHref(event) ?? "#"}
-                    aria-label={t(
-                      "live.conversations.drawer.operations.routingContext.invocationRecordLabel",
-                      {
-                        id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
-                      },
-                    )}
-                    title={t(
-                      "live.conversations.drawer.operations.routingContext.invocationRecordLabel",
-                      {
-                        id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
-                      },
-                    )}
-                  >
-                    {t("live.conversations.drawer.operations.routingContext.invocationRecord", {
-                      id: event.invokeId ?? event.routingContext?.triggerAttemptId ?? "",
-                    })}
-                  </Link>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-          {event.invokeId ? (
-            <p className="break-all font-mono text-[11px] text-base-content/58">
-              {t("live.conversations.drawer.operations.invokeId", {
-                invokeId: event.invokeId,
-              })}
-            </p>
-          ) : null}
-        </article>
+        <ConversationOperationEventCard key={event.id} event={event} t={t} />
       ))}
       {hasMoreOperationEvents ? (
         <div className="flex items-center justify-center">
@@ -4818,6 +3564,126 @@ export function PromptCacheConversationHistoryDrawer({
   );
 }
 
+function ConversationPreviewActions({
+  promptCacheKey,
+  isExpanded,
+  labels,
+  onToggle,
+  onHistory,
+}: {
+  promptCacheKey: string;
+  isExpanded: boolean;
+  labels: { expandAction: string; collapseAction: string; historyAction: string };
+  onToggle: (promptCacheKey: string) => void;
+  onHistory: (promptCacheKey: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        aria-label={isExpanded ? labels.collapseAction : labels.expandAction}
+        aria-expanded={isExpanded}
+        onClick={() => onToggle(promptCacheKey)}
+      >
+        <AppIcon
+          name={isExpanded ? "chevron-up" : "chevron-down"}
+          className="h-4 w-4"
+          aria-hidden
+        />
+      </button>
+      <button
+        type="button"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        aria-label={labels.historyAction}
+        onClick={() => onHistory(promptCacheKey)}
+      >
+        <AppIcon name="account-details-outline" className="h-4 w-4" aria-hidden />
+      </button>
+    </div>
+  );
+}
+
+function ConversationTimeDetails({
+  conversation,
+  labels,
+  dateFormatter,
+}: {
+  conversation: PromptCacheConversation;
+  labels: { createdAtShort: string; lastActivityAtShort: string };
+  dateFormatter: Intl.DateTimeFormat;
+}) {
+  return (
+    <dl className="space-y-1 text-xs">
+      <div className="flex items-center justify-between gap-3">
+        <dt className="text-base-content/60">{labels.createdAtShort}</dt>
+        <dd className="text-right">{formatDateLabel(conversation.createdAt, dateFormatter)}</dd>
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <dt className="text-base-content/60">{labels.lastActivityAtShort}</dt>
+        <dd className="text-right">
+          {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+function ConversationDesktopTimeDetails({
+  conversation,
+  labels,
+  dateFormatter,
+}: {
+  conversation: PromptCacheConversation;
+  labels: { createdAtShort: string; lastActivityAtShort: string };
+  dateFormatter: Intl.DateTimeFormat;
+}) {
+  return (
+    <div className="space-y-1.5 text-[11px]">
+      <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
+        <span className="text-base-content/60">{labels.createdAtShort}</span>
+        <span className="whitespace-nowrap font-medium tabular-nums">
+          {formatDateLabel(conversation.createdAt, dateFormatter)}
+        </span>
+      </div>
+      <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
+        <span className="text-base-content/60">{labels.lastActivityAtShort}</span>
+        <span className="whitespace-nowrap font-medium tabular-nums">
+          {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ConversationDesktopExpandedPreview({
+  conversation,
+  isExpanded,
+  labels,
+  onOpenUpstreamAccount,
+}: {
+  conversation: PromptCacheConversation;
+  isExpanded: boolean;
+  labels: { empty: string };
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+}) {
+  if (!isExpanded) return null;
+  return (
+    <tr className="bg-base-200/20">
+      <td colSpan={5} className="px-3 pb-4 pt-0">
+        <div className="border-t border-base-300/60 pt-3">
+          <PromptCacheConversationInvocationTable
+            records={conversation.recentInvocations.map(buildInvocationFromPromptCachePreview)}
+            isLoading={false}
+            emptyLabel={labels.empty}
+            onOpenUpstreamAccount={onOpenUpstreamAccount}
+          />
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 export function PromptCacheConversationTable({
   stats,
   isLoading,
@@ -5059,8 +3925,6 @@ export function PromptCacheConversationTable({
       <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
         <div className="space-y-3 p-3 sm:hidden">
           {stats.conversations.map((conversation) => {
-            const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter);
-            const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter);
             const isExpanded = expandedPromptCacheKeySet.has(conversation.promptCacheKey);
 
             return (
@@ -5078,31 +3942,13 @@ export function PromptCacheConversationTable({
                         {conversation.promptCacheKey}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                        aria-label={
-                          isExpanded ? previewLabels.collapseAction : previewLabels.expandAction
-                        }
-                        aria-expanded={isExpanded}
-                        onClick={() => togglePromptCachePreview(conversation.promptCacheKey)}
-                      >
-                        <AppIcon
-                          name={isExpanded ? "chevron-up" : "chevron-down"}
-                          className="h-4 w-4"
-                          aria-hidden
-                        />
-                      </button>
-                      <button
-                        type="button"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                        aria-label={previewLabels.historyAction}
-                        onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
-                      >
-                        <AppIcon name="account-details-outline" className="h-4 w-4" aria-hidden />
-                      </button>
-                    </div>
+                    <ConversationPreviewActions
+                      promptCacheKey={conversation.promptCacheKey}
+                      isExpanded={isExpanded}
+                      labels={previewLabels}
+                      onToggle={togglePromptCachePreview}
+                      onHistory={openHistoryDrawer}
+                    />
                   </div>
                   {isExpanded ? (
                     <div className="rounded-lg border border-base-300/70 bg-base-200/30 p-3">
@@ -5148,16 +3994,11 @@ export function PromptCacheConversationTable({
                   <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                     {totalLabels.time}
                   </div>
-                  <dl className="space-y-1 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-base-content/60">{totalLabels.createdAtShort}</dt>
-                      <dd className="text-right">{createdAtLabel}</dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <dt className="text-base-content/60">{totalLabels.lastActivityAtShort}</dt>
-                      <dd className="text-right">{lastActivityLabel}</dd>
-                    </div>
-                  </dl>
+                  <ConversationTimeDetails
+                    conversation={conversation}
+                    labels={totalLabels}
+                    dateFormatter={dateFormatter}
+                  />
                 </div>
 
                 <div className="space-y-1">
@@ -5216,35 +4057,13 @@ export function PromptCacheConversationTable({
                         >
                           {conversation.promptCacheKey}
                         </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                            aria-label={
-                              isExpanded ? previewLabels.collapseAction : previewLabels.expandAction
-                            }
-                            aria-expanded={isExpanded}
-                            onClick={() => togglePromptCachePreview(conversation.promptCacheKey)}
-                          >
-                            <AppIcon
-                              name={isExpanded ? "chevron-up" : "chevron-down"}
-                              className="h-4 w-4"
-                              aria-hidden
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                            aria-label={previewLabels.historyAction}
-                            onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
-                          >
-                            <AppIcon
-                              name="account-details-outline"
-                              className="h-4 w-4"
-                              aria-hidden
-                            />
-                          </button>
-                        </div>
+                        <ConversationPreviewActions
+                          promptCacheKey={conversation.promptCacheKey}
+                          isExpanded={isExpanded}
+                          labels={previewLabels}
+                          onToggle={togglePromptCachePreview}
+                          onHistory={openHistoryDrawer}
+                        />
                       </div>
                     </td>
                     <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
@@ -5266,22 +4085,11 @@ export function PromptCacheConversationTable({
                       />
                     </td>
                     <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
-                      <div className="space-y-1.5 text-[11px]">
-                        <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
-                          <span className="text-base-content/60">{totalLabels.createdAtShort}</span>
-                          <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(conversation.createdAt, dateFormatter)}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
-                          <span className="text-base-content/60">
-                            {totalLabels.lastActivityAtShort}
-                          </span>
-                          <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
-                          </span>
-                        </div>
-                      </div>
+                      <ConversationDesktopTimeDetails
+                        conversation={conversation}
+                        labels={totalLabels}
+                        dateFormatter={dateFormatter}
+                      />
                     </td>
                     <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
                       <ConversationSparkline
@@ -5297,22 +4105,12 @@ export function PromptCacheConversationTable({
                       />
                     </td>
                   </tr>
-                  {isExpanded ? (
-                    <tr className="bg-base-200/20">
-                      <td colSpan={5} className="px-3 pb-4 pt-0">
-                        <div className="border-t border-base-300/60 pt-3">
-                          <PromptCacheConversationInvocationTable
-                            records={conversation.recentInvocations.map(
-                              buildInvocationFromPromptCachePreview,
-                            )}
-                            isLoading={false}
-                            emptyLabel={previewLabels.empty}
-                            onOpenUpstreamAccount={onOpenUpstreamAccount}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  ) : null}
+                  <ConversationDesktopExpandedPreview
+                    conversation={conversation}
+                    isExpanded={isExpanded}
+                    labels={previewLabels}
+                    onOpenUpstreamAccount={onOpenUpstreamAccount}
+                  />
                 </Fragment>
               );
             })}

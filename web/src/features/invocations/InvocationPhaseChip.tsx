@@ -126,6 +126,94 @@ interface InvocationPhaseSegmentsProps {
   countVisibility?: "always" | "multipleOnly";
 }
 
+interface PhaseSegmentItemProps {
+  item: { phase: InvocationLivePhase; value: number };
+  itemClassName?: string;
+  motion: InvocationPhaseMotion;
+  showLabel: boolean;
+  countVisibility: "always" | "multipleOnly";
+  t: (key: string) => string;
+}
+
+function PhaseSegmentInline({
+  item,
+  itemClassName,
+  motion,
+  showLabel,
+  countVisibility,
+  t,
+}: PhaseSegmentItemProps) {
+  const display = getInvocationPhaseDisplay(item.phase);
+  const label = t(display.labelKey);
+  const sharedClassName = cn(
+    "inline-flex items-center whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
+    showLabel ? "gap-1.5" : "gap-1",
+    itemClassName,
+  );
+  const iconName = phaseIconName(item.phase, motion);
+  const icon = (
+    <AppIcon
+      name={iconName}
+      data-testid="invocation-phase-icon"
+      data-phase-icon-name={iconName}
+      className={cn(
+        "h-3.5 w-3.5 shrink-0",
+        PHASE_TEXT_CLASSNAMES[item.phase],
+        phaseMotionClassName(item.phase, motion),
+      )}
+      aria-hidden="true"
+    />
+  );
+
+  return (
+    <span
+      data-testid="invocation-phase-segment"
+      data-phase={item.phase}
+      data-phase-motion={motion}
+      data-phase-label-visible={showLabel ? "true" : "false"}
+      role="img"
+      aria-label={`${label} ${item.value}`}
+      title={showLabel ? undefined : `${label} ${item.value}`}
+      className={sharedClassName}
+    >
+      {icon}
+      {showLabel ? <span>{label}</span> : null}
+      {countVisibility === "always" || item.value > 1 || showLabel ? (
+        <span className="font-mono text-base-content/86">{item.value}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function PhaseSegmentBadge({
+  item,
+  itemClassName,
+  motion,
+  t,
+}: Pick<PhaseSegmentItemProps, "item" | "itemClassName" | "motion" | "t">) {
+  const display = getInvocationPhaseDisplay(item.phase);
+  const iconName = phaseIconName(item.phase, motion);
+  return (
+    <Chip
+      tone={display.chipTone}
+      data-testid="invocation-phase-segment"
+      data-phase={item.phase}
+      data-phase-motion={motion}
+      className={cn("gap-1.5 tabular-nums", itemClassName)}
+    >
+      <AppIcon
+        name={iconName}
+        data-testid="invocation-phase-icon"
+        data-phase-icon-name={iconName}
+        className={cn("h-3 w-3 shrink-0", phaseMotionClassName(item.phase, motion))}
+        aria-hidden="true"
+      />
+      <span>{t(display.labelKey)}</span>
+      <span className="font-mono font-semibold">{item.value}</span>
+    </Chip>
+  );
+}
+
 export function InvocationPhaseSegments({
   counts,
   className,
@@ -149,102 +237,37 @@ export function InvocationPhaseSegments({
 
   if (items.length === 0) return null;
 
-  if (appearance === "inline") {
-    return (
-      <div
-        className={cn(
-          "flex flex-wrap items-center gap-y-1.5",
-          showLabel ? "gap-x-3" : "gap-x-2.5",
-          className,
-        )}
-      >
-        {items.map((item) => {
-          const display = getInvocationPhaseDisplay(item.phase);
-          const label = t(display.labelKey);
-          const sharedClassName = cn(
-            "inline-flex items-center whitespace-nowrap text-[11px] font-semibold leading-none tabular-nums text-base-content/68",
-            showLabel ? "gap-1.5" : "gap-1",
-            itemClassName,
-          );
-          const icon = (
-            <AppIcon
-              name={phaseIconName(item.phase, motion)}
-              data-testid="invocation-phase-icon"
-              data-phase-icon-name={phaseIconName(item.phase, motion)}
-              className={cn(
-                "h-3.5 w-3.5 shrink-0",
-                PHASE_TEXT_CLASSNAMES[item.phase],
-                phaseMotionClassName(item.phase, motion),
-              )}
-              aria-hidden="true"
-            />
-          );
-
-          if (!showLabel) {
-            return (
-              <span
-                key={item.phase}
-                data-testid="invocation-phase-segment"
-                data-phase={item.phase}
-                data-phase-motion={motion}
-                data-phase-label-visible="false"
-                role="img"
-                aria-label={`${label} ${item.value}`}
-                title={`${label} ${item.value}`}
-                className={sharedClassName}
-              >
-                {icon}
-                {countVisibility === "always" || item.value > 1 ? (
-                  <span className="font-mono text-base-content/86">{item.value}</span>
-                ) : null}
-              </span>
-            );
-          }
-
-          return (
-            <span
-              key={item.phase}
-              data-testid="invocation-phase-segment"
-              data-phase={item.phase}
-              data-phase-motion={motion}
-              data-phase-label-visible="true"
-              className={sharedClassName}
-            >
-              {icon}
-              <span>{label}</span>
-              <span className="font-mono text-base-content/86">{item.value}</span>
-            </span>
-          );
-        })}
-      </div>
-    );
-  }
-
-  return (
+  return appearance === "inline" ? (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-y-1.5",
+        showLabel ? "gap-x-3" : "gap-x-2.5",
+        className,
+      )}
+    >
+      {items.map((item) => (
+        <PhaseSegmentInline
+          key={item.phase}
+          item={item}
+          itemClassName={itemClassName}
+          motion={motion}
+          showLabel={showLabel}
+          countVisibility={countVisibility}
+          t={t}
+        />
+      ))}
+    </div>
+  ) : (
     <div className={cn("flex flex-wrap items-center gap-2", className)}>
-      {items.map((item) => {
-        const display = getInvocationPhaseDisplay(item.phase);
-        return (
-          <Chip
-            key={item.phase}
-            tone={display.chipTone}
-            data-testid="invocation-phase-segment"
-            data-phase={item.phase}
-            data-phase-motion={motion}
-            className={cn("gap-1.5 tabular-nums", itemClassName)}
-          >
-            <AppIcon
-              name={phaseIconName(item.phase, motion)}
-              data-testid="invocation-phase-icon"
-              data-phase-icon-name={phaseIconName(item.phase, motion)}
-              className={cn("h-3 w-3 shrink-0", phaseMotionClassName(item.phase, motion))}
-              aria-hidden="true"
-            />
-            <span>{t(display.labelKey)}</span>
-            <span className="font-mono font-semibold">{item.value}</span>
-          </Chip>
-        );
-      })}
+      {items.map((item) => (
+        <PhaseSegmentBadge
+          key={item.phase}
+          item={item}
+          itemClassName={itemClassName}
+          motion={motion}
+          t={t}
+        />
+      ))}
     </div>
   );
 }

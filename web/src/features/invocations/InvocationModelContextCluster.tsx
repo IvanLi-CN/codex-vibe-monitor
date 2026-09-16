@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Chip } from "../../components/ui/chip";
 import type { useTranslation } from "../../i18n";
 import type { FastIndicatorState } from "../../lib/invocation";
@@ -47,6 +48,122 @@ export interface InvocationModelContextClusterProps {
   className?: string;
   testId?: string;
   modelTestId?: string;
+}
+
+interface ModelContextViewProps {
+  model: ReactNode;
+  modelValue: string;
+  displayReasoningEffort: string;
+  hasReasoningEffort: boolean;
+  reasoningTone: ReasoningEffortTone;
+  fastIndicator: ReactNode;
+  modelLabel: string;
+  className?: string;
+  testId?: string;
+  modelTestId?: string;
+}
+
+function GroupedModelContext({
+  model,
+  displayReasoningEffort,
+  hasReasoningEffort,
+  reasoningTone,
+  fastIndicator,
+  modelLabel,
+  className,
+  testId,
+  modelTestId,
+}: ModelContextViewProps) {
+  return (
+    <fieldset
+      data-testid={testId}
+      data-model-context-grouped="true"
+      className={cn(
+        "inline-flex h-5 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border-0 border-base-300/75 bg-base-200/58 p-0 leading-none",
+        className,
+      )}
+      title={modelLabel}
+      aria-label={modelLabel}
+    >
+      <span
+        data-testid={modelTestId}
+        data-model-context-part="model"
+        className="flex h-5 w-5 shrink-0 items-center justify-center text-base-content/72"
+      >
+        {model}
+      </span>
+      {hasReasoningEffort ? (
+        <span
+          data-testid={testId ? `${testId}-reasoning-effort` : undefined}
+          data-model-context-part="reasoning-effort"
+          data-reasoning-effort-tone={reasoningTone}
+          className={cn(
+            "flex min-w-0 items-center gap-1 text-xs font-semibold",
+            REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
+          )}
+          title={displayReasoningEffort}
+        >
+          <span
+            data-model-context-part="reasoning-effort-marker"
+            className={cn(
+              "h-1 w-1 shrink-0 rounded-full",
+              REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES[reasoningTone],
+            )}
+            aria-hidden
+          />
+          <span
+            data-model-context-part="reasoning-effort-text"
+            className="truncate whitespace-nowrap"
+          >
+            {displayReasoningEffort}
+          </span>
+        </span>
+      ) : null}
+      {fastIndicator ? (
+        <span
+          data-model-context-part="fast"
+          className="flex w-5 shrink-0 items-center justify-center"
+        >
+          {fastIndicator}
+        </span>
+      ) : null}
+    </fieldset>
+  );
+}
+
+function InlineModelContext({
+  model,
+  displayReasoningEffort,
+  fastIndicator,
+  modelLabel,
+  className,
+  testId,
+  modelTestId,
+}: ModelContextViewProps) {
+  return (
+    <fieldset
+      data-testid={testId}
+      data-model-context-grouped="false"
+      className={cn("flex min-w-0 items-center gap-1", className)}
+      title={modelLabel}
+      aria-label={modelLabel}
+    >
+      <span data-testid={modelTestId} className="min-w-0">
+        {model}
+      </span>
+      <span className="shrink-0 text-base-content/28">·</span>
+      <InvocationReasoningEffortChip
+        value={displayReasoningEffort}
+        testId={testId ? `${testId}-reasoning-effort` : undefined}
+      />
+      {fastIndicator ? (
+        <>
+          <span className="shrink-0 text-base-content/28">·</span>
+          {fastIndicator}
+        </>
+      ) : null}
+    </fieldset>
+  );
 }
 
 export function InvocationReasoningEffortChip({
@@ -140,88 +257,17 @@ export function InvocationModelContextCluster({
     testId: testId ? `${testId}-model` : undefined,
   });
 
-  if (grouped) {
-    return (
-      <div
-        data-testid={testId}
-        data-model-context-grouped="true"
-        className={cn(
-          "inline-flex h-5 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
-          className,
-        )}
-        title={modelLabel}
-        aria-label={modelLabel}
-        role="group"
-      >
-        <span
-          data-testid={modelTestId}
-          data-model-context-part="model"
-          className="flex h-5 w-5 shrink-0 items-center justify-center text-base-content/72"
-        >
-          {model}
-        </span>
-        {hasReasoningEffort ? (
-          <span
-            data-testid={testId ? `${testId}-reasoning-effort` : undefined}
-            data-model-context-part="reasoning-effort"
-            data-reasoning-effort-tone={reasoningTone}
-            className={cn(
-              "flex min-w-0 items-center gap-1 text-xs font-semibold",
-              REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
-            )}
-            title={displayReasoningEffort}
-          >
-            <span
-              data-model-context-part="reasoning-effort-marker"
-              className={cn(
-                "h-1 w-1 shrink-0 rounded-full",
-                REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES[reasoningTone],
-              )}
-              aria-hidden
-            />
-            <span
-              data-model-context-part="reasoning-effort-text"
-              className="truncate whitespace-nowrap"
-            >
-              {displayReasoningEffort}
-            </span>
-          </span>
-        ) : null}
-        {fastIndicator ? (
-          <span
-            data-model-context-part="fast"
-            className="flex w-5 shrink-0 items-center justify-center"
-          >
-            {fastIndicator}
-          </span>
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <div
-      data-testid={testId}
-      data-model-context-grouped="false"
-      className={cn("flex min-w-0 items-center gap-1", className)}
-      title={modelLabel}
-      aria-label={modelLabel}
-      role="group"
-    >
-      <span data-testid={modelTestId} className="min-w-0">
-        {model}
-      </span>
-      <span className="shrink-0 text-base-content/28">·</span>
-      <InvocationReasoningEffortChip
-        value={displayReasoningEffort}
-        testId={testId ? `${testId}-reasoning-effort` : undefined}
-      />
-      {fastIndicator ? (
-        <>
-          <span className="shrink-0 text-base-content/28">·</span>
-          {fastIndicator}
-        </>
-      ) : null}
-    </div>
-  );
+  const viewProps = {
+    model,
+    modelValue,
+    displayReasoningEffort,
+    hasReasoningEffort,
+    reasoningTone,
+    fastIndicator,
+    modelLabel,
+    className,
+    testId,
+    modelTestId,
+  } satisfies ModelContextViewProps;
+  return grouped ? <GroupedModelContext {...viewProps} /> : <InlineModelContext {...viewProps} />;
 }
