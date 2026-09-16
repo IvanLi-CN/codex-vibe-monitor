@@ -270,6 +270,116 @@ function buildNormalizedImportedOauthContent({
   });
 }
 
+type ImportedOauthJwtPayloadResult = ReturnType<typeof parseImportedOauthJwtPayload>;
+
+function finalizeImportedOauthStandardCandidate({
+  record,
+  email,
+  accountId,
+  accessToken,
+  idToken,
+  idTokenPayload,
+  normalizedExpired,
+  errors,
+  t,
+}: {
+  record: Record<string, unknown>;
+  email: string;
+  accountId: string;
+  accessToken: string;
+  idToken: string;
+  idTokenPayload: ImportedOauthJwtPayloadResult | null;
+  normalizedExpired: string;
+  errors: string[];
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const chatgptUserId =
+    idTokenPayload?.ok === true ? extractImportedOauthJwtUserId(idTokenPayload.payload) : null;
+  const planType =
+    firstImportedNonEmptyString(
+      record.plan_type,
+      record.chatgpt_plan_type,
+      idTokenPayload?.ok === true
+        ? extractImportedOauthJwtAuth(idTokenPayload.payload)?.chatgpt_plan_type
+        : null,
+    ) ?? null;
+  const normalizedContent = buildNormalizedImportedOauthContent({
+    email,
+    accountId,
+    accessToken,
+    refreshToken: firstImportedNonEmptyString(record.refresh_token),
+    idToken,
+    tokenType: firstImportedNonEmptyString(record.token_type),
+    expired: normalizedExpired,
+    planType,
+    chatgptUserId,
+  });
+  const matchKey = buildImportedOauthMatchKeyFromValues(chatgptUserId, email, accountId);
+  if (!matchKey) {
+    errors.push(
+      t("accountPool.upstreamAccounts.import.local.requiredField", {
+        fieldName: "account_id",
+      }),
+    );
+    return {
+      ok: false as const,
+      error: Array.from(new Set(errors)).join("\n"),
+      errors: Array.from(new Set(errors)),
+    };
+  }
+
+  return {
+    ok: true as const,
+    normalizedContent,
+    email,
+    chatgptAccountId: accountId,
+    chatgptUserId,
+    matchKey,
+    sourceLabel: email,
+  };
+}
+
+function resolveImportedOauthExpiration({
+  record,
+  idTokenPayload,
+  accessToken,
+  errors,
+  t,
+}: {
+  record: Record<string, unknown>;
+  idTokenPayload: ImportedOauthJwtPayloadResult | null;
+  accessToken: string | null;
+  errors: string[];
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const rawExpired = typeof record.expired === "string" ? record.expired.trim() : "";
+  if (rawExpired) {
+    if (!isImportedOauthRfc3339Timestamp(rawExpired)) {
+      errors.push(t("accountPool.upstreamAccounts.import.local.invalidExpired"));
+    }
+    return rawExpired;
+  }
+
+  const idTokenExp =
+    idTokenPayload?.ok === true ? parseImportedOauthJwtExpiration(idTokenPayload.payload) : null;
+  const accessTokenPayload =
+    idTokenPayload?.ok === true && idTokenExp == null && accessToken
+      ? parseImportedOauthJwtPayload(accessToken, "access_token", t)
+      : null;
+  if (accessTokenPayload && !accessTokenPayload.ok) errors.push(accessTokenPayload.error);
+  const accessTokenExp =
+    accessTokenPayload?.ok === true
+      ? parseImportedOauthJwtExpiration(accessTokenPayload.payload)
+      : null;
+  const derivedExpired =
+    normalizeImportedTimestamp(idTokenExp) ?? normalizeImportedTimestamp(accessTokenExp);
+  if (!derivedExpired) {
+    errors.push(t("accountPool.upstreamAccounts.import.local.missingExpiry"));
+    return "";
+  }
+  return derivedExpired;
+}
+
 export function buildImportedOauthCandidateFromStandardRecord(
   record: Record<string, unknown>,
   t: (key: string, values?: Record<string, string | number>) => string,
@@ -322,34 +432,13 @@ export function buildImportedOauthCandidateFromStandardRecord(
     errors.push(t("accountPool.upstreamAccounts.import.local.accountIdMismatch"));
   }
 
-  const rawExpired = typeof record.expired === "string" ? record.expired.trim() : "";
-  let normalizedExpired = rawExpired;
-  if (rawExpired) {
-    if (!isImportedOauthRfc3339Timestamp(rawExpired)) {
-      errors.push(t("accountPool.upstreamAccounts.import.local.invalidExpired"));
-    }
-  } else {
-    const idTokenExp =
-      idTokenPayload?.ok === true ? parseImportedOauthJwtExpiration(idTokenPayload.payload) : null;
-    const accessTokenPayload =
-      idTokenPayload?.ok === true && idTokenExp == null && accessTokenResult.ok
-        ? parseImportedOauthJwtPayload(accessTokenResult.value, "access_token", t)
-        : null;
-    if (accessTokenPayload && !accessTokenPayload.ok) {
-      errors.push(accessTokenPayload.error);
-    }
-    const accessTokenExp =
-      accessTokenPayload?.ok === true
-        ? parseImportedOauthJwtExpiration(accessTokenPayload.payload)
-        : null;
-    const derivedExpired =
-      normalizeImportedTimestamp(idTokenExp) ?? normalizeImportedTimestamp(accessTokenExp);
-    if (!derivedExpired) {
-      errors.push(t("accountPool.upstreamAccounts.import.local.missingExpiry"));
-    } else {
-      normalizedExpired = derivedExpired;
-    }
-  }
+  const normalizedExpired = resolveImportedOauthExpiration({
+    record,
+    idTokenPayload,
+    accessToken: accessTokenResult.ok ? accessTokenResult.value : null,
+    errors,
+    t,
+  });
 
   if (errors.length > 0) {
     return fail();
@@ -370,46 +459,17 @@ export function buildImportedOauthCandidateFromStandardRecord(
   const accessToken = accessTokenResult.value;
   const idToken = idTokenResult.value;
 
-  const chatgptUserId =
-    idTokenPayload?.ok === true ? extractImportedOauthJwtUserId(idTokenPayload.payload) : null;
-  const planType =
-    firstImportedNonEmptyString(
-      record.plan_type,
-      record.chatgpt_plan_type,
-      idTokenPayload?.ok === true
-        ? extractImportedOauthJwtAuth(idTokenPayload.payload)?.chatgpt_plan_type
-        : null,
-    ) ?? null;
-  const normalizedContent = buildNormalizedImportedOauthContent({
+  return finalizeImportedOauthStandardCandidate({
+    record,
     email,
     accountId,
     accessToken,
-    refreshToken: firstImportedNonEmptyString(record.refresh_token),
     idToken,
-    tokenType: firstImportedNonEmptyString(record.token_type),
-    expired: normalizedExpired,
-    planType,
-    chatgptUserId,
+    idTokenPayload,
+    normalizedExpired,
+    errors,
+    t,
   });
-  const matchKey = buildImportedOauthMatchKeyFromValues(chatgptUserId, email, accountId);
-  if (!matchKey) {
-    errors.push(
-      t("accountPool.upstreamAccounts.import.local.requiredField", {
-        fieldName: "account_id",
-      }),
-    );
-    return fail();
-  }
-
-  return {
-    ok: true as const,
-    normalizedContent,
-    email,
-    chatgptAccountId: accountId,
-    chatgptUserId,
-    matchKey,
-    sourceLabel: email,
-  };
 }
 
 export function buildImportedOauthCandidateFromSub2apiAccount(
@@ -564,17 +624,33 @@ function buildSyntheticImportedWebSessionIdToken({
   })}.${encodeImportedOauthBase64UrlJson(payload)}.signature`;
 }
 
-export function convertImportedWebSessionRecord(
-  record: Record<string, unknown>,
-  sourcePath: string,
-  t: (key: string, values?: Record<string, string | number>) => string,
-): ConvertedImportedWebSessionCredential {
+type ImportedWebSessionTokenData = {
+  token: Record<string, unknown> | null;
+  credentials: Record<string, unknown> | null;
+  providerData: Record<string, unknown> | null;
+  user: Record<string, unknown> | null;
+  account: Record<string, unknown> | null;
+  accessToken: string;
+  accessPayload: Record<string, unknown> | null;
+  auth: Record<string, unknown> | null;
+  profile: Record<string, unknown> | null;
+  inputIdToken: string | null;
+  idPayload: Record<string, unknown> | null;
+  idAuth: Record<string, unknown> | null;
+};
+
+function resolveImportedWebSessionTokenData({
+  record,
+  t,
+}: {
+  record: Record<string, unknown>;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}): ImportedWebSessionTokenData {
   const token = getImportedObject(record.token);
   const credentials = getImportedObject(record.credentials);
   const providerData = getImportedObject(record.providerSpecificData);
   const user = getImportedObject(record.user);
   const account = getImportedObject(record.account);
-
   const accessToken = firstImportedNonEmptyString(
     record.accessToken,
     record.access_token,
@@ -586,11 +662,9 @@ export function convertImportedWebSessionRecord(
   if (!accessToken) {
     throw new Error(t("accountPool.upstreamAccounts.importSession.local.missingAccessToken"));
   }
-
   const accessPayload = parseImportedOauthJwtPayloadOptional(accessToken);
   const auth = accessPayload ? extractImportedOauthJwtAuth(accessPayload) : null;
   const profile = getImportedObject(accessPayload?.["https://api.openai.com/profile"]);
-
   const inputIdToken = firstImportedNonEmptyString(
     record.idToken,
     record.id_token,
@@ -601,7 +675,42 @@ export function convertImportedWebSessionRecord(
   );
   const idPayload = parseImportedOauthJwtPayloadOptional(inputIdToken);
   const idAuth = idPayload ? extractImportedOauthJwtAuth(idPayload) : null;
+  return {
+    token,
+    credentials,
+    providerData,
+    user,
+    account,
+    accessToken,
+    accessPayload,
+    auth,
+    profile,
+    inputIdToken,
+    idPayload,
+    idAuth,
+  };
+}
 
+function resolveImportedWebSessionIdentity({
+  record,
+  data,
+  t,
+}: {
+  record: Record<string, unknown>;
+  data: ImportedWebSessionTokenData;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const {
+    account,
+    accessPayload,
+    auth,
+    credentials,
+    idAuth,
+    idPayload,
+    profile,
+    providerData,
+    user,
+  } = data;
   const email = firstImportedNonEmptyString(
     user?.email,
     record.email,
@@ -613,12 +722,9 @@ export function convertImportedWebSessionRecord(
   );
   if (!email) {
     throw new Error(
-      t("accountPool.upstreamAccounts.import.local.requiredField", {
-        fieldName: "user.email",
-      }),
+      t("accountPool.upstreamAccounts.import.local.requiredField", { fieldName: "user.email" }),
     );
   }
-
   const accountId = firstImportedNonEmptyString(
     account?.id,
     record.account_id,
@@ -632,12 +738,9 @@ export function convertImportedWebSessionRecord(
   );
   if (!accountId) {
     throw new Error(
-      t("accountPool.upstreamAccounts.import.local.requiredField", {
-        fieldName: "account.id",
-      }),
+      t("accountPool.upstreamAccounts.import.local.requiredField", { fieldName: "account.id" }),
     );
   }
-
   const userId = firstImportedNonEmptyString(
     user?.id,
     record.user_id,
@@ -671,22 +774,37 @@ export function convertImportedWebSessionRecord(
   if (!expiresAt) {
     throw new Error(t("accountPool.upstreamAccounts.import.local.missingExpiry"));
   }
+  return { email, accountId, userId, planType, expiresAt };
+}
+
+export function convertImportedWebSessionRecord(
+  record: Record<string, unknown>,
+  sourcePath: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): ConvertedImportedWebSessionCredential {
+  const data = resolveImportedWebSessionTokenData({ record, t });
+  const { accessToken, inputIdToken } = data;
+  const { email, accountId, userId, planType, expiresAt } = resolveImportedWebSessionIdentity({
+    record,
+    data,
+    t,
+  });
 
   const refreshToken = firstImportedNonEmptyString(
     record.refreshToken,
     record.refresh_token,
-    token?.refreshToken,
-    token?.refresh_token,
-    credentials?.refreshToken,
-    credentials?.refresh_token,
+    data.token?.refreshToken,
+    data.token?.refresh_token,
+    data.credentials?.refreshToken,
+    data.credentials?.refresh_token,
   );
   const sessionToken = firstImportedNonEmptyString(
     record.sessionToken,
     record.session_token,
-    token?.sessionToken,
-    token?.session_token,
-    credentials?.sessionToken,
-    credentials?.session_token,
+    data.token?.sessionToken,
+    data.token?.session_token,
+    data.credentials?.sessionToken,
+    data.credentials?.session_token,
   );
   const idToken =
     inputIdToken ??

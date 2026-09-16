@@ -15,6 +15,18 @@ type OAuthIdentityConfirmationAlertProps = {
   compact?: boolean;
 };
 
+function formatIncomingIdentityDetail(
+  identityConfirmation: NonNullable<LoginSessionStatusResponse["identityConfirmation"]>,
+) {
+  return [
+    identityConfirmation.incoming.chatgptAccountId,
+    identityConfirmation.incoming.chatgptUserId,
+    identityConfirmation.incoming.planType,
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 export function OAuthIdentityConfirmationAlert({
   identityConfirmation,
   fallbackDisplayName,
@@ -26,13 +38,7 @@ export function OAuthIdentityConfirmationAlert({
 }: OAuthIdentityConfirmationAlertProps) {
   const unavailable = t("accountPool.upstreamAccounts.identityUnavailable");
   const currentName = identityConfirmation.current.displayName ?? fallbackDisplayName;
-  const incomingIdentityDetail = [
-    identityConfirmation.incoming.chatgptAccountId,
-    identityConfirmation.incoming.chatgptUserId,
-    identityConfirmation.incoming.planType,
-  ]
-    .filter(Boolean)
-    .join(" / ");
+  const incomingIdentityDetail = formatIncomingIdentityDetail(identityConfirmation);
 
   return (
     <Alert
