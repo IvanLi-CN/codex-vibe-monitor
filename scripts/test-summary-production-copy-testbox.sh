@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 runner_script="$repo_root/scripts/run-summary-production-copy-testbox.sh"
-validator_script="$repo_root/scripts/validate-summary-production-fixture.sh"
+validator_script="$repo_root/tests/validate-summary-production-fixture.sh"
 expect_failure() {
   local expected="$1"
   shift

@@ -134,121 +134,117 @@ def decode_v2_payload(payload: bytes) -> list[dict[str, Any]]:
     return normalized
 
 
-def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    connection = sqlite3.connect(database)
-    try:
-        rows.extend(source_rows(connection))
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-        batches = (
-            connection.execute(
-                "SELECT id, file_path, status, sha256 FROM archive_batches "
-                "WHERE dataset = 'codex_invocations' AND status = 'completed'"
-            ).fetchall()
-            if "archive_batches" in tables
-            else []
-        )
-        proof_batches: set[tuple[int, str]] = set()
-        if "summary_archive_snapshot" in tables and "summary_archive_snapshot_v2_proof" in tables:
-            proofs = connection.execute(
-                "SELECT archive_batch_id, manifest_sha256, page_count, row_count, "
-                "coverage_start, coverage_end, semantic_sha256 "
-                "FROM summary_archive_snapshot_v2_proof"
-            ).fetchall()
-            for batch_id, manifest_sha, page_count, row_count, proof_start, proof_end, semantic_sha in proofs:
-                pages = connection.execute(
-                    "SELECT page_index, row_count, payload, coverage_start, coverage_end, "
-                    "snapshot_sha256, payload_bytes, format_version "
-                    "FROM summary_archive_snapshot "
-                    "WHERE archive_batch_id = ? AND manifest_sha256 = ? AND format_version = 2 "
-                    "ORDER BY page_index",
-                    (batch_id, manifest_sha),
-                ).fetchall()
-                if len(pages) != int(page_count) or sum(int(page[1]) for page in pages) != int(row_count):
-                    raise RuntimeError(
-                        f"V2 final proof page metadata is incomplete for archive batch {batch_id}"
-                    )
-                semantic = hashlib.sha256()
-                previous_end: dt.datetime | None = None
-                previous_key: tuple[dt.datetime, int] | None = None
-                seen_ids: set[int] = set()
-                for expected_page, page in enumerate(pages):
-                    page_index, page_row_count, payload, coverage_start, coverage_end, snapshot_sha, payload_bytes, format_version = page
-                    if int(page_index) != expected_page or int(format_version) != 2:
-                        raise RuntimeError("V2 final proof page order or format is invalid")
-                    if int(payload_bytes) != len(payload) or hashlib.sha256(payload).hexdigest() != snapshot_sha:
-                        raise RuntimeError("V2 final proof page integrity is invalid")
-                    start = parse_time(str(coverage_start))
-                    end = parse_time(str(coverage_end))
-                    if start > end or (previous_end is not None and start < previous_end):
-                        raise RuntimeError("V2 final proof page coverage is invalid")
-                    semantic.update(int(page_index).to_bytes(8, "little", signed=True))
-                    semantic.update(str(snapshot_sha).encode())
-                    semantic.update(int(page_row_count).to_bytes(8, "little", signed=True))
-                    semantic.update(str(coverage_start).encode())
-                    semantic.update(str(coverage_end).encode())
-                    decoded = decode_v2_payload(payload)
-                    if len(decoded) != int(page_row_count):
-                        raise RuntimeError("V2 final proof payload row count is invalid")
-                    for record in decoded:
-                        occurred = parse_time(str(record["occurred_at"]))
-                        key = (occurred, int(record.get("id") or 0))
-                        if previous_key is not None and key < previous_key:
-                            raise RuntimeError("V2 final proof record order is invalid")
-                        # `codex_invocations` permits the same invoke_id at different
-                        # occurred_at values (UNIQUE(invoke_id, occurred_at)); row id is
-                        # the authoritative identity used by the service proof validator.
-                        if int(record.get("id") or 0) in seen_ids:
-                            raise RuntimeError("V2 final proof contains duplicate row identity")
-                        if occurred < start or occurred > end:
-                            raise RuntimeError("V2 final proof record coverage is invalid")
-                        seen_ids.add(int(record.get("id") or 0))
-                        previous_key = key
-                    previous_end = end
-                    rows.extend(decoded)
-                if str(proof_start) != str(pages[0][3]) or str(proof_end) != str(pages[-1][4]) or semantic.hexdigest() != str(semantic_sha):
-                    raise RuntimeError("V2 final proof semantic coverage is invalid")
-                proof_batches.add((int(batch_id), str(manifest_sha)))
-        for _batch_id, stored_path, _status, stored_sha in batches:
-            if (int(_batch_id), str(stored_sha)) in proof_batches:
-                continue
-            parts = Path(stored_path).parts
-            try:
-                archive_index = max(index for index, part in enumerate(parts) if part == "archives")
-            except ValueError as error:
-                raise RuntimeError("archive manifest path has no archives root") from error
-            candidate = (archive_root.joinpath(*parts[archive_index + 1 :])).resolve()
-            if archive_root not in (candidate, *candidate.parents) or not candidate.is_file():
-                raise RuntimeError(f"archive authority is missing: {candidate}")
-            archive_connection, archive_temporary = open_archive(candidate)
-            try:
-                rows.extend(source_rows(archive_connection))
-            finally:
-                archive_connection.close()
-                archive_temporary.close()
-    finally:
-        connection.close()
+def validate_v2_page(page: tuple[Any, ...], expected_page: int, previous_end: dt.datetime | None, previous_key: tuple[dt.datetime, int] | None, seen_ids: set[int], semantic: Any) -> tuple[dt.datetime, tuple[dt.datetime, int], list[dict[str, Any]]]:
+    page_index, row_count, payload, coverage_start, coverage_end, snapshot_sha, payload_bytes, format_version = page
+    if int(page_index) != expected_page or int(format_version) != 2:
+        raise RuntimeError("V2 final proof page order or format is invalid")
+    if int(payload_bytes) != len(payload) or hashlib.sha256(payload).hexdigest() != snapshot_sha:
+        raise RuntimeError("V2 final proof page integrity is invalid")
+    start, end = parse_time(str(coverage_start)), parse_time(str(coverage_end))
+    if start > end or (previous_end is not None and start < previous_end):
+        raise RuntimeError("V2 final proof page coverage is invalid")
+    semantic.update(int(page_index).to_bytes(8, "little", signed=True))
+    semantic.update(str(snapshot_sha).encode())
+    semantic.update(int(row_count).to_bytes(8, "little", signed=True))
+    semantic.update(str(coverage_start).encode())
+    semantic.update(str(coverage_end).encode())
+    decoded = decode_v2_payload(payload)
+    if len(decoded) != int(row_count):
+        raise RuntimeError("V2 final proof payload row count is invalid")
+    last_key = previous_key
+    for record in decoded:
+        occurred = parse_time(str(record["occurred_at"]))
+        key = (occurred, int(record.get("id") or 0))
+        if last_key is not None and key < last_key:
+            raise RuntimeError("V2 final proof record order is invalid")
+        row_id = int(record.get("id") or 0)
+        if row_id in seen_ids:
+            raise RuntimeError("V2 final proof contains duplicate row identity")
+        if occurred < start or occurred > end:
+            raise RuntimeError("V2 final proof record coverage is invalid")
+        seen_ids.add(row_id)
+        last_key = key
+    return end, last_key, decoded
 
+
+def load_v2_proof_rows(connection: sqlite3.Connection) -> tuple[list[dict[str, Any]], set[tuple[int, str]]]:
+    rows: list[dict[str, Any]] = []
+    proof_batches: set[tuple[int, str]] = set()
+    proofs = connection.execute(
+        "SELECT archive_batch_id, manifest_sha256, page_count, row_count, coverage_start, coverage_end, semantic_sha256 "
+        "FROM summary_archive_snapshot_v2_proof"
+    ).fetchall()
+    for batch_id, manifest_sha, page_count, row_count, proof_start, proof_end, semantic_sha in proofs:
+        pages = connection.execute(
+            "SELECT page_index, row_count, payload, coverage_start, coverage_end, snapshot_sha256, payload_bytes, format_version "
+            "FROM summary_archive_snapshot WHERE archive_batch_id = ? AND manifest_sha256 = ? AND format_version = 2 ORDER BY page_index",
+            (batch_id, manifest_sha),
+        ).fetchall()
+        if len(pages) != int(page_count) or sum(int(page[1]) for page in pages) != int(row_count):
+            raise RuntimeError(f"V2 final proof page metadata is incomplete for archive batch {batch_id}")
+        semantic = hashlib.sha256()
+        previous_end: dt.datetime | None = None
+        previous_key: tuple[dt.datetime, int] | None = None
+        seen_ids: set[int] = set()
+        for expected_page, page in enumerate(pages):
+            previous_end, previous_key, decoded = validate_v2_page(page, expected_page, previous_end, previous_key, seen_ids, semantic)
+            rows.extend(decoded)
+        if str(proof_start) != str(pages[0][3]) or str(proof_end) != str(pages[-1][4]) or semantic.hexdigest() != str(semantic_sha):
+            raise RuntimeError("V2 final proof semantic coverage is invalid")
+        proof_batches.add((int(batch_id), str(manifest_sha)))
+    return rows, proof_batches
+
+
+def load_archive_rows(connection: sqlite3.Connection, archive_root: Path, proof_batches: set[tuple[int, str]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    batches = connection.execute(
+        "SELECT id, file_path, status, sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND status = 'completed'"
+    ).fetchall()
+    for batch_id, stored_path, _status, stored_sha in batches:
+        if (int(batch_id), str(stored_sha)) in proof_batches:
+            continue
+        parts = Path(stored_path).parts
+        try:
+            archive_index = max(index for index, part in enumerate(parts) if part == "archives")
+        except ValueError as error:
+            raise RuntimeError("archive manifest path has no archives root") from error
+        candidate = (archive_root.joinpath(*parts[archive_index + 1 :])).resolve()
+        if archive_root not in (candidate, *candidate.parents) or not candidate.is_file():
+            raise RuntimeError(f"archive authority is missing: {candidate}")
+        archive_connection, archive_temporary = open_archive(candidate)
+        try:
+            rows.extend(source_rows(archive_connection))
+        finally:
+            archive_connection.close()
+            archive_temporary.close()
+    return rows
+
+
+def deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduplicated: dict[tuple[Any, ...], dict[str, Any]] = {}
     for row in rows:
-        identity = (
-            "id",
-            row.get("id"),
-        ) if row.get("id") is not None else (
-            "invoke",
-            row.get("invoke_id"),
-            row.get("occurred_at"),
-        )
+        identity = ("id", row.get("id")) if row.get("id") is not None else ("invoke", row.get("invoke_id"), row.get("occurred_at"))
         previous = deduplicated.get(identity)
         if previous is not None and not canonical_rows_equal(previous, row):
             raise RuntimeError(f"conflicting authoritative rows for {identity!r}")
         deduplicated[identity] = row
     return list(deduplicated.values())
+
+
+def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
+    connection = sqlite3.connect(database)
+    try:
+        rows = source_rows(connection)
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        proof_batches: set[tuple[int, str]] = set()
+        if "summary_archive_snapshot" in tables and "summary_archive_snapshot_v2_proof" in tables:
+            proof_rows, proof_batches = load_v2_proof_rows(connection)
+            rows.extend(proof_rows)
+        if "archive_batches" in tables:
+            rows.extend(load_archive_rows(connection, archive_root, proof_batches))
+    finally:
+        connection.close()
+    return deduplicate_rows(rows)
 
 
 def canonical_row(row: dict[str, Any]) -> tuple[Any, ...]:
