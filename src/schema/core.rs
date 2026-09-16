@@ -428,6 +428,18 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
         .execute(tx.as_mut())
         .await
         .context("failed to ensure timeseries_minute_projection_v2 recovery table before trigger rebuild")?;
+
+    for trigger_name in [
+        "trg_codex_invocations_live_insert",
+        "trg_codex_invocations_live_update",
+        "trg_codex_invocations_live_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(tx.as_mut())
+            .await
+            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
+    }
+
     create_invocation_insert_trigger(tx.as_mut()).await?;
     create_invocation_update_trigger(tx.as_mut()).await?;
     create_invocation_delete_trigger(tx.as_mut()).await?;
