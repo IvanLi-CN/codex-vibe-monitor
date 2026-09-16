@@ -24,19 +24,39 @@ assert_not_contains() {
   fi
 }
 
+assert_order() {
+  local file="$1"
+  local earlier="$2"
+  local later="$3"
+  local earlier_line later_line
+
+  earlier_line="$(grep -nF -- "$earlier" "$file" | head -n 1 | cut -d: -f1)"
+  later_line="$(grep -nF -- "$later" "$file" | head -n 1 | cut -d: -f1)"
+  [ -n "$earlier_line" ] || fail "expected $file to contain $earlier before $later"
+  [ -n "$later_line" ] || fail "expected $file to contain $later after $earlier"
+  [ "$earlier_line" -lt "$later_line" ] || fail "expected $earlier before $later in $file"
+}
+
 for surface in web markdown rust; do
   assert_contains "$repo_root/lefthook.yml" "format-$surface:"
 done
 assert_contains "$repo_root/lefthook.yml" '{staged_files}'
 assert_contains "$repo_root/lefthook.yml" 'glob: "**/*.md"'
-assert_contains "$repo_root/lefthook.yml" 'parallel: true'
+assert_contains "$repo_root/lefthook.yml" 'parallel: false'
 assert_contains "$repo_root/lefthook.yml" 'stage_fixed: true'
-assert_not_contains "$repo_root/lefthook.yml" 'cargo clippy'
+assert_contains "$repo_root/lefthook.yml" 'pre-push:'
+assert_contains "$repo_root/lefthook.yml" 'source-quality-staged:'
+assert_contains "$repo_root/lefthook.yml" 'check-source-quality.sh'
+assert_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'pre-push'
 assert_not_contains "$repo_root/lefthook.yml" 'tsc -b'
 assert_not_contains "$repo_root/lefthook.yml" 'bun run lint:web'
 assert_not_contains "$repo_root/scripts/install-lefthook-hooks.sh" 'lefthook uninstall'
 assert_not_contains "$repo_root/scripts/format-staged-files.sh" 'lefthook-unstaged.patch'
 assert_contains "$repo_root/scripts/check-staged-formatter-safety.sh" 'format-staged-files.sh" --check'
+assert_order "$repo_root/lefthook.yml" 'format-web:' 'format-markdown:'
+assert_order "$repo_root/lefthook.yml" 'format-markdown:' 'format-rust:'
+assert_order "$repo_root/lefthook.yml" 'format-rust:' 'source-quality-staged:'
+assert_order "$repo_root/lefthook.yml" 'source-quality:' 'rust-quality:'
 
 fake_bin="$tmp_dir/fake-bin"
 formatter_log="$tmp_dir/formatter.log"
@@ -77,14 +97,25 @@ case "$(cd "$(dirname "$lefthook_bin")" && pwd -P)" in
 esac
 
 partial_repo="$tmp_dir/partial-stage"
-mkdir -p "$partial_repo/scripts" "$partial_repo/src"
+mkdir -p "$partial_repo/scripts" "$partial_repo/src" "$partial_repo/tools/source-structure-check"
 cp "$repo_root/lefthook.yml" "$partial_repo/lefthook.yml"
 cp "$repo_root/scripts/format-staged-files.sh" "$partial_repo/scripts/format-staged-files.sh"
 cp "$repo_root/scripts/check-staged-formatter-safety.sh" "$partial_repo/scripts/check-staged-formatter-safety.sh"
+cp "$repo_root/scripts/check-staged-source-quality.sh" "$partial_repo/scripts/check-staged-source-quality.sh"
 cp "$repo_root/scripts/install-lefthook-hooks.sh" "$partial_repo/scripts/install-lefthook-hooks.sh"
+cat > "$partial_repo/tools/source-structure-check/check-staged" <<'EOF_SOURCE_QUALITY_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' 'source-quality' >> "${SOURCE_QUALITY_LOG:?}"
+exit 0
+EOF_SOURCE_QUALITY_STUB
 chmod +x "$partial_repo/scripts/format-staged-files.sh"
 chmod +x "$partial_repo/scripts/check-staged-formatter-safety.sh"
+chmod +x "$partial_repo/scripts/check-staged-source-quality.sh"
 chmod +x "$partial_repo/scripts/install-lefthook-hooks.sh"
+chmod +x "$partial_repo/tools/source-structure-check/check-staged"
+source_quality_log="$tmp_dir/source-quality.log"
+export SOURCE_QUALITY_LOG="$source_quality_log"
 cat > "$partial_repo/src/sample.rs" <<'EOF_RUST'
 fn main() {
     println!("base");
@@ -101,6 +132,7 @@ git -C "$partial_repo" commit -qm 'fixture'
 )
 partial_pre_commit_hook="$partial_repo/.git/hooks/pre-commit"
 assert_contains "$partial_pre_commit_hook" 'bash scripts/check-staged-formatter-safety.sh'
+assert_order "$partial_pre_commit_hook" 'bash scripts/check-staged-formatter-safety.sh' 'call_lefthook run "pre-commit"'
 cat > "$partial_repo/src/sample.rs" <<'EOF_STAGED'
 fn main(){ println!("staged"); }
 EOF_STAGED
@@ -113,6 +145,7 @@ git -C "$partial_repo" apply --cached "$tmp_dir/staged.patch"
 cat > "$fake_bin/partial-rustfmt" <<'EOF_PARTIAL_RUSTFMT'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' 'rustfmt' >> "${SOURCE_QUALITY_LOG:?}"
 for path in "$@"; do
   [ "$path" = '--edition' ] && shift && continue
   [ "$path" = '2024' ] && continue
@@ -145,10 +178,17 @@ cmp -s "$tmp_dir/expected-worktree.contents" "$tmp_dir/worktree.contents" \
 cat > "$partial_repo/src/sample.rs" <<'EOF_FULL_STAGE'
 fn main(){ println!("staged"); }
 EOF_FULL_STAGE
+: > "$source_quality_log"
 (
   cd "$partial_repo"
   LEFTHOOK_BIN="$lefthook_bin" CODEX_HOOK_RUSTFMT_BIN="$fake_bin/partial-rustfmt" "$partial_pre_commit_hook"
 )
+cat > "$tmp_dir/expected-hook-order" <<'EOF_HOOK_ORDER'
+rustfmt
+source-quality
+EOF_HOOK_ORDER
+cmp -s "$tmp_dir/expected-hook-order" "$source_quality_log" \
+  || fail 'pre-commit ran staged source quality before staged formatting'
 git -C "$partial_repo" show :src/sample.rs > "$tmp_dir/formatted-index.contents"
 cp "$partial_repo/src/sample.rs" "$tmp_dir/formatted-worktree.contents"
 cat > "$tmp_dir/expected-formatted.contents" <<'EOF_FORMATTED'
