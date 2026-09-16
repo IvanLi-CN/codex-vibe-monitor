@@ -1,5 +1,5 @@
 pre-commit:
-  parallel: true
+  parallel: false
   commands:
     format-web:
       glob: "web/**/*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}"
@@ -13,6 +13,16 @@ pre-commit:
       glob: "*.{rs}"
       run: bash scripts/format-staged-files.sh rust {staged_files}
       stage_fixed: true
+    source-quality-staged:
+      run: bash scripts/check-staged-source-quality.sh
+
+pre-push:
+  parallel: false
+  commands:
+    source-quality:
+      run: bash scripts/check-source-quality.sh
+    rust-quality:
+      run: cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings
 
 commit-msg:
   commands:

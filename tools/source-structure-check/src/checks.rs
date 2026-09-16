@@ -13,6 +13,16 @@ pub fn run(
     let scope = repository::collect(repo_root, config, staged)?;
     let mut diagnostics = Vec::new();
     let mut parse_errors = Vec::new();
+
+    let biome_files = scope.files.clone();
+    match biome::check(repo_root, &biome_files, staged) {
+        Ok((biome_diagnostics, biome_errors)) => {
+            diagnostics.extend(biome_diagnostics);
+            parse_errors.extend(biome_errors);
+        }
+        Err(error) => parse_errors.push(error),
+    }
+
     for file in &scope.files {
         let (class, limit) = config::limit_for(config, &file.path);
         let lines = physical_lines(&file.content);
@@ -29,14 +39,6 @@ pub fn run(
             Ok(analysis) => diagnostics.extend(analysis.diagnostics),
             Err(error) => parse_errors.push(error),
         }
-    }
-    let biome_files = scope.files.clone();
-    match biome::check(repo_root, &biome_files, staged) {
-        Ok((biome_diagnostics, biome_errors)) => {
-            diagnostics.extend(biome_diagnostics);
-            parse_errors.extend(biome_errors);
-        }
-        Err(error) => parse_errors.push(error),
     }
     diagnostics.sort_by(|left, right| {
         (&left.path, &left.rule, &left.subject).cmp(&(&right.path, &right.rule, &right.subject))
