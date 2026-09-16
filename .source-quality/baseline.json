@@ -12240,28 +12240,28 @@
     {
       "rule": "rust-structural-suppression",
       "path": "src/proxy/mod.rs",
-      "subject": "line:19:clippy::too_many_arguments",
+      "subject": "line:15:clippy::too_many_arguments",
       "actual": 1,
       "limit": 0
     },
     {
       "rule": "rust-structural-suppression",
       "path": "src/proxy/mod.rs",
-      "subject": "line:25:clippy::too_many_arguments",
+      "subject": "line:21:clippy::too_many_arguments",
       "actual": 1,
       "limit": 0
     },
     {
       "rule": "rust-structural-suppression",
       "path": "src/proxy/mod.rs",
-      "subject": "line:32:clippy::too_many_arguments",
+      "subject": "line:28:clippy::too_many_arguments",
       "actual": 1,
       "limit": 0
     },
     {
       "rule": "rust-structural-suppression",
       "path": "src/proxy/mod.rs",
-      "subject": "line:37:clippy::too_many_arguments",
+      "subject": "line:33:clippy::too_many_arguments",
       "actual": 1,
       "limit": 0
     },

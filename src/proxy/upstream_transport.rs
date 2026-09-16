@@ -512,18 +512,31 @@ async fn connect_via_counted_transport(
     forward_proxy_url: Option<&Url>,
     meter: UpstreamSocketByteMeter,
 ) -> Result<BoxedWsIo, io::Error> {
-    let Some(forward_proxy_url) = forward_proxy_url else {
-        let host = target_url.host_str().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "upstream URL missing host")
-        })?;
-        let port = target_url.port_or_known_default().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "upstream URL missing port")
-        })?;
-        let stream = TcpStream::connect((host, port)).await?;
-        let counted = CountedIo::new(stream, meter);
-        return maybe_tls_wrap_target_stream(counted, target_url).await;
-    };
+    match forward_proxy_url {
+        Some(proxy) => connect_via_forward_proxy(target_url, proxy, meter).await,
+        None => connect_direct_target(target_url, meter).await,
+    }
+}
 
+async fn connect_direct_target(
+    target_url: &Url,
+    meter: UpstreamSocketByteMeter,
+) -> Result<BoxedWsIo, io::Error> {
+    let host = target_url
+        .host_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "upstream URL missing host"))?;
+    let port = target_url
+        .port_or_known_default()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "upstream URL missing port"))?;
+    let stream = TcpStream::connect((host, port)).await?;
+    maybe_tls_wrap_target_stream(CountedIo::new(stream, meter), target_url).await
+}
+
+async fn connect_via_forward_proxy(
+    target_url: &Url,
+    forward_proxy_url: &Url,
+    meter: UpstreamSocketByteMeter,
+) -> Result<BoxedWsIo, io::Error> {
     let proxy_host = forward_proxy_url.host_str().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -542,143 +555,225 @@ async fn connect_via_counted_transport(
     let upstream_port = target_url
         .port_or_known_default()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "upstream URL missing port"))?;
-    let target_authority = if upstream_host.contains(':') {
-        format!("[{upstream_host}]:{upstream_port}")
-    } else {
-        format!("{upstream_host}:{upstream_port}")
-    };
 
-    let proxy_scheme = forward_proxy_url.scheme();
-    if matches!(proxy_scheme, "socks5" | "socks5h") {
-        let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
-        let mut stream = CountedIo::new(stream, meter);
-        let socks_target_host = if proxy_scheme == "socks5" {
-            super::websocket::resolve_socks5_local_target_host(upstream_host, upstream_port)
-                .await
-                .map_err(|err| io::Error::other(err.to_string()))?
-        } else {
-            upstream_host.to_string()
-        };
-        let username = super::websocket::forward_proxy_username(forward_proxy_url);
-        let password =
-            super::websocket::forward_proxy_password(forward_proxy_url).unwrap_or_default();
-        let use_password_auth = !username.is_empty();
-        if use_password_auth {
-            stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
-        } else {
-            stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    match forward_proxy_url.scheme() {
+        "socks5" | "socks5h" => {
+            connect_socks5_proxy(
+                target_url,
+                forward_proxy_url,
+                meter,
+                proxy_host,
+                proxy_port,
+                upstream_host,
+                upstream_port,
+            )
+            .await
         }
-        let mut method_response = [0_u8; 2];
-        stream.read_exact(&mut method_response).await?;
-        if method_response[0] != 0x05 || method_response[1] == 0xff {
-            return Err(io::Error::other(
-                "SOCKS5 forward proxy did not accept an authentication method",
-            ));
+        "http" | "https" => {
+            connect_http_proxy(
+                target_url,
+                forward_proxy_url,
+                meter,
+                proxy_host,
+                proxy_port,
+                upstream_host,
+                upstream_port,
+            )
+            .await
         }
-        if method_response[1] == 0x02 {
-            let mut auth_request = Vec::with_capacity(3 + username.len() + password.len());
-            auth_request.push(0x01);
-            auth_request.push(u8::try_from(username.len()).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "SOCKS5 username exceeds 255 bytes",
-                )
-            })?);
-            auth_request.extend_from_slice(username.as_bytes());
-            auth_request.push(u8::try_from(password.len()).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "SOCKS5 password exceeds 255 bytes",
-                )
-            })?);
-            auth_request.extend_from_slice(password.as_bytes());
-            stream.write_all(&auth_request).await?;
-            let mut auth_response = [0_u8; 2];
-            stream.read_exact(&mut auth_response).await?;
-            if auth_response != [0x01, 0x00] {
-                return Err(io::Error::other(
-                    "SOCKS5 username/password authentication failed",
-                ));
-            }
-        }
-        let mut connect_request = Vec::with_capacity(6 + socks_target_host.len());
-        connect_request.push(0x05);
-        connect_request.push(0x01);
-        connect_request.push(0x00);
-        if let Ok(ipv4) = socks_target_host.parse::<std::net::Ipv4Addr>() {
-            connect_request.push(0x01);
-            connect_request.extend_from_slice(&ipv4.octets());
-        } else if let Ok(ipv6) = socks_target_host.parse::<std::net::Ipv6Addr>() {
-            connect_request.push(0x04);
-            connect_request.extend_from_slice(&ipv6.octets());
-        } else {
-            connect_request.push(0x03);
-            let host_bytes = socks_target_host.as_bytes();
-            connect_request.push(u8::try_from(host_bytes.len()).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "SOCKS5 host exceeds 255 bytes")
-            })?);
-            connect_request.extend_from_slice(host_bytes);
-        }
-        connect_request.extend_from_slice(&upstream_port.to_be_bytes());
-        stream.write_all(&connect_request).await?;
-        let mut response_head = [0_u8; 4];
-        stream.read_exact(&mut response_head).await?;
-        if response_head[0] != 0x05 || response_head[1] != 0x00 {
-            return Err(io::Error::other("SOCKS5 forward proxy CONNECT failed"));
-        }
-        match response_head[3] {
-            0x01 => {
-                let mut skip = [0_u8; 4 + 2];
-                stream.read_exact(&mut skip).await?;
-            }
-            0x03 => {
-                let mut len = [0_u8; 1];
-                stream.read_exact(&mut len).await?;
-                let mut skip = vec![0_u8; usize::from(len[0]) + 2];
-                stream.read_exact(&mut skip).await?;
-            }
-            0x04 => {
-                let mut skip = [0_u8; 16 + 2];
-                stream.read_exact(&mut skip).await?;
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "SOCKS5 forward proxy returned invalid address type",
-                ));
-            }
-        }
-        return maybe_tls_wrap_target_stream(stream, target_url).await;
-    }
-    if !matches!(proxy_scheme, "http" | "https") {
-        return Err(io::Error::new(
+        proxy_scheme => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!(
                 "HTTP transport only supports HTTP CONNECT, HTTPS CONNECT, or SOCKS5 forward proxy endpoints, got {proxy_scheme}"
             ),
+        )),
+    }
+}
+
+async fn connect_socks5_proxy(
+    target_url: &Url,
+    forward_proxy_url: &Url,
+    meter: UpstreamSocketByteMeter,
+    proxy_host: &str,
+    proxy_port: u16,
+    upstream_host: &str,
+    upstream_port: u16,
+) -> Result<BoxedWsIo, io::Error> {
+    let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
+    let mut stream = CountedIo::new(stream, meter);
+    let target_host = if forward_proxy_url.scheme() == "socks5" {
+        super::websocket::resolve_socks5_local_target_host(upstream_host, upstream_port)
+            .await
+            .map_err(|err| io::Error::other(err.to_string()))?
+    } else {
+        upstream_host.to_string()
+    };
+    authenticate_socks5(&mut stream, forward_proxy_url).await?;
+    connect_socks5_target(&mut stream, &target_host, upstream_port).await?;
+    maybe_tls_wrap_target_stream(stream, target_url).await
+}
+
+async fn authenticate_socks5(
+    stream: &mut CountedIo<TcpStream>,
+    forward_proxy_url: &Url,
+) -> Result<(), io::Error> {
+    let username = super::websocket::forward_proxy_username(forward_proxy_url);
+    let password = super::websocket::forward_proxy_password(forward_proxy_url).unwrap_or_default();
+    if username.is_empty() {
+        stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    } else {
+        stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
+    }
+    let mut method_response = [0_u8; 2];
+    stream.read_exact(&mut method_response).await?;
+    if method_response[0] != 0x05 || method_response[1] == 0xff {
+        return Err(io::Error::other(
+            "SOCKS5 forward proxy did not accept an authentication method",
         ));
     }
+    if method_response[1] != 0x02 {
+        return Ok(());
+    }
+    let username_len = u8::try_from(username.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SOCKS5 username exceeds 255 bytes",
+        )
+    })?;
+    let password_len = u8::try_from(password.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SOCKS5 password exceeds 255 bytes",
+        )
+    })?;
+    let mut request = Vec::with_capacity(3 + username.len() + password.len());
+    request.extend_from_slice(&[0x01, username_len]);
+    request.extend_from_slice(username.as_bytes());
+    request.extend_from_slice(&[password_len]);
+    request.extend_from_slice(password.as_bytes());
+    stream.write_all(&request).await?;
+    let mut response = [0_u8; 2];
+    stream.read_exact(&mut response).await?;
+    if response != [0x01, 0x00] {
+        return Err(io::Error::other(
+            "SOCKS5 username/password authentication failed",
+        ));
+    }
+    Ok(())
+}
 
+async fn connect_socks5_target(
+    stream: &mut CountedIo<TcpStream>,
+    target_host: &str,
+    target_port: u16,
+) -> Result<(), io::Error> {
+    let mut request = Vec::with_capacity(6 + target_host.len());
+    request.extend_from_slice(&[0x05, 0x01, 0x00]);
+    if let Ok(ipv4) = target_host.parse::<std::net::Ipv4Addr>() {
+        request.push(0x01);
+        request.extend_from_slice(&ipv4.octets());
+    } else if let Ok(ipv6) = target_host.parse::<std::net::Ipv6Addr>() {
+        request.push(0x04);
+        request.extend_from_slice(&ipv6.octets());
+    } else {
+        request.push(0x03);
+        let host_bytes = target_host.as_bytes();
+        request.push(u8::try_from(host_bytes.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "SOCKS5 host exceeds 255 bytes")
+        })?);
+        request.extend_from_slice(host_bytes);
+    }
+    request.extend_from_slice(&target_port.to_be_bytes());
+    stream.write_all(&request).await?;
+    let mut response = [0_u8; 4];
+    stream.read_exact(&mut response).await?;
+    if response[0] != 0x05 || response[1] != 0x00 {
+        return Err(io::Error::other("SOCKS5 forward proxy CONNECT failed"));
+    }
+    consume_socks5_bound_address(stream, response[3]).await
+}
+
+async fn consume_socks5_bound_address(
+    stream: &mut CountedIo<TcpStream>,
+    address_type: u8,
+) -> Result<(), io::Error> {
+    match address_type {
+        0x01 => {
+            let mut skip = [0_u8; 4 + 2];
+            stream.read_exact(&mut skip).await?;
+        }
+        0x03 => {
+            let mut len = [0_u8; 1];
+            stream.read_exact(&mut len).await?;
+            let mut skip = vec![0_u8; usize::from(len[0]) + 2];
+            stream.read_exact(&mut skip).await?;
+        }
+        0x04 => {
+            let mut skip = [0_u8; 16 + 2];
+            stream.read_exact(&mut skip).await?;
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SOCKS5 forward proxy returned invalid address type",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn connect_http_proxy(
+    target_url: &Url,
+    forward_proxy_url: &Url,
+    meter: UpstreamSocketByteMeter,
+    proxy_host: &str,
+    proxy_port: u16,
+    upstream_host: &str,
+    upstream_port: u16,
+) -> Result<BoxedWsIo, io::Error> {
     let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
     let mut stream: BoxedWsIo = if forward_proxy_url.scheme() == "https" {
-        maybe_tls_wrap_target_stream(CountedIo::new(stream, meter.clone()), forward_proxy_url)
-            .await?
+        maybe_tls_wrap_target_stream(CountedIo::new(stream, meter), forward_proxy_url).await?
     } else {
-        Box::new(CountedIo::new(stream, meter.clone()))
+        Box::new(CountedIo::new(stream, meter))
     };
-    let mut connect_request =
+    let target_authority = format_authority(upstream_host, upstream_port);
+    let request = build_http_connect_request(&target_authority, forward_proxy_url);
+    stream.write_all(request.as_bytes()).await?;
+    let response = read_http_connect_response(&mut stream).await?;
+    let extra_read = validate_http_connect_response(&response)?;
+    let stream: BoxedWsIo = if extra_read.is_empty() {
+        stream
+    } else {
+        Box::new(PrefixedIo::new(extra_read, stream))
+    };
+    maybe_tls_wrap_target_stream(stream, target_url).await
+}
+
+fn format_authority(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn build_http_connect_request(target_authority: &str, forward_proxy_url: &Url) -> String {
+    let mut request =
         format!("CONNECT {target_authority} HTTP/1.1\r\nHost: {target_authority}\r\n");
     if let Some(credential) =
         super::websocket::forward_proxy_basic_auth_credential(forward_proxy_url)
     {
         let encoded = base64::engine::general_purpose::STANDARD.encode(credential);
-        connect_request.push_str("Proxy-Authorization: Basic ");
-        connect_request.push_str(&encoded);
-        connect_request.push_str("\r\n");
+        request.push_str("Proxy-Authorization: Basic ");
+        request.push_str(&encoded);
+        request.push_str("\r\n");
     }
-    connect_request.push_str("\r\n");
-    stream.write_all(connect_request.as_bytes()).await?;
+    request.push_str("\r\n");
+    request
+}
 
+async fn read_http_connect_response(stream: &mut BoxedWsIo) -> Result<Vec<u8>, io::Error> {
     let mut response = Vec::with_capacity(256);
     let mut buffer = [0_u8; 1024];
     loop {
@@ -691,7 +786,7 @@ async fn connect_via_counted_transport(
         }
         response.extend_from_slice(&buffer[..read]);
         if response.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+            return Ok(response);
         }
         if response.len() > 16 * 1024 {
             return Err(io::Error::new(
@@ -700,7 +795,9 @@ async fn connect_via_counted_transport(
             ));
         }
     }
+}
 
+fn validate_http_connect_response(response: &[u8]) -> Result<Vec<u8>, io::Error> {
     let header_end = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -730,14 +827,7 @@ async fn connect_via_counted_transport(
             "forward proxy CONNECT failed: {status_line}"
         )));
     }
-
-    let extra_read = response[(header_end + 4)..].to_vec();
-    let stream: BoxedWsIo = if extra_read.is_empty() {
-        stream
-    } else {
-        Box::new(PrefixedIo::new(extra_read, stream))
-    };
-    maybe_tls_wrap_target_stream(stream, target_url).await
+    Ok(response[(header_end + 4)..].to_vec())
 }
 
 pub(crate) async fn send_counted_upstream_http_request(
