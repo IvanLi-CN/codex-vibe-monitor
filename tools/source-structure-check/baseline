@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+build_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+target_dir=${CARGO_TARGET_DIR:-"$build_root/target"}
+exec env CARGO_TARGET_DIR="$target_dir" cargo run --quiet --locked --manifest-path "$script_dir/Cargo.toml" -- baseline "$@"

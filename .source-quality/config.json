@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    ".rs",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".css",
+    ".py",
+    ".sh"
+  ],
+  "exclusions": [
+    "web/public/mockServiceWorker.js"
+  ],
+  "baseline": ".source-quality/baseline.json",
+  "state": ".source-quality/state.json",
+  "limits": {
+    "function_lines": 100,
+    "parameters": 7,
+    "nesting": 4,
+    "production_file_lines": 1000,
+    "test_file_lines": 2000,
+    "tool_file_lines": 500,
+    "entry_file_lines": 500
+  },
+  "entry_paths": [
+    "src/main.rs",
+    "web/src/main.tsx",
+    "web/src/App.tsx",
+    "docs-site/rspress.config.ts",
+    ".github/scripts/**",
+    "scripts/**",
+    "web/scripts/**",
+    "docs-site/scripts/**",
+    "tools/source-structure-check/**"
+  ],
+  "tool_roots": [
+    ".github/scripts",
+    "scripts",
+    "web/scripts",
+    "docs-site/scripts",
+    "tools"
+  ]
+}
