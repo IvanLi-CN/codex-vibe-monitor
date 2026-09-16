@@ -46,6 +46,36 @@ function calcUsagePercent(limit?: number, used?: number) {
   return Math.min(100, Math.max(0, (used / limit) * 100));
 }
 
+function resolveCountdownDisplay(
+  expire: Date | null,
+  remaining: number,
+  minutes: number,
+  hours: number,
+  days: number,
+  t: ReturnType<typeof useTranslation>["t"],
+) {
+  if (!expire) return { display: "—", tone: "text-base-content/60" };
+  if (Number.isFinite(remaining) && remaining <= 0) {
+    return { display: t("quota.status.expired.badge"), tone: "text-error" };
+  }
+  if (Number.isFinite(days) && days >= 2) {
+    return {
+      display: t("quota.status.expireInDays", { count: days }),
+      tone: "text-base-content/60",
+    };
+  }
+  if (Number.isFinite(hours) && minutes >= 100) {
+    return { display: t("quota.status.expireInHours", { count: hours }), tone: "text-warning" };
+  }
+  if (Number.isFinite(minutes)) {
+    return {
+      display: t("quota.status.expireInMinutes", { count: Math.max(1, minutes) }),
+      tone: "text-warning",
+    };
+  }
+  return { display: "—", tone: "text-base-content/60" };
+}
+
 export function QuotaOverview({ snapshot, isLoading, error }: QuotaOverviewProps) {
   const { t } = useTranslation();
 
@@ -174,28 +204,11 @@ function CountdownUntil({ expireISO }: { expireISO?: string }) {
   const expire = useMemo(() => (expireISO ? new Date(expireISO) : null), [expireISO]);
   const remaining = useMemo(() => (expire ? expire.getTime() - now.getTime() : NaN), [expire, now]);
 
-  const isExpired = Number.isFinite(remaining) && remaining <= 0;
   const minutes = Number.isFinite(remaining) ? Math.ceil(remaining / 60_000) : NaN;
   const hours = Number.isFinite(remaining) ? Math.ceil(remaining / 3_600_000) : NaN;
   const days = Number.isFinite(remaining) ? Math.ceil(remaining / 86_400_000) : NaN;
 
-  let display = "—";
-  let tone = "text-base-content/60";
-  if (expire) {
-    if (isExpired) {
-      display = t("quota.status.expired.badge");
-      tone = "text-error";
-    } else if (Number.isFinite(days) && (days as number) >= 2) {
-      display = t("quota.status.expireInDays", { count: days as number });
-    } else if (Number.isFinite(hours) && (minutes as number) >= 100) {
-      display = t("quota.status.expireInHours", { count: hours as number });
-      tone = "text-warning";
-    } else if (Number.isFinite(minutes)) {
-      const mins = Math.max(1, minutes as number);
-      display = t("quota.status.expireInMinutes", { count: mins });
-      tone = "text-warning";
-    }
-  }
+  const { display, tone } = resolveCountdownDisplay(expire, remaining, minutes, hours, days, t);
 
   const absolute = expireISO
     ? t("quota.status.expireAt", { time: formatDate(expireISO) })
