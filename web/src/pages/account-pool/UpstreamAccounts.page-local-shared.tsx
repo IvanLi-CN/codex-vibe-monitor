@@ -635,8 +635,8 @@ function resolveOauthRecoveryHint(
 function AccountDetailSkeleton() {
   return (
     <div className="grid gap-4">
-      {Array.from({ length: 3 }).map((_, index) => (
-        <div key={index} className="h-28 animate-pulse rounded-[1.35rem] bg-base-200/75" />
+      {["first", "second", "third"].map((key) => (
+        <div key={key} className="h-28 animate-pulse rounded-[1.35rem] bg-base-200/75" />
       ))}
     </div>
   );

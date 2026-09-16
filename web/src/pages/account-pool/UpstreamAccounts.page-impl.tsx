@@ -42,6 +42,7 @@ import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
+import type { TranslationValues } from "../../i18n";
 import { useTranslation } from "../../i18n";
 import { buildAccountPoolGroupSummaries } from "../../lib/accountPoolGroups";
 import type {
@@ -94,6 +95,35 @@ import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroup
 export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local-shared";
 
 type AccountRosterViewMode = "flat" | "grouped" | "grid";
+type Translate = (key: string, values?: TranslationValues) => string;
+
+function buildAccountRosterLabelers(t: Translate) {
+  const unknown = () => t("accountPool.upstreamAccounts.latestAction.unknown");
+  const resolve = (prefix: string, value?: string | null) => {
+    if (!value) return null;
+    const key = `${prefix}.${value}`;
+    const translated = t(key);
+    return translated === key ? unknown() : translated;
+  };
+  return {
+    accountEnableStatusLabel: (status: string) =>
+      t(`accountPool.upstreamAccounts.enableStatus.${status}`),
+    accountWorkStatusLabel: (status: string) =>
+      t(`accountPool.upstreamAccounts.workStatus.${status}`),
+    accountWorkingCountLabel: (count: number) =>
+      t("accountPool.upstreamAccounts.workStatus.workingWithCount", { count }),
+    accountHealthStatusLabel: (status: string) =>
+      t(`accountPool.upstreamAccounts.healthStatus.${status}`),
+    accountSyncStateLabel: (status: string) =>
+      t(`accountPool.upstreamAccounts.syncState.${status}`),
+    accountActionLabel: (action?: string | null) =>
+      resolve("accountPool.upstreamAccounts.latestAction.actions", action),
+    accountActionSourceLabel: (source?: string | null) =>
+      resolve("accountPool.upstreamAccounts.latestAction.sources", source),
+    accountActionReasonLabel: (reason?: string | null) =>
+      resolve("accountPool.upstreamAccounts.latestAction.reasons", reason),
+  };
+}
 
 function ApiKeyGroupMigrationAutoRunner({
   enabled,
@@ -458,10 +488,6 @@ export default function UpstreamAccountsPage() {
       new Set(visibleGroupedAccountIds.filter((accountId) => visibleRosterIdSet.has(accountId))),
     );
   }, [rosterViewMode, visibleGroupedAccountIds, visibleRosterItems]);
-  const visibleHydrationAccountIdsKey = useMemo(
-    () => [...visibleHydrationAccountIds].sort((left, right) => left - right).join(","),
-    [visibleHydrationAccountIds],
-  );
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === "oauth_codex").length,
@@ -528,7 +554,6 @@ export default function UpstreamAccountsPage() {
     listState.hasCurrentQueryData,
     showBlockingRosterState,
     visibleHydrationAccountIds,
-    visibleHydrationAccountIdsKey,
   ]);
   const handleWorkStatusFilterChange = useCallback(
     (value: string[]) => {
@@ -686,7 +711,7 @@ export default function UpstreamAccountsPage() {
     }, UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [listState.dataQueryKey, listState.loadingState, listState.queryKey]);
+  }, [listState.loadingState]);
 
   useLayoutEffect(() => {
     if (hideRosterDerivedUi) return;
@@ -695,17 +720,7 @@ export default function UpstreamAccountsPage() {
     const nextHeight = Math.ceil(region.getBoundingClientRect().height);
     if (!(nextHeight > 0)) return;
     setLastStableRosterRegionHeight((current) => (current === nextHeight ? current : nextHeight));
-  }, [
-    bulkActionError,
-    bulkActionMessage,
-    hideRosterDerivedUi,
-    page,
-    pageCount,
-    pageSize,
-    selectedAccountIds.length,
-    visibleListWarning,
-    visibleRosterItems,
-  ]);
+  }, [hideRosterDerivedUi]);
 
   useEffect(() => {
     if (
@@ -931,34 +946,16 @@ export default function UpstreamAccountsPage() {
       })
       .join(" / ");
   };
-  const accountEnableStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.enableStatus.${status}`);
-  const accountWorkStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.workStatus.${status}`);
-  const accountWorkingCountLabel = (count: number) =>
-    t("accountPool.upstreamAccounts.workStatus.workingWithCount", { count });
-  const accountHealthStatusLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.healthStatus.${status}`);
-  const accountSyncStateLabel = (status: string) =>
-    t(`accountPool.upstreamAccounts.syncState.${status}`);
-  const accountActionLabel = (action?: string | null) => {
-    if (!action) return null;
-    const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
-    const translated = t(key);
-    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
-  };
-  const accountActionSourceLabel = (source?: string | null) => {
-    if (!source) return null;
-    const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`;
-    const translated = t(key);
-    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
-  };
-  const accountActionReasonLabel = (reason?: string | null) => {
-    if (!reason) return null;
-    const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
-    const translated = t(key);
-    return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
-  };
+  const {
+    accountEnableStatusLabel,
+    accountWorkStatusLabel,
+    accountWorkingCountLabel,
+    accountHealthStatusLabel,
+    accountSyncStateLabel,
+    accountActionLabel,
+    accountActionSourceLabel,
+    accountActionReasonLabel,
+  } = useMemo(() => buildAccountRosterLabelers(t), [t]);
   const accountRosterLabels = useMemo<UpstreamAccountsTableLabels>(
     () => ({
       selectPage: t("accountPool.upstreamAccounts.bulk.selectPage"),
@@ -1051,6 +1048,7 @@ export default function UpstreamAccountsPage() {
       accountWorkStatusLabel,
       accountWorkingCountLabel,
       t,
+      routingBlockNowMs,
     ],
   );
   const groupedPlanLabel = useCallback(
@@ -1220,9 +1218,9 @@ export default function UpstreamAccountsPage() {
       setSelectedAccountIds((current) => {
         const next = new Set(current);
         if (checked) {
-          currentPageIds.forEach((accountId) => next.add(accountId));
+          for (const accountId of currentPageIds) next.add(accountId);
         } else {
-          currentPageIds.forEach((accountId) => next.delete(accountId));
+          for (const accountId of currentPageIds) next.delete(accountId);
         }
         return Array.from(next);
       });
