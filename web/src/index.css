@@ -1102,6 +1102,24 @@ body {
       inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
 
+  .invocation-detail-hero-surface {
+    border: 1px solid var(--invocation-detail-hero-border);
+    background: var(--invocation-detail-hero-bg);
+    box-shadow: var(--invocation-detail-hero-shadow);
+  }
+
+  .invocation-detail-card-surface {
+    border: 1px solid var(--invocation-detail-card-border);
+    background-color: var(--invocation-detail-card-bg);
+    box-shadow: var(--invocation-detail-card-shadow);
+  }
+
+  .invocation-detail-timeline-surface {
+    border: 1px solid var(--invocation-detail-timeline-border);
+    background-color: var(--invocation-detail-timeline-bg);
+    box-shadow: var(--invocation-detail-timeline-shadow);
+  }
+
   /* Compact pages use one page gutter. Panels become structural wrappers so
      nested surfaces do not consume the working width before data begins. */
   @media (max-width: 768px) {
@@ -1214,13 +1232,13 @@ body {
     color: oklch(var(--color-error));
   }
 
+  .destructive-callout-item + .destructive-callout-item {
+    border-top: 1px solid var(--destructive-callout-separator);
+  }
+
   .destructive-callout-list {
     border: 1px solid var(--destructive-callout-list-border);
     background: var(--destructive-callout-list-bg);
-  }
-
-  .destructive-callout-item + .destructive-callout-item {
-    border-top: 1px solid var(--destructive-callout-separator);
   }
 
   .destructive-callout-bullet {
