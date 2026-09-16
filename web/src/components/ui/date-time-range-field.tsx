@@ -52,6 +52,178 @@ function fallbackSummary<T extends string>(
   );
 }
 
+function DateTimeRangeFieldPresetButtons<T extends string>({
+  value,
+  options,
+  onChange,
+}: Pick<DateTimeRangeFieldProps<T>, "value" | "options" | "onChange">) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {options.map((option) => {
+        const active = option.value === value.preset;
+        return (
+          <Button
+            key={option.value}
+            type="button"
+            variant={active ? "default" : "ghost"}
+            className="justify-start rounded-xl"
+            onClick={() => onChange({ ...value, preset: option.value })}
+          >
+            {option.label}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DateTimeRangeFieldCustomInputs<T extends string>({
+  value,
+  customPresetValue,
+  onChange,
+  fromLabel,
+  toLabel,
+  disabled,
+  error,
+  feedbackId,
+  fromName,
+  toName,
+}: Pick<
+  DateTimeRangeFieldProps<T>,
+  | "value"
+  | "customPresetValue"
+  | "onChange"
+  | "fromLabel"
+  | "toLabel"
+  | "disabled"
+  | "error"
+  | "fromName"
+  | "toName"
+> & { feedbackId: string }) {
+  return (
+    <div className="rounded-2xl border border-base-300/75 bg-base-200/35 p-3">
+      <div className="grid gap-3">
+        <label className="field gap-1">
+          <span className="field-label">{fromLabel}</span>
+          <Input
+            {...textInputAutocompleteOffProps}
+            type="datetime-local"
+            name={fromName}
+            aria-describedby={error ? feedbackId : undefined}
+            aria-invalid={error ? true : undefined}
+            disabled={disabled}
+            value={value.from}
+            onChange={(event) =>
+              onChange({ ...value, preset: customPresetValue, from: event.target.value })
+            }
+          />
+        </label>
+        <label className="field gap-1">
+          <span className="field-label">{toLabel}</span>
+          <Input
+            {...textInputAutocompleteOffProps}
+            type="datetime-local"
+            name={toName}
+            aria-describedby={error ? feedbackId : undefined}
+            aria-invalid={error ? true : undefined}
+            disabled={disabled}
+            value={value.to}
+            onChange={(event) =>
+              onChange({ ...value, preset: customPresetValue, to: event.target.value })
+            }
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function DateTimeRangeFieldSurface<T extends string>({
+  value,
+  options,
+  customPresetValue,
+  onChange,
+  resolvedSummary,
+  fromLabel,
+  toLabel,
+  disabled,
+  error,
+  labelId,
+  summaryId,
+  feedbackId,
+  triggerClassName,
+  contentClassName,
+  fromName,
+  toName,
+}: Pick<
+  DateTimeRangeFieldProps<T>,
+  | "value"
+  | "options"
+  | "customPresetValue"
+  | "onChange"
+  | "fromLabel"
+  | "toLabel"
+  | "disabled"
+  | "error"
+  | "triggerClassName"
+  | "contentClassName"
+  | "fromName"
+  | "toName"
+> & { resolvedSummary: string; labelId: string; summaryId: string; feedbackId: string }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          aria-labelledby={`${labelId} ${summaryId}`}
+          aria-describedby={error ? feedbackId : undefined}
+          aria-invalid={error ? true : undefined}
+          className={cn(
+            "h-auto w-full items-start justify-between rounded-lg px-3 py-2 text-left",
+            error && "border-error/70 text-error",
+            triggerClassName,
+          )}
+        >
+          <span className="flex min-w-0 flex-col gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/45">
+              {options.find((option) => option.value === value.preset)?.label ??
+                String(value.preset)}
+            </span>
+            <span id={summaryId} className="truncate text-sm text-base-content">
+              {resolvedSummary}
+            </span>
+          </span>
+          <AppIcon name="chevron-down" className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        aria-labelledby={labelId}
+        align="start"
+        sideOffset={8}
+        className={cn("w-[min(24rem,calc(100vw-2rem))] rounded-2xl p-3", contentClassName)}
+      >
+        <div className="space-y-3">
+          <DateTimeRangeFieldPresetButtons value={value} options={options} onChange={onChange} />
+          <DateTimeRangeFieldCustomInputs
+            value={value}
+            customPresetValue={customPresetValue}
+            onChange={onChange}
+            fromLabel={fromLabel}
+            toLabel={toLabel}
+            disabled={disabled}
+            error={error}
+            feedbackId={feedbackId}
+            fromName={fromName}
+            toName={toName}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function DateTimeRangeField<T extends string = string>({
   label,
   value,
@@ -83,102 +255,24 @@ export function DateTimeRangeField<T extends string = string>({
         message={error}
         messageId={error ? feedbackId : undefined}
       />
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={disabled}
-            aria-labelledby={`${labelId} ${summaryId}`}
-            aria-describedby={error ? feedbackId : undefined}
-            aria-invalid={error ? true : undefined}
-            className={cn(
-              "h-auto w-full items-start justify-between rounded-lg px-3 py-2 text-left",
-              error && "border-error/70 text-error",
-              triggerClassName,
-            )}
-          >
-            <span className="flex min-w-0 flex-col gap-1">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/45">
-                {options.find((option) => option.value === value.preset)?.label ??
-                  String(value.preset)}
-              </span>
-              <span id={summaryId} className="truncate text-sm text-base-content">
-                {resolvedSummary}
-              </span>
-            </span>
-            <AppIcon name="chevron-down" className="mt-0.5 h-4 w-4 shrink-0 text-base-content/55" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          aria-labelledby={labelId}
-          align="start"
-          sideOffset={8}
-          className={cn("w-[min(24rem,calc(100vw-2rem))] rounded-2xl p-3", contentClassName)}
-        >
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2">
-              {options.map((option) => {
-                const active = option.value === value.preset;
-                return (
-                  <Button
-                    key={option.value}
-                    type="button"
-                    variant={active ? "default" : "ghost"}
-                    className="justify-start rounded-xl"
-                    onClick={() => onChange({ ...value, preset: option.value })}
-                  >
-                    {option.label}
-                  </Button>
-                );
-              })}
-            </div>
-
-            <div className="rounded-2xl border border-base-300/75 bg-base-200/35 p-3">
-              <div className="grid gap-3">
-                <label className="field gap-1">
-                  <span className="field-label">{fromLabel}</span>
-                  <Input
-                    {...textInputAutocompleteOffProps}
-                    type="datetime-local"
-                    name={fromName}
-                    aria-describedby={error ? feedbackId : undefined}
-                    aria-invalid={error ? true : undefined}
-                    disabled={disabled}
-                    value={value.from}
-                    onChange={(event) =>
-                      onChange({
-                        ...value,
-                        preset: customPresetValue,
-                        from: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <label className="field gap-1">
-                  <span className="field-label">{toLabel}</span>
-                  <Input
-                    {...textInputAutocompleteOffProps}
-                    type="datetime-local"
-                    name={toName}
-                    aria-describedby={error ? feedbackId : undefined}
-                    aria-invalid={error ? true : undefined}
-                    disabled={disabled}
-                    value={value.to}
-                    onChange={(event) =>
-                      onChange({
-                        ...value,
-                        preset: customPresetValue,
-                        to: event.target.value,
-                      })
-                    }
-                  />
-                </label>
-              </div>
-            </div>
-          </div>
-        </PopoverContent>
-      </Popover>
+      <DateTimeRangeFieldSurface
+        value={value}
+        options={options}
+        customPresetValue={customPresetValue}
+        onChange={onChange}
+        resolvedSummary={resolvedSummary}
+        fromLabel={fromLabel}
+        toLabel={toLabel}
+        disabled={disabled}
+        error={error}
+        labelId={labelId}
+        summaryId={summaryId}
+        feedbackId={feedbackId}
+        triggerClassName={triggerClassName}
+        contentClassName={contentClassName}
+        fromName={fromName}
+        toName={toName}
+      />
     </div>
   );
 }
