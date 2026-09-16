@@ -286,17 +286,38 @@ pub(crate) async fn current_proxy_cost_backfill_snapshot_max_id(
               )
         ),
         cost_candidates AS (
-            SELECT *, CASE WHEN LOWER(TRIM(COALESCE(snapshot_upstream_account_kind,
-                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END, ''))) = ?4
-                    AND TRIM(COALESCE(requested_service_tier, '')) != '' THEN 1 ELSE 0 END AS uses_requested_tier_strategy
+            SELECT
+                *,
+                CASE
+                  WHEN LOWER(TRIM(COALESCE(
+                        snapshot_upstream_account_kind,
+                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
+                        ''
+                    ))) = ?4
+                    AND TRIM(COALESCE(requested_service_tier, '')) != ''
+                  THEN 1
+                  ELSE 0
+                END AS uses_requested_tier_strategy
             FROM base
         )
         SELECT COALESCE(MAX(id), 0)
         FROM cost_candidates
-            WHERE (uses_requested_tier_strategy = 1 AND (LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(requested_service_tier, '')))
-                    OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2)) OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?3)))
-              OR (uses_requested_tier_strategy = 0 AND (LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
-                    OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2)) OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?5)))
+        WHERE (
+            uses_requested_tier_strategy = 1
+            AND (
+                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(requested_service_tier, '')))
+                OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
+                OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?3))
+            )
+        )
+        OR (
+            uses_requested_tier_strategy = 0
+            AND (
+                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
+                OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
+                OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?5))
+            )
+        )
         "#,
     )
     .bind(SOURCE_PROXY)
