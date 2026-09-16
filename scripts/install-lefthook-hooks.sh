@@ -217,7 +217,7 @@ is_managed_hook() {
   return 1
 }
 
-for hook_name in pre-commit commit-msg post-checkout; do
+for hook_name in pre-commit pre-push commit-msg post-checkout; do
   hook_path="$hooks_dir/$hook_name"
   if is_managed_hook "$hook_name" "$hook_path" \
     || { [ "$hook_name" = 'pre-commit' ] && is_marked_standard_pre_commit "$hook_path"; }; then
