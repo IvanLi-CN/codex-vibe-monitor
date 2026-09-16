@@ -1472,7 +1472,7 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
                     cancel,
                     Some(&task_run),
                     SystemTaskStatus::Skipped,
-                    "background hourly rollup bootstrap cancelled before recording task start",
+                    "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
                     None,
                 )
                 .await;
