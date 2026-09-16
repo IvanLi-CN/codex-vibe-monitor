@@ -303,7 +303,7 @@ jobs:
         run: bash scripts/test-git-hooks-contract.sh
 
       - name: Source-quality contract smoke
-        run: bash .source-quality/test-contract.sh
+        run: PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH" bash .source-quality/test-contract.sh
 
       - name: Bun-first guard
         run: bun run check:bun-first
