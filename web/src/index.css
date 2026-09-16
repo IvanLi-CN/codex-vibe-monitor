@@ -1078,6 +1078,24 @@ body {
     backdrop-filter: blur(18px);
   }
 
+  .invocation-detail-hero-surface {
+    border: 1px solid var(--invocation-detail-hero-border);
+    background: var(--invocation-detail-hero-bg);
+    box-shadow: var(--invocation-detail-hero-shadow);
+  }
+
+  .invocation-detail-card-surface {
+    border: 1px solid var(--invocation-detail-card-border);
+    background-color: var(--invocation-detail-card-bg);
+    box-shadow: var(--invocation-detail-card-shadow);
+  }
+
+  .invocation-detail-timeline-surface {
+    border: 1px solid var(--invocation-detail-timeline-border);
+    background-color: var(--invocation-detail-timeline-bg);
+    box-shadow: var(--invocation-detail-timeline-shadow);
+  }
+
   [data-theme="vibe-dark"] .dashboard-floating-action-panel {
     box-shadow:
       0 28px 72px rgba(2, 6, 23, 0.48),
@@ -1208,24 +1226,6 @@ body {
   .destructive-callout-bullet {
     background-color: oklch(var(--color-error) / 0.82);
     box-shadow: 0 0 0 4px var(--destructive-callout-bullet-halo);
-  }
-
-  .invocation-detail-hero-surface {
-    border: 1px solid var(--invocation-detail-hero-border);
-    background: var(--invocation-detail-hero-bg);
-    box-shadow: var(--invocation-detail-hero-shadow);
-  }
-
-  .invocation-detail-card-surface {
-    border: 1px solid var(--invocation-detail-card-border);
-    background-color: var(--invocation-detail-card-bg);
-    box-shadow: var(--invocation-detail-card-shadow);
-  }
-
-  .invocation-detail-timeline-surface {
-    border: 1px solid var(--invocation-detail-timeline-border);
-    background-color: var(--invocation-detail-timeline-bg);
-    box-shadow: var(--invocation-detail-timeline-shadow);
   }
 
   .invocation-detail-marker {
