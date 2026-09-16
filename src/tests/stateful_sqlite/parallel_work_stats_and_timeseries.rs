@@ -21875,6 +21875,78 @@ async fn exact_fallback_warm_invalidates_non_proxy_stream_duration_replacement()
 }
 
 #[tokio::test]
+async fn timeseries_startup_recovery_baseline_runs_once_and_clean_restart_skips_invalidation() {
+    let pool = test_current_schema_pool().await;
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load baseline recovery marker");
+    assert_eq!(
+        pending, 1,
+        "first schema upgrade must publish one baseline marker"
+    );
+
+    sqlx::query(
+        "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0 WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .execute(&pool)
+    .await
+    .expect("complete baseline warming");
+    crate::ensure_schema(&pool)
+        .await
+        .expect("clean restart schema refresh");
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load clean restart recovery marker");
+    assert_eq!(
+        pending, 0,
+        "clean restart must not reopen a completed baseline"
+    );
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'timeseries_minute_projection_startup_recovery_baseline_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load startup baseline migration marker");
+    assert_eq!(marker_count, 1);
+}
+
+#[tokio::test]
+async fn timeseries_startup_recovery_baseline_reenters_after_stopped_release() {
+    let pool = test_current_schema_pool().await;
+    sqlx::query(
+        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'timeseries_minute_projection_startup_recovery_baseline_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("remove incomplete baseline marker");
+    sqlx::query(
+        "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0 WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .execute(&pool)
+    .await
+    .expect("clear stopped baseline marker");
+    crate::ensure_schema(&pool)
+        .await
+        .expect("forward repair baseline migration");
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired recovery marker");
+    assert_eq!(
+        pending, 1,
+        "stopped baseline must re-enter warming on next startup"
+    );
+}
+
+#[tokio::test]
 async fn restart_schema_refreshes_existing_objects_across_primed_pool_connections() {
     let temp_dir = make_temp_test_dir("existing-schema-objects-across-pool");
     let database_path = temp_dir.join("projection.db");

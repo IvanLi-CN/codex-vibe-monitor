@@ -15,6 +15,10 @@ const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_l
 const SCHEMA_REFRESH_MIGRATIONS_TABLE: &str = "schema_refresh_migrations";
 const PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
     "prompt_cache_expression_indexes_v1";
+const INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
+    "invoke_id_filter_expression_index_v1";
+const TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME: &str =
+    "timeseries_minute_projection_startup_recovery_baseline_v1";
 const INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME: &str = "invocation_live_projection_v1";
 const TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
@@ -1597,6 +1601,117 @@ async fn ensure_prompt_cache_expression_indexes(pool: &Pool<Sqlite>) -> Result<(
     Ok(())
 }
 
+async fn ensure_invoke_id_filter_expression_index(pool: &Pool<Sqlite>) -> Result<()> {
+    const INDEX_NAME: &str = "idx_codex_invocations_invoke_id_filter_id";
+    const CREATE_INDEX_SQL: &str = r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_invoke_id_filter_id
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(invoke_id, '')))),
+            id
+        )
+        "#;
+
+    if schema_refresh_completed(
+        pool,
+        INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+    )
+    .await?
+    {
+        sqlx::query(CREATE_INDEX_SQL)
+            .execute(pool)
+            .await
+            .context("failed to ensure invoke_id filter expression index")?;
+        return Ok(());
+    }
+    if sqlite_schema_object_exists(pool, "index", INDEX_NAME).await? {
+        record_schema_refresh_completion(
+            pool,
+            INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin invoke_id filter expression index refresh")?;
+    if schema_refresh_completed_in_transaction(
+        &mut tx,
+        INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+    )
+    .await?
+    {
+        tx.commit()
+            .await
+            .context("failed to commit invoke_id filter expression index marker check")?;
+        sqlx::query(CREATE_INDEX_SQL)
+            .execute(pool)
+            .await
+            .context("failed to ensure invoke_id filter expression index")?;
+        return Ok(());
+    }
+    sqlx::query(CREATE_INDEX_SQL)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to create invoke_id filter expression index")?;
+    record_schema_refresh_completion_in_transaction(
+        &mut tx,
+        INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .context("failed to commit invoke_id filter expression index refresh")?;
+    Ok(())
+}
+
+async fn ensure_timeseries_minute_projection_startup_recovery_baseline(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    if schema_refresh_completed(
+        pool,
+        TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME,
+    )
+    .await?
+    {
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin timeseries startup recovery baseline")?;
+    if schema_refresh_completed_in_transaction(
+        &mut tx,
+        TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME,
+    )
+    .await?
+    {
+        tx.commit()
+            .await
+            .context("failed to commit timeseries startup recovery baseline marker check")?;
+        return Ok(());
+    }
+
+    sqlx::query(
+        "INSERT INTO timeseries_minute_projection_v2_recovery (consumer, generation, invalidation_pending, updated_at) VALUES (?1, 1, 1, datetime('now')) ON CONFLICT(consumer) DO UPDATE SET generation = MAX(timeseries_minute_projection_v2_recovery.generation, 1), invalidation_pending = 1, updated_at = excluded.updated_at",
+    )
+    .bind("timeseries_minute_v2")
+    .execute(tx.as_mut())
+    .await
+    .context("failed to publish timeseries startup recovery baseline")?;
+    record_schema_refresh_completion_in_transaction(
+        &mut tx,
+        TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .context("failed to commit timeseries startup recovery baseline")?;
+    Ok(())
+}
+
 async fn legacy_raw_blob_link_seed_completed(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<bool> {
@@ -1714,6 +1829,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await
         .context("failed to ensure timeseries_minute_projection_v2 recovery table existence")?;
     ensure_schema_refresh_migrations_table(pool).await?;
+    ensure_timeseries_minute_projection_startup_recovery_baseline(pool).await?;
 
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
@@ -1827,6 +1943,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .context("failed to ensure index idx_codex_invocations_failure_class_occurred_at")?;
 
     ensure_prompt_cache_expression_indexes(pool).await?;
+    ensure_invoke_id_filter_expression_index(pool).await?;
 
     sqlx::query(
         r#"

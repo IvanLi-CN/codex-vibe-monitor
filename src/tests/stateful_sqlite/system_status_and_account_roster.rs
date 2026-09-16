@@ -1611,6 +1611,15 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     restore_stateful_schema_template(&pool)
         .await
         .expect("schema should initialize from the stateful template");
+    // Ordinary stateful tests model a process that has already completed the one-time startup
+    // warming pass. Dedicated recovery tests use `test_current_schema_pool` to observe the
+    // migration's pending marker before it is consumed.
+    sqlx::query(
+        "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0 WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .execute(&pool)
+    .await
+    .expect("complete the startup recovery baseline for ordinary stateful tests");
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
