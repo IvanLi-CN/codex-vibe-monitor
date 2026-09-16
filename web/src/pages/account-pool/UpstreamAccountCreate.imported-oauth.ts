@@ -35,7 +35,6 @@ import {
   createImportedOauthSourceId,
   createImportedSessionPastedFileName,
   markImportedOauthRowsAsError,
-  mergeImportedOauthValidationRow,
   mergeImportedOauthValidationRows,
   type ParsedImportedOauthCredentialRejection,
   parseImportedOauthCredentialDocumentLocally,
@@ -159,6 +158,7 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
     setImportValidationState(null);
   }, [cancelActiveImportedOauthValidation, closeImportValidationEventSource]);
 
+  // Attach the server-side validation stream and reconcile each incoming row.
   const attachImportedOauthValidationJob = useCallback(
     ({
       jobId,
@@ -186,9 +186,7 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
         setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
           const baselineRows = current?.rows ?? buildImportedOauthPendingState(allItems).rows;
           const mergedRows = merge
-            ? nextRows.length === 1
-              ? mergeImportedOauthValidationRow(baselineRows, nextRows[0]!, retriedSourceIds)
-              : mergeImportedOauthValidationRows(baselineRows, nextRows, retriedSourceIds)
+            ? mergeImportedOauthValidationRows(baselineRows, nextRows, retriedSourceIds)
             : mergeImportedOauthValidationRows(
                 baselineRows,
                 nextRows,
@@ -613,6 +611,8 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
     [buildExpandedImportedOauthFileName, t],
   );
 
+  // Parse pasted credentials before adding them to the validation queue.
+  // Duplicate checks run again after any pending validation job is cancelled.
   const validateAndQueueImportedOauthPaste = useCallback(
     async (
       draftContent: string,
@@ -1221,7 +1221,6 @@ export function useUpstreamAccountCreateImportedOauth(ctx: UpstreamAccountCreate
     resolveGroupSingleAccountRotationEnabledForName,
     t,
   ]);
-
   return {
     closeImportValidationEventSource,
     cancelActiveImportedOauthValidation,
