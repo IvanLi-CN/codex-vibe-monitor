@@ -1086,6 +1086,24 @@ body {
 
   /* Compact pages use one page gutter. Panels become structural wrappers so
      nested surfaces do not consume the working width before data begins. */
+  .invocation-detail-hero-surface {
+    border: 1px solid var(--invocation-detail-hero-border);
+    background: var(--invocation-detail-hero-bg);
+    box-shadow: var(--invocation-detail-hero-shadow);
+  }
+
+  .invocation-detail-card-surface {
+    border: 1px solid var(--invocation-detail-card-border);
+    background-color: var(--invocation-detail-card-bg);
+    box-shadow: var(--invocation-detail-card-shadow);
+  }
+
+  .invocation-detail-timeline-surface {
+    border: 1px solid var(--invocation-detail-timeline-border);
+    background-color: var(--invocation-detail-timeline-bg);
+    box-shadow: var(--invocation-detail-timeline-shadow);
+  }
+
   @media (max-width: 768px) {
     .surface-panel {
       border: 0;
@@ -1208,24 +1226,6 @@ body {
   .destructive-callout-bullet {
     background-color: oklch(var(--color-error) / 0.82);
     box-shadow: 0 0 0 4px var(--destructive-callout-bullet-halo);
-  }
-
-  .invocation-detail-hero-surface {
-    border: 1px solid var(--invocation-detail-hero-border);
-    background: var(--invocation-detail-hero-bg);
-    box-shadow: var(--invocation-detail-hero-shadow);
-  }
-
-  .invocation-detail-card-surface {
-    border: 1px solid var(--invocation-detail-card-border);
-    background-color: var(--invocation-detail-card-bg);
-    box-shadow: var(--invocation-detail-card-shadow);
-  }
-
-  .invocation-detail-timeline-surface {
-    border: 1px solid var(--invocation-detail-timeline-border);
-    background-color: var(--invocation-detail-timeline-bg);
-    box-shadow: var(--invocation-detail-timeline-shadow);
   }
 
   .invocation-detail-marker {

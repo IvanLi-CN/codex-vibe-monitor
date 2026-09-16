@@ -216,6 +216,141 @@ function routingSelectionHandoffLabel(audit: PoolRoutingSelectionAudit, t: Trans
   );
 }
 
+function PoolAttemptRoutingAudit({
+  audit,
+  t,
+}: {
+  audit: PoolRoutingSelectionAudit;
+  t: Translator;
+}) {
+  return (
+    <div
+      className="mt-2 space-y-1 rounded border border-info/25 bg-info/5 p-2 text-xs text-base-content/72"
+      data-testid="pool-attempt-routing-selection-audit"
+    >
+      <p className="font-medium text-base-content">
+        {t("table.poolAttempts.routingDecision.summary", {
+          account: audit.selectedAccountName,
+          count: audit.eligibleCandidateCount,
+        })}
+      </p>
+      <p>{routingSelectionWinnerLabel(audit, t)}</p>
+      {routingSelectionHandoffLabel(audit, t) ? (
+        <p>
+          {t("live.routing.record.handoffAdmission")}: {routingSelectionHandoffLabel(audit, t)}
+        </p>
+      ) : null}
+      {audit.selectedScore ? (
+        <p data-testid="pool-attempt-routing-selection-score">
+          {routingSelectionScoreLabel(audit.selectedAccountName, audit.selectedScore, t)}
+        </p>
+      ) : null}
+      {audit.comparedScore && audit.comparedAccountName ? (
+        <p>{routingSelectionScoreLabel(audit.comparedAccountName, audit.comparedScore, t)}</p>
+      ) : null}
+      {audit.excludedCandidates.map((candidate) => (
+        <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
+          {routingSelectionExclusionLabel(candidate.accountName, candidate.reasonCode, t)}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function PoolAttemptMetric({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">{label}</span>
+      <span className="min-w-0 break-all font-mono">{children}</span>
+    </div>
+  );
+}
+
+function PoolAttemptIdentityMetrics({
+  attempt,
+  proxyDisplay,
+  originalModel,
+  upstreamRequestModel,
+  t,
+}: {
+  attempt: ApiPoolUpstreamRequestAttempt;
+  proxyDisplay: PoolAttemptProxyDisplay;
+  originalModel: string;
+  upstreamRequestModel: string;
+  t: Translator;
+}) {
+  return (
+    <>
+      <PoolAttemptMetric label={t("table.poolAttempts.retry")}>
+        {attempt.sameAccountRetryIndex}/{attempt.distinctAccountIndex}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.proxy")}>
+        <span
+          className={cn(
+            "block truncate whitespace-nowrap",
+            proxyDisplay.resolved ? "font-medium" : "",
+          )}
+          title={proxyDisplay.title}
+          data-testid="pool-attempt-proxy-value"
+        >
+          {proxyDisplay.value}
+        </span>
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.upstreamHttpStatus")}>
+        {formatOptionalStatusCode(attempt.httpStatus)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.downstreamHttpStatus")}>
+        {formatOptionalStatusCode(attempt.downstreamHttpStatus)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.failureKind")}>
+        {formatOptionalText(attempt.failureKind)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.originalModel")}>
+        {originalModel}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.upstreamRequestModel")}>
+        {upstreamRequestModel}
+      </PoolAttemptMetric>
+      {attempt.modelMappingPattern?.trim() ? (
+        <PoolAttemptMetric label={t("table.poolAttempts.modelMappingPattern")}>
+          {attempt.modelMappingPattern.trim()}
+        </PoolAttemptMetric>
+      ) : null}
+    </>
+  );
+}
+
+function PoolAttemptTimingMetrics({
+  attempt,
+  t,
+}: {
+  attempt: ApiPoolUpstreamRequestAttempt;
+  t: Translator;
+}) {
+  return (
+    <>
+      <PoolAttemptMetric label={t("table.poolAttempts.connectLatency")}>
+        {formatMilliseconds(attempt.connectLatencyMs)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.firstByteLatency")}>
+        {formatMilliseconds(attempt.firstByteLatencyMs)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.streamLatency")}>
+        {formatMilliseconds(attempt.streamLatencyMs)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.startedAt")}>
+        {formatDetailTimestamp(attempt.startedAt)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.finishedAt")}>
+        {formatDetailTimestamp(attempt.finishedAt)}
+      </PoolAttemptMetric>
+      <PoolAttemptMetric label={t("table.poolAttempts.upstreamRequestId")}>
+        {formatOptionalText(attempt.upstreamRequestId)}
+      </PoolAttemptMetric>
+    </>
+  );
+}
+
 export function PoolAttemptRecordCard({
   attempt,
   proxyDisplay,
@@ -239,8 +374,6 @@ export function PoolAttemptRecordCard({
   const phase = resolvePoolAttemptPhase(attempt);
   const phaseMeta = poolAttemptPhaseMeta(phase);
   const accountLabel = formatPoolAttemptAccountLabel(attempt);
-  const httpStatusValue = formatOptionalStatusCode(attempt.httpStatus);
-  const downstreamHttpStatusValue = formatOptionalStatusCode(attempt.downstreamHttpStatus);
   const originalModel = resolveOriginalModel(attempt);
   const upstreamRequestModel = resolveUpstreamRequestModel(attempt, t);
 
@@ -269,149 +402,17 @@ export function PoolAttemptRecordCard({
       </div>
       {summarySupplement ? <div className="mt-2">{summarySupplement}</div> : null}
       {attempt.routingSelectionAudit ? (
-        <div
-          className="mt-2 space-y-1 rounded border border-info/25 bg-info/5 p-2 text-xs text-base-content/72"
-          data-testid="pool-attempt-routing-selection-audit"
-        >
-          <p className="font-medium text-base-content">
-            {t("table.poolAttempts.routingDecision.summary", {
-              account: attempt.routingSelectionAudit.selectedAccountName,
-              count: attempt.routingSelectionAudit.eligibleCandidateCount,
-            })}
-          </p>
-          <p>{routingSelectionWinnerLabel(attempt.routingSelectionAudit, t)}</p>
-          {routingSelectionHandoffLabel(attempt.routingSelectionAudit, t) ? (
-            <p>
-              {t("live.routing.record.handoffAdmission")}:{" "}
-              {routingSelectionHandoffLabel(attempt.routingSelectionAudit, t)}
-            </p>
-          ) : null}
-          {attempt.routingSelectionAudit.selectedScore ? (
-            <p data-testid="pool-attempt-routing-selection-score">
-              {routingSelectionScoreLabel(
-                attempt.routingSelectionAudit.selectedAccountName,
-                attempt.routingSelectionAudit.selectedScore,
-                t,
-              )}
-            </p>
-          ) : null}
-          {attempt.routingSelectionAudit.comparedScore &&
-          attempt.routingSelectionAudit.comparedAccountName ? (
-            <p>
-              {routingSelectionScoreLabel(
-                attempt.routingSelectionAudit.comparedAccountName,
-                attempt.routingSelectionAudit.comparedScore,
-                t,
-              )}
-            </p>
-          ) : null}
-          {attempt.routingSelectionAudit.excludedCandidates.map((candidate) => (
-            <p key={`${candidate.accountId}-${candidate.reasonCode}`}>
-              {routingSelectionExclusionLabel(candidate.accountName, candidate.reasonCode, t)}
-            </p>
-          ))}
-        </div>
+        <PoolAttemptRoutingAudit audit={attempt.routingSelectionAudit} t={t} />
       ) : null}
       <div className="mt-2 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-3">
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.retry")}
-          </span>
-          <span className="font-mono">
-            {attempt.sameAccountRetryIndex}/{attempt.distinctAccountIndex}
-          </span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.proxy")}
-          </span>
-          <span
-            className={cn(
-              "min-w-0 truncate whitespace-nowrap",
-              proxyDisplay.resolved ? "font-medium" : "font-mono",
-            )}
-            title={proxyDisplay.title}
-            data-testid="pool-attempt-proxy-value"
-          >
-            {proxyDisplay.value}
-          </span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.upstreamHttpStatus")}
-          </span>
-          <span className="font-mono">{httpStatusValue}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.downstreamHttpStatus")}
-          </span>
-          <span className="font-mono">{downstreamHttpStatusValue}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.failureKind")}
-          </span>
-          <span className="break-all font-mono">{formatOptionalText(attempt.failureKind)}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.originalModel")}
-          </span>
-          <span className="break-all font-mono">{originalModel}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.upstreamRequestModel")}
-          </span>
-          <span className="break-all font-mono">{upstreamRequestModel}</span>
-        </div>
-        {attempt.modelMappingPattern?.trim() ? (
-          <div className="flex items-start gap-2">
-            <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-              {t("table.poolAttempts.modelMappingPattern")}
-            </span>
-            <span className="break-all font-mono">{attempt.modelMappingPattern.trim()}</span>
-          </div>
-        ) : null}
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.connectLatency")}
-          </span>
-          <span className="font-mono">{formatMilliseconds(attempt.connectLatencyMs)}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.firstByteLatency")}
-          </span>
-          <span className="font-mono">{formatMilliseconds(attempt.firstByteLatencyMs)}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.streamLatency")}
-          </span>
-          <span className="font-mono">{formatMilliseconds(attempt.streamLatencyMs)}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.startedAt")}
-          </span>
-          <span className="font-mono">{formatDetailTimestamp(attempt.startedAt)}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.finishedAt")}
-          </span>
-          <span className="font-mono">{formatDetailTimestamp(attempt.finishedAt)}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-            {t("table.poolAttempts.upstreamRequestId")}
-          </span>
-          <span className="break-all font-mono">
-            {formatOptionalText(attempt.upstreamRequestId)}
-          </span>
-        </div>
+        <PoolAttemptIdentityMetrics
+          attempt={attempt}
+          proxyDisplay={proxyDisplay}
+          originalModel={originalModel}
+          upstreamRequestModel={upstreamRequestModel}
+          t={t}
+        />
+        <PoolAttemptTimingMetrics attempt={attempt} t={t} />
       </div>
       {children}
     </div>
