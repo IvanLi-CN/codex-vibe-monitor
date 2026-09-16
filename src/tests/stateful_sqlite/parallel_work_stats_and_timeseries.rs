@@ -21876,14 +21876,11 @@ async fn exact_fallback_warm_invalidates_non_proxy_stream_duration_replacement()
 
 #[tokio::test]
 async fn timeseries_startup_recovery_baseline_runs_once_and_clean_restart_skips_invalidation() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
+    let pool = test_current_schema_pool().await;
     let pending: i64 = sqlx::query_scalar(
         "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .expect("load baseline recovery marker");
     assert_eq!(
@@ -21894,16 +21891,16 @@ async fn timeseries_startup_recovery_baseline_runs_once_and_clean_restart_skips_
     sqlx::query(
         "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0 WHERE consumer = 'timeseries_minute_v2'",
     )
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .expect("complete baseline warming");
-    crate::ensure_schema(&state.pool)
+    crate::ensure_schema(&pool)
         .await
         .expect("clean restart schema refresh");
     let pending: i64 = sqlx::query_scalar(
         "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .expect("load clean restart recovery marker");
     assert_eq!(
@@ -21913,7 +21910,7 @@ async fn timeseries_startup_recovery_baseline_runs_once_and_clean_restart_skips_
     let marker_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'timeseries_minute_projection_startup_recovery_baseline_v1'",
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .expect("load startup baseline migration marker");
     assert_eq!(marker_count, 1);
@@ -21921,29 +21918,26 @@ async fn timeseries_startup_recovery_baseline_runs_once_and_clean_restart_skips_
 
 #[tokio::test]
 async fn timeseries_startup_recovery_baseline_reenters_after_stopped_release() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
+    let pool = test_current_schema_pool().await;
     sqlx::query(
         "DELETE FROM schema_refresh_migrations WHERE migration_name = 'timeseries_minute_projection_startup_recovery_baseline_v1'",
     )
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .expect("remove incomplete baseline marker");
     sqlx::query(
         "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0 WHERE consumer = 'timeseries_minute_v2'",
     )
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .expect("clear stopped baseline marker");
-    crate::ensure_schema(&state.pool)
+    crate::ensure_schema(&pool)
         .await
         .expect("forward repair baseline migration");
     let pending: i64 = sqlx::query_scalar(
         "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .expect("load repaired recovery marker");
     assert_eq!(
