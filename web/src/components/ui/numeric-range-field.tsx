@@ -74,6 +74,104 @@ function formatRangeSummary(
   return unitLabel ? `${startLabel} - ${endLabel} ${unitLabel}` : `${startLabel} - ${endLabel}`;
 }
 
+function NumericRangeFieldSurface({
+  label,
+  currentRangeSummary,
+  error,
+  feedbackId,
+  isEmbedded,
+  disabled,
+  testId,
+  trackStartValue,
+  trackEndValue,
+  effectiveSliderMin,
+  effectiveSliderMax,
+  effectiveStep,
+  minAriaLabel,
+  maxAriaLabel,
+  unitLabel,
+  applyThumbValues,
+}: {
+  label: ReactNode;
+  currentRangeSummary: string;
+  error?: string | null;
+  feedbackId: string;
+  isEmbedded: boolean;
+  disabled?: boolean;
+  testId?: string;
+  trackStartValue: number;
+  trackEndValue: number;
+  effectiveSliderMin: number;
+  effectiveSliderMax: number;
+  effectiveStep: number;
+  minAriaLabel?: string;
+  maxAriaLabel?: string;
+  unitLabel?: string;
+  applyThumbValues: (nextValues: number[]) => void;
+}) {
+  return (
+    <>
+      <FormFieldFeedback
+        label={
+          <span className="flex w-full min-w-0 items-center justify-between gap-3">
+            <span className="min-w-0 truncate">{label}</span>
+            <span
+              aria-hidden="true"
+              className="min-w-0 max-w-[72%] truncate text-right text-[11px] font-medium tabular-nums normal-case tracking-normal text-base-content/60"
+            >
+              {currentRangeSummary}
+            </span>
+          </span>
+        }
+        labelClassName="flex min-w-0 flex-1"
+        message={error}
+        messageId={error ? feedbackId : undefined}
+      />
+      <div
+        className={cn(
+          isEmbedded ? "px-0 py-1" : "rounded-lg border border-base-300/80 bg-base-100 px-3 py-3",
+          error && !isEmbedded && "border-error/70",
+          disabled && "opacity-60",
+        )}
+      >
+        <div className="space-y-1">
+          <Slider
+            className="h-8"
+            data-testid={testId ? `${testId}-slider` : undefined}
+            value={[trackStartValue, trackEndValue]}
+            min={effectiveSliderMin}
+            max={effectiveSliderMax}
+            step={effectiveStep}
+            minStepsBetweenThumbs={0}
+            disabled={disabled}
+            onValueChange={applyThumbValues}
+          >
+            <SliderTrack>
+              <SliderRange />
+            </SliderTrack>
+            <SliderThumb
+              aria-describedby={error ? feedbackId : undefined}
+              aria-invalid={error ? true : undefined}
+              aria-label={minAriaLabel ? `${minAriaLabel} slider` : "Minimum value slider"}
+              aria-valuetext={formatValueText(trackStartValue, effectiveStep, unitLabel)}
+            />
+            <SliderThumb
+              aria-describedby={error ? feedbackId : undefined}
+              aria-invalid={error ? true : undefined}
+              aria-label={maxAriaLabel ? `${maxAriaLabel} slider` : "Maximum value slider"}
+              aria-valuetext={formatValueText(trackEndValue, effectiveStep, unitLabel)}
+            />
+          </Slider>
+          <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
+            <span>{formatDisplayValue(effectiveSliderMin, effectiveStep)}</span>
+            <span>{formatDisplayValue(effectiveSliderMax, effectiveStep)}</span>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function NumericRangeField({
   label,
   minValue,
@@ -134,64 +232,24 @@ export function NumericRangeField({
 
   return (
     <div className={cn("field", className)} data-testid={testId}>
-      <FormFieldFeedback
-        label={
-          <span className="flex w-full min-w-0 items-center justify-between gap-3">
-            <span className="min-w-0 truncate">{label}</span>
-            <span
-              aria-hidden="true"
-              className="min-w-0 max-w-[72%] truncate text-right text-[11px] font-medium tabular-nums normal-case tracking-normal text-base-content/60"
-            >
-              {currentRangeSummary}
-            </span>
-          </span>
-        }
-        labelClassName="flex min-w-0 flex-1"
-        message={error}
-        messageId={error ? feedbackId : undefined}
+      <NumericRangeFieldSurface
+        label={label}
+        currentRangeSummary={currentRangeSummary}
+        error={error}
+        feedbackId={feedbackId}
+        isEmbedded={isEmbedded}
+        disabled={disabled}
+        testId={testId}
+        trackStartValue={trackStartValue}
+        trackEndValue={trackEndValue}
+        effectiveSliderMin={effectiveSliderMin}
+        effectiveSliderMax={effectiveSliderMax}
+        effectiveStep={effectiveStep}
+        minAriaLabel={minAriaLabel}
+        maxAriaLabel={maxAriaLabel}
+        unitLabel={unitLabel}
+        applyThumbValues={applyThumbValues}
       />
-      <div
-        className={cn(
-          isEmbedded ? "px-0 py-1" : "rounded-lg border border-base-300/80 bg-base-100 px-3 py-3",
-          error && !isEmbedded && "border-error/70",
-          disabled && "opacity-60",
-        )}
-      >
-        <div className="space-y-1">
-          <Slider
-            className="h-8"
-            data-testid={testId ? `${testId}-slider` : undefined}
-            value={[trackStartValue, trackEndValue]}
-            min={effectiveSliderMin}
-            max={effectiveSliderMax}
-            step={effectiveStep}
-            minStepsBetweenThumbs={0}
-            disabled={disabled}
-            onValueChange={applyThumbValues}
-          >
-            <SliderTrack>
-              <SliderRange />
-            </SliderTrack>
-            <SliderThumb
-              aria-describedby={error ? feedbackId : undefined}
-              aria-invalid={error ? true : undefined}
-              aria-label={minAriaLabel ? `${minAriaLabel} slider` : "Minimum value slider"}
-              aria-valuetext={formatValueText(trackStartValue, effectiveStep, unitLabel)}
-            />
-            <SliderThumb
-              aria-describedby={error ? feedbackId : undefined}
-              aria-invalid={error ? true : undefined}
-              aria-label={maxAriaLabel ? `${maxAriaLabel} slider` : "Maximum value slider"}
-              aria-valuetext={formatValueText(trackEndValue, effectiveStep, unitLabel)}
-            />
-          </Slider>
-
-          <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
-            <span>{formatDisplayValue(effectiveSliderMin, effectiveStep)}</span>
-            <span>{formatDisplayValue(effectiveSliderMax, effectiveStep)}</span>
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

@@ -170,6 +170,11 @@ jobs:
             ".github/quality-gates.json"
             ".github/scripts/check_quality_gates_contract.py"
             ".github/scripts/check_live_quality_gates.py"
+            ".github/quality_gates_contract_impl.py"
+            ".github/quality-gates-contract-validators.py"
+            ".github/quality-gates-contract-release-snapshot-validator.py"
+            ".github/check_live_quality_gates_impl.py"
+            ".github/scripts/live_quality_rules.py"
             ".github/scripts/metadata_gate.py"
           )
           final_topology_paths=(
