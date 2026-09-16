@@ -34,6 +34,7 @@ import {
 } from "../lib/api";
 import { extractProxyDisplayName, extractProxyProtocolName } from "../lib/forwardProxyDisplay";
 import { cn } from "../lib/utils";
+import { PricingDesktopEntry, PricingMobileEntries, pricingEntryKey } from "./PricingSettingsRows";
 
 type PricingDraftEntry = {
   model: string;
@@ -116,6 +117,106 @@ type ForwardProxyTableNode = {
   penalized: boolean;
   stats: ForwardProxyNodeStats;
 };
+
+function ForwardProxyLatencyTooltipContent({
+  state,
+  summary,
+  targetRows,
+}: {
+  state: ForwardProxyLatencyUiState;
+  summary: string;
+  targetRows: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <div
+        className={cn(
+          "text-[11px] font-semibold",
+          state.status === "failed" ? "text-error" : "text-base-content",
+        )}
+      >
+        {summary}
+      </div>
+      <div className="whitespace-pre-line font-mono text-[11px] leading-5 text-base-content/78">
+        {targetRows}
+      </div>
+    </div>
+  );
+}
+
+function ForwardProxyBatchResultStatus({
+  item,
+  tooltipKey,
+  onToggle,
+  t,
+}: {
+  item: ForwardProxyBatchValidationItem;
+  tooltipKey: string | null;
+  onToggle: (key: string) => void;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const latestRound = item.lastRound;
+  const latestRoundLabel =
+    latestRound == null
+      ? t("settings.forwardProxy.modal.statusValidating")
+      : latestRound.ok
+        ? formatLatency(latestRound.latencyMs)
+        : latestRound.timedOut
+          ? t("settings.forwardProxy.modal.statusTimeout")
+          : t("settings.forwardProxy.modal.statusUnavailable");
+  const latestRoundTone =
+    latestRound == null
+      ? "text-info"
+      : latestRound.ok
+        ? "text-success"
+        : latestRound.timedOut
+          ? "text-warning"
+          : "text-error";
+
+  return (
+    <div className="group relative inline-flex max-w-full flex-col items-start">
+      <button
+        type="button"
+        className="text-left"
+        disabled={item.rounds.length === 0}
+        onClick={() => onToggle(item.key)}
+      >
+        <span className={cn("inline-block whitespace-nowrap text-sm font-medium", latestRoundTone)}>
+          {latestRoundLabel}
+        </span>
+        <span className="block font-mono text-[10px] text-base-content/65">
+          {t("settings.forwardProxy.modal.roundProgress", {
+            current: item.completedRounds,
+            total: item.totalRounds,
+          })}
+        </span>
+      </button>
+      {item.rounds.length > 0 ? (
+        <div
+          className={cn(
+            "pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-h-52 min-w-[16rem] max-w-[22rem] overflow-y-auto rounded-md border border-base-300/80 bg-base-100/95 p-2 text-left text-[11px] leading-snug text-base-content shadow-lg",
+            tooltipKey === item.key ? "block" : "group-hover:block",
+          )}
+        >
+          <div className="space-y-1 font-mono">
+            {item.rounds.map((round) => (
+              <div key={`${item.key}-round-${round.round}`}>
+                {round.ok
+                  ? t("settings.forwardProxy.modal.roundResultSuccess", {
+                      round: round.round,
+                      latency: formatLatency(round.latencyMs),
+                    })
+                  : round.timedOut
+                    ? t("settings.forwardProxy.modal.roundResultTimeout", { round: round.round })
+                    : t("settings.forwardProxy.modal.roundResultFailed", { round: round.round })}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 type ForwardProxyLatencyUiState =
   | { status: "idle" }
@@ -287,12 +388,6 @@ function parsePositiveInteger(raw: string): number | null {
   if (!/^[1-9]\d*$/.test(trimmed)) return null;
   const parsed = Number(trimmed);
   return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
-function sourceChipTone(source: string): "success" | "warning" | "secondary" {
-  if (source === "official") return "success";
-  if (source === "temporary") return "warning";
-  return "secondary";
 }
 
 function appendUniqueItem(list: string[], value: string): string[] {
@@ -1322,7 +1417,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       });
       return;
     }
-
     setForwardProxyValidation({ status: "validating" });
     if (forwardProxyModalKind === "subscriptionUrl") {
       try {
@@ -1680,7 +1774,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       </Chip>
     );
     if (!progress || state.status === "idle") return button;
-
     const summary =
       state.status === "failed"
         ? state.message
@@ -1701,19 +1794,11 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
           "aria-label": title,
         }}
         content={
-          <div className="space-y-2">
-            <div
-              className={cn(
-                "text-[11px] font-semibold",
-                state.status === "failed" ? "text-error" : "text-base-content",
-              )}
-            >
-              {summary}
-            </div>
-            <div className="whitespace-pre-line font-mono text-[11px] leading-5 text-base-content/78">
-              {formatForwardProxyLatencyTargetRows(progress)}
-            </div>
-          </div>
+          <ForwardProxyLatencyTooltipContent
+            state={state}
+            summary={summary}
+            targetRows={formatForwardProxyLatencyTargetRows(progress)}
+          />
         }
       >
         {button}
@@ -2171,115 +2256,15 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     onBlur={() => triggerPricingSave(true)}
                   />
                 </div>
-
                 <div className="space-y-3 desktop:hidden">
-                  {pricingDraft.entries.map((entry, index) => (
-                    <article
-                      key={`mobile-pricing-${index}`}
-                      className="surface-subtle rounded-xl p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 space-y-2">
-                          <div className="text-sm font-semibold text-base-content">
-                            {entry.model || t("settings.pricing.columns.model")}
-                          </div>
-                          <Chip
-                            tone={sourceChipTone(entry.source)}
-                            className="inline-flex min-w-[5rem] justify-center"
-                          >
-                            {entry.source}
-                          </Chip>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 px-2.5 text-error hover:bg-error/10"
-                          onClick={() => handleRemovePricingEntry(index)}
-                        >
-                          {t("settings.pricing.remove")}
-                        </Button>
-                      </div>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                        <div className="space-y-2">
-                          <label className="block text-xs font-medium text-base-content/68">
-                            {t("settings.pricing.columns.model")}
-                          </label>
-                          <Input
-                            type="text"
-                            className="h-9 px-3"
-                            value={entry.model}
-                            onChange={(event) =>
-                              handlePricingFieldChange(index, "model", event.target.value)
-                            }
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="block text-xs font-medium text-base-content/68">
-                            {t("settings.pricing.columns.input")}
-                          </label>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.inputPer1m}
-                            onChange={(event) =>
-                              handlePricingFieldChange(index, "inputPer1m", event.target.value)
-                            }
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="block text-xs font-medium text-base-content/68">
-                            {t("settings.pricing.columns.output")}
-                          </label>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.outputPer1m}
-                            onChange={(event) =>
-                              handlePricingFieldChange(index, "outputPer1m", event.target.value)
-                            }
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="block text-xs font-medium text-base-content/68">
-                            {t("settings.pricing.columns.cacheRead")}
-                          </label>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.cacheReadPer1m}
-                            onChange={(event) =>
-                              handlePricingFieldChange(index, "cacheReadPer1m", event.target.value)
-                            }
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </div>
-                        <div className="space-y-2 sm:col-span-2">
-                          <label className="block text-xs font-medium text-base-content/68">
-                            {t("settings.pricing.columns.reasoning")}
-                          </label>
-                          <Input
-                            type="number"
-                            step="any"
-                            className="h-9 px-3"
-                            value={entry.reasoningPer1m}
-                            onChange={(event) =>
-                              handlePricingFieldChange(index, "reasoningPer1m", event.target.value)
-                            }
-                            onBlur={() => triggerPricingSave(true)}
-                          />
-                        </div>
-                      </div>
-                    </article>
-                  ))}
+                  <PricingMobileEntries
+                    entries={pricingDraft.entries}
+                    onChange={handlePricingFieldChange}
+                    onRemove={handleRemovePricingEntry}
+                    onBlur={() => triggerPricingSave(true)}
+                    t={t}
+                  />
                 </div>
-
                 <div className="surface-subtle hidden overflow-x-auto rounded-xl desktop:block">
                   <table className="w-full min-w-[56rem] table-fixed text-sm">
                     <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
@@ -2317,122 +2302,16 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                     </thead>
                     <tbody className="divide-y divide-base-300/65">
                       {pricingDraft.entries.map((entry, index) => (
-                        <tr
-                          key={index}
-                          className={cn(
-                            "transition-colors",
-                            index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22",
-                            "hover:bg-primary/6",
-                          )}
-                        >
-                          <td className={pricingTableBodyCellClass}>
-                            <Input
-                              type="text"
-                              className="h-9 px-3"
-                              value={entry.model}
-                              onChange={(event) =>
-                                handlePricingFieldChange(index, "model", event.target.value)
-                              }
-                              onBlur={() => triggerPricingSave(true)}
-                            />
-                          </td>
-                          <td className={pricingTableBodyCellClass}>
-                            <Input
-                              type="number"
-                              step="any"
-                              className="h-9 px-3"
-                              value={entry.inputPer1m}
-                              onChange={(event) =>
-                                handlePricingFieldChange(index, "inputPer1m", event.target.value)
-                              }
-                              onBlur={() => triggerPricingSave(true)}
-                            />
-                          </td>
-                          <td className={pricingTableBodyCellClass}>
-                            <Input
-                              type="number"
-                              step="any"
-                              className="h-9 px-3"
-                              value={entry.outputPer1m}
-                              onChange={(event) =>
-                                handlePricingFieldChange(index, "outputPer1m", event.target.value)
-                              }
-                              onBlur={() => triggerPricingSave(true)}
-                            />
-                          </td>
-                          <td className={pricingTableBodyCellClass}>
-                            <Input
-                              type="number"
-                              step="any"
-                              className="h-9 px-3"
-                              value={entry.cacheReadPer1m}
-                              onChange={(event) =>
-                                handlePricingFieldChange(
-                                  index,
-                                  "cacheReadPer1m",
-                                  event.target.value,
-                                )
-                              }
-                              onBlur={() => triggerPricingSave(true)}
-                            />
-                          </td>
-                          <td className={pricingTableBodyCellClass}>
-                            <Input
-                              type="number"
-                              step="any"
-                              className="h-9 px-3"
-                              value={entry.cacheWritePer1m}
-                              onChange={(event) =>
-                                handlePricingFieldChange(
-                                  index,
-                                  "cacheWritePer1m",
-                                  event.target.value,
-                                )
-                              }
-                              onBlur={() => triggerPricingSave(true)}
-                            />
-                          </td>
-                          <td className={pricingTableBodyCellClass}>
-                            <Input
-                              type="number"
-                              step="any"
-                              className="h-9 px-3"
-                              value={entry.reasoningPer1m}
-                              onChange={(event) =>
-                                handlePricingFieldChange(
-                                  index,
-                                  "reasoningPer1m",
-                                  event.target.value,
-                                )
-                              }
-                              onBlur={() => triggerPricingSave(true)}
-                            />
-                          </td>
-                          <td className={cn(pricingTableBodyCellClass, "whitespace-nowrap")}>
-                            <Chip
-                              tone={sourceChipTone(entry.source)}
-                              className="inline-flex min-w-[5rem] justify-center"
-                            >
-                              {entry.source}
-                            </Chip>
-                          </td>
-                          <td
-                            className={cn(
-                              pricingTableBodyCellClass,
-                              "text-right whitespace-nowrap",
-                            )}
-                          >
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 px-2.5 text-error hover:bg-error/10"
-                              onClick={() => handleRemovePricingEntry(index)}
-                            >
-                              {t("settings.pricing.remove")}
-                            </Button>
-                          </td>
-                        </tr>
+                        <PricingDesktopEntry
+                          key={pricingEntryKey(entry)}
+                          entry={entry}
+                          index={index}
+                          bodyClassName={pricingTableBodyCellClass}
+                          onChange={handlePricingFieldChange}
+                          onRemove={handleRemovePricingEntry}
+                          onBlur={() => triggerPricingSave(true)}
+                          t={t}
+                        />
                       ))}
                     </tbody>
                   </table>
@@ -2809,7 +2688,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         </td>
                         {windows.map((window, index) => (
                           <td
-                            key={`${node.key}-${index}`}
+                            key={`${node.key}-${forwardProxyWindowColumns[index]?.labelKey ?? index}`}
                             className={cn(pricingTableBodyCellClass, "box-border px-2 text-center")}
                           >
                             <div className="space-y-0.5 text-[11px] leading-tight">
@@ -3061,93 +2940,16 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                                       </span>
                                     </td>
                                     <td className="px-3 py-2">
-                                      {(() => {
-                                        const latestRound = item.lastRound;
-                                        const latestRoundLabel =
-                                          latestRound == null
-                                            ? t("settings.forwardProxy.modal.statusValidating")
-                                            : latestRound.ok
-                                              ? formatLatency(latestRound.latencyMs)
-                                              : latestRound.timedOut
-                                                ? t("settings.forwardProxy.modal.statusTimeout")
-                                                : t(
-                                                    "settings.forwardProxy.modal.statusUnavailable",
-                                                  );
-                                        const latestRoundTone =
-                                          latestRound == null
-                                            ? "text-info"
-                                            : latestRound.ok
-                                              ? "text-success"
-                                              : latestRound.timedOut
-                                                ? "text-warning"
-                                                : "text-error";
-                                        return (
-                                          <div className="group relative inline-flex max-w-full flex-col items-start">
-                                            <button
-                                              type="button"
-                                              className="text-left"
-                                              disabled={item.rounds.length === 0}
-                                              onClick={() => {
-                                                if (item.rounds.length === 0) return;
-                                                setForwardProxyBatchTooltipKey((current) =>
-                                                  current === item.key ? null : item.key,
-                                                );
-                                              }}
-                                            >
-                                              <span
-                                                className={cn(
-                                                  "inline-block whitespace-nowrap text-sm font-medium",
-                                                  latestRoundTone,
-                                                )}
-                                              >
-                                                {latestRoundLabel}
-                                              </span>
-                                              <span className="block font-mono text-[10px] text-base-content/65">
-                                                {t("settings.forwardProxy.modal.roundProgress", {
-                                                  current: item.completedRounds,
-                                                  total: item.totalRounds,
-                                                })}
-                                              </span>
-                                            </button>
-                                            {item.rounds.length > 0 && (
-                                              <div
-                                                className={cn(
-                                                  "pointer-events-none absolute left-0 top-full z-20 mt-1 hidden max-h-52 min-w-[16rem] max-w-[22rem] overflow-y-auto rounded-md border border-base-300/80 bg-base-100/95 p-2 text-left text-[11px] leading-snug text-base-content shadow-lg",
-                                                  forwardProxyBatchTooltipKey === item.key
-                                                    ? "block"
-                                                    : "group-hover:block",
-                                                )}
-                                              >
-                                                <div className="space-y-1 font-mono">
-                                                  {item.rounds.map((round) => (
-                                                    <div key={`${item.key}-round-${round.round}`}>
-                                                      {round.ok
-                                                        ? t(
-                                                            "settings.forwardProxy.modal.roundResultSuccess",
-                                                            {
-                                                              round: round.round,
-                                                              latency: formatLatency(
-                                                                round.latencyMs,
-                                                              ),
-                                                            },
-                                                          )
-                                                        : round.timedOut
-                                                          ? t(
-                                                              "settings.forwardProxy.modal.roundResultTimeout",
-                                                              { round: round.round },
-                                                            )
-                                                          : t(
-                                                              "settings.forwardProxy.modal.roundResultFailed",
-                                                              { round: round.round },
-                                                            )}
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })()}
+                                      <ForwardProxyBatchResultStatus
+                                        item={item}
+                                        tooltipKey={forwardProxyBatchTooltipKey}
+                                        onToggle={(key) =>
+                                          setForwardProxyBatchTooltipKey((current) =>
+                                            current === key ? null : key,
+                                          )
+                                        }
+                                        t={t}
+                                      />
                                     </td>
                                     <td className="px-3 py-2 text-right">
                                       <div className="inline-flex items-center gap-1.5">
