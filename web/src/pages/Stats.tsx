@@ -1,12 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert } from "../components/ui/alert";
-import { SelectField } from "../components/ui/select-field";
-import { ErrorReasonPieChart } from "../features/stats/ErrorReasonPieChart";
-import { LongTermStatsSection } from "../features/stats/LongTermStatsSection";
-import { ParallelWorkStatsSection } from "../features/stats/ParallelWorkStatsSection";
-import { StatsCards } from "../features/stats/StatsCards";
-import { SuccessFailureChart } from "../features/stats/SuccessFailureChart";
-import { TimeseriesChart } from "../features/stats/TimeseriesChart";
 import { useErrorDistribution } from "../hooks/useErrorDistribution";
 import { useFailureSummary } from "../hooks/useFailureSummary";
 import { useParallelWorkStats } from "../hooks/useParallelWorkStats";
@@ -14,6 +6,7 @@ import { useSummary } from "../hooks/useStats";
 import { useTimeseries } from "../hooks/useTimeseries";
 import { useTranslation } from "../i18n";
 import type { FailureScope } from "../lib/api";
+import { StatsPageSections } from "./StatsPageSections";
 import { RANGE_OPTIONS, resolveStatsBucketOptions, resolveStatsBucketValue } from "./stats-options";
 
 export default function StatsPage() {
@@ -86,150 +79,41 @@ export default function StatsPage() {
   } = useParallelWorkStats({ range, bucket: effectiveBucket });
 
   const scopeOptions = useMemo(
-    () =>
-      [
-        { value: "service", label: t("stats.errors.scope.service") },
-        { value: "client", label: t("stats.errors.scope.client") },
-        { value: "abort", label: t("stats.errors.scope.abort") },
-        { value: "all", label: t("stats.errors.scope.all") },
-      ] as const,
+    () => [
+      { value: "service", label: t("stats.errors.scope.service") },
+      { value: "client", label: t("stats.errors.scope.client") },
+      { value: "abort", label: t("stats.errors.scope.abort") },
+      { value: "all", label: t("stats.errors.scope.all") },
+    ],
     [t],
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="section-heading">
-              <h2 className="section-title">{t("stats.title")}</h2>
-              <p className="section-description">{t("stats.subtitle")}</p>
-            </div>
-            <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
-              <SelectField
-                className="w-full sm:w-auto"
-                options={rangeOptions}
-                value={range}
-                onValueChange={(value) => setRange(value as typeof range)}
-                triggerClassName="w-full sm:min-w-[8.5rem]"
-                data-testid="stats-range-select-trigger"
-                aria-label={t("stats.subtitle")}
-              />
-              <SelectField
-                className="w-full sm:w-auto"
-                options={bucketOptions}
-                value={effectiveBucket}
-                onValueChange={setBucket}
-                triggerClassName="w-full sm:min-w-[7rem]"
-                data-testid="stats-bucket-select-trigger"
-                aria-label={t("stats.trendTitle")}
-              />
-            </div>
-          </div>
-          <StatsCards stats={summary} loading={summaryLoading} error={summaryError} />
-        </div>
-      </section>
-
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="section-heading">
-            <h3 className="section-title">{t("stats.trendTitle")}</h3>
-          </div>
-          {timeseriesError ? (
-            <Alert variant="error">{timeseriesError}</Alert>
-          ) : (
-            <TimeseriesChart
-              points={timeseries?.points ?? []}
-              isLoading={timeseriesLoading}
-              bucketSeconds={timeseries?.bucketSeconds}
-            />
-          )}
-        </div>
-      </section>
-
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="section-heading">
-            <h3 className="section-title">{t("stats.successFailureTitle")}</h3>
-          </div>
-          {timeseriesError ? (
-            <Alert variant="error">{timeseriesError}</Alert>
-          ) : (
-            <SuccessFailureChart
-              points={timeseries?.points ?? []}
-              isLoading={timeseriesLoading}
-              bucketSeconds={timeseries?.bucketSeconds}
-            />
-          )}
-        </div>
-      </section>
-
-      <ParallelWorkStatsSection
-        stats={parallelWorkStats}
-        isLoading={parallelWorkLoading}
-        error={parallelWorkError}
-      />
-
-      <section className="surface-panel">
-        <div className="surface-panel-body gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="section-heading">
-              <h3 className="section-title">{t("stats.errors.title")}</h3>
-              {failureSummaryError ? (
-                <p className="section-description text-error">{failureSummaryError}</p>
-              ) : (
-                <p className="section-description">
-                  {t("stats.errors.actionableRate", {
-                    rate: `${((failureSummary?.actionableFailureRate ?? 0) * 100).toFixed(1)}%`,
-                  })}
-                </p>
-              )}
-            </div>
-            <SelectField
-              label={t("stats.errors.scope.label")}
-              className="w-full min-[769px]:max-w-[14rem]"
-              options={scopeOptions}
-              value={errorScope}
-              onValueChange={(value) => setErrorScope(value as FailureScope)}
-              data-testid="stats-error-scope-select-trigger"
-              aria-label={t("stats.errors.scope.label")}
-            />
-          </div>
-          <div className="metric-grid w-full grid-cols-1 sm:grid-cols-4">
-            <div className="metric-cell">
-              <div className="metric-label">{t("stats.errors.summary.service")}</div>
-              <div className="metric-value text-error text-2xl">
-                {failureSummaryLoading ? "—" : (failureSummary?.serviceFailureCount ?? 0)}
-              </div>
-            </div>
-            <div className="metric-cell">
-              <div className="metric-label">{t("stats.errors.summary.client")}</div>
-              <div className="metric-value text-warning text-2xl">
-                {failureSummaryLoading ? "—" : (failureSummary?.clientFailureCount ?? 0)}
-              </div>
-            </div>
-            <div className="metric-cell">
-              <div className="metric-label">{t("stats.errors.summary.abort")}</div>
-              <div className="metric-value text-info text-2xl">
-                {failureSummaryLoading ? "—" : (failureSummary?.clientAbortCount ?? 0)}
-              </div>
-            </div>
-            <div className="metric-cell">
-              <div className="metric-label">{t("stats.errors.summary.actionable")}</div>
-              <div className="metric-value text-secondary text-2xl">
-                {failureSummaryLoading ? "—" : (failureSummary?.actionableFailureCount ?? 0)}
-              </div>
-            </div>
-          </div>
-          {errorsError ? (
-            <Alert variant="error">{errorsError}</Alert>
-          ) : (
-            <ErrorReasonPieChart items={errors?.items ?? []} isLoading={errorsLoading} />
-          )}
-        </div>
-      </section>
-
-      <LongTermStatsSection />
-    </div>
+    <StatsPageSections
+      summary={summary}
+      summaryLoading={summaryLoading}
+      summaryError={summaryError}
+      range={range}
+      rangeOptions={rangeOptions}
+      onRangeChange={(value) => setRange(value as typeof range)}
+      effectiveBucket={effectiveBucket}
+      bucketOptions={bucketOptions}
+      onBucketChange={setBucket}
+      timeseries={timeseries}
+      timeseriesLoading={timeseriesLoading}
+      timeseriesError={timeseriesError}
+      parallelWorkStats={parallelWorkStats}
+      parallelWorkLoading={parallelWorkLoading}
+      parallelWorkError={parallelWorkError}
+      errors={errors}
+      errorsLoading={errorsLoading}
+      errorsError={errorsError}
+      failureSummary={failureSummary}
+      failureSummaryLoading={failureSummaryLoading}
+      failureSummaryError={failureSummaryError}
+      errorScope={errorScope}
+      scopeOptions={scopeOptions}
+      onScopeChange={(value) => setErrorScope(value as FailureScope)}
+    />
   );
 }

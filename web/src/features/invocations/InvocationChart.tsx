@@ -26,6 +26,121 @@ interface InvocationChartProps {
   isLoading: boolean;
 }
 
+interface InvocationChartData {
+  i: number;
+  timeLabel: string;
+  totalTokens: number;
+  cost: number;
+}
+
+interface InvocationChartViewProps {
+  data: InvocationChartData[];
+  numberFormatter: Intl.NumberFormat;
+  currencyFormatter: Intl.NumberFormat;
+  seriesNames: { totalTokens: string; cost: string };
+  chartColors: {
+    gridLine: string;
+    axisText: string;
+    tooltipBg: string;
+    tooltipBorder: string;
+    tokenColor: string;
+    tokenFill: string;
+    costColor: string;
+    costFill: string;
+  };
+  tooltipFormatter: Formatter<ValueType, NameType>;
+}
+
+function chartDataIndex(value: number, length: number) {
+  return Math.max(0, Math.min(length - 1, Math.round(value)));
+}
+
+function InvocationChartView({
+  data,
+  numberFormatter,
+  currencyFormatter,
+  seriesNames,
+  chartColors,
+  tooltipFormatter,
+}: InvocationChartViewProps) {
+  return (
+    <div className="h-96 w-full">
+      <ResponsiveContainer>
+        <AreaChart data={data} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
+          <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+          <XAxis
+            dataKey="i"
+            type="number"
+            domain={[0, Math.max(0, data.length - 1)]}
+            minTickGap={24}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
+            tickFormatter={(value: number) => {
+              const idx = chartDataIndex(value, data.length);
+              return data[idx]?.timeLabel ?? String(idx);
+            }}
+          />
+          <YAxis
+            yAxisId="tokens"
+            orientation="left"
+            tickFormatter={(value) => numberFormatter.format(value as number)}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
+          />
+          <YAxis
+            yAxisId="cost"
+            orientation="right"
+            tickFormatter={(value) => currencyFormatter.format(value as number)}
+            width={80}
+            axisLine={{ stroke: chartColors.gridLine }}
+            tickLine={{ stroke: chartColors.gridLine }}
+            tick={{ fill: chartColors.axisText, fontSize: 12 }}
+          />
+          <Tooltip
+            labelFormatter={(value) => {
+              const idx = chartDataIndex(Number(value), data.length);
+              return data[idx]?.timeLabel ?? String(idx);
+            }}
+            formatter={tooltipFormatter}
+            contentStyle={{
+              backgroundColor: chartColors.tooltipBg,
+              borderColor: chartColors.tooltipBorder,
+              borderRadius: 10,
+            }}
+            labelStyle={{ color: chartColors.axisText, fontWeight: 600 }}
+            itemStyle={{ color: chartColors.axisText }}
+          />
+          <Legend wrapperStyle={{ color: chartColors.axisText }} />
+          <Area
+            type="monotone"
+            dataKey="totalTokens"
+            name={seriesNames.totalTokens}
+            yAxisId="tokens"
+            stroke={chartColors.tokenColor}
+            fill={chartColors.tokenFill}
+            fillOpacity={1}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
+          <Area
+            type="monotone"
+            dataKey="cost"
+            name={seriesNames.cost}
+            yAxisId="cost"
+            stroke={chartColors.costColor}
+            fill={chartColors.costFill}
+            fillOpacity={1}
+            strokeWidth={2}
+            isAnimationActive={false}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 export function InvocationChart({ records, isLoading }: InvocationChartProps) {
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
@@ -45,7 +160,7 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
     [localeTag],
   );
 
-  const data = useMemo(() => {
+  const data = useMemo<InvocationChartData[]>(() => {
     const chronological = [...records].sort((a, b) => {
       const aEpoch = parseIsoEpoch(a.occurredAt);
       const bEpoch = parseIsoEpoch(b.occurredAt);
@@ -125,81 +240,14 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
   }
 
   return (
-    <div className="h-96 w-full">
-      <ResponsiveContainer>
-        <AreaChart data={data} margin={{ top: 16, right: 32, left: 0, bottom: 8 }}>
-          <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
-          <XAxis
-            dataKey="i"
-            type="number"
-            domain={[0, Math.max(0, data.length - 1)]}
-            minTickGap={24}
-            axisLine={{ stroke: chartColors.gridLine }}
-            tickLine={{ stroke: chartColors.gridLine }}
-            tick={{ fill: chartColors.axisText, fontSize: 12 }}
-            tickFormatter={(value: number) => {
-              const idx = Math.max(0, Math.min(data.length - 1, Math.round(value)));
-              const label = data[idx]?.timeLabel;
-              return label ?? String(idx);
-            }}
-          />
-          <YAxis
-            yAxisId="tokens"
-            orientation="left"
-            tickFormatter={(value) => numberFormatter.format(value as number)}
-            axisLine={{ stroke: chartColors.gridLine }}
-            tickLine={{ stroke: chartColors.gridLine }}
-            tick={{ fill: chartColors.axisText, fontSize: 12 }}
-          />
-          <YAxis
-            yAxisId="cost"
-            orientation="right"
-            tickFormatter={(value) => currencyFormatter.format(value as number)}
-            width={80}
-            axisLine={{ stroke: chartColors.gridLine }}
-            tickLine={{ stroke: chartColors.gridLine }}
-            tick={{ fill: chartColors.axisText, fontSize: 12 }}
-          />
-          <Tooltip
-            labelFormatter={(value) => {
-              const idx = Math.max(0, Math.min(data.length - 1, Math.round(Number(value))));
-              return data[idx]?.timeLabel ?? String(idx);
-            }}
-            formatter={tooltipFormatter}
-            contentStyle={{
-              backgroundColor: chartColors.tooltipBg,
-              borderColor: chartColors.tooltipBorder,
-              borderRadius: 10,
-            }}
-            labelStyle={{ color: chartColors.axisText, fontWeight: 600 }}
-            itemStyle={{ color: chartColors.axisText }}
-          />
-          <Legend wrapperStyle={{ color: chartColors.axisText }} />
-          <Area
-            type="monotone"
-            dataKey="totalTokens"
-            name={seriesNames.totalTokens}
-            yAxisId="tokens"
-            stroke={chartColors.tokenColor}
-            fill={chartColors.tokenFill}
-            fillOpacity={1}
-            strokeWidth={2}
-            isAnimationActive={false}
-          />
-          <Area
-            type="monotone"
-            dataKey="cost"
-            name={seriesNames.cost}
-            yAxisId="cost"
-            stroke={chartColors.costColor}
-            fill={chartColors.costFill}
-            fillOpacity={1}
-            strokeWidth={2}
-            isAnimationActive={false}
-          />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
+    <InvocationChartView
+      data={data}
+      numberFormatter={numberFormatter}
+      currencyFormatter={currencyFormatter}
+      seriesNames={seriesNames}
+      chartColors={chartColors}
+      tooltipFormatter={tooltipFormatter}
+    />
   );
 }
 
