@@ -630,13 +630,15 @@ pub(crate) async fn model_scoped_sticky_clear_cause_does_not_cross_models() {
     assert!(matches!(
         upsert_runtime_prompt_cache_conversation_sticky_route(
             &state.pool,
-            prompt_cache_key,
-            Some(prompt_cache_key),
-            replacement_account_id,
-            &now_iso,
-            Some("success-gpt-51"),
-            Some(replacement_attempt_id),
-            None,
+            RuntimePromptCacheStickyRouteRequest {
+                sticky_key: prompt_cache_key,
+                prompt_cache_key: Some(prompt_cache_key),
+                upstream_account_id: replacement_account_id,
+                now_iso: &now_iso,
+                invoke_id: Some("success-gpt-51"),
+                attempt_id: Some(replacement_attempt_id),
+                sticky_affinity_generation: None,
+            },
         )
         .await
         .expect("persist independent model sticky route"),
@@ -981,13 +983,15 @@ pub(crate) async fn runtime_sticky_upsert_rechecks_generation_after_waiting_for_
     let write_task = tokio::spawn(async move {
         upsert_runtime_prompt_cache_conversation_sticky_route(
             &pool,
-            &sticky_key,
-            Some(&sticky_key),
-            stale_account_id,
-            &format_utc_iso(Utc::now()),
-            Some("locked-stale-invoke"),
-            None,
-            Some(stale_generation),
+            RuntimePromptCacheStickyRouteRequest {
+                sticky_key: &sticky_key,
+                prompt_cache_key: Some(&sticky_key),
+                upstream_account_id: stale_account_id,
+                now_iso: &format_utc_iso(Utc::now()),
+                invoke_id: Some("locked-stale-invoke"),
+                attempt_id: None,
+                sticky_affinity_generation: Some(stale_generation),
+            },
         )
         .await
     });
