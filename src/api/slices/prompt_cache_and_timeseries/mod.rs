@@ -16,9 +16,5 @@ pub(crate) use prompt_cache_and_timeseries_forward_proxy_stats::*;
 mod prompt_cache_conversations;
 pub(crate) use prompt_cache_conversations::*;
 #[path = "timeseries.rs"]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Timeseries aggregation adapters preserve established call-site contracts."
-)]
 pub(crate) mod prompt_cache_and_timeseries_timeseries;
 pub(crate) use prompt_cache_and_timeseries_timeseries::*;
