@@ -11,7 +11,7 @@
     "lint:docs": "biome check docs-site",
     "lint:web": "biome check web",
     "typecheck:web": "cd web && bunx tsc -b",
-    "verify:rust": "cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings",
+    "verify:rust": "cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings -D clippy::too_many_arguments -A clippy::too_many_lines -A clippy::excessive_nesting",
     "worktree:bootstrap": "bash scripts/worktree-bootstrap.sh",
     "worktree:setup": "bash scripts/worktree-setup.sh"
   },

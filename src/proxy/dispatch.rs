@@ -417,7 +417,6 @@ fn build_local_capture_error_resp_raw(envelope: &ProxyErrorResponseEnvelope) -> 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -613,7 +612,6 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,

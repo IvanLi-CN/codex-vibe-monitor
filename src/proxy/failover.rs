@@ -615,7 +615,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_pool_account_for_failover_on_fresh_task(
     state: Arc<AppState>,
     sticky_key: Option<String>,

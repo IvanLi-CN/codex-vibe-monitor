@@ -267,6 +267,11 @@ macro_rules! retention_record_commit {
 pub(crate) use retention_record_commit;
 
 pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
+    let mut health = RETENTION_WRITE_HEALTH
+        .lock()
+        .expect("retention write health");
+    let breached = observe_retention_write_commit(&mut health, &commit);
+    drop(health);
     let RetentionWriteCommit {
         operation,
         admission_mode,
@@ -279,23 +284,6 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
         p1_waiter_count,
         candidate_remaining_hint,
     } = commit;
-    let mut health = RETENTION_WRITE_HEALTH
-        .lock()
-        .expect("retention write health");
-    let breached = observe_retention_write_commit(
-        &mut health,
-        operation,
-        admission_mode,
-        rows,
-        estimated_bytes,
-        prepare_elapsed,
-        lock_wait,
-        execute_elapsed,
-        commit_elapsed,
-        p1_waiter_count,
-        candidate_remaining_hint,
-    );
-    drop(health);
     if breached {
         warn!(
             operation,
@@ -326,20 +314,20 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn observe_retention_write_commit(
     health: &mut RetentionWriteHealthState,
-    operation: &'static str,
-    admission_mode: &'static str,
-    rows: usize,
-    estimated_bytes: usize,
-    prepare_elapsed: Duration,
-    lock_wait: Duration,
-    execute_elapsed: Duration,
-    commit_elapsed: Duration,
-    p1_waiter_count: usize,
-    candidate_remaining_hint: usize,
+    commit: &RetentionWriteCommit,
 ) -> bool {
+    let operation = commit.operation;
+    let admission_mode = commit.admission_mode;
+    let rows = commit.rows;
+    let estimated_bytes = commit.estimated_bytes;
+    let prepare_elapsed = commit.prepare_elapsed;
+    let lock_wait = commit.lock_wait;
+    let execute_elapsed = commit.execute_elapsed;
+    let commit_elapsed = commit.commit_elapsed;
+    let p1_waiter_count = commit.p1_waiter_count;
+    let candidate_remaining_hint = commit.candidate_remaining_hint;
     let elapsed = execute_elapsed.saturating_add(commit_elapsed);
     let breached =
         health
@@ -3883,16 +3871,18 @@ mod retention_write_budget_tests {
         );
         assert!(observe_retention_write_commit(
             &mut health,
-            OPERATION,
-            "normal",
-            4,
-            4 * 256,
-            Duration::ZERO,
-            Duration::ZERO,
-            Duration::from_millis(251),
-            Duration::ZERO,
-            0,
-            0,
+            &RetentionWriteCommit {
+                operation: OPERATION,
+                admission_mode: "normal",
+                rows: 4,
+                estimated_bytes: 4 * 256,
+                prepare_elapsed: Duration::ZERO,
+                lock_wait: Duration::ZERO,
+                execute_elapsed: Duration::from_millis(251),
+                commit_elapsed: Duration::ZERO,
+                p1_waiter_count: 0,
+                candidate_remaining_hint: 0,
+            },
         ));
         assert_eq!(
             retention_adaptive_candidate_limit_from_state(&mut health, 64, OPERATION),

@@ -240,7 +240,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings -D clippy::too_many_arguments -A clippy::too_many_lines -A clippy::excessive_nesting
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
