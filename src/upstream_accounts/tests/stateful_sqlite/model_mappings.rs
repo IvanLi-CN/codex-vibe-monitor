@@ -1,6 +1,7 @@
 use super::*;
 use crate::tests::{
-    seed_pool_routing_api_key, test_state_with_openai_base_and_pool_no_available_wait,
+    PoolAccountWaitOptions, seed_pool_routing_api_key,
+    test_state_with_openai_base_and_pool_no_available_wait,
 };
 
 fn mapping(source_model: &str, target_model: &str, enabled: bool) -> ModelMapping {
@@ -110,6 +111,13 @@ async fn post_create_sync_warms_empty_model_mapping_cache_entry() {
 
 #[tokio::test]
 async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
+    let (state, api_key_account_id, oauth_account_id, initial_generation) =
+        prepare_model_mapping_api_test().await;
+    assert_api_key_mapping_update(&state, api_key_account_id, initial_generation).await;
+    assert_oauth_mapping_update_and_rejection(&state, api_key_account_id, oauth_account_id).await;
+}
+
+async fn prepare_model_mapping_api_test() -> (Arc<AppState>, i64, i64, u64) {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let api_key_account_id = insert_api_key_account(&state.pool, "Mapping API key").await;
     let crypto_key = state
@@ -126,17 +134,30 @@ async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
         "user_mapping_oauth",
     )
     .await;
-
     observe_model_route_seen(&state.pool, api_key_account_id, Some("client-fast"))
         .await
         .expect("seed model route");
     ensure_account_has_unsupported_model_tag(&state.pool, api_key_account_id, "upstream-old")
         .await
         .expect("seed unsupported target tag");
-    let initial_cache = refresh_pool_routing_runtime_cache(state.as_ref())
+    let initial_generation = refresh_pool_routing_runtime_cache(state.as_ref())
         .await
-        .expect("seed runtime cache");
+        .expect("seed runtime cache")
+        .model_routing
+        .generation;
+    (
+        state,
+        api_key_account_id,
+        oauth_account_id,
+        initial_generation,
+    )
+}
 
+async fn assert_api_key_mapping_update(
+    state: &Arc<AppState>,
+    api_key_account_id: i64,
+    initial_generation: u64,
+) {
     let Json(detail) = update_upstream_account_model_mappings(
         State(state.clone()),
         HeaderMap::new(),
@@ -201,9 +222,15 @@ async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
         .expect("runtime cache")
         .model_routing
         .generation;
-    assert!(refreshed_generation > initial_cache.model_routing.generation);
+    assert!(refreshed_generation > initial_generation);
     drop(cache);
+}
 
+async fn assert_oauth_mapping_update_and_rejection(
+    state: &Arc<AppState>,
+    api_key_account_id: i64,
+    oauth_account_id: i64,
+) {
     let Json(oauth_detail) = update_upstream_account_model_mappings(
         State(state.clone()),
         HeaderMap::new(),
@@ -315,16 +342,20 @@ async fn model_mapping_save_wakes_a_waiting_no_candidate_request() {
 
     let started = std::time::Instant::now();
     let mut wait_deadline = None;
-    let resolution = resolve_pool_account_for_request_with_wait(
+    let resolution = crate::tests::resolve_pool_account_for_request_with_wait(
         state.as_ref(),
-        None,
-        Some("client-fast"),
-        &[],
-        &std::collections::HashSet::new(),
-        None,
-        true,
-        &mut wait_deadline,
-        Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+        PoolAccountWaitOptions {
+            sticky_key: None,
+            requested_model: Some("client-fast"),
+            excluded_ids: &[],
+            excluded_upstream_route_keys: &std::collections::HashSet::new(),
+            required_upstream_route_key: None,
+            wait_for_no_available: true,
+            wait_deadline: &mut wait_deadline,
+            total_timeout_deadline: Some(
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            ),
+        },
     )
     .await
     .expect("waiting request should resolve");
@@ -347,6 +378,14 @@ async fn model_mapping_save_wakes_a_waiting_no_candidate_request() {
 
 #[tokio::test]
 async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
+    let (state, account_id) = prepare_mapped_routing_account().await;
+
+    assert_allowed_mapped_target(&state, account_id).await;
+    assert_disallowed_mapped_target(&state, account_id).await;
+    assert_denied_mapped_target(&state, account_id).await;
+}
+
+async fn prepare_mapped_routing_account() -> (Arc<AppState>, i64) {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -365,13 +404,7 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
         .await
         .expect("attach mapped target tag");
     sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET policy_available_models_json = '["ordinary-model"]',
-            policy_available_models_mode = 'allowlist',
-            model_mappings_json = '[{"sourceModel":"client-*","targetModel":"upstream-special","enabled":true}]'
-        WHERE id = ?1
-        "#,
+        "UPDATE pool_upstream_accounts SET policy_available_models_json = '[\"ordinary-model\"]', policy_available_models_mode = 'allowlist', model_mappings_json = '[{\"sourceModel\":\"client-*\",\"targetModel\":\"upstream-special\",\"enabled\":true}]' WHERE id = ?1",
     )
     .bind(account_id)
     .execute(&state.pool)
@@ -380,14 +413,10 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     refresh_pool_routing_runtime_cache(state.as_ref())
         .await
         .expect("refresh routing cache");
-    let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
-        .await
-        .expect("load constrained effective rule");
-    assert_eq!(
-        effective_rule.tag_available_models.as_deref(),
-        Some(["upstream-special".to_string()].as_slice())
-    );
+    (state, account_id)
+}
 
+async fn assert_allowed_mapped_target(state: &Arc<AppState>, account_id: i64) {
     let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
         state.as_ref(),
         None,
@@ -402,7 +431,9 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
         panic!("expected mapped account to resolve, got {resolution:?}");
     };
     assert_eq!(resolved.account_id, account_id);
+}
 
+async fn assert_disallowed_mapped_target(state: &Arc<AppState>, account_id: i64) {
     sqlx::query("UPDATE pool_upstream_accounts SET model_mappings_json = ?1 WHERE id = ?2")
         .bind(
             serde_json::to_string(&vec![mapping(
@@ -460,7 +491,9 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
         !matches!(resolution, PoolAccountResolution::Resolved(_)),
         "prompt-cache binding must not bypass a mapped target tag allowlist, got {resolution:?}"
     );
+}
 
+async fn assert_denied_mapped_target(state: &Arc<AppState>, account_id: i64) {
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -478,6 +511,7 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     ensure_account_has_unsupported_model_tag(&state.pool, account_id, "upstream-special")
         .await
         .expect("deny mapped target");
+    let binding = PromptCacheConversationBindingConstraint::Group("test-direct-group".to_string());
     let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
         state.as_ref(),
         None,

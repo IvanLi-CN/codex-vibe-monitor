@@ -1,4 +1,5 @@
 use super::*;
+use axum::http::header;
 use serde_json::json;
 
 #[derive(Debug, FromRow)]
@@ -120,24 +121,40 @@ fn test_external_oauth_credentials(
     }
 }
 
+struct ExternalUpsertMetadata<'a> {
+    display_name: &'a str,
+    group_name: Option<&'a str>,
+    note: Option<&'a str>,
+}
+
+fn test_external_upsert_metadata<'a>(
+    display_name: &'a str,
+    group_name: Option<&'a str>,
+    note: Option<&'a str>,
+) -> ExternalUpsertMetadata<'a> {
+    ExternalUpsertMetadata {
+        display_name,
+        group_name,
+        note,
+    }
+}
+
 fn test_external_upsert_request(
     email: &str,
     account_id: &str,
     user_id: &str,
     access_token: &str,
     refresh_token: &str,
-    display_name: &str,
-    group_name: Option<&str>,
-    note: Option<&str>,
+    metadata: ExternalUpsertMetadata<'_>,
 ) -> ExternalUpstreamAccountUpsertRequest {
     ExternalUpstreamAccountUpsertRequest {
         metadata: ExternalUpstreamAccountMetadataRequest {
-            display_name: Some(display_name.to_string()),
-            group_name: group_name.map(str::to_string),
+            display_name: Some(metadata.display_name.to_string()),
+            group_name: metadata.group_name.map(str::to_string),
             group_bound_proxy_keys: None,
             group_node_shunt_enabled: None,
             group_single_account_rotation_enabled: None,
-            note: note.map(str::to_string),
+            note: metadata.note.map(str::to_string),
             group_note: None,
             concurrency_limit: None,
             enabled: Some(true),
@@ -152,6 +169,207 @@ fn test_external_upsert_request(
             refresh_token,
         ),
     }
+}
+
+async fn run_external_upsert(
+    state: &Arc<AppState>,
+    secret: &str,
+    source_id: &str,
+    request: ExternalUpstreamAccountUpsertRequest,
+) {
+    let _ = external_upsert_oauth_upstream_account_route(
+        State(state.clone()),
+        external_api_auth_headers(secret),
+        AxumPath(source_id.to_string()),
+        Json(request),
+    )
+    .await
+    .expect("external oauth upsert should succeed");
+}
+
+async fn mark_external_relogin_target(
+    pool: &SqlitePool,
+    account_id: i64,
+    client_id: &str,
+    source_id: &str,
+    enabled: i64,
+) {
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET external_client_id = ?2,
+                external_source_account_id = ?3,
+                status = ?4,
+                enabled = ?5,
+                last_error = 'manual recovery required',
+                last_error_at = ?6,
+                updated_at = ?6
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind(client_id)
+    .bind(source_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    .bind(enabled)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await
+    .expect("mark external repair target as needs reauth");
+}
+
+async fn run_external_relogin(
+    state: &Arc<AppState>,
+    secret: &str,
+    source_id: &str,
+    oauth: ExternalOauthCredentialsRequest,
+) {
+    let _ = external_relogin_oauth_upstream_account_route(
+        State(state.clone()),
+        external_api_auth_headers(secret),
+        AxumPath(source_id.to_string()),
+        Json(ExternalUpstreamAccountReloginRequest { oauth }),
+    )
+    .await
+    .expect("external relogin should succeed");
+}
+
+fn assert_oauth_credentials_unchanged(
+    before: &StoredOauthCredentials,
+    after: &StoredOauthCredentials,
+) {
+    assert_eq!(after.access_token, before.access_token);
+    assert_eq!(after.refresh_token, before.refresh_token);
+    assert_eq!(after.id_token, before.id_token);
+}
+
+async fn assert_atomic_upsert_preserved(
+    state: &Arc<AppState>,
+    client_id: &str,
+    before_credentials: &StoredOauthCredentials,
+) {
+    let after =
+        load_upstream_account_row_by_external_identity(&state.pool, client_id, "atomic-source-001")
+            .await
+            .expect("load atomic target after failure")
+            .expect("atomic target should still exist");
+    assert_eq!(after.display_name, "Atomic Existing");
+    assert_eq!(after.note.as_deref(), Some("before atomic failure"));
+    let after_credentials =
+        decrypt_test_oauth_credentials(state, after.encrypted_credentials.as_deref());
+    assert_oauth_credentials_unchanged(before_credentials, &after_credentials);
+}
+
+async fn assert_idempotent_external_client_upsert(
+    state: &Arc<AppState>,
+    secret: &str,
+    client_row: &ExternalApiKeyDbRow,
+) -> i64 {
+    run_external_upsert(
+        state,
+        secret,
+        "shared-source-001",
+        test_external_upsert_request(
+            "shared-a@example.com",
+            "org_shared_a",
+            "user_shared_a",
+            "access-a-1",
+            "refresh-a-1",
+            test_external_upsert_metadata("Shared Client A", None, Some("note-a-1")),
+        ),
+    )
+    .await;
+    let first = load_upstream_account_row_by_external_identity(
+        &state.pool,
+        &client_row.client_id,
+        "shared-source-001",
+    )
+    .await
+    .expect("load client A first account")
+    .expect("client A first account should exist");
+
+    run_external_upsert(
+        state,
+        secret,
+        "shared-source-001",
+        test_external_upsert_request(
+            "shared-a@example.com",
+            "org_shared_a",
+            "user_shared_a",
+            "access-a-2",
+            "refresh-a-2",
+            test_external_upsert_metadata("Shared Client A Updated", None, Some("note-a-2")),
+        ),
+    )
+    .await;
+    let second = load_upstream_account_row_by_external_identity(
+        &state.pool,
+        &client_row.client_id,
+        "shared-source-001",
+    )
+    .await
+    .expect("load client A second account")
+    .expect("client A second account should exist");
+    assert_eq!(second.id, first.id);
+    assert_eq!(second.display_name, "Shared Client A Updated");
+    assert_eq!(second.note.as_deref(), Some("note-a-2"));
+    let credentials =
+        decrypt_test_oauth_credentials(state, second.encrypted_credentials.as_deref());
+    assert_eq!(credentials.access_token, "access-a-2");
+    assert_eq!(credentials.refresh_token.as_deref(), Some("refresh-a-2"));
+    first.id
+}
+
+fn decrypt_test_oauth_credentials(
+    state: &Arc<AppState>,
+    encrypted_credentials: Option<&str>,
+) -> StoredOauthCredentials {
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let decrypted = decrypt_credentials(
+        crypto_key,
+        encrypted_credentials.expect("encrypted oauth credentials"),
+    )
+    .expect("decrypt oauth credentials");
+    let StoredCredentials::Oauth(credentials) = decrypted else {
+        panic!("test account should use oauth credentials");
+    };
+    credentials
+}
+
+async fn assert_external_relogin_result(
+    state: &Arc<AppState>,
+    account_id: i64,
+    expected_enabled: i64,
+    access_token: &str,
+    refresh_token: &str,
+    usage_requests: &Arc<AtomicUsize>,
+    token_requests: &Arc<AtomicUsize>,
+) {
+    let repaired = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load repaired account")
+        .expect("repaired account should exist");
+    assert_eq!(repaired.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert_eq!(repaired.enabled, expected_enabled);
+    assert!(repaired.last_synced_at.is_some());
+    assert!(repaired.last_successful_sync_at.is_some());
+    assert_ne!(
+        repaired.last_action_reason_code.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+    );
+    let credentials =
+        decrypt_test_oauth_credentials(state, repaired.encrypted_credentials.as_deref());
+    assert_eq!(credentials.access_token, access_token);
+    assert_eq!(credentials.refresh_token.as_deref(), Some(refresh_token));
+    assert_eq!(
+        usage_requests.load(Ordering::SeqCst),
+        expected_enabled as usize + 1
+    );
+    assert!(token_requests.load(Ordering::SeqCst) <= 1);
 }
 
 #[test]
@@ -195,17 +413,6 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
     )
     .await;
     let state = test_app_state_with_usage_base(&usage_base_url).await;
-    let create_without_browser_headers_err = create_external_api_key(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(CreateExternalApiKeyRequest {
-            name: "Missing Origin".to_string(),
-        }),
-    )
-    .await
-    .expect_err("missing browser same-origin headers should be rejected");
-    assert_eq!(create_without_browser_headers_err.0, StatusCode::FORBIDDEN);
-
     let (key_id, secret, created_row) =
         create_external_api_key_for_test(&state, "Partner Alpha").await;
 
@@ -222,20 +429,39 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
     assert_ne!(created_row.secret_hash, secret);
     assert!(created_row.last_used_at.is_none());
 
-    let missing_err = external_upsert_oauth_upstream_account_route(
+    assert_external_api_key_authentication(&state, key_id, &secret).await;
+    assert_external_api_key_rotation_and_disable(&state, key_id, &secret, &created_row).await;
+
+    server.abort();
+}
+
+async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i64, secret: &str) {
+    let create_err = create_external_api_key(
         State(state.clone()),
         HeaderMap::new(),
-        AxumPath("partner-source-1".to_string()),
-        Json(test_external_upsert_request(
+        Json(CreateExternalApiKeyRequest {
+            name: "Missing Origin".to_string(),
+        }),
+    )
+    .await
+    .expect_err("missing browser same-origin headers should be rejected");
+    assert_eq!(create_err.0, StatusCode::FORBIDDEN);
+
+    let request = || {
+        test_external_upsert_request(
             "alpha@example.com",
             "org_partner_alpha",
             "user_partner_alpha",
             "alpha-access",
             "alpha-refresh",
-            "Partner Alpha OAuth",
-            None,
-            Some("initial note"),
-        )),
+            test_external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
+        )
+    };
+    let missing_err = external_upsert_oauth_upstream_account_route(
+        State(state.clone()),
+        HeaderMap::new(),
+        AxumPath("partner-source-1".to_string()),
+        Json(request()),
     )
     .await
     .expect_err("missing bearer token should be rejected");
@@ -245,16 +471,7 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
         State(state.clone()),
         external_api_auth_headers("cvm_ext_invalid"),
         AxumPath("partner-source-1".to_string()),
-        Json(test_external_upsert_request(
-            "alpha@example.com",
-            "org_partner_alpha",
-            "user_partner_alpha",
-            "alpha-access",
-            "alpha-refresh",
-            "Partner Alpha OAuth",
-            None,
-            Some("initial note"),
-        )),
+        Json(request()),
     )
     .await
     .expect_err("unknown bearer token should be rejected");
@@ -262,24 +479,22 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
 
     let _ = external_upsert_oauth_upstream_account_route(
         State(state.clone()),
-        external_api_auth_headers_with_scheme(&secret, "bearer"),
+        external_api_auth_headers_with_scheme(secret, "bearer"),
         AxumPath("partner-source-1".to_string()),
-        Json(test_external_upsert_request(
-            "alpha@example.com",
-            "org_partner_alpha",
-            "user_partner_alpha",
-            "alpha-access",
-            "alpha-refresh",
-            "Partner Alpha OAuth",
-            None,
-            Some("initial note"),
-        )),
+        Json(request()),
     )
     .await
     .expect("active external key should authenticate");
     let used_row = load_external_api_key_db_row(&state.pool, key_id).await;
     assert!(used_row.last_used_at.is_some());
+}
 
+async fn assert_external_api_key_rotation_and_disable(
+    state: &Arc<AppState>,
+    key_id: i64,
+    secret: &str,
+    created_row: &ExternalApiKeyDbRow,
+) {
     let Json(rotated_response) = rotate_external_api_key(
         State(state.clone()),
         external_api_key_settings_headers(),
@@ -312,9 +527,9 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
     .expect_err("rotating the same key again should conflict");
     assert_eq!(rotate_again_err.0, StatusCode::CONFLICT);
 
-    let rotated_old_secret_err = external_patch_oauth_upstream_account_route(
+    let old_secret_err = external_patch_oauth_upstream_account_route(
         State(state.clone()),
-        external_api_auth_headers(&secret),
+        external_api_auth_headers(secret),
         AxumPath("partner-source-1".to_string()),
         Json(ExternalUpstreamAccountMetadataRequest {
             note: Some("rotated old secret".to_string()),
@@ -323,7 +538,7 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
     )
     .await
     .expect_err("rotated secret should be forbidden");
-    assert_eq!(rotated_old_secret_err.0, StatusCode::FORBIDDEN);
+    assert_eq!(old_secret_err.0, StatusCode::FORBIDDEN);
 
     let _ = external_patch_oauth_upstream_account_route(
         State(state.clone()),
@@ -360,8 +575,6 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
     .await
     .expect_err("disabled secret should be forbidden");
     assert_eq!(disabled_err.0, StatusCode::FORBIDDEN);
-
-    server.abort();
 }
 
 #[tokio::test]
@@ -438,100 +651,23 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
     let (_client_b_key_id, client_b_secret, client_b_row) =
         create_external_api_key_for_test(&state, "Partner Client B").await;
 
-    let _ = external_upsert_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&client_a_secret),
-        AxumPath("shared-source-001".to_string()),
-        Json(test_external_upsert_request(
-            "shared-a@example.com",
-            "org_shared_a",
-            "user_shared_a",
-            "access-a-1",
-            "refresh-a-1",
-            "Shared Client A",
-            None,
-            Some("note-a-1"),
-        )),
-    )
-    .await
-    .expect("client A first upsert");
-    let client_a_first = load_upstream_account_row_by_external_identity(
-        &state.pool,
-        &client_a_row.client_id,
+    let client_a_first_id =
+        assert_idempotent_external_client_upsert(&state, &client_a_secret, &client_a_row).await;
+
+    run_external_upsert(
+        &state,
+        &client_b_secret,
         "shared-source-001",
-    )
-    .await
-    .expect("load client A first account")
-    .expect("client A first account should exist");
-
-    let _ = external_upsert_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&client_a_secret),
-        AxumPath("shared-source-001".to_string()),
-        Json(test_external_upsert_request(
-            "shared-a@example.com",
-            "org_shared_a",
-            "user_shared_a",
-            "access-a-2",
-            "refresh-a-2",
-            "Shared Client A Updated",
-            None,
-            Some("note-a-2"),
-        )),
-    )
-    .await
-    .expect("client A second upsert should be idempotent");
-    let client_a_second = load_upstream_account_row_by_external_identity(
-        &state.pool,
-        &client_a_row.client_id,
-        "shared-source-001",
-    )
-    .await
-    .expect("load client A second account")
-    .expect("client A second account should exist");
-    assert_eq!(client_a_second.id, client_a_first.id);
-    assert_eq!(client_a_second.display_name, "Shared Client A Updated");
-    assert_eq!(client_a_second.note.as_deref(), Some("note-a-2"));
-
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let decrypted_client_a = decrypt_credentials(
-        crypto_key,
-        client_a_second
-            .encrypted_credentials
-            .as_deref()
-            .expect("client A encrypted credentials"),
-    )
-    .expect("decrypt client A credentials");
-    let StoredCredentials::Oauth(client_a_credentials) = decrypted_client_a else {
-        panic!("client A should keep oauth credentials");
-    };
-    assert_eq!(client_a_credentials.access_token, "access-a-2");
-    assert_eq!(
-        client_a_credentials.refresh_token.as_deref(),
-        Some("refresh-a-2")
-    );
-
-    let _ = external_upsert_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&client_b_secret),
-        AxumPath("shared-source-001".to_string()),
-        Json(test_external_upsert_request(
+        test_external_upsert_request(
             "shared-b@example.com",
             "org_shared_b",
             "user_shared_b",
             "access-b-1",
             "refresh-b-1",
-            "Shared Client B",
-            None,
-            Some("note-b-1"),
-        )),
+            test_external_upsert_metadata("Shared Client B", None, Some("note-b-1")),
+        ),
     )
-    .await
-    .expect("client B upsert should create an isolated account");
+    .await;
     let client_b_account = load_upstream_account_row_by_external_identity(
         &state.pool,
         &client_b_row.client_id,
@@ -540,7 +676,7 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
     .await
     .expect("load client B account")
     .expect("client B account should exist");
-    assert_ne!(client_b_account.id, client_a_first.id);
+    assert_ne!(client_b_account.id, client_a_first_id);
 
     let shared_source_count = sqlx::query_scalar::<_, i64>(
         r#"
@@ -650,9 +786,7 @@ async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_
             "user_email_preserve",
             "preserve-access-1",
             "preserve-refresh-1",
-            "External Email Preserve",
-            None,
-            None,
+            test_external_upsert_metadata("External Email Preserve", None, None),
         )),
     )
     .await
@@ -686,9 +820,7 @@ async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_
             "user_email_preserve",
             "preserve-access-2",
             "preserve-refresh-2",
-            "External Email Preserve",
-            None,
-            None,
+            test_external_upsert_metadata("External Email Preserve", None, None),
         )),
     )
     .await
@@ -753,9 +885,7 @@ async fn external_oauth_patch_updates_metadata_without_overwriting_credentials()
             "user_patch",
             "patch-access-1",
             "patch-refresh-1",
-            "Patch Original",
-            None,
-            Some("before patch"),
+            test_external_upsert_metadata("Patch Original", None, Some("before patch")),
         )),
     )
     .await
@@ -769,22 +899,8 @@ async fn external_oauth_patch_updates_metadata_without_overwriting_credentials()
     .await
     .expect("load patch target before patch")
     .expect("patch target should exist");
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let before_decrypted = decrypt_credentials(
-        crypto_key,
-        before
-            .encrypted_credentials
-            .as_deref()
-            .expect("patch target encrypted credentials"),
-    )
-    .expect("decrypt patch target before patch");
-    let StoredCredentials::Oauth(before_credentials) = before_decrypted else {
-        panic!("patch target should use oauth credentials");
-    };
+    let before_credentials =
+        decrypt_test_oauth_credentials(&state, before.encrypted_credentials.as_deref());
 
     let _ = external_patch_oauth_upstream_account_route(
         State(state.clone()),
@@ -815,26 +931,9 @@ async fn external_oauth_patch_updates_metadata_without_overwriting_credentials()
     assert_eq!(after.enabled, 0);
     assert_eq!(after.is_mother, 1);
 
-    let after_decrypted = decrypt_credentials(
-        crypto_key,
-        after
-            .encrypted_credentials
-            .as_deref()
-            .expect("patched target encrypted credentials"),
-    )
-    .expect("decrypt patch target after patch");
-    let StoredCredentials::Oauth(after_credentials) = after_decrypted else {
-        panic!("patched target should still use oauth credentials");
-    };
-    assert_eq!(
-        after_credentials.access_token,
-        before_credentials.access_token
-    );
-    assert_eq!(
-        after_credentials.refresh_token,
-        before_credentials.refresh_token
-    );
-    assert_eq!(after_credentials.id_token, before_credentials.id_token);
+    let after_credentials =
+        decrypt_test_oauth_credentials(&state, after.encrypted_credentials.as_deref());
+    assert_oauth_credentials_unchanged(&before_credentials, &after_credentials);
 
     server.abort();
 }
@@ -869,9 +968,7 @@ async fn external_oauth_patch_preserves_system_tags_when_tag_ids_is_empty() {
             "user_patch_tags",
             "patch-access-tags-1",
             "patch-refresh-tags-1",
-            "Patch Tags Original",
-            None,
-            Some("before patch"),
+            test_external_upsert_metadata("Patch Tags Original", None, Some("before patch")),
         )),
     )
     .await
@@ -1059,41 +1156,39 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
     let (_key_id, secret, key_row) =
         create_external_api_key_for_test(&state, "Partner Atomicity").await;
 
-    let _ = external_upsert_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&secret),
-        AxumPath("atomic-source-001".to_string()),
-        Json(test_external_upsert_request(
+    run_external_upsert(
+        &state,
+        &secret,
+        "atomic-source-001",
+        test_external_upsert_request(
             "atomic@example.com",
             "org_atomic",
             "user_atomic",
             "atomic-access-1",
             "atomic-refresh-1",
-            "Atomic Existing",
-            None,
-            Some("before atomic failure"),
-        )),
+            test_external_upsert_metadata("Atomic Existing", None, Some("before atomic failure")),
+        ),
     )
-    .await
-    .expect("create atomic target account");
+    .await;
 
-    let _ = external_upsert_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&secret),
-        AxumPath("atomic-source-conflict".to_string()),
-        Json(test_external_upsert_request(
+    run_external_upsert(
+        &state,
+        &secret,
+        "atomic-source-conflict",
+        test_external_upsert_request(
             "atomic-conflict@example.com",
             "org_atomic_conflict",
             "user_atomic_conflict",
             "atomic-conflict-access",
             "atomic-conflict-refresh",
-            "Conflicting Display Name",
-            None,
-            Some("conflict holder"),
-        )),
+            test_external_upsert_metadata(
+                "Conflicting Display Name",
+                None,
+                Some("conflict holder"),
+            ),
+        ),
     )
-    .await
-    .expect("create conflicting display name holder");
+    .await;
 
     let before = load_upstream_account_row_by_external_identity(
         &state.pool,
@@ -1103,22 +1198,8 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
     .await
     .expect("load atomic target before failure")
     .expect("atomic target should exist");
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let before_decrypted = decrypt_credentials(
-        crypto_key,
-        before
-            .encrypted_credentials
-            .as_deref()
-            .expect("atomic target encrypted credentials"),
-    )
-    .expect("decrypt atomic target before failure");
-    let StoredCredentials::Oauth(before_credentials) = before_decrypted else {
-        panic!("atomic target should use oauth credentials");
-    };
+    let before_credentials =
+        decrypt_test_oauth_credentials(&state, before.encrypted_credentials.as_deref());
 
     let err = external_upsert_oauth_upstream_account_route(
         State(state.clone()),
@@ -1130,46 +1211,18 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic",
             "atomic-access-2",
             "atomic-refresh-2",
-            "Conflicting Display Name",
-            None,
-            Some("after atomic failure"),
+            test_external_upsert_metadata(
+                "Conflicting Display Name",
+                None,
+                Some("after atomic failure"),
+            ),
         )),
     )
     .await
     .expect_err("duplicate display name should reject the upsert");
     assert_eq!(err.0, StatusCode::CONFLICT);
 
-    let after = load_upstream_account_row_by_external_identity(
-        &state.pool,
-        &key_row.client_id,
-        "atomic-source-001",
-    )
-    .await
-    .expect("load atomic target after failure")
-    .expect("atomic target should still exist");
-    assert_eq!(after.display_name, "Atomic Existing");
-    assert_eq!(after.note.as_deref(), Some("before atomic failure"));
-
-    let after_decrypted = decrypt_credentials(
-        crypto_key,
-        after
-            .encrypted_credentials
-            .as_deref()
-            .expect("atomic target encrypted credentials after failure"),
-    )
-    .expect("decrypt atomic target after failure");
-    let StoredCredentials::Oauth(after_credentials) = after_decrypted else {
-        panic!("atomic target should still use oauth credentials");
-    };
-    assert_eq!(
-        after_credentials.access_token,
-        before_credentials.access_token
-    );
-    assert_eq!(
-        after_credentials.refresh_token,
-        before_credentials.refresh_token
-    );
-    assert_eq!(after_credentials.id_token, before_credentials.id_token);
+    assert_atomic_upsert_preserved(&state, &key_row.client_id, &before_credentials).await;
 
     server.abort();
 }
@@ -1237,77 +1290,39 @@ async fn external_oauth_relogin_repairs_needs_reauth_account_and_triggers_sync()
         "user_repair",
     )
     .await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET external_client_id = ?2,
-                external_source_account_id = ?3,
-                status = ?4,
-                enabled = 1,
-                last_error = 'manual recovery required',
-                last_error_at = ?5,
-                updated_at = ?5
-            WHERE id = ?1
-            "#,
+    mark_external_relogin_target(
+        &state.pool,
+        account_id,
+        &key_row.client_id,
+        "repair-source-001",
+        1,
     )
-    .bind(account_id)
-    .bind(&key_row.client_id)
-    .bind("repair-source-001")
-    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
-    .bind(format_utc_iso(Utc::now()))
-    .execute(&state.pool)
-    .await
-    .expect("mark external repair target as needs reauth");
+    .await;
 
-    let _ = external_relogin_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&secret),
-        AxumPath("repair-source-001".to_string()),
-        Json(ExternalUpstreamAccountReloginRequest {
-            oauth: test_external_oauth_credentials(
-                "repair@example.com",
-                "org_repair",
-                "user_repair",
-                "repair-access-2",
-                "repair-refresh-2",
-            ),
-        }),
+    run_external_relogin(
+        &state,
+        &secret,
+        "repair-source-001",
+        test_external_oauth_credentials(
+            "repair@example.com",
+            "org_repair",
+            "user_repair",
+            "repair-access-2",
+            "repair-refresh-2",
+        ),
     )
-    .await
-    .expect("external relogin repair should succeed");
+    .await;
 
-    let repaired = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load repaired account")
-        .expect("repaired account should exist");
-    assert_eq!(repaired.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(repaired.enabled, 1);
-    assert!(repaired.last_synced_at.is_some());
-    assert!(repaired.last_successful_sync_at.is_some());
-    assert_ne!(
-        repaired.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
-    );
-
-    let decrypted = decrypt_credentials(
-        crypto_key,
-        repaired
-            .encrypted_credentials
-            .as_deref()
-            .expect("repaired encrypted credentials"),
+    assert_external_relogin_result(
+        &state,
+        account_id,
+        1,
+        "repair-access-2",
+        "repair-refresh-2",
+        &usage_requests,
+        &token_requests,
     )
-    .expect("decrypt repaired credentials");
-    let StoredCredentials::Oauth(credentials) = decrypted else {
-        panic!("repaired account should keep oauth credentials");
-    };
-    assert_eq!(credentials.access_token, "repair-access-2");
-    assert_eq!(
-        credentials.refresh_token.as_deref(),
-        Some("repair-refresh-2")
-    );
-
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
-    assert!(token_requests.load(Ordering::SeqCst) <= 1);
+    .await;
 
     server.abort();
 }
@@ -1360,77 +1375,39 @@ async fn external_oauth_relogin_preserves_disabled_account_state() {
         "user_disabled_repair",
     )
     .await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET external_client_id = ?2,
-                external_source_account_id = ?3,
-                status = ?4,
-                enabled = 0,
-                last_error = 'manual recovery required',
-                last_error_at = ?5,
-                updated_at = ?5
-            WHERE id = ?1
-            "#,
+    mark_external_relogin_target(
+        &state.pool,
+        account_id,
+        &key_row.client_id,
+        "disabled-repair-source-001",
+        0,
     )
-    .bind(account_id)
-    .bind(&key_row.client_id)
-    .bind("disabled-repair-source-001")
-    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
-    .bind(format_utc_iso(Utc::now()))
-    .execute(&state.pool)
-    .await
-    .expect("mark disabled external repair target as needs reauth");
+    .await;
 
-    let _ = external_relogin_oauth_upstream_account_route(
-        State(state.clone()),
-        external_api_auth_headers(&secret),
-        AxumPath("disabled-repair-source-001".to_string()),
-        Json(ExternalUpstreamAccountReloginRequest {
-            oauth: test_external_oauth_credentials(
-                "disabled-repair@example.com",
-                "org_disabled_repair",
-                "user_disabled_repair",
-                "disabled-repair-access-2",
-                "disabled-repair-refresh-2",
-            ),
-        }),
+    run_external_relogin(
+        &state,
+        &secret,
+        "disabled-repair-source-001",
+        test_external_oauth_credentials(
+            "disabled-repair@example.com",
+            "org_disabled_repair",
+            "user_disabled_repair",
+            "disabled-repair-access-2",
+            "disabled-repair-refresh-2",
+        ),
     )
-    .await
-    .expect("external relogin repair should preserve disabled state");
+    .await;
 
-    let repaired = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load repaired disabled account")
-        .expect("repaired disabled account should exist");
-    assert_eq!(repaired.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(repaired.enabled, 0);
-    assert!(repaired.last_synced_at.is_some());
-    assert!(repaired.last_successful_sync_at.is_some());
-    assert_ne!(
-        repaired.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
-    );
-
-    let decrypted = decrypt_credentials(
-        crypto_key,
-        repaired
-            .encrypted_credentials
-            .as_deref()
-            .expect("repaired disabled encrypted credentials"),
+    assert_external_relogin_result(
+        &state,
+        account_id,
+        0,
+        "disabled-repair-access-2",
+        "disabled-repair-refresh-2",
+        &usage_requests,
+        &token_requests,
     )
-    .expect("decrypt repaired disabled credentials");
-    let StoredCredentials::Oauth(credentials) = decrypted else {
-        panic!("repaired disabled account should keep oauth credentials");
-    };
-    assert_eq!(credentials.access_token, "disabled-repair-access-2");
-    assert_eq!(
-        credentials.refresh_token.as_deref(),
-        Some("disabled-repair-refresh-2")
-    );
-
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
-    assert!(token_requests.load(Ordering::SeqCst) <= 1);
+    .await;
 
     server.abort();
 }
