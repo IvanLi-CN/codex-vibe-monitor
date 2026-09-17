@@ -569,21 +569,6 @@ async fn ensure_schema_rebuilds_invocation_in_progress_live_from_existing_invoca
     .await;
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
 
-    for trigger_name in [
-        "trg_codex_invocations_live_insert",
-        "trg_codex_invocations_live_update",
-        "trg_codex_invocations_live_delete",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
-            .execute(&state.pool)
-            .await
-            .expect("drop live trigger before rebuild test");
-    }
-    sqlx::query("DROP TABLE IF EXISTS invocation_in_progress_live")
-        .execute(&state.pool)
-        .await
-        .expect("drop live table before rebuild test");
-
     for (
         invoke_id,
         source,
@@ -679,6 +664,11 @@ async fn ensure_schema_rebuilds_invocation_in_progress_live_from_existing_invoca
         .await
         .expect("insert rebuild source invocation row");
     }
+
+    sqlx::query("DROP TABLE invocation_in_progress_live")
+        .execute(&state.pool)
+        .await
+        .expect("drop live projection table while retaining its triggers");
 
     ensure_schema(&state.pool)
         .await
