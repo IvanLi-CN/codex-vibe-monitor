@@ -277,9 +277,8 @@ fn build_binding_write_plan(
     })
 }
 
-async fn persist_binding_write_plan(
-    state: &AppState,
-    prompt_cache_key: &str,
+async fn ensure_binding_write_target(
+    pool: &Pool<Sqlite>,
     plan: &PromptCacheBindingWritePlan,
 ) -> Result<(), ApiError> {
     match plan.binding_kind.as_str() {
@@ -287,7 +286,7 @@ async fn persist_binding_write_plan(
             let group_name = plan.group_name.as_deref().ok_or_else(|| {
                 ApiError::bad_request(anyhow!("groupName is required for group binding"))
             })?;
-            ensure_group_binding_target(&state.pool, group_name).await?;
+            ensure_group_binding_target(pool, group_name).await?;
         }
         "upstreamAccount" => {
             let account_id = plan.upstream_account_id.ok_or_else(|| {
@@ -295,7 +294,7 @@ async fn persist_binding_write_plan(
                     "upstreamAccountId is required for upstream account binding"
                 ))
             })?;
-            ensure_upstream_account_binding_target(&state.pool, account_id).await?;
+            ensure_upstream_account_binding_target(pool, account_id).await?;
         }
         "none" => {}
         _ => {
@@ -304,6 +303,15 @@ async fn persist_binding_write_plan(
             )));
         }
     }
+    Ok(())
+}
+
+async fn persist_binding_write_plan(
+    state: &AppState,
+    prompt_cache_key: &str,
+    plan: &PromptCacheBindingWritePlan,
+) -> Result<(), ApiError> {
+    ensure_binding_write_target(&state.pool, plan).await?;
     let mut connection = state.pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(connection.as_mut())

@@ -253,6 +253,40 @@ async fn append_runtime_sticky_changed_event(
     .await
 }
 
+async fn append_runtime_sticky_change_if_needed(
+    connection: &mut SqliteConnection,
+    event_prompt_cache_key: Option<&str>,
+    sticky_key: &str,
+    now_iso: &str,
+    invoke_id: Option<&str>,
+    context: &RuntimeStickyUpsertContext,
+    previous_account_id: Option<i64>,
+) -> Result<()> {
+    let Some(prompt_cache_key) = event_prompt_cache_key else {
+        return Ok(());
+    };
+    let sticky_after = load_prompt_cache_conversation_sticky_snapshot_for_model_executor(
+        &mut *connection,
+        sticky_key,
+        context.model_key.as_deref(),
+    )
+    .await?;
+    let sticky_changed = context.sticky_before != sticky_after;
+    if sticky_changed && let Some(sticky_after) = sticky_after {
+        append_runtime_sticky_changed_event(
+            &mut *connection,
+            prompt_cache_key,
+            now_iso,
+            invoke_id,
+            context,
+            previous_account_id,
+            sticky_after,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
     pool: &Pool<Sqlite>,
     request: RuntimePromptCacheStickyRouteRequest<'_>,
@@ -309,28 +343,16 @@ pub(crate) async fn upsert_runtime_prompt_cache_conversation_sticky_route(
         )
         .await?;
 
-        if let Some(prompt_cache_key) = event_prompt_cache_key {
-            let sticky_after = load_prompt_cache_conversation_sticky_snapshot_for_model_executor(
-                conn.as_mut(),
-                sticky_key,
-                context.model_key.as_deref(),
-            )
-            .await?;
-
-            let sticky_changed = context.sticky_before != sticky_after;
-            if sticky_changed && let Some(sticky_after) = sticky_after {
-                append_runtime_sticky_changed_event(
-                    conn.as_mut(),
-                    prompt_cache_key,
-                    now_iso,
-                    invoke_id,
-                    &context,
-                    previous_account_id,
-                    sticky_after,
-                )
-                .await?;
-            }
-        }
+        append_runtime_sticky_change_if_needed(
+            conn.as_mut(),
+            event_prompt_cache_key,
+            sticky_key,
+            now_iso,
+            invoke_id,
+            &context,
+            previous_account_id,
+        )
+        .await?;
         Ok(if target_changed {
             RuntimeStickyMutation::Changed {
                 previous_upstream_account_id: previous_account_id,
