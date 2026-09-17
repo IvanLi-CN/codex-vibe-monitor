@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import type { UsageBreakdown } from "../../lib/api";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
@@ -15,7 +15,6 @@ const labels = {
   unknownModel: "Unidentified model",
   reasoningEffort: "Reasoning effort",
 };
-
 function exactBreakdown(): UsageBreakdown {
   return {
     cacheWriteTokens: 100,
@@ -32,7 +31,6 @@ function exactBreakdown(): UsageBreakdown {
     models: [],
   };
 }
-
 function renderTooltip(breakdown: UsageBreakdown) {
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -51,128 +49,107 @@ function renderTooltip(breakdown: UsageBreakdown) {
   });
   return { host, root };
 }
-
 function totalRowCells(host: HTMLElement) {
   const row = host.querySelector("tbody tr");
   if (!row) throw new Error("missing total row");
   return Array.from(row.querySelectorAll("td")).map((cell) => cell.textContent);
 }
-
 afterEach(() => {
   document.body.replaceChildren();
 });
+it("pairs cache and output Token buckets with their reconciled cost totals", () => {
+  const { host, root } = renderTooltip(exactBreakdown());
 
-describe("UsageBreakdownTooltip", () => {
-  it("pairs cache and output Token buckets with their reconciled cost totals", () => {
-    const { host, root } = renderTooltip(exactBreakdown());
+  expect(Array.from(host.querySelectorAll("thead th")).map((header) => header.textContent)).toEqual(
+    ["Model", "Cache write", "Cache read", "Cache hit rate", "Output", "Total"],
+  );
+  expect(totalRowCells(host)).toEqual(["T100$3.00", "T20$0.50", "13.3%", "T30$1.50", "T150$5.00"]);
+  const cacheHitRateCell = host.querySelector("tbody tr td:nth-of-type(3)");
+  expect(cacheHitRateCell?.classList.contains("font-normal")).toBe(true);
+  const cacheHitRateValue = cacheHitRateCell?.querySelector("span span:not([aria-hidden])");
+  expect(cacheHitRateValue?.classList.contains("text-base-content")).toBe(true);
+  expect(cacheHitRateValue?.classList.contains("text-base-content/80")).toBe(false);
+  const placeholder = cacheHitRateCell?.querySelector('[aria-hidden="true"]');
+  expect(placeholder?.classList.contains("h-3")).toBe(true);
+  expect(placeholder?.classList.contains("sm:h-4")).toBe(true);
 
-    expect(
-      Array.from(host.querySelectorAll("thead th")).map((header) => header.textContent),
-    ).toEqual(["Model", "Cache write", "Cache read", "Cache hit rate", "Output", "Total"]);
-    expect(totalRowCells(host)).toEqual([
-      "T100$3.00",
-      "T20$0.50",
-      "13.3%",
-      "T30$1.50",
-      "T150$5.00",
-    ]);
-    const cacheHitRateCell = host.querySelector("tbody tr td:nth-of-type(3)");
-    expect(cacheHitRateCell?.classList.contains("font-normal")).toBe(true);
-    const cacheHitRateValue = cacheHitRateCell?.querySelector("span span:not([aria-hidden])");
-    expect(cacheHitRateValue?.classList.contains("text-base-content")).toBe(true);
-    expect(cacheHitRateValue?.classList.contains("text-base-content/80")).toBe(false);
-    const placeholder = cacheHitRateCell?.querySelector('[aria-hidden="true"]');
-    expect(placeholder?.classList.contains("h-3")).toBe(true);
-    expect(placeholder?.classList.contains("sm:h-4")).toBe(true);
+  act(() => root.unmount());
+});
+it("keeps historical unknown cost in total while leaving unmappable amount cells blank", () => {
+  const breakdown = exactBreakdown();
+  breakdown.costs = {
+    input: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+    output: 0,
+    reasoning: 0,
+    unknown: 5,
+  };
+  const { host, root } = renderTooltip(breakdown);
 
-    act(() => root.unmount());
-  });
+  expect(totalRowCells(host)).toEqual(["T100—", "T20—", "13.3%", "T30—", "T150$5.00"]);
 
-  it("keeps historical unknown cost in total while leaving unmappable amount cells blank", () => {
-    const breakdown = exactBreakdown();
-    breakdown.costs = {
-      input: 0,
-      cacheWrite: 0,
-      cacheRead: 0,
-      output: 0,
-      reasoning: 0,
-      unknown: 5,
-    };
-    const { host, root } = renderTooltip(breakdown);
+  act(() => root.unmount());
+});
+it("shows unavailable amounts without inventing a total when cost details are absent", () => {
+  const breakdown = exactBreakdown();
+  delete breakdown.costs;
+  const { host, root } = renderTooltip(breakdown);
 
-    expect(totalRowCells(host)).toEqual(["T100—", "T20—", "13.3%", "T30—", "T150$5.00"]);
+  expect(totalRowCells(host)).toEqual(["T100—", "T20—", "13.3%", "T30—", "T150—"]);
 
-    act(() => root.unmount());
-  });
+  act(() => root.unmount());
+});
+it("keeps a known zero amount distinct from unavailable cost details", () => {
+  const breakdown = exactBreakdown();
+  breakdown.costs = {
+    input: 0,
+    cacheWrite: 0,
+    cacheRead: 0,
+    output: 0,
+    reasoning: 0,
+    unknown: 0,
+  };
+  const { host, root } = renderTooltip(breakdown);
 
-  it("shows unavailable amounts without inventing a total when cost details are absent", () => {
-    const breakdown = exactBreakdown();
-    delete breakdown.costs;
-    const { host, root } = renderTooltip(breakdown);
+  expect(totalRowCells(host)).toEqual(["T100$0.00", "T20$0.00", "13.3%", "T30$0.00", "T150$0.00"]);
 
-    expect(totalRowCells(host)).toEqual(["T100—", "T20—", "13.3%", "T30—", "T150—"]);
+  act(() => root.unmount());
+});
+it("uses normalized raw reasoning efforts and the shared model identity", () => {
+  const breakdown = exactBreakdown();
+  breakdown.models = [
+    {
+      model: "gpt-5.6",
+      reasoningEffort: " MAX ",
+      cacheWriteTokens: 50,
+      cacheReadTokens: 10,
+      outputTokens: 20,
+    },
+    {
+      model: "gpt-5.6-luna-2026-07-27",
+      reasoningEffort: "ULTRA",
+      cacheWriteTokens: 20,
+      cacheReadTokens: 5,
+      outputTokens: 5,
+    },
+    {
+      model: "custom-model",
+      reasoningEffort: null,
+      cacheWriteTokens: 30,
+      cacheReadTokens: 5,
+      outputTokens: 5,
+    },
+  ];
+  const { host, root } = renderTooltip(breakdown);
 
-    act(() => root.unmount());
-  });
+  expect(host.textContent).toContain("Reasoning effort: max");
+  expect(host.textContent).toContain("Reasoning effort: ultra");
+  expect(host.textContent).toContain("Reasoning effort: —");
+  expect(host.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
+  expect(host.querySelector('[data-model-identity="gpt-5.6-luna-2026-07-27"]')).not.toBeNull();
+  expect(host.textContent).not.toContain("MAX");
+  expect(host.textContent).not.toContain("ULTRA");
 
-  it("keeps a known zero amount distinct from unavailable cost details", () => {
-    const breakdown = exactBreakdown();
-    breakdown.costs = {
-      input: 0,
-      cacheWrite: 0,
-      cacheRead: 0,
-      output: 0,
-      reasoning: 0,
-      unknown: 0,
-    };
-    const { host, root } = renderTooltip(breakdown);
-
-    expect(totalRowCells(host)).toEqual([
-      "T100$0.00",
-      "T20$0.00",
-      "13.3%",
-      "T30$0.00",
-      "T150$0.00",
-    ]);
-
-    act(() => root.unmount());
-  });
-
-  it("uses normalized raw reasoning efforts and the shared model identity", () => {
-    const breakdown = exactBreakdown();
-    breakdown.models = [
-      {
-        model: "gpt-5.6",
-        reasoningEffort: " MAX ",
-        cacheWriteTokens: 50,
-        cacheReadTokens: 10,
-        outputTokens: 20,
-      },
-      {
-        model: "gpt-5.6-luna-2026-07-27",
-        reasoningEffort: "ULTRA",
-        cacheWriteTokens: 20,
-        cacheReadTokens: 5,
-        outputTokens: 5,
-      },
-      {
-        model: "custom-model",
-        reasoningEffort: null,
-        cacheWriteTokens: 30,
-        cacheReadTokens: 5,
-        outputTokens: 5,
-      },
-    ];
-    const { host, root } = renderTooltip(breakdown);
-
-    expect(host.textContent).toContain("Reasoning effort: max");
-    expect(host.textContent).toContain("Reasoning effort: ultra");
-    expect(host.textContent).toContain("Reasoning effort: —");
-    expect(host.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
-    expect(host.querySelector('[data-model-identity="gpt-5.6-luna-2026-07-27"]')).not.toBeNull();
-    expect(host.textContent).not.toContain("MAX");
-    expect(host.textContent).not.toContain("ULTRA");
-
-    act(() => root.unmount());
-  });
+  act(() => root.unmount());
 });

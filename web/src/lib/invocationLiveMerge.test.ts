@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import type { ApiInvocation } from "./api";
 import {
   choosePreferredInvocationRecord,
@@ -24,234 +24,223 @@ function createRecord(
     ...rest,
   };
 }
-
-describe("invocationLiveMerge", () => {
-  it("lets later collections override equal-completeness records", () => {
-    const live = createRecord({
-      id: 1,
-      invokeId: "invoke-1",
-      occurredAt: "2026-03-10T02:30:00Z",
-      proxyDisplayName: "Proxy Live",
-      requestedServiceTier: "auto",
-    });
-    const authoritative = createRecord({
-      id: 1,
-      invokeId: "invoke-1",
-      occurredAt: "2026-03-10T02:30:00Z",
-      proxyDisplayName: "Proxy Final",
-      requestedServiceTier: "flex",
-    });
-
-    const merged = mergeInvocationRecordCollections([live], [authoritative]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.proxyDisplayName).toBe("Proxy Final");
-    expect(merged[0]?.requestedServiceTier).toBe("flex");
+it("lets later collections override equal-completeness records", () => {
+  const live = createRecord({
+    id: 1,
+    invokeId: "invoke-1",
+    occurredAt: "2026-03-10T02:30:00Z",
+    proxyDisplayName: "Proxy Live",
+    requestedServiceTier: "auto",
+  });
+  const authoritative = createRecord({
+    id: 1,
+    invokeId: "invoke-1",
+    occurredAt: "2026-03-10T02:30:00Z",
+    proxyDisplayName: "Proxy Final",
+    requestedServiceTier: "flex",
   });
 
-  it("keeps the current record on exact ties for direct preference checks", () => {
-    const authoritative = createRecord({
-      id: 2,
-      invokeId: "invoke-2",
-      occurredAt: "2026-03-10T02:31:00Z",
-      proxyDisplayName: "Proxy Final",
-      requestedServiceTier: "flex",
-    });
-    const live = createRecord({
-      id: 2,
-      invokeId: "invoke-2",
-      occurredAt: "2026-03-10T02:31:00Z",
-      proxyDisplayName: "Proxy Live",
-      requestedServiceTier: "auto",
-    });
+  const merged = mergeInvocationRecordCollections([live], [authoritative]);
 
-    expect(choosePreferredInvocationRecord(authoritative, live)).toBe(authoritative);
+  expect(merged).toHaveLength(1);
+  expect(merged[0]?.proxyDisplayName).toBe("Proxy Final");
+  expect(merged[0]?.requestedServiceTier).toBe("flex");
+});
+it("keeps the current record on exact ties for direct preference checks", () => {
+  const authoritative = createRecord({
+    id: 2,
+    invokeId: "invoke-2",
+    occurredAt: "2026-03-10T02:31:00Z",
+    proxyDisplayName: "Proxy Final",
+    requestedServiceTier: "flex",
+  });
+  const live = createRecord({
+    id: 2,
+    invokeId: "invoke-2",
+    occurredAt: "2026-03-10T02:31:00Z",
+    proxyDisplayName: "Proxy Live",
+    requestedServiceTier: "auto",
   });
 
-  it("preserves a real DB id when a fresher transient running snapshot wins preference", () => {
-    const persisted = createRecord({
-      id: 42,
-      invokeId: "invoke-transient",
-      occurredAt: "2026-03-10T02:31:30Z",
-      status: "running",
-      proxyDisplayName: "Proxy Placeholder",
-    });
-    const transient = createRecord({
-      id: 0,
-      invokeId: "invoke-transient",
-      occurredAt: "2026-03-10T02:31:30Z",
-      status: "running",
-      proxyDisplayName: "Proxy Live",
-      tUpstreamTtfbMs: 180,
-    });
-
-    const merged = mergeInvocationRecordCollections([persisted], [transient]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.id).toBe(42);
-    expect(merged[0]?.proxyDisplayName).toBe("Proxy Live");
-    expect(merged[0]?.tUpstreamTtfbMs).toBe(180);
+  expect(choosePreferredInvocationRecord(authoritative, live)).toBe(authoritative);
+});
+it("preserves a real DB id when a fresher transient running snapshot wins preference", () => {
+  const persisted = createRecord({
+    id: 42,
+    invokeId: "invoke-transient",
+    occurredAt: "2026-03-10T02:31:30Z",
+    status: "running",
+    proxyDisplayName: "Proxy Placeholder",
+  });
+  const transient = createRecord({
+    id: 0,
+    invokeId: "invoke-transient",
+    occurredAt: "2026-03-10T02:31:30Z",
+    status: "running",
+    proxyDisplayName: "Proxy Live",
+    tUpstreamTtfbMs: 180,
   });
 
-  it("keeps measured live first-token progress when a stale HTTP preview arrives", () => {
-    const live = createRecord({
-      id: 43,
-      invokeId: "invoke-live-first-token",
-      occurredAt: "2026-03-10T02:31:45Z",
-      status: "running",
-      livePhase: "responding",
-      firstTokenMs: 720,
-    });
-    const staleHttp = createRecord({
-      id: 43,
-      invokeId: "invoke-live-first-token",
-      occurredAt: "2026-03-10T02:31:45Z",
-      status: "running",
-      proxyDisplayName: "Persisted preview",
-      tUpstreamTtfbMs: 180,
-    });
+  const merged = mergeInvocationRecordCollections([persisted], [transient]);
 
-    const merged = mergeInvocationRecordCollections([live], [staleHttp]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.firstTokenMs).toBe(720);
-    expect(merged[0]?.livePhase).toBe("responding");
+  expect(merged).toHaveLength(1);
+  expect(merged[0]?.id).toBe(42);
+  expect(merged[0]?.proxyDisplayName).toBe("Proxy Live");
+  expect(merged[0]?.tUpstreamTtfbMs).toBe(180);
+});
+it("keeps measured live first-token progress when a stale HTTP preview arrives", () => {
+  const live = createRecord({
+    id: 43,
+    invokeId: "invoke-live-first-token",
+    occurredAt: "2026-03-10T02:31:45Z",
+    status: "running",
+    livePhase: "responding",
+    firstTokenMs: 720,
+  });
+  const staleHttp = createRecord({
+    id: 43,
+    invokeId: "invoke-live-first-token",
+    occurredAt: "2026-03-10T02:31:45Z",
+    status: "running",
+    proxyDisplayName: "Persisted preview",
+    tUpstreamTtfbMs: 180,
   });
 
-  it("does not let an invalid negative first-token value hide a valid zero measurement", () => {
-    const invalidRuntime = createRecord({
-      id: 44,
-      invokeId: "invoke-negative-first-token",
-      occurredAt: "2026-03-10T02:31:50Z",
-      status: "running",
-      firstTokenMs: -1,
-    });
-    const validPreview = createRecord({
-      id: 44,
-      invokeId: "invoke-negative-first-token",
-      occurredAt: "2026-03-10T02:31:50Z",
+  const merged = mergeInvocationRecordCollections([live], [staleHttp]);
+
+  expect(merged).toHaveLength(1);
+  expect(merged[0]?.firstTokenMs).toBe(720);
+  expect(merged[0]?.livePhase).toBe("responding");
+});
+it("does not let an invalid negative first-token value hide a valid zero measurement", () => {
+  const invalidRuntime = createRecord({
+    id: 44,
+    invokeId: "invoke-negative-first-token",
+    occurredAt: "2026-03-10T02:31:50Z",
+    status: "running",
+    firstTokenMs: -1,
+  });
+  const validPreview = createRecord({
+    id: 44,
+    invokeId: "invoke-negative-first-token",
+    occurredAt: "2026-03-10T02:31:50Z",
+    status: "running",
+    firstTokenMs: 0,
+  });
+
+  const merged = mergeInvocationRecordCollections([invalidRuntime], [validPreview]);
+
+  expect(merged[0]?.firstTokenMs).toBe(0);
+});
+it("clears invalid timing when no valid fallback is available", () => {
+  const merged = mergeInvocationRecordCollections([
+    createRecord({
+      id: 45,
+      invokeId: "invoke-invalid-stream",
+      occurredAt: "2026-03-10T02:31:51Z",
       status: "running",
       firstTokenMs: 0,
-    });
+      tUpstreamStreamMs: 0,
+    }),
+  ]);
 
-    const merged = mergeInvocationRecordCollections([invalidRuntime], [validPreview]);
-
-    expect(merged[0]?.firstTokenMs).toBe(0);
+  expect(merged[0]?.firstTokenMs).toBe(0);
+  expect(merged[0]?.tUpstreamStreamMs).toBeNull();
+});
+it("does not backfill stale failure metadata into a recovered terminal success", () => {
+  const runtimeFailure = createRecord({
+    id: 3,
+    invokeId: "invoke-3",
+    occurredAt: "2026-03-10T02:32:00Z",
+    status: "running",
+    errorMessage: "upstream timeout",
+    failureKind: "upstream_timeout",
+    poolAttemptTerminalReason: "budget_exhausted_final",
+    upstreamErrorCode: "rate_limit",
+    upstreamErrorMessage: "quota exhausted",
+    isActionable: true,
+    proxyDisplayName: "Proxy Live",
+  });
+  const finalSuccess = createRecord({
+    id: 3,
+    invokeId: "invoke-3",
+    occurredAt: "2026-03-10T02:32:00Z",
+    status: "success",
+    failureClass: "none",
+    proxyDisplayName: "Proxy Final",
+    requestedServiceTier: "flex",
   });
 
-  it("clears invalid timing when no valid fallback is available", () => {
-    const merged = mergeInvocationRecordCollections([
-      createRecord({
-        id: 45,
-        invokeId: "invoke-invalid-stream",
-        occurredAt: "2026-03-10T02:31:51Z",
-        status: "running",
-        firstTokenMs: 0,
-        tUpstreamStreamMs: 0,
-      }),
-    ]);
+  const merged = mergeInvocationRecordCollections([runtimeFailure], [finalSuccess]);
 
-    expect(merged[0]?.firstTokenMs).toBe(0);
-    expect(merged[0]?.tUpstreamStreamMs).toBeNull();
+  expect(merged).toHaveLength(1);
+  expect(merged[0]?.status).toBe("success");
+  expect(merged[0]?.proxyDisplayName).toBe("Proxy Final");
+  expect(merged[0]?.requestedServiceTier).toBe("flex");
+  expect(merged[0]?.errorMessage).toBeUndefined();
+  expect(merged[0]?.failureKind).toBeUndefined();
+  expect(merged[0]?.poolAttemptTerminalReason).toBeUndefined();
+  expect(merged[0]?.upstreamErrorCode).toBeUndefined();
+  expect(merged[0]?.upstreamErrorMessage).toBeUndefined();
+  expect(merged[0]?.isActionable).toBeUndefined();
+});
+it("still backfills failure metadata when the preferred terminal record is failed", () => {
+  const runtimeFailure = createRecord({
+    id: 4,
+    invokeId: "invoke-4",
+    occurredAt: "2026-03-10T02:33:00Z",
+    status: "running",
+    errorMessage: "upstream timeout",
+    failureKind: "upstream_timeout",
+    poolAttemptTerminalReason: "budget_exhausted_final",
+    upstreamErrorCode: "rate_limit",
+    upstreamErrorMessage: "quota exhausted",
+    isActionable: true,
+  });
+  const finalFailure = createRecord({
+    id: 4,
+    invokeId: "invoke-4",
+    occurredAt: "2026-03-10T02:33:00Z",
+    status: "http_429",
+    failureClass: "service_failure",
+    proxyDisplayName: "Proxy Final",
   });
 
-  it("does not backfill stale failure metadata into a recovered terminal success", () => {
-    const runtimeFailure = createRecord({
-      id: 3,
-      invokeId: "invoke-3",
-      occurredAt: "2026-03-10T02:32:00Z",
-      status: "running",
-      errorMessage: "upstream timeout",
-      failureKind: "upstream_timeout",
-      poolAttemptTerminalReason: "budget_exhausted_final",
-      upstreamErrorCode: "rate_limit",
-      upstreamErrorMessage: "quota exhausted",
-      isActionable: true,
-      proxyDisplayName: "Proxy Live",
-    });
-    const finalSuccess = createRecord({
-      id: 3,
-      invokeId: "invoke-3",
-      occurredAt: "2026-03-10T02:32:00Z",
-      status: "success",
-      failureClass: "none",
-      proxyDisplayName: "Proxy Final",
-      requestedServiceTier: "flex",
-    });
+  const merged = mergeInvocationRecordCollections([runtimeFailure], [finalFailure]);
 
-    const merged = mergeInvocationRecordCollections([runtimeFailure], [finalSuccess]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.status).toBe("success");
-    expect(merged[0]?.proxyDisplayName).toBe("Proxy Final");
-    expect(merged[0]?.requestedServiceTier).toBe("flex");
-    expect(merged[0]?.errorMessage).toBeUndefined();
-    expect(merged[0]?.failureKind).toBeUndefined();
-    expect(merged[0]?.poolAttemptTerminalReason).toBeUndefined();
-    expect(merged[0]?.upstreamErrorCode).toBeUndefined();
-    expect(merged[0]?.upstreamErrorMessage).toBeUndefined();
-    expect(merged[0]?.isActionable).toBeUndefined();
+  expect(merged).toHaveLength(1);
+  expect(merged[0]?.status).toBe("http_429");
+  expect(merged[0]?.errorMessage).toBe("upstream timeout");
+  expect(merged[0]?.failureKind).toBe("upstream_timeout");
+  expect(merged[0]?.poolAttemptTerminalReason).toBe("budget_exhausted_final");
+  expect(merged[0]?.upstreamErrorCode).toBe("rate_limit");
+  expect(merged[0]?.upstreamErrorMessage).toBe("quota exhausted");
+  expect(merged[0]?.isActionable).toBe(true);
+});
+it("backfills downstream-facing error metadata during live merges", () => {
+  const runtimeFailure = createRecord({
+    id: 5,
+    invokeId: "invoke-5",
+    occurredAt: "2026-03-10T02:34:00Z",
+    status: "failed",
+    failureClass: "client_abort",
+    failureKind: "downstream_closed",
+    downstreamStatusCode: 200,
+    downstreamErrorMessage:
+      "[downstream_closed] downstream closed while streaming upstream response",
+  });
+  const finalFailure = createRecord({
+    id: 5,
+    invokeId: "invoke-5",
+    occurredAt: "2026-03-10T02:34:00Z",
+    status: "failed",
+    failureClass: "client_abort",
+    failureKind: "downstream_closed",
   });
 
-  it("still backfills failure metadata when the preferred terminal record is failed", () => {
-    const runtimeFailure = createRecord({
-      id: 4,
-      invokeId: "invoke-4",
-      occurredAt: "2026-03-10T02:33:00Z",
-      status: "running",
-      errorMessage: "upstream timeout",
-      failureKind: "upstream_timeout",
-      poolAttemptTerminalReason: "budget_exhausted_final",
-      upstreamErrorCode: "rate_limit",
-      upstreamErrorMessage: "quota exhausted",
-      isActionable: true,
-    });
-    const finalFailure = createRecord({
-      id: 4,
-      invokeId: "invoke-4",
-      occurredAt: "2026-03-10T02:33:00Z",
-      status: "http_429",
-      failureClass: "service_failure",
-      proxyDisplayName: "Proxy Final",
-    });
+  const merged = mergeInvocationRecordCollections([finalFailure], [runtimeFailure]);
 
-    const merged = mergeInvocationRecordCollections([runtimeFailure], [finalFailure]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.status).toBe("http_429");
-    expect(merged[0]?.errorMessage).toBe("upstream timeout");
-    expect(merged[0]?.failureKind).toBe("upstream_timeout");
-    expect(merged[0]?.poolAttemptTerminalReason).toBe("budget_exhausted_final");
-    expect(merged[0]?.upstreamErrorCode).toBe("rate_limit");
-    expect(merged[0]?.upstreamErrorMessage).toBe("quota exhausted");
-    expect(merged[0]?.isActionable).toBe(true);
-  });
-
-  it("backfills downstream-facing error metadata during live merges", () => {
-    const runtimeFailure = createRecord({
-      id: 5,
-      invokeId: "invoke-5",
-      occurredAt: "2026-03-10T02:34:00Z",
-      status: "failed",
-      failureClass: "client_abort",
-      failureKind: "downstream_closed",
-      downstreamStatusCode: 200,
-      downstreamErrorMessage:
-        "[downstream_closed] downstream closed while streaming upstream response",
-    });
-    const finalFailure = createRecord({
-      id: 5,
-      invokeId: "invoke-5",
-      occurredAt: "2026-03-10T02:34:00Z",
-      status: "failed",
-      failureClass: "client_abort",
-      failureKind: "downstream_closed",
-    });
-
-    const merged = mergeInvocationRecordCollections([finalFailure], [runtimeFailure]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.downstreamStatusCode).toBe(200);
-    expect(merged[0]?.downstreamErrorMessage).toContain("downstream closed");
-  });
+  expect(merged).toHaveLength(1);
+  expect(merged[0]?.downstreamStatusCode).toBe(200);
+  expect(merged[0]?.downstreamErrorMessage).toContain("downstream closed");
 });

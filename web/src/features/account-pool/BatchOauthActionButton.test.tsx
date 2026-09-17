@@ -1,12 +1,11 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { BatchOauthActionButton } from "./BatchOauthActionButton";
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -36,11 +35,9 @@ beforeAll(() => {
     });
   }
 });
-
 beforeEach(() => {
   vi.useFakeTimers();
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -50,7 +47,6 @@ afterEach(() => {
   root = null;
   vi.useRealTimers();
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -59,7 +55,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function getButton(name: RegExp) {
   const button = Array.from(document.body.querySelectorAll("button")).find(
     (candidate) =>
@@ -77,198 +72,187 @@ function getButton(name: RegExp) {
   expect(button).toBeInstanceOf(HTMLButtonElement);
   return button as HTMLButtonElement;
 }
+const baseProps = {
+  primaryAriaLabel: "Copy OAuth URL",
+  regenerateAriaLabel: "Regenerate OAuth URL",
+  popoverTitle: "Copy OAuth URL",
+  popoverDescription:
+    "Copy the generated login URL, open it in the browser that will complete the login, and return here with the callback URL.",
+  remainingLabel: "Current link expires in 14:59.",
+  expiresAtLabel: "Expires at 2026-03-26 18:00:00.",
+  manualCopyTitle: "Copy manually",
+  manualCopyDescription: "Clipboard access failed.",
+  onPrimaryAction: vi.fn(),
+  onRegenerate: vi.fn(),
+};
+it("opens the copy popover on right click and shows countdown details", () => {
+  render(<BatchOauthActionButton mode="copy" {...baseProps} />);
 
-describe("BatchOauthActionButton", () => {
-  const baseProps = {
-    primaryAriaLabel: "Copy OAuth URL",
-    regenerateAriaLabel: "Regenerate OAuth URL",
-    popoverTitle: "Copy OAuth URL",
-    popoverDescription:
-      "Copy the generated login URL, open it in the browser that will complete the login, and return here with the callback URL.",
-    remainingLabel: "Current link expires in 14:59.",
-    expiresAtLabel: "Expires at 2026-03-26 18:00:00.",
-    manualCopyTitle: "Copy manually",
-    manualCopyDescription: "Clipboard access failed.",
-    onPrimaryAction: vi.fn(),
-    onRegenerate: vi.fn(),
-  };
-
-  it("opens the copy popover on right click and shows countdown details", () => {
-    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
-
-    const button = getButton(/copy oauth url/i);
-    expect(button.getAttribute("title")).toBeNull();
-    act(() => {
-      button.dispatchEvent(
-        new MouseEvent("contextmenu", {
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-    });
-
-    expect(document.body.textContent).toContain("Current link expires in 14:59.");
-    expect(document.body.textContent).toContain("Expires at 2026-03-26 18:00:00.");
-    expect(document.body.textContent).toContain("Regenerate OAuth URL");
-  });
-
-  it("keeps a native title fallback only when the trigger is disabled", () => {
-    render(<BatchOauthActionButton mode="copy" {...baseProps} disabled />);
-
-    const button = getButton(/copy oauth url/i);
-    expect(button.getAttribute("title")).toBe("Copy OAuth URL");
-  });
-
-  it("waits briefly before opening the passive hover bubble", () => {
-    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
-
-    const button = getButton(/copy oauth url/i);
-    act(() => {
-      button.dispatchEvent(
-        new MouseEvent("mouseover", {
-          bubbles: true,
-          relatedTarget: null,
-        }),
-      );
-      vi.advanceTimersByTime(319);
-    });
-
-    expect(document.body.textContent).not.toContain("Copy OAuth URL");
-
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(document.body.textContent).toContain("Copy OAuth URL");
-  });
-
-  it("cancels a pending passive bubble when the primary action fires", () => {
-    const onPrimaryAction = vi.fn();
-    render(
-      <BatchOauthActionButton mode="generate" {...baseProps} onPrimaryAction={onPrimaryAction} />,
+  const button = getButton(/copy oauth url/i);
+  expect(button.getAttribute("title")).toBeNull();
+  act(() => {
+    button.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+      }),
     );
-
-    const button = getButton(/copy oauth url/i);
-    act(() => {
-      button.dispatchEvent(
-        new MouseEvent("mouseover", {
-          bubbles: true,
-          relatedTarget: null,
-        }),
-      );
-      vi.advanceTimersByTime(100);
-      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      vi.advanceTimersByTime(220);
-    });
-
-    expect(onPrimaryAction).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).not.toContain("Copy OAuth URL");
   });
 
-  it("opens on touch long press without triggering the primary click", () => {
-    const onPrimaryAction = vi.fn();
-    render(<BatchOauthActionButton mode="copy" {...baseProps} onPrimaryAction={onPrimaryAction} />);
+  expect(document.body.textContent).toContain("Current link expires in 14:59.");
+  expect(document.body.textContent).toContain("Expires at 2026-03-26 18:00:00.");
+  expect(document.body.textContent).toContain("Regenerate OAuth URL");
+});
+it("keeps a native title fallback only when the trigger is disabled", () => {
+  render(<BatchOauthActionButton mode="copy" {...baseProps} disabled />);
 
-    const button = getButton(/copy oauth url/i);
-    act(() => {
-      button.dispatchEvent(
-        new PointerEvent("pointerdown", {
-          bubbles: true,
-          pointerType: "touch",
-          button: 0,
-        }),
-      );
-      vi.advanceTimersByTime(430);
-    });
+  const button = getButton(/copy oauth url/i);
+  expect(button.getAttribute("title")).toBe("Copy OAuth URL");
+});
+it("waits briefly before opening the passive hover bubble", () => {
+  render(<BatchOauthActionButton mode="generate" {...baseProps} />);
 
-    expect(document.body.textContent).toContain("Regenerate OAuth URL");
-
-    act(() => {
-      button.dispatchEvent(
-        new PointerEvent("pointerup", {
-          bubbles: true,
-          pointerType: "touch",
-          button: 0,
-        }),
-      );
-      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(onPrimaryAction).not.toHaveBeenCalled();
-
-    act(() => {
-      vi.runAllTimers();
-      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(onPrimaryAction).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows the manual copy fallback and allows dismissing it", () => {
-    const onManualCopyOpenChange = vi.fn();
-    render(
-      <BatchOauthActionButton
-        mode="copy"
-        {...baseProps}
-        manualCopyValue="https://auth.openai.com/authorize?login=manual"
-        onManualCopyOpenChange={onManualCopyOpenChange}
-      />,
+  const button = getButton(/copy oauth url/i);
+  act(() => {
+    button.dispatchEvent(
+      new MouseEvent("mouseover", {
+        bubbles: true,
+        relatedTarget: null,
+      }),
     );
-
-    expect(document.body.textContent).toContain("Copy manually");
-    expect(document.body.textContent).toContain("https://auth.openai.com/authorize?login=manual");
-
-    act(() => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    });
-
-    expect(onManualCopyOpenChange).toHaveBeenCalledWith(false);
+    vi.advanceTimersByTime(319);
   });
 
-  it("lets keyboard users open the pinned popover action with ArrowDown", () => {
-    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+  expect(document.body.textContent).not.toContain("Copy OAuth URL");
 
-    const button = getButton(/copy oauth url/i);
-    act(() => {
-      button.focus();
-    });
-
-    act(() => {
-      button.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          key: "ArrowDown",
-        }),
-      );
-      vi.runAllTimers();
-    });
-
-    const regenerateButton = getButton(/regenerate oauth url/i);
-    expect(document.activeElement).toBe(regenerateButton);
+  act(() => {
+    vi.advanceTimersByTime(1);
   });
 
-  it("does not hijack forward tab navigation from the trigger", () => {
-    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+  expect(document.body.textContent).toContain("Copy OAuth URL");
+});
+it("cancels a pending passive bubble when the primary action fires", () => {
+  const onPrimaryAction = vi.fn();
+  render(
+    <BatchOauthActionButton mode="generate" {...baseProps} onPrimaryAction={onPrimaryAction} />,
+  );
 
-    const button = getButton(/copy oauth url/i);
-    act(() => {
-      button.focus();
-    });
-
-    const event = new KeyboardEvent("keydown", {
-      bubbles: true,
-      cancelable: true,
-      key: "Tab",
-    });
-
-    let dispatchResult = true;
-    act(() => {
-      dispatchResult = button.dispatchEvent(event);
-      vi.runAllTimers();
-    });
-
-    expect(dispatchResult).toBe(true);
-    expect(event.defaultPrevented).toBe(false);
-    expect(document.activeElement).toBe(button);
+  const button = getButton(/copy oauth url/i);
+  act(() => {
+    button.dispatchEvent(
+      new MouseEvent("mouseover", {
+        bubbles: true,
+        relatedTarget: null,
+      }),
+    );
+    vi.advanceTimersByTime(100);
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    vi.advanceTimersByTime(220);
   });
+
+  expect(onPrimaryAction).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).not.toContain("Copy OAuth URL");
+});
+it("opens on touch long press without triggering the primary click", () => {
+  const onPrimaryAction = vi.fn();
+  render(<BatchOauthActionButton mode="copy" {...baseProps} onPrimaryAction={onPrimaryAction} />);
+
+  const button = getButton(/copy oauth url/i);
+  act(() => {
+    button.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        pointerType: "touch",
+        button: 0,
+      }),
+    );
+    vi.advanceTimersByTime(430);
+  });
+
+  expect(document.body.textContent).toContain("Regenerate OAuth URL");
+
+  act(() => {
+    button.dispatchEvent(
+      new PointerEvent("pointerup", {
+        bubbles: true,
+        pointerType: "touch",
+        button: 0,
+      }),
+    );
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  expect(onPrimaryAction).not.toHaveBeenCalled();
+
+  act(() => {
+    vi.runAllTimers();
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  expect(onPrimaryAction).toHaveBeenCalledTimes(1);
+});
+it("shows the manual copy fallback and allows dismissing it", () => {
+  const onManualCopyOpenChange = vi.fn();
+  render(
+    <BatchOauthActionButton
+      mode="copy"
+      {...baseProps}
+      manualCopyValue="https://auth.openai.com/authorize?login=manual"
+      onManualCopyOpenChange={onManualCopyOpenChange}
+    />,
+  );
+
+  expect(document.body.textContent).toContain("Copy manually");
+  expect(document.body.textContent).toContain("https://auth.openai.com/authorize?login=manual");
+
+  act(() => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  });
+
+  expect(onManualCopyOpenChange).toHaveBeenCalledWith(false);
+});
+it("lets keyboard users open the pinned popover action with ArrowDown", () => {
+  render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+
+  const button = getButton(/copy oauth url/i);
+  act(() => {
+    button.focus();
+  });
+
+  act(() => {
+    button.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "ArrowDown",
+      }),
+    );
+    vi.runAllTimers();
+  });
+
+  const regenerateButton = getButton(/regenerate oauth url/i);
+  expect(document.activeElement).toBe(regenerateButton);
+});
+it("does not hijack forward tab navigation from the trigger", () => {
+  render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+
+  const button = getButton(/copy oauth url/i);
+  act(() => {
+    button.focus();
+  });
+
+  const event = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    key: "Tab",
+  });
+
+  let dispatchResult = true;
+  act(() => {
+    dispatchResult = button.dispatchEvent(event);
+    vi.runAllTimers();
+  });
+
+  expect(dispatchResult).toBe(true);
+  expect(event.defaultPrevented).toBe(false);
+  expect(document.activeElement).toBe(button);
 });

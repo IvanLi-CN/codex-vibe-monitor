@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import type { ParallelWorkStatsResponse } from "../../lib/api";
 import { ParallelWorkStatsSection } from "./ParallelWorkStatsSection";
 
@@ -39,7 +39,6 @@ vi.mock("recharts", () => ({
     </div>
   ),
 }));
-
 class MockPointerEvent extends MouseEvent {
   pointerType: string;
 
@@ -48,11 +47,9 @@ class MockPointerEvent extends MouseEvent {
     this.pointerType = init.pointerType ?? "mouse";
   }
 }
-
 vi.mock("../../components/ui/alert", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
 }));
-
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     locale: "en",
@@ -78,16 +75,13 @@ vi.mock("../../i18n", () => ({
     },
   }),
 }));
-
 vi.mock("../../theme", () => ({
   useTheme: () => ({
     themeMode: "light",
   }),
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -105,7 +99,6 @@ beforeAll(() => {
     value: MockPointerEvent,
   });
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -115,7 +108,6 @@ afterEach(() => {
   root = null;
   vi.clearAllMocks();
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -124,7 +116,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function mockRect(
   element: Element,
   rect: Partial<DOMRect> & {
@@ -150,7 +141,6 @@ function mockRect(
     value: () => fullRect,
   });
 }
-
 const populatedStats: ParallelWorkStatsResponse = {
   current: {
     rangeStart: "2026-03-01T00:00:00Z",
@@ -261,208 +251,192 @@ const populatedStats: ParallelWorkStatsResponse = {
     ],
   },
 };
+it("renders the current page-period card without internal window controls", () => {
+  render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
 
-describe("ParallelWorkStatsSection", () => {
-  it("renders the current page-period card without internal window controls", () => {
-    render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
+  expect(host?.querySelector('[data-testid="parallel-work-window-toggle"]')).toBeNull();
+  expect(host?.querySelectorAll('[data-testid^="parallel-work-card-"]')).toHaveLength(1);
+  expect(host?.querySelector('[data-testid="parallel-work-card-current"]')).not.toBeNull();
+  expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull();
+  expect(host?.textContent).toContain("Parallel work");
+  expect(host?.textContent).toContain("4.67");
+  expect(host?.textContent).not.toContain("Last 7 days · by minute");
+  expect(host?.textContent).not.toContain("Minute buckets");
+  expect(host?.textContent).not.toContain("10080 complete buckets · 4132 active buckets");
+  const chart = host?.querySelector(
+    '[data-chart-kind="parallel-work-sparkline"]',
+  ) as HTMLElement | null;
+  const section = host?.querySelector(
+    '[data-testid="parallel-work-section"]',
+  ) as HTMLElement | null;
+  const heading = host?.querySelector(
+    '[data-testid="parallel-work-heading-current"]',
+  ) as HTMLElement | null;
+  const infoTrigger = document.querySelector(
+    'button[aria-label="Explain Parallel work details"]',
+  ) as HTMLButtonElement | null;
+  expect(chart).not.toBeNull();
+  expect(chart?.className).toContain("w-full");
+  expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
+  expect(chart?.querySelector('[data-testid="parallel-work-responsive-container"]')).not.toBeNull();
+  expect(chart?.querySelector('[data-testid="parallel-work-area-chart"]')).not.toBeNull();
+  expect(
+    chart?.querySelector('[data-testid="parallel-work-x-axis"]')?.getAttribute("data-tick-count"),
+  ).toBe("3");
+  expect(
+    chart?.querySelector('[data-testid="parallel-work-y-axis"]')?.getAttribute("data-tick-count"),
+  ).toBe("3");
+  expect(section).not.toBeNull();
+  expect(heading).not.toBeNull();
+  expect(infoTrigger).not.toBeNull();
+  expect(heading?.contains(infoTrigger)).toBe(true);
+});
+it("collapses current period details into a question-mark tooltip", () => {
+  render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
 
-    expect(host?.querySelector('[data-testid="parallel-work-window-toggle"]')).toBeNull();
-    expect(host?.querySelectorAll('[data-testid^="parallel-work-card-"]')).toHaveLength(1);
-    expect(host?.querySelector('[data-testid="parallel-work-card-current"]')).not.toBeNull();
-    expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull();
-    expect(host?.textContent).toContain("Parallel work");
-    expect(host?.textContent).toContain("4.67");
-    expect(host?.textContent).not.toContain("Last 7 days · by minute");
-    expect(host?.textContent).not.toContain("Minute buckets");
-    expect(host?.textContent).not.toContain("10080 complete buckets · 4132 active buckets");
-    const chart = host?.querySelector(
-      '[data-chart-kind="parallel-work-sparkline"]',
-    ) as HTMLElement | null;
-    const section = host?.querySelector(
-      '[data-testid="parallel-work-section"]',
-    ) as HTMLElement | null;
-    const heading = host?.querySelector(
-      '[data-testid="parallel-work-heading-current"]',
-    ) as HTMLElement | null;
-    const infoTrigger = document.querySelector(
-      'button[aria-label="Explain Parallel work details"]',
-    ) as HTMLButtonElement | null;
-    expect(chart).not.toBeNull();
-    expect(chart?.className).toContain("w-full");
-    expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
-    expect(
-      chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
-    ).not.toBeNull();
-    expect(chart?.querySelector('[data-testid="parallel-work-area-chart"]')).not.toBeNull();
-    expect(
-      chart?.querySelector('[data-testid="parallel-work-x-axis"]')?.getAttribute("data-tick-count"),
-    ).toBe("3");
-    expect(
-      chart?.querySelector('[data-testid="parallel-work-y-axis"]')?.getAttribute("data-tick-count"),
-    ).toBe("3");
-    expect(section).not.toBeNull();
-    expect(heading).not.toBeNull();
-    expect(infoTrigger).not.toBeNull();
-    expect(heading?.contains(infoTrigger)).toBe(true);
+  const trigger = document.querySelector(
+    'button[aria-label="Explain Parallel work details"]',
+  ) as HTMLButtonElement | null;
+  expect(trigger).not.toBeNull();
+
+  act(() => {
+    trigger?.click();
   });
 
-  it("collapses current period details into a question-mark tooltip", () => {
-    render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
+  const tooltip = document.body.querySelector(
+    '[role="tooltip"][aria-hidden="false"]',
+  ) as HTMLElement;
+  expect(tooltip.textContent).toContain("Parallel work");
+  expect(tooltip.textContent).toContain("Track active prompt-cache conversations.");
+  expect(tooltip.textContent).toContain("10080 complete buckets · 4132 active buckets");
+});
+it("shows inline tooltip details on click for the active window chart", () => {
+  render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
 
-    const trigger = document.querySelector(
-      'button[aria-label="Explain Parallel work details"]',
-    ) as HTMLButtonElement | null;
-    expect(trigger).not.toBeNull();
+  const container = document.querySelector(
+    '[aria-label="Parallel work trend"]',
+  ) as HTMLElement | null;
+  const overlay = container?.querySelector(
+    '[data-testid="parallel-work-interaction-overlay"]',
+  ) as HTMLButtonElement | null;
 
-    act(() => {
-      trigger?.click();
-    });
+  expect(container).not.toBeNull();
+  expect(overlay).not.toBeNull();
 
-    const tooltip = document.body.querySelector(
-      '[role="tooltip"][aria-hidden="false"]',
-    ) as HTMLElement;
-    expect(tooltip.textContent).toContain("Parallel work");
-    expect(tooltip.textContent).toContain("Track active prompt-cache conversations.");
-    expect(tooltip.textContent).toContain("10080 complete buckets · 4132 active buckets");
-  });
+  mockRect(container!, { left: 0, top: 0, width: 420, height: 160 });
+  mockRect(overlay!, { left: 38, top: 20, width: 366, height: 120 });
 
-  it("shows inline tooltip details on click for the active window chart", () => {
-    render(<ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />);
-
-    const container = document.querySelector(
-      '[aria-label="Parallel work trend"]',
-    ) as HTMLElement | null;
-    const overlay = container?.querySelector(
-      '[data-testid="parallel-work-interaction-overlay"]',
-    ) as HTMLButtonElement | null;
-
-    expect(container).not.toBeNull();
-    expect(overlay).not.toBeNull();
-
-    mockRect(container!, { left: 0, top: 0, width: 420, height: 160 });
-    mockRect(overlay!, { left: 38, top: 20, width: 366, height: 120 });
-
-    act(() => {
-      overlay?.dispatchEvent(
-        new MouseEvent("click", {
-          bubbles: true,
-          clientX: 221,
-          clientY: 62,
-        }),
-      );
-    });
-
-    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
-    expect(tooltip).not.toBeNull();
-    expect(tooltip?.textContent).toContain("Parallel work");
-    expect(tooltip?.textContent).toContain("4");
-    expect(tooltip?.textContent).toContain("03/07");
-    expect(tooltip?.textContent).toContain("→");
-  });
-
-  it("renders a conversation gantt for page periods up to 24 hours", () => {
-    const dayCurrent: ParallelWorkStatsResponse = {
-      ...populatedStats,
-      current: {
-        ...populatedStats.current,
-        rangeStart: "2026-03-07T00:00:00Z",
-        rangeEnd: "2026-03-08T00:00:00Z",
-        completeBucketCount: 96,
-        conversations: [
-          {
-            conversationId: "conversation-a",
-            start: "2026-03-07T01:00:00Z",
-            end: "2026-03-07T04:15:00Z",
-            requestCount: 7,
-          },
-          {
-            conversationId: "conversation-b",
-            start: "2026-03-07T08:30:00Z",
-            end: "2026-03-07T10:00:00Z",
-            requestCount: 3,
-          },
-        ],
-      },
-    };
-
-    render(<ParallelWorkStatsSection stats={dayCurrent} isLoading={false} error={null} />);
-
-    expect(host?.querySelector('[data-testid="parallel-work-conversation-gantt"]')).not.toBeNull();
-    expect(host?.querySelectorAll('[data-testid="parallel-work-conversation-bar"]')).toHaveLength(
-      2,
+  act(() => {
+    overlay?.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        clientX: 221,
+        clientY: 62,
+      }),
     );
-    expect(host?.querySelector('[data-chart-mode="conversation-gantt"]')).not.toBeNull();
-    expect(host?.textContent).toContain("#1");
-    expect(host?.textContent).toContain("#2");
   });
 
-  it("keeps periods beyond 24 hours on the Recharts trend even if conversations exist", () => {
-    const longCurrent: ParallelWorkStatsResponse = {
-      ...populatedStats,
-      current: {
-        ...populatedStats.current,
-        rangeStart: "2026-03-01T00:00:00Z",
-        rangeEnd: "2026-03-08T00:00:00Z",
-        conversations: [
-          {
-            conversationId: "conversation-a",
-            start: "2026-03-02T01:00:00Z",
-            end: "2026-03-02T04:00:00Z",
-            requestCount: 7,
-          },
-        ],
-      },
-    };
+  const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
+  expect(tooltip).not.toBeNull();
+  expect(tooltip?.textContent).toContain("Parallel work");
+  expect(tooltip?.textContent).toContain("4");
+  expect(tooltip?.textContent).toContain("03/07");
+  expect(tooltip?.textContent).toContain("→");
+});
+it("renders a conversation gantt for page periods up to 24 hours", () => {
+  const dayCurrent: ParallelWorkStatsResponse = {
+    ...populatedStats,
+    current: {
+      ...populatedStats.current,
+      rangeStart: "2026-03-07T00:00:00Z",
+      rangeEnd: "2026-03-08T00:00:00Z",
+      completeBucketCount: 96,
+      conversations: [
+        {
+          conversationId: "conversation-a",
+          start: "2026-03-07T01:00:00Z",
+          end: "2026-03-07T04:15:00Z",
+          requestCount: 7,
+        },
+        {
+          conversationId: "conversation-b",
+          start: "2026-03-07T08:30:00Z",
+          end: "2026-03-07T10:00:00Z",
+          requestCount: 3,
+        },
+      ],
+    },
+  };
 
-    render(<ParallelWorkStatsSection stats={longCurrent} isLoading={false} error={null} />);
+  render(<ParallelWorkStatsSection stats={dayCurrent} isLoading={false} error={null} />);
 
-    const chart = host?.querySelector('[data-chart-kind="parallel-work-sparkline"]');
-    expect(chart?.querySelector('[data-testid="parallel-work-conversation-gantt"]')).toBeNull();
-    expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
-    expect(
-      chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
-    ).not.toBeNull();
-    expect(chart?.querySelector('[data-testid="parallel-work-area-chart"]')).not.toBeNull();
-  });
+  expect(host?.querySelector('[data-testid="parallel-work-conversation-gantt"]')).not.toBeNull();
+  expect(host?.querySelectorAll('[data-testid="parallel-work-conversation-bar"]')).toHaveLength(2);
+  expect(host?.querySelector('[data-chart-mode="conversation-gantt"]')).not.toBeNull();
+  expect(host?.textContent).toContain("#1");
+  expect(host?.textContent).toContain("#2");
+});
+it("keeps periods beyond 24 hours on the Recharts trend even if conversations exist", () => {
+  const longCurrent: ParallelWorkStatsResponse = {
+    ...populatedStats,
+    current: {
+      ...populatedStats.current,
+      rangeStart: "2026-03-01T00:00:00Z",
+      rangeEnd: "2026-03-08T00:00:00Z",
+      conversations: [
+        {
+          conversationId: "conversation-a",
+          start: "2026-03-02T01:00:00Z",
+          end: "2026-03-02T04:00:00Z",
+          requestCount: 7,
+        },
+      ],
+    },
+  };
 
-  it("uses the current window data supplied by the page", () => {
-    const hourCurrent: ParallelWorkStatsResponse = {
-      ...populatedStats,
-      current: populatedStats.hour30d,
-    };
+  render(<ParallelWorkStatsSection stats={longCurrent} isLoading={false} error={null} />);
 
-    render(<ParallelWorkStatsSection stats={hourCurrent} isLoading={false} error={null} />);
+  const chart = host?.querySelector('[data-chart-kind="parallel-work-sparkline"]');
+  expect(chart?.querySelector('[data-testid="parallel-work-conversation-gantt"]')).toBeNull();
+  expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
+  expect(chart?.querySelector('[data-testid="parallel-work-responsive-container"]')).not.toBeNull();
+  expect(chart?.querySelector('[data-testid="parallel-work-area-chart"]')).not.toBeNull();
+});
+it("uses the current window data supplied by the page", () => {
+  const hourCurrent: ParallelWorkStatsResponse = {
+    ...populatedStats,
+    current: populatedStats.hour30d,
+  };
 
-    expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull();
-    expect(host?.querySelector('[data-testid="parallel-work-card-current"]')).not.toBeNull();
-    expect(host?.textContent).toContain("2.13");
-  });
+  render(<ParallelWorkStatsSection stats={hourCurrent} isLoading={false} error={null} />);
 
-  it("renders empty current-period state with null summaries", () => {
-    const emptyCurrent: ParallelWorkStatsResponse = {
-      ...populatedStats,
-      current: {
-        rangeStart: "2026-03-08T00:00:00Z",
-        rangeEnd: "2026-03-08T00:00:00Z",
-        bucketSeconds: 86400,
-        completeBucketCount: 0,
-        activeBucketCount: 0,
-        minCount: null,
-        maxCount: null,
-        avgCount: null,
-        points: [],
-      },
-    };
+  expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull();
+  expect(host?.querySelector('[data-testid="parallel-work-card-current"]')).not.toBeNull();
+  expect(host?.textContent).toContain("2.13");
+});
+it("renders empty current-period state with null summaries", () => {
+  const emptyCurrent: ParallelWorkStatsResponse = {
+    ...populatedStats,
+    current: {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:00:00Z",
+      bucketSeconds: 86400,
+      completeBucketCount: 0,
+      activeBucketCount: 0,
+      minCount: null,
+      maxCount: null,
+      avgCount: null,
+      points: [],
+    },
+  };
 
-    render(<ParallelWorkStatsSection stats={emptyCurrent} isLoading={false} error={null} />);
+  render(<ParallelWorkStatsSection stats={emptyCurrent} isLoading={false} error={null} />);
 
-    const card = host?.querySelector('[data-testid="parallel-work-card-current"]');
-    expect(card?.textContent).toContain("No complete buckets yet.");
-    expect(card?.textContent).toContain("—");
-  });
-
-  it("renders a section-level error alert", () => {
-    render(<ParallelWorkStatsSection stats={null} isLoading={false} error="boom" />);
-    expect(host?.querySelector('[role="alert"]')?.textContent).toContain("boom");
-  });
+  const card = host?.querySelector('[data-testid="parallel-work-card-current"]');
+  expect(card?.textContent).toContain("No complete buckets yet.");
+  expect(card?.textContent).toContain("—");
+});
+it("renders a section-level error alert", () => {
+  render(<ParallelWorkStatsSection stats={null} isLoading={false} error="boom" />);
+  expect(host?.querySelector('[role="alert"]')?.textContent).toContain("boom");
 });

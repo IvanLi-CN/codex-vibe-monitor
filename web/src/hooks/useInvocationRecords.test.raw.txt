@@ -1,0 +1,670 @@
+/** @vitest-environment jsdom */
+it("keeps paging on the applied snapshot until search refreshes it", async () => {
+  vi.useFakeTimers();
+
+  let newCount42CallCount = 0;
+  apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+    if (query.snapshotId === 42) {
+      return createListResponse({
+        snapshotId: 42,
+        page: query.page ?? 1,
+        pageSize: query.pageSize ?? 20,
+        records: [
+          {
+            id: query.page === 2 ? 2 : 1,
+            invokeId: `invoke-${query.page ?? 1}`,
+            occurredAt: "2026-03-10T00:00:00Z",
+            createdAt: "2026-03-10T00:00:00Z",
+            model: "baseline-model",
+            status: "success",
+          },
+        ],
+      });
+    }
+
+    if (query.model === "next-model") {
+      return createListResponse({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: query.pageSize ?? 20,
+        records: [
+          {
+            id: 9,
+            invokeId: "invoke-next",
+            occurredAt: "2026-03-10T01:00:00Z",
+            createdAt: "2026-03-10T01:00:00Z",
+            model: "next-model",
+            status: "failed",
+          },
+        ],
+      });
+    }
+
+    return createListResponse({ snapshotId: 42 });
+  });
+
+  apiMocks.fetchInvocationRecordsSummary.mockImplementation(async (query) => {
+    if (query.snapshotId === 84) {
+      return createSummaryResponse({
+        snapshotId: 84,
+        newRecordsCount: 9,
+        totalCount: 1,
+        successCount: 0,
+        failureCount: 1,
+        token: {
+          requestCount: 1,
+          totalTokens: 300,
+          avgTokensPerRequest: 300,
+          cacheInputTokens: 0,
+          totalCost: 0.12,
+        },
+        exception: {
+          failureCount: 1,
+          serviceFailureCount: 1,
+          clientFailureCount: 0,
+          clientAbortCount: 0,
+          actionableFailureCount: 1,
+        },
+      });
+    }
+
+    return createSummaryResponse({});
+  });
+
+  apiMocks.fetchInvocationRecordsNewCount.mockImplementation(async (query) => {
+    newCount42CallCount += 1;
+    return createNewCountResponse({
+      snapshotId: query.snapshotId ?? 42,
+      newRecordsCount: newCount42CallCount >= 1 ? 3 : 0,
+    });
+  });
+
+  render(<Probe />);
+  await flushAsync();
+
+  expect(text("snapshot")).toBe("42");
+  expect(text("page")).toBe("1");
+  expect(text("model")).toBe("baseline-model");
+  expect(text("applied-draft-model")).toBe("");
+
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1);
+  expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(0);
+  expect(apiMocks.fetchInvocationRecords.mock.calls[0][0]?.snapshotId).toBeUndefined();
+  expect(apiMocks.fetchInvocationRecordsSummary.mock.calls[0][0]?.snapshotId).toBe(42);
+
+  click("focus-network");
+  expect(text("focus")).toBe("network");
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(1);
+
+  click("draft-model");
+  click("page-2");
+  await flushAsync();
+
+  expect(text("page")).toBe("2");
+  expect(text("snapshot")).toBe("42");
+
+  const pageQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0];
+  expect(pageQuery?.snapshotId).toBe(42);
+  expect(pageQuery?.page).toBe(2);
+  expect(pageQuery?.model).toBeUndefined();
+  expect(text("model")).toBe("baseline-model");
+  expect(text("applied-draft-model")).toBe("");
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
+  });
+
+  await flushAsync();
+  expect(text("new-count")).toBe("3");
+
+  const pollQuery = apiMocks.fetchInvocationRecordsNewCount.mock.calls.at(-1)?.[0];
+  expect(pollQuery?.snapshotId).toBe(42);
+  expect(pollQuery?.model).toBeUndefined();
+
+  const recordsCallsBeforeSearch = apiMocks.fetchInvocationRecords.mock.calls.length;
+  const summaryCallsBeforeSearch = apiMocks.fetchInvocationRecordsSummary.mock.calls.length;
+  const newCountCallsBeforeSearch = apiMocks.fetchInvocationRecordsNewCount.mock.calls.length;
+  click("search");
+  await flushAsync();
+
+  expect(text("snapshot")).toBe("84");
+  expect(text("page")).toBe("1");
+  expect(text("model")).toBe("next-model");
+  expect(text("applied-draft-model")).toBe("next-model");
+  expect(text("new-count")).toBe("0");
+
+  const searchQuery = apiMocks.fetchInvocationRecords.mock.calls[recordsCallsBeforeSearch]?.[0];
+  expect(searchQuery?.snapshotId).toBeUndefined();
+  expect(searchQuery?.page).toBe(1);
+  expect(searchQuery?.model).toBe("next-model");
+
+  expect(apiMocks.fetchInvocationRecordsNewCount.mock.calls.length).toBe(newCountCallsBeforeSearch);
+
+  const searchSummaryQuery =
+    apiMocks.fetchInvocationRecordsSummary.mock.calls[summaryCallsBeforeSearch]?.[0];
+  expect(searchSummaryQuery?.snapshotId).toBe(84);
+  expect(searchSummaryQuery?.model).toBe("next-model");
+});
+it("ignores stale new-count responses after a search even when snapshotId repeats", async () => {
+  vi.useFakeTimers();
+
+  let resolvePoll: ((value: InvocationRecordsNewCountResponse) => void) | null = null;
+  const pollPromise = new Promise<InvocationRecordsNewCountResponse>((resolve) => {
+    resolvePoll = resolve;
+  });
+
+  apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+    if (query.model === "next-model") {
+      return createListResponse({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        pageSize: query.pageSize ?? 20,
+        records: [
+          {
+            id: 9,
+            invokeId: "invoke-next",
+            occurredAt: "2026-03-10T01:00:00Z",
+            createdAt: "2026-03-10T01:00:00Z",
+            model: "next-model",
+            status: "success",
+          },
+        ],
+      });
+    }
+
+    return createListResponse({ snapshotId: 42 });
+  });
+
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+    createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }),
+  );
+  apiMocks.fetchInvocationRecordsNewCount.mockImplementation(async () => pollPromise);
+
+  render(<Probe />);
+  await flushAsync();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
+  });
+
+  expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1);
+
+  click("draft-model");
+  click("search");
+  await flushAsync();
+
+  expect(text("snapshot")).toBe("42");
+  expect(text("model")).toBe("next-model");
+  expect(text("new-count")).toBe("0");
+
+  if (!resolvePoll) {
+    throw new Error("poll resolver missing");
+  }
+  const resolvePollFn = resolvePoll as (value: InvocationRecordsNewCountResponse) => void;
+  resolvePollFn(createNewCountResponse({ snapshotId: 42, newRecordsCount: 7 }));
+  await flushAsync();
+
+  expect(text("new-count")).toBe("0");
+});
+it("refreshes using the applied filters and keeps the previous summary visible until the new summary resolves", async () => {
+  vi.useFakeTimers();
+  let initialListCalls = 0;
+  let resolveRefreshSummary: ((value: InvocationRecordsSummaryResponse) => void) | null = null;
+
+  apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+    initialListCalls += 1;
+
+    if (initialListCalls === 1) {
+      return createListResponse({ snapshotId: 42 });
+    }
+
+    expect(query.model).toBeUndefined();
+    expect(query.snapshotId).toBeUndefined();
+    return createListResponse({
+      snapshotId: 84,
+      records: [
+        {
+          id: 9,
+          invokeId: "invoke-refresh",
+          occurredAt: "2026-03-10T01:00:00Z",
+          createdAt: "2026-03-10T01:00:00Z",
+          model: "baseline-refreshed",
+          status: "success",
+        },
+      ],
+    });
+  });
+
+  apiMocks.fetchInvocationRecordsSummary
+    .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 3 }))
+    .mockImplementationOnce(
+      async () =>
+        new Promise<InvocationRecordsSummaryResponse>((resolve) => {
+          resolveRefreshSummary = resolve;
+        }),
+    );
+
+  apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+    createNewCountResponse({ snapshotId: 42, newRecordsCount: 3 }),
+  );
+
+  render(<Probe />);
+  await flushAsync();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
+  });
+  await flushAsync();
+
+  expect(text("snapshot")).toBe("42");
+  expect(text("summary-snapshot")).toBe("42");
+  expect(text("new-count")).toBe("3");
+
+  click("draft-model");
+  click("refresh-applied");
+  await flushAsync();
+
+  expect(text("snapshot")).toBe("84");
+  expect(text("model")).toBe("baseline-refreshed");
+  expect(text("summary-snapshot")).toBe("42");
+  expect(text("new-count")).toBe("3");
+  expect(text("summary-loading")).toBe("yes");
+
+  const refreshListQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0];
+  expect(refreshListQuery?.model).toBeUndefined();
+  expect(refreshListQuery?.snapshotId).toBeUndefined();
+
+  if (!resolveRefreshSummary) {
+    throw new Error("refresh summary resolver missing");
+  }
+
+  act(() => {
+    resolveRefreshSummary?.(
+      createSummaryResponse({ snapshotId: 84, newRecordsCount: 0, totalCount: 1 }),
+    );
+  });
+  await flushAsync();
+
+  const refreshSummaryQuery = apiMocks.fetchInvocationRecordsSummary.mock.calls.at(-1)?.[0];
+  expect(refreshSummaryQuery?.model).toBeUndefined();
+  expect(refreshSummaryQuery?.snapshotId).toBe(84);
+  expect(text("summary-snapshot")).toBe("84");
+  expect(text("new-count")).toBe("0");
+  expect(text("summary-loading")).toBe("no");
+});
+it("merges matching realtime records into the current window", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
+
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce(
+      createListResponse({
+        snapshotId: 42,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: "invoke-running",
+            occurredAt: "2026-03-10T00:00:00Z",
+            createdAt: "2026-03-10T00:00:00Z",
+            status: "running",
+          }),
+        ],
+      }),
+    )
+    .mockResolvedValueOnce(
+      createListResponse({
+        snapshotId: 84,
+        records: [
+          createRecord({
+            id: 2,
+            invokeId: "invoke-new",
+            occurredAt: "2026-03-10T00:01:00Z",
+            createdAt: "2026-03-10T00:01:00Z",
+            status: "success",
+          }),
+          createRecord({
+            id: 1,
+            invokeId: "invoke-running",
+            occurredAt: "2026-03-10T00:00:00Z",
+            createdAt: "2026-03-10T00:00:00Z",
+            status: "success",
+            totalTokens: 777,
+          }),
+        ],
+      }),
+    );
+
+  apiMocks.fetchInvocationRecordsSummary
+    .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+    .mockResolvedValueOnce(
+      createSummaryResponse({ snapshotId: 84, newRecordsCount: 0, totalCount: 2 }),
+    );
+  apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+    createNewCountResponse({ snapshotId: 42, newRecordsCount: 2 }),
+  );
+
+  render(<Probe />);
+  await flushAsync();
+
+  expect(text("snapshot")).toBe("42");
+  expect(text("total")).toBe("2");
+  expect(text("model")).toBe("baseline-model");
+
+  emitRealtimeRecords(
+    [
+      createRecord({
+        id: 2,
+        invokeId: "invoke-new",
+        occurredAt: "2026-03-10T00:01:00Z",
+        createdAt: "2026-03-10T00:01:00Z",
+        status: "success",
+        model: "new-model",
+      }),
+      createRecord({
+        id: 1,
+        invokeId: "invoke-running",
+        occurredAt: "2026-03-10T00:00:00Z",
+        createdAt: "2026-03-10T00:00:00Z",
+        status: "success",
+        totalTokens: 777,
+      }),
+    ],
+    ["invoke-new-2026-03-10T00:01:00Z"],
+  );
+  await waitFor(() => {
+    expect(text("snapshot")).toBe("42");
+    expect(text("total")).toBe("3");
+    expect(text("model")).toBe("new-model");
+  });
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS);
+  });
+  await flushAsync();
+
+  expect(text("new-count")).toBe("1");
+});
+it("drops visible transient running records after an applied refresh restores authoritative data", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
+
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce(
+      createListResponse({
+        snapshotId: 42,
+        total: 1,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: "invoke-existing",
+            occurredAt: "2026-03-10T00:00:00Z",
+            createdAt: "2026-03-10T00:00:00Z",
+            status: "success",
+            model: "baseline-model",
+          }),
+        ],
+      }),
+    )
+    .mockResolvedValueOnce(
+      createListResponse({
+        snapshotId: 84,
+        total: 1,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: "invoke-existing",
+            occurredAt: "2026-03-10T00:00:00Z",
+            createdAt: "2026-03-10T00:00:00Z",
+            status: "success",
+            model: "baseline-model",
+          }),
+        ],
+      }),
+    );
+
+  apiMocks.fetchInvocationRecordsSummary
+    .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, totalCount: 1 }))
+    .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 84, totalCount: 1 }));
+  apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+    createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+  );
+
+  render(<Probe />);
+  await flushAsync();
+
+  emitRealtimeRecords(
+    [
+      createRecord({
+        id: 0,
+        invokeId: "invoke-running-transient",
+        occurredAt: "2026-03-10T00:01:00Z",
+        createdAt: "2026-03-10T00:01:00Z",
+        status: "running",
+        model: "live-running-model",
+      }),
+      createRecord({
+        id: 1,
+        invokeId: "invoke-existing",
+        occurredAt: "2026-03-10T00:00:00Z",
+        createdAt: "2026-03-10T00:00:00Z",
+        status: "success",
+        model: "baseline-model",
+      }),
+    ],
+    ["invoke-running-transient-2026-03-10T00:01:00Z"],
+  );
+  await flushAsync();
+
+  expect(text("model")).toBe("live-running-model");
+  expect(text("total")).toBe("2");
+
+  click("refresh-applied");
+  await waitFor(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    expect(text("snapshot")).toBe("84");
+    expect(text("model")).toBe("baseline-model");
+    expect(text("total")).toBe("1");
+  });
+});
+it("keeps visible transient running realtime records across page fetches before DB flush catches up", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
+
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce(
+      createListResponse({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: "invoke-existing",
+            occurredAt: "2026-03-10T00:00:00Z",
+            createdAt: "2026-03-10T00:00:00Z",
+            status: "success",
+            model: "baseline-model",
+          }),
+        ],
+      }),
+    )
+    .mockResolvedValueOnce(
+      createListResponse({
+        snapshotId: 42,
+        total: 1,
+        page: 2,
+        records: [],
+      }),
+    );
+
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+    createSummaryResponse({ snapshotId: 42, totalCount: 1 }),
+  );
+  apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+    createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+  );
+
+  render(<Probe />);
+  await flushAsync();
+
+  emitRealtimeRecords(
+    [
+      createRecord({
+        id: 0,
+        invokeId: "invoke-running-transient",
+        occurredAt: "2026-03-10T00:01:00Z",
+        createdAt: "2026-03-10T00:01:00Z",
+        status: "running",
+        model: "live-running-model",
+      }),
+      createRecord({
+        id: 1,
+        invokeId: "invoke-existing",
+        occurredAt: "2026-03-10T00:00:00Z",
+        createdAt: "2026-03-10T00:00:00Z",
+        status: "success",
+        model: "baseline-model",
+      }),
+    ],
+    ["invoke-running-transient-2026-03-10T00:01:00Z"],
+  );
+  await flushAsync();
+
+  expect(text("model")).toBe("live-running-model");
+  expect(text("total")).toBe("2");
+
+  click("page-2");
+  await waitFor(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    expect(text("page")).toBe("2");
+    expect(text("model")).toBe("live-running-model");
+    expect(text("total")).toBe("1");
+  });
+
+  const pageQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0];
+  expect(pageQuery?.snapshotId).toBe(42);
+  expect(pageQuery?.page).toBe(2);
+});
+it("increments the visible total when page-one SSE inserts add matching rows", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
+
+  apiMocks.fetchInvocationRecords.mockResolvedValue(
+    createListResponse({
+      snapshotId: 42,
+      total: 2,
+      records: [
+        createRecord({
+          id: 1,
+          invokeId: "invoke-existing-a",
+          occurredAt: "2026-03-10T00:00:00Z",
+          createdAt: "2026-03-10T00:00:00Z",
+          status: "success",
+        }),
+        createRecord({
+          id: 2,
+          invokeId: "invoke-existing-b",
+          occurredAt: "2026-03-10T00:00:30Z",
+          createdAt: "2026-03-10T00:00:30Z",
+          status: "success",
+        }),
+      ],
+    }),
+  );
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+    createSummaryResponse({ snapshotId: 42, newRecordsCount: 0, totalCount: 2 }),
+  );
+  apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+    createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+  );
+
+  render(<Probe />);
+  await flushAsync();
+
+  expect(text("total")).toBe("2");
+
+  emitRealtimeRecords(
+    [
+      createRecord({
+        id: 3,
+        invokeId: "invoke-live-added",
+        occurredAt: "2026-03-10T00:01:00Z",
+        createdAt: "2026-03-10T00:01:00Z",
+        status: "success",
+        model: "live-added-model",
+      }),
+      createRecord({
+        id: 1,
+        invokeId: "invoke-existing-a",
+        occurredAt: "2026-03-10T00:00:00Z",
+        createdAt: "2026-03-10T00:00:00Z",
+        status: "success",
+      }),
+      createRecord({
+        id: 2,
+        invokeId: "invoke-existing-b",
+        occurredAt: "2026-03-10T00:00:30Z",
+        createdAt: "2026-03-10T00:00:30Z",
+        status: "success",
+      }),
+    ],
+    ["invoke-live-added-2026-03-10T00:01:00Z"],
+  );
+  await waitFor(() => {
+    expect(text("model")).toBe("live-added-model");
+    expect(text("total")).toBe("3");
+  });
+});
+it("applies visible SSE updates when only non-sort detail fields change", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-03-10T02:00:00Z"));
+
+  apiMocks.fetchInvocationRecords.mockResolvedValue(
+    createListResponse({
+      snapshotId: 42,
+      records: [
+        createRecord({
+          id: 1,
+          invokeId: "invoke-detail-update",
+          occurredAt: "2026-03-10T00:00:00Z",
+          createdAt: "2026-03-10T00:00:00Z",
+          status: "success",
+          model: "baseline-model",
+          upstreamAccountName: "Old Account",
+        }),
+      ],
+    }),
+  );
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+    createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }),
+  );
+  apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+    createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+  );
+
+  render(<Probe />);
+  await flushAsync();
+
+  expect(text("model")).toBe("baseline-model");
+  expect(text("account-name")).toBe("Old Account");
+
+  emitRealtimeRecords([
+    createRecord({
+      id: 1,
+      invokeId: "invoke-detail-update",
+      occurredAt: "2026-03-10T00:00:00Z",
+      createdAt: "2026-03-10T00:00:00Z",
+      status: "success",
+      model: "refined-model",
+      upstreamAccountName: "New Account",
+    }),
+  ]);
+  await flushAsync();
+
+  expect(text("model")).toBe("refined-model");
+  expect(text("account-name")).toBe("New Account");
+});

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, expect, it } from "vitest";
 import { floatingSurfaceStyle } from "../../components/ui/floating-surface";
 import { InlineChartTooltipSurface } from "../../components/ui/inline-chart-tooltip";
 import { useInlineChartInteraction } from "../../components/ui/use-inline-chart-interaction";
@@ -14,7 +14,6 @@ class MockPointerEvent extends MouseEvent {
     this.pointerType = init.pointerType ?? "mouse";
   }
 }
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -32,10 +31,8 @@ beforeAll(() => {
     value: MockPointerEvent,
   });
 });
-
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -44,7 +41,6 @@ afterEach(() => {
   root = null;
   host = null;
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -53,7 +49,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function mockRect(
   element: Element,
   rect: Partial<DOMRect> & { left: number; top: number; width: number; height: number },
@@ -74,13 +69,11 @@ function mockRect(
     value: () => fullRect,
   });
 }
-
 function click(element: Element) {
   act(() => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 }
-
 function pointerDownOutside() {
   act(() => {
     document.body.dispatchEvent(
@@ -88,7 +81,6 @@ function pointerDownOutside() {
     );
   });
 }
-
 function InteractionHarness({
   itemCount,
   defaultIndex,
@@ -144,12 +136,10 @@ function InteractionHarness({
     </div>
   );
 }
-
 function state() {
   const node = document.querySelector('[data-testid="state"]');
   return node ? JSON.parse(node.textContent ?? "{}") : null;
 }
-
 function TooltipHarness() {
   return (
     <InlineChartTooltipSurface
@@ -180,143 +170,137 @@ function TooltipHarness() {
     </InlineChartTooltipSurface>
   );
 }
+it("tracks hover open, move, and close for the request chart flow", () => {
+  render(<InteractionHarness itemCount={2} defaultIndex={1} />);
 
-describe("Live inline chart tooltip interactions", () => {
-  it("tracks hover open, move, and close for the request chart flow", () => {
-    render(<InteractionHarness itemCount={2} defaultIndex={1} />);
+  const surface = document.querySelector('[data-testid="surface"]') as HTMLElement;
+  const item0 = document.querySelector('[data-testid="item-0"]') as HTMLElement;
+  const item1 = document.querySelector('[data-testid="item-1"]') as HTMLElement;
+  mockRect(surface, { left: 0, top: 0, width: 260, height: 96 });
+  mockRect(item0, { left: 24, top: 28, width: 8, height: 40 });
+  mockRect(item1, { left: 40, top: 28, width: 8, height: 40 });
 
-    const surface = document.querySelector('[data-testid="surface"]') as HTMLElement;
-    const item0 = document.querySelector('[data-testid="item-0"]') as HTMLElement;
-    const item1 = document.querySelector('[data-testid="item-1"]') as HTMLElement;
-    mockRect(surface, { left: 0, top: 0, width: 260, height: 96 });
-    mockRect(item0, { left: 24, top: 28, width: 8, height: 40 });
-    mockRect(item1, { left: 40, top: 28, width: 8, height: 40 });
-
-    click(document.querySelector('[data-testid="hover-0"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: 0,
-      isOpen: true,
-      isPinned: false,
-      anchor: { x: 28, y: 40 },
-    });
-
-    click(document.querySelector('[data-testid="move-0"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: 0,
-      isOpen: true,
-      isPinned: false,
-      anchor: { x: 36, y: 44 },
-    });
-
-    click(document.querySelector('[data-testid="leave"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: null,
-      isOpen: false,
-      isPinned: false,
-      anchor: null,
-    });
+  click(document.querySelector('[data-testid="hover-0"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: 0,
+    isOpen: true,
+    isPinned: false,
+    anchor: { x: 28, y: 40 },
   });
 
-  it("uses focus and arrow keys to switch points on the weight chart flow", () => {
-    render(<InteractionHarness itemCount={2} defaultIndex={1} />);
-
-    const surface = document.querySelector('[data-testid="surface"]') as HTMLElement;
-    const item0 = document.querySelector('[data-testid="item-0"]') as HTMLElement;
-    const item1 = document.querySelector('[data-testid="item-1"]') as HTMLElement;
-    mockRect(surface, { left: 0, top: 0, width: 260, height: 96 });
-    mockRect(item0, { left: 32, top: 24, width: 20, height: 40 });
-    mockRect(item1, { left: 64, top: 24, width: 20, height: 40 });
-
-    click(document.querySelector('[data-testid="focus"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: 1,
-      isOpen: true,
-      isPinned: false,
-      anchor: { x: 74, y: 44 },
-    });
-
-    click(document.querySelector('[data-testid="key-left"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: 0,
-      isOpen: true,
-      isPinned: false,
-      anchor: { x: 42, y: 44 },
-    });
-
-    click(document.querySelector('[data-testid="key-escape"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: null,
-      isOpen: false,
-      isPinned: false,
-      anchor: null,
-    });
+  click(document.querySelector('[data-testid="move-0"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: 0,
+    isOpen: true,
+    isPinned: false,
+    anchor: { x: 36, y: 44 },
   });
 
-  it("pins and dismisses the prompt-cache tap flow", () => {
-    render(<InteractionHarness itemCount={2} defaultIndex={1} />);
+  click(document.querySelector('[data-testid="leave"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: null,
+    isOpen: false,
+    isPinned: false,
+    anchor: null,
+  });
+});
+it("uses focus and arrow keys to switch points on the weight chart flow", () => {
+  render(<InteractionHarness itemCount={2} defaultIndex={1} />);
 
-    const surface = document.querySelector('[data-testid="surface"]') as HTMLElement;
-    const item0 = document.querySelector('[data-testid="item-0"]') as HTMLElement;
-    const item1 = document.querySelector('[data-testid="item-1"]') as HTMLElement;
-    mockRect(surface, { left: 0, top: 0, width: 260, height: 96 });
-    mockRect(item0, { left: 20, top: 18, width: 90, height: 48 });
-    mockRect(item1, { left: 118, top: 18, width: 96, height: 48 });
+  const surface = document.querySelector('[data-testid="surface"]') as HTMLElement;
+  const item0 = document.querySelector('[data-testid="item-0"]') as HTMLElement;
+  const item1 = document.querySelector('[data-testid="item-1"]') as HTMLElement;
+  mockRect(surface, { left: 0, top: 0, width: 260, height: 96 });
+  mockRect(item0, { left: 32, top: 24, width: 20, height: 40 });
+  mockRect(item1, { left: 64, top: 24, width: 20, height: 40 });
 
-    click(document.querySelector('[data-testid="touch-1"]')!);
-    expect(state()).toMatchObject({
-      activeIndex: 1,
-      isOpen: true,
-      isPinned: true,
-      anchor: { x: 166, y: 42 },
-    });
-
-    pointerDownOutside();
-    expect(state()).toMatchObject({
-      activeIndex: null,
-      isOpen: false,
-      isPinned: false,
-      anchor: null,
-    });
+  click(document.querySelector('[data-testid="focus"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: 1,
+    isOpen: true,
+    isPinned: false,
+    anchor: { x: 74, y: 44 },
   });
 
-  it("exposes the active tooltip content to assistive technologies", () => {
-    render(
-      <div data-theme="vibe-dark">
-        <TooltipHarness />
-      </div>,
-    );
-
-    const surface = document.querySelector('[data-testid="tooltip-surface"]') as HTMLElement;
-    const container = document.querySelector('[aria-label="Harness tooltip chart"]') as HTMLElement;
-    const item0 = document.querySelector('[data-testid="tooltip-item-0"]') as HTMLElement;
-    const item1 = document.querySelector('[data-testid="tooltip-item-1"]') as HTMLElement;
-    mockRect(container, { left: 0, top: 0, width: 220, height: 96 });
-    mockRect(surface, { left: 0, top: 0, width: 220, height: 96 });
-    mockRect(item0, { left: 20, top: 24, width: 24, height: 40 });
-    mockRect(item1, { left: 92, top: 24, width: 24, height: 40 });
-
-    act(() => {
-      container.focus();
-    });
-
-    const tooltip = document.querySelector('[role="tooltip"]') as HTMLElement | null;
-    const liveRegion = Array.from(document.querySelectorAll(".sr-only")).find((node) =>
-      node.textContent?.includes("Window B"),
-    ) as HTMLElement | undefined;
-    const describedBy = container.getAttribute("aria-describedby") ?? "";
-
-    expect(tooltip).not.toBeNull();
-    expect(tooltip?.textContent).toContain("Window B");
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-    expect(tooltip?.getAttribute("data-theme")).toBe("vibe-dark");
-    expect(tooltip?.style.backgroundColor).toBe(
-      floatingSurfaceStyle("neutral", "vibe-dark").backgroundColor,
-    );
-    expect(tooltip?.style.backdropFilter).toBe(
-      floatingSurfaceStyle("neutral", "vibe-dark").backdropFilter,
-    );
-    expect(liveRegion?.getAttribute("aria-live")).toBe("polite");
-    expect(liveRegion?.textContent).toContain("Failure 1");
-    expect(describedBy).toContain(liveRegion?.id ?? "");
+  click(document.querySelector('[data-testid="key-left"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: 0,
+    isOpen: true,
+    isPinned: false,
+    anchor: { x: 42, y: 44 },
   });
+
+  click(document.querySelector('[data-testid="key-escape"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: null,
+    isOpen: false,
+    isPinned: false,
+    anchor: null,
+  });
+});
+it("pins and dismisses the prompt-cache tap flow", () => {
+  render(<InteractionHarness itemCount={2} defaultIndex={1} />);
+
+  const surface = document.querySelector('[data-testid="surface"]') as HTMLElement;
+  const item0 = document.querySelector('[data-testid="item-0"]') as HTMLElement;
+  const item1 = document.querySelector('[data-testid="item-1"]') as HTMLElement;
+  mockRect(surface, { left: 0, top: 0, width: 260, height: 96 });
+  mockRect(item0, { left: 20, top: 18, width: 90, height: 48 });
+  mockRect(item1, { left: 118, top: 18, width: 96, height: 48 });
+
+  click(document.querySelector('[data-testid="touch-1"]')!);
+  expect(state()).toMatchObject({
+    activeIndex: 1,
+    isOpen: true,
+    isPinned: true,
+    anchor: { x: 166, y: 42 },
+  });
+
+  pointerDownOutside();
+  expect(state()).toMatchObject({
+    activeIndex: null,
+    isOpen: false,
+    isPinned: false,
+    anchor: null,
+  });
+});
+it("exposes the active tooltip content to assistive technologies", () => {
+  render(
+    <div data-theme="vibe-dark">
+      <TooltipHarness />
+    </div>,
+  );
+
+  const surface = document.querySelector('[data-testid="tooltip-surface"]') as HTMLElement;
+  const container = document.querySelector('[aria-label="Harness tooltip chart"]') as HTMLElement;
+  const item0 = document.querySelector('[data-testid="tooltip-item-0"]') as HTMLElement;
+  const item1 = document.querySelector('[data-testid="tooltip-item-1"]') as HTMLElement;
+  mockRect(container, { left: 0, top: 0, width: 220, height: 96 });
+  mockRect(surface, { left: 0, top: 0, width: 220, height: 96 });
+  mockRect(item0, { left: 20, top: 24, width: 24, height: 40 });
+  mockRect(item1, { left: 92, top: 24, width: 24, height: 40 });
+
+  act(() => {
+    container.focus();
+  });
+
+  const tooltip = document.querySelector('[role="tooltip"]') as HTMLElement | null;
+  const liveRegion = Array.from(document.querySelectorAll(".sr-only")).find((node) =>
+    node.textContent?.includes("Window B"),
+  ) as HTMLElement | undefined;
+  const describedBy = container.getAttribute("aria-describedby") ?? "";
+
+  expect(tooltip).not.toBeNull();
+  expect(tooltip?.textContent).toContain("Window B");
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+  expect(tooltip?.getAttribute("data-theme")).toBe("vibe-dark");
+  expect(tooltip?.style.backgroundColor).toBe(
+    floatingSurfaceStyle("neutral", "vibe-dark").backgroundColor,
+  );
+  expect(tooltip?.style.backdropFilter).toBe(
+    floatingSurfaceStyle("neutral", "vibe-dark").backdropFilter,
+  );
+  expect(liveRegion?.getAttribute("aria-live")).toBe("polite");
+  expect(liveRegion?.textContent).toContain("Failure 1");
+  expect(describedBy).toContain(liveRegion?.id ?? "");
 });

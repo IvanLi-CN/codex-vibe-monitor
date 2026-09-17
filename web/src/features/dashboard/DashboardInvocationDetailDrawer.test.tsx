@@ -21,7 +21,6 @@ const { apiMocks } = vi.hoisted(() => ({
     fetchInvocationWorkflowDetail: vi.fn(),
   },
 }));
-
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
@@ -33,7 +32,6 @@ vi.mock("../../lib/api", async () => {
     fetchInvocationWorkflowDetail: apiMocks.fetchInvocationWorkflowDetail,
   };
 });
-
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
@@ -44,10 +42,8 @@ vi.mock("../../i18n", () => ({
     },
   }),
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -55,7 +51,6 @@ beforeAll(() => {
     value: true,
   });
 });
-
 beforeEach(() => {
   apiMocks.fetchInvocationRecords.mockReset();
   apiMocks.fetchInvocationRequestBody.mockReset();
@@ -72,7 +67,6 @@ beforeEach(() => {
     createWorkflowDetailFixture(createRecord()),
   );
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -82,7 +76,6 @@ afterEach(() => {
   root = null;
   vi.restoreAllMocks();
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -91,7 +84,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 async function flushMicrotasks(rounds = 4) {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) {
@@ -99,7 +91,6 @@ async function flushMicrotasks(rounds = 4) {
     }
   });
 }
-
 async function flushAsyncWork(rounds = 4) {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) {
@@ -108,14 +99,12 @@ async function flushAsyncWork(rounds = 4) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   });
 }
-
 async function advanceTime(ms: number) {
   await act(async () => {
     vi.advanceTimersByTime(ms);
     await Promise.resolve();
   });
 }
-
 async function waitFor(check: () => boolean, timeoutMs = 1000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -124,7 +113,6 @@ async function waitFor(check: () => boolean, timeoutMs = 1000) {
   }
   throw new Error("timed out waiting for async UI state");
 }
-
 function createPreview(
   overrides: Partial<PromptCacheConversationInvocationPreview> & {
     id: number;
@@ -174,7 +162,6 @@ function createPreview(
     tTotalMs: overrides.tTotalMs ?? 601,
   };
 }
-
 function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
   return {
     id: 501,
@@ -213,7 +200,6 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     ...overrides,
   };
 }
-
 function createSelection(
   recordOverrides: Partial<ApiInvocation> = {},
 ): DashboardWorkingConversationInvocationSelection {
@@ -286,7 +272,6 @@ function createSelection(
     },
   };
 }
-
 function createRecordsResponse(records: ApiInvocation[]): InvocationRecordsResponse {
   return {
     snapshotId: 1,
@@ -296,7 +281,6 @@ function createRecordsResponse(records: ApiInvocation[]): InvocationRecordsRespo
     records,
   };
 }
-
 function createWorkflowDetailFixture(
   record: ApiInvocation,
   overrides: Partial<ApiInvocationWorkflowDetailResponse> = {},
@@ -418,7 +402,6 @@ function createWorkflowDetailFixture(
     timeline: overrides.timeline ?? base.timeline,
   };
 }
-
 function createResponseBodyFixture(
   overrides: Partial<ApiInvocationResponseBodyResponse> = {},
 ): ApiInvocationResponseBodyResponse {
@@ -439,7 +422,6 @@ function createResponseBodyFixture(
     ...overrides,
   };
 }
-
 describe("DashboardInvocationDetailDrawer model details", () => {
   it("shows separate request and response model labels for mismatched records", async () => {
     const selection = createSelection({
@@ -477,249 +459,234 @@ describe("DashboardInvocationDetailDrawer model details", () => {
     );
   });
 });
+it("loads the full record by invoke id and keeps the account action clickable", async () => {
+  const onOpenUpstreamAccount = vi.fn();
+  const record = createRecord({ routeMode: "pool" });
+  apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
 
-describe("DashboardInvocationDetailDrawer", () => {
-  it("loads the full record by invoke id and keeps the account action clickable", async () => {
-    const onOpenUpstreamAccount = vi.fn();
-    const record = createRecord({ routeMode: "pool" });
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection({ routeMode: "pool" })}
+      onClose={() => undefined}
+      onOpenUpstreamAccount={onOpenUpstreamAccount}
+    />,
+  );
 
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={createSelection({ routeMode: "pool" })}
-        onClose={() => undefined}
-        onOpenUpstreamAccount={onOpenUpstreamAccount}
-      />,
-    );
+  await waitFor(
+    () =>
+      document.body.querySelector('button[title="pool-alpha@example.com"]') instanceof
+      HTMLButtonElement,
+  );
 
-    await waitFor(
-      () =>
-        document.body.querySelector('button[title="pool-alpha@example.com"]') instanceof
-        HTMLButtonElement,
-    );
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
-      invokeId: "invoke-dashboard-drawer",
-      pageSize: 1,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-    });
-
-    const accountButton = document.body.querySelector('button[title="pool-alpha@example.com"]');
-    if (!(accountButton instanceof HTMLButtonElement)) {
-      throw new Error("missing account button");
-    }
-
-    act(() => {
-      accountButton.click();
-    });
-
-    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "pool-alpha@example.com");
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+    invokeId: "invoke-dashboard-drawer",
+    pageSize: 1,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
   });
 
-  it("shows the bare conversation hash in the drawer header while keeping prompt cache key visible", async () => {
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([createRecord()]));
+  const accountButton = document.body.querySelector('button[title="pool-alpha@example.com"]');
+  if (!(accountButton instanceof HTMLButtonElement)) {
+    throw new Error("missing account button");
+  }
 
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={createSelection()}
-        onClose={() => undefined}
-      />,
-    );
-
-    await waitFor(
-      () =>
-        document.body.querySelector('[data-testid="dashboard-invocation-detail-drawer"]') != null,
-    );
-
-    const drawer = document.body.querySelector(
-      '[data-testid="dashboard-invocation-detail-drawer"]',
-    );
-    if (!(drawer instanceof HTMLElement)) {
-      throw new Error("missing invocation drawer header");
-    }
-
-    expect(drawer.textContent ?? "").toContain("AB364A");
-    expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
-    expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
-
-    const drawerBody = drawer.closest('[role="dialog"], section')?.querySelector(".drawer-body");
-    expect(drawerBody?.classList.contains("overflow-x-hidden")).toBe(true);
-    expect(drawerBody?.classList.contains("overflow-y-auto")).toBe(true);
-    expect(drawerBody?.textContent ?? "").toContain("调用详情");
-    expect(drawerBody?.textContent ?? "").toContain("工作流时间线");
+  act(() => {
+    accountButton.click();
   });
 
-  it("renders interrupted status with the dedicated recovery badge", async () => {
-    const record = createRecord({
-      status: "interrupted",
-      failureClass: "service_failure",
-      failureKind: "proxy_interrupted",
-      errorMessage: "proxy request was interrupted before completion and was recovered on startup",
-    });
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
+  expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "pool-alpha@example.com");
+});
+it("shows the bare conversation hash in the drawer header while keeping prompt cache key visible", async () => {
+  apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([createRecord()]));
 
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={createSelection(record)}
-        onClose={() => undefined}
-      />,
-    );
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection()}
+      onClose={() => undefined}
+    />,
+  );
 
-    await waitFor(() => (document.body.textContent ?? "").includes("table.status.interrupted"));
+  await waitFor(
+    () => document.body.querySelector('[data-testid="dashboard-invocation-detail-drawer"]') != null,
+  );
 
-    const text = document.body.textContent ?? "";
-    expect(text).toContain("table.status.interrupted");
-    expect(text).not.toContain("table.status.failed");
+  const drawer = document.body.querySelector('[data-testid="dashboard-invocation-detail-drawer"]');
+  if (!(drawer instanceof HTMLElement)) {
+    throw new Error("missing invocation drawer header");
+  }
+
+  expect(drawer.textContent ?? "").toContain("AB364A");
+  expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
+  expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
+
+  const drawerBody = drawer.closest('[role="dialog"], section')?.querySelector(".drawer-body");
+  expect(drawerBody?.classList.contains("overflow-x-hidden")).toBe(true);
+  expect(drawerBody?.classList.contains("overflow-y-auto")).toBe(true);
+  expect(drawerBody?.textContent ?? "").toContain("调用详情");
+  expect(drawerBody?.textContent ?? "").toContain("工作流时间线");
+});
+it("renders interrupted status with the dedicated recovery badge", async () => {
+  const record = createRecord({
+    status: "interrupted",
+    failureClass: "service_failure",
+    failureKind: "proxy_interrupted",
+    errorMessage: "proxy request was interrupted before completion and was recovered on startup",
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
+
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection(record)}
+      onClose={() => undefined}
+    />,
+  );
+
+  await waitFor(() => (document.body.textContent ?? "").includes("table.status.interrupted"));
+
+  const text = document.body.textContent ?? "";
+  expect(text).toContain("table.status.interrupted");
+  expect(text).not.toContain("table.status.failed");
+});
+it("shows the empty state inside the drawer when the full lookup returns no record", async () => {
+  apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([]));
+
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection()}
+      onClose={() => undefined}
+    />,
+  );
+
+  await waitFor(
+    () => document.body.querySelector('[data-testid="dashboard-invocation-detail-empty"]') != null,
+  );
+
+  expect(
+    document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]'),
+  ).toBeNull();
+});
+it("shows the lookup error inside the drawer when the full record request fails", async () => {
+  apiMocks.fetchInvocationRecords.mockRejectedValue(new Error("lookup failed"));
+
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection()}
+      onClose={() => undefined}
+    />,
+  );
+
+  await waitFor(
+    () => document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]') != null,
+  );
+
+  expect(document.body.textContent ?? "").toContain("lookup failed");
+});
+it("loads abnormal response details only for abnormal records", async () => {
+  const record = createRecord({
+    status: "failed",
+    failureClass: "service_failure",
+    errorMessage: "upstream exploded",
+    failureKind: "downstream_closed",
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
+  apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
+    available: true,
+    bodyText: '{"error":"preview","trace":"full"}',
   });
 
-  it("shows the empty state inside the drawer when the full lookup returns no record", async () => {
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([]));
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection(record)}
+      onClose={() => undefined}
+    />,
+  );
 
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={createSelection()}
-        onClose={() => undefined}
-      />,
-    );
+  await waitFor(() => (document.body.textContent ?? "").includes("工作流时间线"));
 
-    await waitFor(
-      () =>
-        document.body.querySelector('[data-testid="dashboard-invocation-detail-empty"]') != null,
-    );
+  const responseBodyButton = Array.from(document.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("响应体"),
+  );
+  expect(responseBodyButton).toBeTruthy();
 
-    expect(
-      document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]'),
-    ).toBeNull();
+  act(() => {
+    responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("shows the lookup error inside the drawer when the full record request fails", async () => {
-    apiMocks.fetchInvocationRecords.mockRejectedValue(new Error("lookup failed"));
-
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={createSelection()}
-        onClose={() => undefined}
-      />,
-    );
-
-    await waitFor(
-      () =>
-        document.body.querySelector('[data-testid="dashboard-invocation-detail-error"]') != null,
-    );
-
-    expect(document.body.textContent ?? "").toContain("lookup failed");
+  await waitFor(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length > 0);
+  expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(501);
+  expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(501, "attempt-1");
+});
+it("does not request DB-backed abnormal details for transient live records", async () => {
+  const liveRecord = createRecord({
+    id: 0,
+    status: "failed",
+    failureClass: "service_failure",
+    errorMessage: "upstream exploded before placeholder flush",
   });
+  apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([liveRecord]));
 
-  it("loads abnormal response details only for abnormal records", async () => {
-    const record = createRecord({
-      status: "failed",
-      failureClass: "service_failure",
-      errorMessage: "upstream exploded",
-      failureKind: "downstream_closed",
-    });
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
-    apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValue({
-      available: true,
-      bodyText: '{"error":"preview","trace":"full"}',
-    });
+  render(
+    <DashboardInvocationDetailDrawer
+      open
+      selection={createSelection(liveRecord)}
+      onClose={() => undefined}
+    />,
+  );
 
+  await waitFor(() => (document.body.textContent ?? "").includes("调用未落盘"));
+
+  expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
+  expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+});
+it("retries the lookup after opening on a transient record until the persisted row arrives", async () => {
+  vi.useFakeTimers();
+  const transientRecord = createRecord({
+    id: 0,
+    status: "failed",
+    failureClass: "service_failure",
+    errorMessage: "upstream exploded before placeholder flush",
+  });
+  const persistedRecord = createRecord({
+    id: 501,
+    status: "failed",
+    failureClass: "service_failure",
+    errorMessage: "upstream exploded after sqlite flush",
+  });
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce(createRecordsResponse([transientRecord]))
+    .mockResolvedValueOnce(createRecordsResponse([persistedRecord]));
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(
+    createWorkflowDetailFixture(persistedRecord),
+  );
+
+  try {
     render(
       <DashboardInvocationDetailDrawer
         open
-        selection={createSelection(record)}
+        selection={createSelection(transientRecord)}
         onClose={() => undefined}
       />,
     );
 
-    await waitFor(() => (document.body.textContent ?? "").includes("工作流时间线"));
+    await flushMicrotasks();
+    expect(document.body.textContent ?? "").toContain("调用未落盘");
+    await advanceTime(1_500);
+    await flushMicrotasks();
 
-    const responseBodyButton = Array.from(document.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("响应体"),
-    );
-    expect(responseBodyButton).toBeTruthy();
+    expect(document.body.textContent ?? "").toContain("工作流时间线");
 
-    act(() => {
-      responseBodyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    await waitFor(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length > 0);
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(501);
-    expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(501, "attempt-1");
-  });
-
-  it("does not request DB-backed abnormal details for transient live records", async () => {
-    const liveRecord = createRecord({
-      id: 0,
-      status: "failed",
-      failureClass: "service_failure",
-      errorMessage: "upstream exploded before placeholder flush",
-    });
-    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([liveRecord]));
-
-    render(
-      <DashboardInvocationDetailDrawer
-        open
-        selection={createSelection(liveRecord)}
-        onClose={() => undefined}
-      />,
-    );
-
-    await waitFor(() => (document.body.textContent ?? "").includes("调用未落盘"));
-
-    expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
-    expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
-  });
-
-  it("retries the lookup after opening on a transient record until the persisted row arrives", async () => {
-    vi.useFakeTimers();
-    const transientRecord = createRecord({
-      id: 0,
-      status: "failed",
-      failureClass: "service_failure",
-      errorMessage: "upstream exploded before placeholder flush",
-    });
-    const persistedRecord = createRecord({
-      id: 501,
-      status: "failed",
-      failureClass: "service_failure",
-      errorMessage: "upstream exploded after sqlite flush",
-    });
-    apiMocks.fetchInvocationRecords
-      .mockResolvedValueOnce(createRecordsResponse([transientRecord]))
-      .mockResolvedValueOnce(createRecordsResponse([persistedRecord]));
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(
-      createWorkflowDetailFixture(persistedRecord),
-    );
-
-    try {
-      render(
-        <DashboardInvocationDetailDrawer
-          open
-          selection={createSelection(transientRecord)}
-          onClose={() => undefined}
-        />,
-      );
-
-      await flushMicrotasks();
-      expect(document.body.textContent ?? "").toContain("调用未落盘");
-      await advanceTime(1_500);
-      await flushMicrotasks();
-
-      expect(document.body.textContent ?? "").toContain("工作流时间线");
-
-      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
-      expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(501);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  } finally {
+    vi.useRealTimers();
+  }
 });

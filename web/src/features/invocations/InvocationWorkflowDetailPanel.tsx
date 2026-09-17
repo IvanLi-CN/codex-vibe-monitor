@@ -3045,7 +3045,7 @@ export function InvocationWorkflowAttemptRecord({
     responseBodyFetchSeqRef.current += 1;
     setRequestBodyState(createIdlePayloadState());
     setResponseBodyState(createIdlePayloadState());
-  }, [entry.blockId, record.id]);
+  }, []);
 
   useEffect(() => {
     if (isControlled || !focused || !defaultSection) return;

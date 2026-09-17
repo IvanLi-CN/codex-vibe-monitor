@@ -1,0 +1,511 @@
+/** @vitest-environment jsdom */
+
+it("does not confirm when clearing a manual override back to the encrypted owner lock", async () => {
+  apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+    promptCacheKey: "pck-binding-clear",
+    bindingKind: "group",
+    groupName: "prod",
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: true,
+    encryptedOwnerAccountId: 42,
+    encryptedOwnerAccountName: "Pool Alpha",
+    encryptedOwnerGroupName: "prod",
+    updatedAt: "2026-03-02T12:00:00Z",
+  });
+  apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+    writesEnabled: true,
+    items: [
+      createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
+      createUpstreamAccountSummary(77, "Pool Beta", "prod"),
+    ],
+    groups: [{ groupName: "prod", accountCount: 2 }],
+    forwardProxyNodes: [],
+    hasUngroupedAccounts: false,
+    total: 2,
+    page: 1,
+    pageSize: 500,
+    metrics: { total: 2, oauth: 0, apiKey: 2, attention: 0 },
+    routing: null,
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 1,
+    total: 0,
+    page: 1,
+    pageSize: 200,
+    records: [],
+  });
+  apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+    promptCacheKey: "pck-binding-clear",
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: true,
+    encryptedOwnerAccountId: 42,
+    encryptedOwnerAccountName: "Pool Alpha",
+    encryptedOwnerGroupName: "prod",
+    updatedAt: "2026-03-02T12:05:00Z",
+  });
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-binding-clear",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  await clickDrawerTab("路由");
+
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const kindSelect = document.querySelector(
+    '[role="combobox"][aria-label="绑定类型"]',
+  ) as HTMLElement | null;
+  expect(kindSelect?.textContent).toContain("分组");
+  await user.click(requireTestValue(kindSelect, "binding kind select"));
+  await user.click(requireTestValue(findSelectOption("清空"), "clear option"));
+  await flushInteractive();
+  await clickDrawerTab("路由");
+
+  const saveButton = findButtonByAriaLabel("保存");
+  await act(async () => {
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith("pck-binding-clear", {
+    bindingKind: "none",
+  });
+});
+it("uses the first and latest same-day invocation timestamps as the history chart range", async () => {
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+    snapshotId: 900,
+    newRecordsCount: 0,
+    totalCount: 4,
+    successCount: 4,
+    failureCount: 0,
+    totalCost: 0.48,
+    totalTokens: 749_360,
+    token: {
+      requestCount: 4,
+      totalTokens: 749_360,
+      avgTokensPerRequest: 187_340,
+      cacheInputTokens: 735_000,
+      totalCost: 0.48,
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs: 15_800,
+      p95TotalMs: 33_860,
+    },
+    exception: {
+      failureCount: 0,
+      serviceFailureCount: 0,
+      clientFailureCount: 0,
+      clientAbortCount: 0,
+      actionableFailureCount: 0,
+    },
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 901,
+    total: 4,
+    page: 1,
+    pageSize: 200,
+    records: [
+      {
+        id: 84,
+        invokeId: "same-day-84",
+        occurredAt: "2026-05-13T23:40:47.000Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 187_327,
+        cost: 0.0972,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-same-day-short",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy Latest",
+        createdAt: "2026-05-13T23:40:47.000Z",
+      },
+      {
+        id: 83,
+        invokeId: "same-day-83",
+        occurredAt: "2026-05-13T23:38:49.000Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 187_080,
+        cost: 0.1558,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-same-day-short",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy Mid",
+        createdAt: "2026-05-13T23:38:49.000Z",
+      },
+      {
+        id: 82,
+        invokeId: "same-day-82",
+        occurredAt: "2026-05-13T23:37:43.000Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 187_002,
+        cost: 0.11,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-same-day-short",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy Mid",
+        createdAt: "2026-05-13T23:37:43.000Z",
+      },
+      {
+        id: 81,
+        invokeId: "same-day-81",
+        occurredAt: "2026-05-13T23:26:12.000Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 188_951,
+        cost: 0.117,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-same-day-short",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy First",
+        createdAt: "2026-05-13T23:26:12.000Z",
+      },
+    ],
+  });
+  const sameDaySummary = await apiMocks.fetchInvocationRecordsSummary({});
+  const sameDayResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 200 });
+  apiMocks.fetchInvocationRecords.mockClear();
+  detailTopicMocks.current.overview.data = {
+    summary: sameDaySummary,
+    records: sameDayResponse.records,
+    chartTotal: sameDayResponse.total,
+    chartIsSampled: false,
+    chartRangeStart: "2026-05-13T23:26:12.000Z",
+    chartRangeEnd: "2026-05-13T23:40:47.000Z",
+  };
+
+  renderInteractive({
+    rangeStart: "2026-05-13T16:00:00Z",
+    rangeEnd: "2026-05-14T15:59:59Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-same-day-short",
+        requestCount: 4,
+        totalTokens: 749_360,
+        totalCost: 0.48,
+        createdAt: "2026-05-13T23:26:12.000Z",
+        lastActivityAt: "2026-05-13T23:40:47.000Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  expect(historyButton).toBeTruthy();
+
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  await clickDrawerTab("概览");
+
+  const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
+  expect(chart?.getAttribute("data-visible-total-count")).toBe("4");
+  expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-05-13T23:26:12.000Z");
+  expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-05-13T23:40:47.000Z");
+  expect(chart?.getAttribute("data-chart-range-start")).not.toBe("2026-05-13T16:00:00.000Z");
+});
+it("renders neutral activity buckets in the chart", async () => {
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+    snapshotId: 900,
+    newRecordsCount: 0,
+    totalCount: 1,
+    successCount: 0,
+    failureCount: 0,
+    totalCost: 0.07,
+    totalTokens: 700,
+    token: {
+      requestCount: 1,
+      totalTokens: 700,
+      avgTokensPerRequest: 700,
+      cacheInputTokens: 200,
+      totalCost: 0.07,
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs: 4321,
+      p95TotalMs: 4321,
+    },
+    exception: {
+      failureCount: 0,
+      serviceFailureCount: 0,
+      clientFailureCount: 0,
+      clientAbortCount: 0,
+      actionableFailureCount: 0,
+    },
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 901,
+    total: 1,
+    page: 1,
+    pageSize: 200,
+    records: [
+      {
+        id: 72,
+        invokeId: "neutral-history-72",
+        occurredAt: "2026-02-02T12:30:00Z",
+        status: "",
+        failureClass: "none",
+        totalTokens: 700,
+        cost: 0.07,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-neutral-history",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy Neutral",
+        createdAt: "2026-02-02T12:30:00Z",
+      },
+    ],
+  });
+  const neutralSummary = await apiMocks.fetchInvocationRecordsSummary({});
+  const neutralResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 200 });
+  apiMocks.fetchInvocationRecords.mockClear();
+  detailTopicMocks.current.overview.data = {
+    summary: neutralSummary,
+    records: neutralResponse.records,
+    chartTotal: neutralResponse.total,
+    chartIsSampled: false,
+    chartRangeStart: "2026-02-02T12:30:00Z",
+    chartRangeEnd: "2026-02-02T12:30:00Z",
+  };
+  detailTopicMocks.current.calls.data = {
+    ...neutralResponse,
+    pageSize: 50,
+  };
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-neutral-history",
+        requestCount: 1,
+        totalTokens: 700,
+        totalCost: 0.07,
+        createdAt: "2026-02-02T12:30:00Z",
+        lastActivityAt: "2026-02-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  expect(historyButton).toBeTruthy();
+
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("中性");
+  await clickDrawerTab("调用");
+  expect(document.body.textContent).toContain("Proxy Neutral");
+});
+it("preserves the retained first-to-latest chart range when history records are sampled", async () => {
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+    snapshotId: 900,
+    newRecordsCount: 0,
+    totalCount: 1001,
+    successCount: 1001,
+    failureCount: 0,
+    totalCost: 100.1,
+    totalTokens: 100100,
+    token: {
+      requestCount: 1001,
+      totalTokens: 100100,
+      avgTokensPerRequest: 100,
+      cacheInputTokens: 0,
+      totalCost: 100.1,
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs: 1000,
+      p95TotalMs: 1000,
+    },
+    exception: {
+      failureCount: 0,
+      serviceFailureCount: 0,
+      clientFailureCount: 0,
+      clientAbortCount: 0,
+      actionableFailureCount: 0,
+    },
+  });
+  apiMocks.fetchInvocationRecords.mockImplementation(
+    async (query: {
+      page?: number;
+      pageSize?: number;
+      snapshotId?: number;
+      sortOrder?: string;
+      signal?: AbortSignal;
+    }) => {
+      if (!query.signal) {
+        const listRecords = [
+          {
+            id: 1001,
+            invokeId: "sampled-history-1001",
+            occurredAt: "2026-03-02T23:00:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 100,
+            cost: 0.1,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-sampled-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: "Proxy 1001",
+            createdAt: "2026-03-02T23:00:00Z",
+          },
+          {
+            id: 1000,
+            invokeId: "sampled-history-1000",
+            occurredAt: "2026-03-02T22:59:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 100,
+            cost: 0.1,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-sampled-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: "Proxy 1000",
+            createdAt: "2026-03-02T22:59:00Z",
+          },
+        ];
+        return {
+          snapshotId: 901,
+          total: listRecords.length,
+          page: query.page ?? 1,
+          pageSize: query.pageSize ?? 200,
+          records: query.page === 1 ? listRecords : [],
+        };
+      }
+      const page = query.page ?? 1;
+      const pageSize = query.pageSize ?? 200;
+      const total = 1001;
+      const startOffset = (page - 1) * pageSize;
+      const count = Math.max(0, Math.min(pageSize, total - startOffset));
+      return {
+        snapshotId: 901,
+        total,
+        page,
+        pageSize,
+        records: Array.from({ length: count }, (_, index) => {
+          const offset = startOffset + index;
+          const id = total - offset;
+          const occurredAt =
+            offset === total - 1
+              ? "2026-01-01T00:00:00Z"
+              : new Date(Date.parse("2026-03-03T12:00:00Z") - offset * 60_000).toISOString();
+          return {
+            id,
+            invokeId: `sampled-history-${id}`,
+            occurredAt,
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 100,
+            cost: 0.1,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-sampled-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: `Proxy ${id}`,
+            createdAt: occurredAt,
+          };
+        }),
+      };
+    },
+  );
+  const sampledSummary = await apiMocks.fetchInvocationRecordsSummary({});
+  const sampledResponse = await apiMocks.fetchInvocationRecords({
+    page: 1,
+    pageSize: 1_000,
+    signal: new AbortController().signal,
+  });
+  apiMocks.fetchInvocationRecords.mockClear();
+  detailTopicMocks.current.overview.data = {
+    summary: sampledSummary,
+    records: sampledResponse.records,
+    chartTotal: 1_001,
+    chartIsSampled: true,
+    chartRangeStart: "2026-01-01T00:00:00Z",
+    chartRangeEnd: "2026-03-03T12:00:00Z",
+  };
+
+  renderInteractive({
+    rangeStart: "2026-01-01T00:00:00Z",
+    rangeEnd: "2026-03-03T12:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-sampled-history",
+        requestCount: 1001,
+        totalTokens: 100100,
+        totalCost: 100.1,
+        createdAt: "2026-01-01T00:00:00Z",
+        lastActivityAt: "2026-03-03T12:00:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  expect(historyButton).toBeTruthy();
+
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+  const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
+  expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-01-01T00:00:00.000Z");
+  expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-03-03T12:00:00.000Z");
+  expect(document.body.textContent).toContain("01/01");
+  expect(document.body.textContent).toContain("03/03");
+  expect(document.body.textContent).toContain("图表采样最近 1,000 / 1,001 条匹配调用");
+});

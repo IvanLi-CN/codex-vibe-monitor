@@ -1,0 +1,690 @@
+/** @vitest-environment jsdom */
+
+it("keeps the account chip inline with model metadata and surfaces compact endpoint badges", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-account-inline-compact", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-account-inline-compact",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+          upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
+          upstreamAccountPlanType: "team",
+          endpoint: "/v1/responses/compact",
+          reasoningEffort: "medium",
+          tTotalMs: null,
+        }),
+      ]),
+    ]),
+  );
+
+  const currentSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  if (!(currentSlot instanceof HTMLDivElement)) {
+    throw new Error("missing current invocation slot");
+  }
+
+  const accountLine = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-account-line"]',
+  );
+  const accountChip = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-account-chip"]',
+  );
+  const accountName = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-account-name"]',
+  );
+  const slotModel = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-slot-model"]',
+  );
+  const compactBadge = currentSlot.querySelector(
+    '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
+  );
+
+  if (
+    !(accountLine instanceof HTMLDivElement) ||
+    !(accountChip instanceof HTMLElement) ||
+    !(accountName instanceof HTMLElement) ||
+    !(slotModel instanceof HTMLDivElement) ||
+    !(compactBadge instanceof HTMLElement)
+  ) {
+    throw new Error("missing account row or compact endpoint markers");
+  }
+
+  expect(accountLine.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+  expect(accountChip.className).not.toContain("bg-base-100");
+  expect(accountChip.className).not.toContain("px-1.5");
+  expect(accountName.className).toContain("truncate");
+  expect(accountName.className).toContain("whitespace-nowrap");
+  expect(accountName.className).not.toContain("line-clamp-2");
+  expect(accountName.className).not.toContain("break-all");
+  expect(slotModel.getAttribute("title")).toContain("gpt-5.4");
+  expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
+  expect(currentSlot.textContent).toContain("Team");
+  expect(currentSlot.textContent).not.toContain("RQ ");
+  expect(currentSlot.textContent).not.toContain("UP ");
+  expect(currentSlot.textContent).not.toContain("ED ");
+  expect(currentSlot.textContent).not.toContain("TT ");
+  expect(
+    currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]'),
+  ).not.toBeNull();
+  expect(
+    currentSlot.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+  ).toBeNull();
+  expect(
+    currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
+  ).not.toMatch(/rounded|border|bg-/);
+  expect(
+    currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
+  ).not.toMatch(/rounded|border|bg-/);
+});
+it("shows the remote compaction v2 badge for running responses previews", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-remote-v2", [
+        createPreview({
+          id: 11,
+          invokeId: "invoke-remote-v2",
+          occurredAt: "2026-04-04T10:06:00Z",
+          status: "running",
+          endpoint: "/v1/responses",
+          compactionRequestKind: "remote_v2",
+        }),
+      ]),
+    ]),
+  );
+
+  const badge = host?.querySelector(
+    '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="remote_v2"]',
+  );
+  if (!(badge instanceof HTMLElement)) {
+    throw new Error("missing remote v2 badge");
+  }
+
+  expect(badge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
+});
+it("compresses visible usage into hit token cost while keeping detailed hover metadata", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-compact-usage-line", [
+        createPreview({
+          id: 21,
+          invokeId: "invoke-compact-usage-current",
+          occurredAt: "2026-04-04T10:06:00Z",
+          status: "running",
+          totalTokens: 74_148,
+          inputTokens: 73_951,
+          outputTokens: 197,
+          cacheInputTokens: 5_632,
+          cost: 0.1752,
+          reasoningTokens: 62,
+        }),
+        createPreview({
+          id: 20,
+          invokeId: "invoke-compact-usage-previous",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "completed",
+          totalTokens: 13_184,
+          inputTokens: 13_184,
+          outputTokens: 0,
+          cacheInputTokens: 0,
+          cost: 0.052,
+          reasoningTokens: 0,
+        }),
+      ]),
+    ]),
+  );
+
+  const currentSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  const previousSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="previous"]',
+  );
+  if (!(currentSlot instanceof HTMLDivElement) || !(previousSlot instanceof HTMLDivElement)) {
+    throw new Error("missing current or previous invocation slot");
+  }
+
+  const currentUsageLine = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-line"]',
+  );
+  const previousUsageLine = previousSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-line"]',
+  );
+  const currentCostValue = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-cost"]',
+  );
+  const currentHitValue = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-hit"]',
+  );
+  const previousHitValue = previousSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-hit"]',
+  );
+  const usageMetaLine = currentUsageLine?.parentElement;
+  if (
+    !(currentUsageLine instanceof HTMLDivElement) ||
+    !(previousUsageLine instanceof HTMLDivElement) ||
+    !(currentCostValue instanceof HTMLElement) ||
+    !(currentHitValue instanceof HTMLElement) ||
+    !(previousHitValue instanceof HTMLElement) ||
+    !(usageMetaLine instanceof HTMLElement)
+  ) {
+    throw new Error("missing compact usage line elements");
+  }
+
+  expect(currentUsageLine.textContent).toContain("Hit 7.6%");
+  expect(currentUsageLine.textContent).toContain("Token 74,148");
+  expect(currentUsageLine.textContent).toContain("$0.1752");
+  expect(currentUsageLine.textContent).not.toContain("IN ");
+  expect(currentUsageLine.textContent).not.toContain("CW ");
+  expect(currentUsageLine.textContent).not.toContain(" C ");
+  expect(currentUsageLine.textContent).not.toContain("O ");
+  expect(previousUsageLine.textContent).toContain("Hit 0%");
+  expect(previousUsageLine.textContent).toContain("Token 13,184");
+  expect(previousUsageLine.textContent).toContain("$0.0520");
+  expect(currentHitValue.dataset.summaryTone).toBe("error");
+  expect(previousHitValue.dataset.summaryTone).toBe("error");
+  expect(currentCostValue.dataset.summaryTone).toBe("warning");
+  expect(usageMetaLine.title).toContain("Cache write: 68,319");
+  expect(usageMetaLine.title).toContain("5,632");
+  expect(usageMetaLine.title).toContain("74,148");
+  expect(usageMetaLine.title).toContain("US$0.1752");
+  expect(host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]')).toBeNull();
+});
+it("applies strict hit and cost threshold tones to conversation and upstream recent summaries", () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(700);
+  upstreamAccountActivityMock.data = {
+    ...createUpstreamAccountActivityResponse(),
+    accounts: [
+      {
+        ...createUpstreamAccountActivityResponse().accounts[0],
+        recentInvocations: [
+          createPreview({
+            id: 9101,
+            invokeId: "acct-threshold-warning",
+            promptCacheKey: "pck-upstream-threshold-warning",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "success",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 899,
+            cost: 0.1001,
+            reasoningTokens: 20,
+          }),
+          createPreview({
+            id: 9102,
+            invokeId: "acct-threshold-error",
+            promptCacheKey: "pck-upstream-threshold-error",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "failed",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 499,
+            cost: 0.5001,
+            reasoningTokens: 20,
+          }),
+          createPreview({
+            id: 9103,
+            invokeId: "acct-threshold-default",
+            promptCacheKey: "pck-upstream-threshold-default",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "success",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 900,
+            cost: 0.1,
+            reasoningTokens: 20,
+          }),
+          createPreview({
+            id: 9104,
+            invokeId: "acct-threshold-boundary",
+            promptCacheKey: "pck-upstream-threshold-boundary",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "success",
+            totalTokens: 1_000,
+            inputTokens: 700,
+            outputTokens: 200,
+            cacheInputTokens: 500,
+            cost: 0.5,
+            reasoningTokens: 20,
+          }),
+        ],
+      },
+    ],
+  };
+
+  renderSection(
+    createResponse([
+      createConversation("pck-threshold-default", [
+        createPreview({
+          id: 31,
+          invokeId: "invoke-threshold-default-current",
+          occurredAt: "2026-04-04T10:06:00Z",
+          status: "running",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 955,
+          cost: 0.0586,
+          reasoningTokens: 20,
+        }),
+        createPreview({
+          id: 30,
+          invokeId: "invoke-threshold-warning-previous",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "completed",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 899,
+          cost: 0.1001,
+          reasoningTokens: 20,
+        }),
+      ]),
+      createConversation("pck-threshold-error", [
+        createPreview({
+          id: 41,
+          invokeId: "invoke-threshold-error-current",
+          occurredAt: "2026-04-04T10:04:30Z",
+          status: "completed",
+          totalTokens: 1_000,
+          inputTokens: 700,
+          outputTokens: 200,
+          cacheInputTokens: 499,
+          cost: 0.5001,
+          reasoningTokens: 20,
+        }),
+      ]),
+    ]),
+  );
+
+  const firstCardCurrentSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  const firstCardPreviousSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="previous"]',
+  );
+  const secondCard = host?.querySelectorAll(
+    '[data-testid="dashboard-working-conversation-card"]',
+  )[1];
+  const secondCardCurrentSlot = secondCard?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  if (
+    !(firstCardCurrentSlot instanceof HTMLElement) ||
+    !(firstCardPreviousSlot instanceof HTMLElement) ||
+    !(secondCardCurrentSlot instanceof HTMLElement)
+  ) {
+    throw new Error("missing threshold summary slots");
+  }
+
+  const currentHit = firstCardCurrentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-hit"]',
+  );
+  const currentCost = firstCardCurrentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-cost"]',
+  );
+  const previousHit = firstCardPreviousSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-hit"]',
+  );
+  const previousCost = firstCardPreviousSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-cost"]',
+  );
+  const errorHit = secondCardCurrentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-hit"]',
+  );
+  const errorCost = secondCardCurrentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-usage-cost"]',
+  );
+  if (
+    !(currentHit instanceof HTMLElement) ||
+    !(currentCost instanceof HTMLElement) ||
+    !(previousHit instanceof HTMLElement) ||
+    !(previousCost instanceof HTMLElement) ||
+    !(errorHit instanceof HTMLElement) ||
+    !(errorCost instanceof HTMLElement)
+  ) {
+    throw new Error("missing conversation threshold summary fields");
+  }
+
+  expect(currentHit.textContent).toContain("Hit 95.5%");
+  expect(currentHit.dataset.summaryTone).toBe("primary");
+  expect(currentCost.textContent).toContain("$0.0586");
+  expect(currentCost.dataset.summaryTone).toBe("primary");
+  expect(previousHit.textContent).toContain("Hit 89.9%");
+  expect(previousHit.dataset.summaryTone).toBe("warning");
+  expect(previousCost.textContent).toContain("$0.1001");
+  expect(previousCost.dataset.summaryTone).toBe("warning");
+  expect(errorHit.textContent).toContain("Hit 49.9%");
+  expect(errorHit.dataset.summaryTone).toBe("error");
+  expect(errorCost.textContent).toContain("$0.5001");
+  expect(errorCost.dataset.summaryTone).toBe("error");
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const recentRows = Array.from(
+    host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]') ?? [],
+  );
+  expect(recentRows).toHaveLength(4);
+  const warningRow = recentRows[0];
+  const errorRow = recentRows[1];
+  const defaultRow = recentRows[2];
+  const boundaryRow = recentRows[3];
+  if (
+    !(warningRow instanceof HTMLElement) ||
+    !(errorRow instanceof HTMLElement) ||
+    !(defaultRow instanceof HTMLElement) ||
+    !(boundaryRow instanceof HTMLElement)
+  ) {
+    throw new Error("missing upstream threshold rows");
+  }
+
+  const warningSummary = warningRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-line"]',
+  );
+  const warningMetaLine = warningRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-meta-line"]',
+  );
+  const warningHit = warningRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+  );
+  const warningCost = warningRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+  );
+  const errorHitRow = errorRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+  );
+  const errorCostRow = errorRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+  );
+  const defaultHitRow = defaultRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+  );
+  const defaultCostRow = defaultRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+  );
+  const boundaryHitRow = boundaryRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-hit"]',
+  );
+  const boundaryCostRow = boundaryRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-summary-cost"]',
+  );
+  if (
+    !(warningSummary instanceof HTMLElement) ||
+    !(warningMetaLine instanceof HTMLElement) ||
+    !(warningHit instanceof HTMLElement) ||
+    !(warningCost instanceof HTMLElement) ||
+    !(errorHitRow instanceof HTMLElement) ||
+    !(errorCostRow instanceof HTMLElement) ||
+    !(defaultHitRow instanceof HTMLElement) ||
+    !(defaultCostRow instanceof HTMLElement) ||
+    !(boundaryHitRow instanceof HTMLElement) ||
+    !(boundaryCostRow instanceof HTMLElement)
+  ) {
+    throw new Error("missing upstream threshold summary fields");
+  }
+
+  expect(warningRow.textContent).not.toContain("IN ");
+  expect(warningRow.textContent).not.toContain("CW ");
+  expect(warningRow.textContent).not.toContain(" C ");
+  expect(warningRow.textContent).not.toContain("O ");
+  expect(warningRow.textContent).not.toContain("T ");
+  const warningDetailsRow = warningRow.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-details-row"]',
+  );
+  if (!(warningDetailsRow instanceof HTMLElement)) {
+    throw new Error("missing upstream account recent details row");
+  }
+  expect(warningDetailsRow.className).toContain("sm:grid-cols-2");
+  expect(warningDetailsRow.dataset.layout).toBe("split");
+  expect(
+    warningMetaLine.compareDocumentPosition(warningSummary) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).not.toBe(0);
+  expect(warningSummary.className).toContain("sm:justify-end");
+  expect(warningHit.textContent).toContain("Hit 89.9%");
+  expect(warningHit.dataset.summaryTone).toBe("warning");
+  expect(warningCost.textContent).toContain("$0.1001");
+  expect(warningCost.dataset.summaryTone).toBe("warning");
+  expect(errorHitRow.textContent).toContain("Hit 49.9%");
+  expect(errorHitRow.dataset.summaryTone).toBe("error");
+  expect(errorCostRow.textContent).toContain("$0.5001");
+  expect(errorCostRow.dataset.summaryTone).toBe("error");
+  expect(defaultHitRow.textContent).toContain("Hit 90%");
+  expect(defaultHitRow.dataset.summaryTone).toBe("primary");
+  expect(defaultCostRow.textContent).toContain("$0.1000");
+  expect(defaultCostRow.dataset.summaryTone).toBe("primary");
+  expect(boundaryHitRow.textContent).toContain("Hit 50%");
+  expect(boundaryHitRow.dataset.summaryTone).toBe("warning");
+  expect(boundaryCostRow.textContent).toContain("$0.5000");
+  expect(boundaryCostRow.dataset.summaryTone).toBe("warning");
+  expect(warningSummary.title).toContain("Cache write:");
+  expect(warningSummary.title).toContain("缓存输入");
+  expect(warningSummary.title).toContain("推理 Tokens");
+});
+it("shows the image-tool badge only for image-capable previews", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-image-yes", [
+        createPreview({
+          id: 12,
+          invokeId: "invoke-image-yes",
+          occurredAt: "2026-04-04T10:05:30Z",
+          status: "running",
+          endpoint: "/v1/responses",
+          imageIntent: "yes",
+        }),
+      ]),
+      createConversation("pck-image-no", [
+        createPreview({
+          id: 13,
+          invokeId: "invoke-image-no",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "completed",
+          endpoint: "/v1/responses",
+          imageIntent: "no",
+        }),
+      ]),
+    ]),
+  );
+
+  const badges = host?.querySelectorAll('[data-testid="dashboard-image-tool-icon-badge"]');
+  expect(badges?.length ?? 0).toBe(1);
+  expect(badges?.[0]?.getAttribute("aria-label")).toMatch(/图片工具|Image tool/);
+  expect(badges?.[0]?.textContent).not.toMatch(/图片工具|Image tool/);
+  expect(badges?.[0]?.className).toContain("rounded-full");
+  expect(badges?.[0]?.className).toContain("border");
+});
+it("renders image endpoint chips and hides the image icon badge on direct image endpoints", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-image-endpoint", [
+        createPreview({
+          id: 14,
+          invokeId: "invoke-image-endpoint",
+          occurredAt: "2026-04-04T10:05:45Z",
+          status: "running",
+          endpoint: "/v1/images/generations",
+          imageIntent: "yes",
+          model: "gpt-image-1",
+        }),
+      ]),
+    ]),
+  );
+
+  const currentSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  if (!(currentSlot instanceof HTMLElement)) {
+    throw new Error("missing current slot");
+  }
+
+  const imageEndpointBadge = currentSlot.querySelector(
+    '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_gen"]',
+  );
+  if (!(imageEndpointBadge instanceof HTMLElement)) {
+    throw new Error("missing image endpoint badge");
+  }
+
+  expect(imageEndpointBadge.textContent).toBe("image/gen");
+  expect(currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]')).toBeNull();
+  expect(currentSlot.textContent).not.toContain("/v1/images/generations");
+});
+it("renders image edit endpoint chips without duplicate image icons in upstream account recent rows", () => {
+  const upstreamActivity = createUpstreamAccountActivityResponse();
+  upstreamActivity.accounts[0].recentInvocations = [
+    createPreview({
+      id: 9010,
+      invokeId: "acct-image-edit",
+      promptCacheKey: "pck-acct-image-edit",
+      occurredAt: "2026-04-04T10:05:50Z",
+      status: "success",
+      endpoint: "/v1/images/edits",
+      imageIntent: "direct_image",
+      model: "gpt-image-1",
+      upstreamAccountName: "Pool Alpha",
+    }),
+  ];
+  upstreamAccountActivityMock.data = upstreamActivity;
+
+  renderSection(createResponse([]));
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const recentRow = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+  if (!(recentRow instanceof HTMLElement)) {
+    throw new Error("missing upstream account recent row");
+  }
+
+  const imageEditBadge = recentRow.querySelector(
+    '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="image_edit"]',
+  );
+  if (!(imageEditBadge instanceof HTMLElement)) {
+    throw new Error("missing image edit endpoint badge");
+  }
+
+  expect(imageEditBadge.textContent).toBe("image/edit");
+  expect(recentRow.querySelector('[data-testid="dashboard-image-tool-icon-badge"]')).toBeNull();
+  expect(recentRow.textContent).not.toContain("/v1/images/edits");
+});
+it("keeps image and remote_v2 badges visible together for mixed-signal previews", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-mixed-signal", [
+        createPreview({
+          id: 14,
+          invokeId: "invoke-mixed-signal",
+          occurredAt: "2026-04-04T10:06:30Z",
+          status: "running",
+          endpoint: "/v1/responses",
+          compactionRequestKind: "remote_v2",
+          imageIntent: "direct_image",
+        }),
+      ]),
+    ]),
+  );
+
+  const remoteBadge = host?.querySelector(
+    '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="remote_v2"]',
+  );
+  const imageBadge = host?.querySelector(
+    '[data-testid="dashboard-image-tool-icon-badge"][data-image-intent-kind="direct_image"]',
+  );
+
+  if (!(remoteBadge instanceof HTMLElement) || !(imageBadge instanceof HTMLElement)) {
+    throw new Error("missing mixed-signal badges");
+  }
+
+  expect(remoteBadge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
+  expect(imageBadge.getAttribute("aria-label")).toMatch(/图片工具|Image tool/);
+  expect(imageBadge.textContent).not.toMatch(/图片工具|Image tool/);
+});
+it("renders compact account plan badges and hides local or missing plans", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-enterprise-plan", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-enterprise-plan",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+          upstreamAccountName: "enterprise-account@example.com",
+          upstreamAccountPlanType: "enterprise",
+        }),
+      ]),
+      createConversation("pck-plus-plan", [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-plus-plan",
+          occurredAt: "2026-04-04T10:03:00Z",
+          status: "running",
+          upstreamAccountName: "plus-account@example.com",
+          upstreamAccountPlanType: "plus",
+        }),
+      ]),
+      createConversation("pck-free-plan", [
+        createPreview({
+          id: 3,
+          invokeId: "invoke-free-plan",
+          occurredAt: "2026-04-04T10:02:00Z",
+          status: "running",
+          upstreamAccountName: "free-account@example.com",
+          upstreamAccountPlanType: "free",
+        }),
+      ]),
+      createConversation("pck-pro-plan", [
+        createPreview({
+          id: 4,
+          invokeId: "invoke-pro-plan",
+          occurredAt: "2026-04-04T10:01:00Z",
+          status: "running",
+          upstreamAccountName: "pro-account@example.com",
+          upstreamAccountPlanType: "pro",
+        }),
+      ]),
+      createConversation("pck-local-plan", [
+        createPreview({
+          id: 5,
+          invokeId: "invoke-local-plan",
+          occurredAt: "2026-04-04T10:00:00Z",
+          status: "running",
+          upstreamAccountName: "local-account@example.com",
+          upstreamAccountPlanType: "local",
+        }),
+      ]),
+    ]),
+  );
+
+  const planBadges = Array.from(
+    host?.querySelectorAll('[data-testid="dashboard-working-conversation-account-plan"]') ?? [],
+  );
+  const labels = planBadges.map((badge) => badge.textContent);
+
+  expect(labels).toEqual(expect.arrayContaining(["Ent", "Plus", "Free", "Pro"]));
+  expect(labels).not.toContain("enterprise");
+  expect(labels).not.toContain("local");
+
+  const enterpriseBadge = planBadges.find((badge) => badge.textContent === "Ent");
+  expect(enterpriseBadge?.getAttribute("title")).toBe("enterprise");
+  expect(enterpriseBadge?.getAttribute("data-plan")).toBe("enterprise");
+});

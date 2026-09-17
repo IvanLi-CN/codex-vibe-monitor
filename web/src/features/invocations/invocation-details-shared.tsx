@@ -1330,7 +1330,7 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
     );
 
     return unsubscribe;
-  }, [expandedRecord]);
+  }, []);
 
   const expandedPoolAttemptRouteMode = expandedRecord?.routeMode ?? null;
   const expandedPoolAttemptInvokeId = expandedRecord?.invokeId ?? null;

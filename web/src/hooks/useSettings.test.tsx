@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   ForwardProxySettings,
   PricingSettings,
@@ -38,7 +38,6 @@ const apiMocks = vi.hoisted(() => ({
     >(),
   updatePricingSettings: vi.fn<(payload: PricingSettings) => Promise<PricingSettings>>(),
 }));
-
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
@@ -49,10 +48,8 @@ vi.mock("../lib/api", async () => {
     updatePricingSettings: apiMocks.updatePricingSettings,
   };
 });
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 function createForwardProxySettings(
   overrides: Partial<ForwardProxySettings> = {},
 ): ForwardProxySettings {
@@ -64,7 +61,6 @@ function createForwardProxySettings(
     ...overrides,
   };
 }
-
 function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): SettingsPayload {
   return {
     proxy: {
@@ -96,7 +92,6 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
     ...overrides,
   };
 }
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -105,21 +100,18 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
-
 async function flushDebouncedMutation() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(600);
   });
   await flushAsync();
 }
-
 function click(testId: string) {
   const element = host?.querySelector(`[data-testid="${testId}"]`);
   if (!(element instanceof HTMLButtonElement)) {
@@ -129,7 +121,6 @@ function click(testId: string) {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 }
-
 function text(testId: string) {
   const element = host?.querySelector(`[data-testid="${testId}"]`);
   if (!(element instanceof HTMLElement)) {
@@ -137,7 +128,6 @@ function text(testId: string) {
   }
   return element.textContent ?? "";
 }
-
 function Probe() {
   const {
     settings,
@@ -248,7 +238,6 @@ function Probe() {
     </div>
   );
 }
-
 beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers();
@@ -284,7 +273,6 @@ beforeEach(() => {
     }),
   );
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -294,131 +282,125 @@ afterEach(() => {
   root = null;
   vi.useRealTimers();
 });
+it("debounces proxy settings and keeps the draft available when save fails", async () => {
+  render(<Probe />);
+  await flushAsync();
 
-describe("useSettings", () => {
-  it("debounces proxy settings and keeps the draft available when save fails", async () => {
+  expect(text("proxy-enabled-models")).toContain("gpt-5.4");
+
+  click("save-proxy");
+  await flushDebouncedMutation();
+
+  expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(1);
+  expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
+  expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
+  expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
+  expect(text("proxy-body-logging")).toBe("false/false");
+  expect(text("proxy-encrypted-owner-routing")).toBe("false");
+  expect(apiMocks.updateProxySettings.mock.calls[0]?.[0]).toMatchObject({
+    encryptedSessionOwnerRoutingEnabled: false,
+    enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  });
+  expect(text("error")).toBe("");
+
+  apiMocks.updateProxySettings.mockRejectedValueOnce(new Error("proxy save failed"));
+  click("save-proxy");
+  await flushDebouncedMutation();
+
+  expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(2);
+  expect(text("error")).toBe("proxy save failed");
+  expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
+  expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
+  expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
+
+  click("retry-proxy");
+  await flushDebouncedMutation();
+  expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(3);
+  expect(text("error")).toBe("");
+});
+it("emits the upstream-accounts invalidation event after forward-proxy settings save succeeds", async () => {
+  let eventCount = 0;
+  const handleChanged = () => {
+    eventCount += 1;
+  };
+  window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
+
+  try {
     render(<Probe />);
     await flushAsync();
 
-    expect(text("proxy-enabled-models")).toContain("gpt-5.4");
+    expect(text("loading")).toBe("false");
+    expect(text("proxy-urls")).toContain("http://initial-proxy.example.com");
 
-    click("save-proxy");
+    click("save-forward-proxy");
     await flushDebouncedMutation();
 
-    expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(1);
-    expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
-    expect(text("proxy-body-logging")).toBe("false/false");
-    expect(text("proxy-encrypted-owner-routing")).toBe("false");
-    expect(apiMocks.updateProxySettings.mock.calls[0]?.[0]).toMatchObject({
-      encryptedSessionOwnerRoutingEnabled: false,
-      enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-    });
+    expect(apiMocks.updateForwardProxySettings).toHaveBeenCalledTimes(1);
+    expect(eventCount).toBe(1);
+    expect(text("proxy-urls")).toContain("http://refreshed-proxy.example.com");
     expect(text("error")).toBe("");
+  } finally {
+    window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
+  }
+});
+it("does not emit the invalidation event when saving forward-proxy settings fails", async () => {
+  apiMocks.updateForwardProxySettings.mockRejectedValueOnce(new Error("save failed"));
 
-    apiMocks.updateProxySettings.mockRejectedValueOnce(new Error("proxy save failed"));
-    click("save-proxy");
-    await flushDebouncedMutation();
+  let eventCount = 0;
+  const handleChanged = () => {
+    eventCount += 1;
+  };
+  window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
 
-    expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(2);
-    expect(text("error")).toBe("proxy save failed");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
-    expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
-
-    click("retry-proxy");
-    await flushDebouncedMutation();
-    expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(3);
-    expect(text("error")).toBe("");
-  });
-
-  it("emits the upstream-accounts invalidation event after forward-proxy settings save succeeds", async () => {
-    let eventCount = 0;
-    const handleChanged = () => {
-      eventCount += 1;
-    };
-    window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
-
-    try {
-      render(<Probe />);
-      await flushAsync();
-
-      expect(text("loading")).toBe("false");
-      expect(text("proxy-urls")).toContain("http://initial-proxy.example.com");
-
-      click("save-forward-proxy");
-      await flushDebouncedMutation();
-
-      expect(apiMocks.updateForwardProxySettings).toHaveBeenCalledTimes(1);
-      expect(eventCount).toBe(1);
-      expect(text("proxy-urls")).toContain("http://refreshed-proxy.example.com");
-      expect(text("error")).toBe("");
-    } finally {
-      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
-    }
-  });
-
-  it("does not emit the invalidation event when saving forward-proxy settings fails", async () => {
-    apiMocks.updateForwardProxySettings.mockRejectedValueOnce(new Error("save failed"));
-
-    let eventCount = 0;
-    const handleChanged = () => {
-      eventCount += 1;
-    };
-    window.addEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
-
-    try {
-      render(<Probe />);
-      await flushAsync();
-
-      click("save-forward-proxy");
-      await flushDebouncedMutation();
-
-      expect(apiMocks.updateForwardProxySettings).toHaveBeenCalledTimes(1);
-      expect(eventCount).toBe(0);
-      expect(text("error")).toBe("save failed");
-      expect(text("proxy-urls")).toContain("http://refreshed-proxy.example.com");
-    } finally {
-      window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
-    }
-  });
-
-  it("saves pricing settings with mirrored cache read compatibility fields", async () => {
+  try {
     render(<Probe />);
     await flushAsync();
 
-    click("save-pricing");
-    await flushAsync();
+    click("save-forward-proxy");
+    await flushDebouncedMutation();
 
-    expect(apiMocks.updatePricingSettings).toHaveBeenCalledTimes(1);
-    expect(apiMocks.updatePricingSettings.mock.calls[0]?.[0]).toEqual({
-      catalogVersion: "openai-standard-2026-07-10",
-      entries: [
-        {
-          model: "gpt-5.6-sol",
-          inputPer1m: 5,
-          outputPer1m: 30,
-          cacheInputPer1m: 0.5,
-          cacheReadPer1m: 0.5,
-          cacheWritePer1m: 6.25,
-          reasoningPer1m: null,
-          source: "official",
-        },
-        {
-          model: "gpt-5.4-mini",
-          inputPer1m: 0.6,
-          outputPer1m: 2.4,
-          cacheInputPer1m: 0.075,
-          cacheReadPer1m: 0.075,
-          cacheWritePer1m: null,
-          reasoningPer1m: null,
-          source: "official",
-        },
-      ],
-    });
-    expect(text("pricing-models")).toContain("gpt-5.6-sol");
-    expect(text("pricing-models")).toContain("gpt-5.4-mini");
-    expect(text("error")).toBe("");
+    expect(apiMocks.updateForwardProxySettings).toHaveBeenCalledTimes(1);
+    expect(eventCount).toBe(0);
+    expect(text("error")).toBe("save failed");
+    expect(text("proxy-urls")).toContain("http://refreshed-proxy.example.com");
+  } finally {
+    window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
+  }
+});
+it("saves pricing settings with mirrored cache read compatibility fields", async () => {
+  render(<Probe />);
+  await flushAsync();
+
+  click("save-pricing");
+  await flushAsync();
+
+  expect(apiMocks.updatePricingSettings).toHaveBeenCalledTimes(1);
+  expect(apiMocks.updatePricingSettings.mock.calls[0]?.[0]).toEqual({
+    catalogVersion: "openai-standard-2026-07-10",
+    entries: [
+      {
+        model: "gpt-5.6-sol",
+        inputPer1m: 5,
+        outputPer1m: 30,
+        cacheInputPer1m: 0.5,
+        cacheReadPer1m: 0.5,
+        cacheWritePer1m: 6.25,
+        reasoningPer1m: null,
+        source: "official",
+      },
+      {
+        model: "gpt-5.4-mini",
+        inputPer1m: 0.6,
+        outputPer1m: 2.4,
+        cacheInputPer1m: 0.075,
+        cacheReadPer1m: 0.075,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "official",
+      },
+    ],
   });
+  expect(text("pricing-models")).toContain("gpt-5.6-sol");
+  expect(text("pricing-models")).toContain("gpt-5.4-mini");
+  expect(text("error")).toBe("");
 });

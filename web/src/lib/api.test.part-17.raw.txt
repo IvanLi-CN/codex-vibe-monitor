@@ -1,0 +1,599 @@
+it("serializes exact upstream account group filters into the query string", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
+    expect(String(_input)).toContain(
+      "/api/pool/upstream-accounts?groupExact=production&groupExact=staging",
+    );
+    return new Response(
+      JSON.stringify({
+        writesEnabled: true,
+        groups: [],
+        hasUngroupedAccounts: false,
+        items: [],
+        routing: {
+          apiKeyConfigured: false,
+          maskedApiKey: null,
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  await fetchUpstreamAccounts({
+    groupExact: ["production", "staging"],
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it("normalizes split status dimensions from legacy upstream account payloads", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          writesEnabled: true,
+          groups: [],
+          hasUngroupedAccounts: false,
+          items: [
+            {
+              id: 9,
+              kind: "oauth_codex",
+              provider: "codex",
+              displayName: "Legacy OAuth",
+              isMother: false,
+              status: "syncing",
+              displayStatus: "needs_reauth",
+              enabled: true,
+            },
+            {
+              id: 10,
+              kind: "api_key_codex",
+              provider: "codex",
+              displayName: "Legacy API key",
+              isMother: false,
+              status: "disabled",
+              displayStatus: "disabled",
+              enabled: false,
+            },
+            {
+              id: 11,
+              kind: "oauth_codex",
+              provider: "codex",
+              displayName: "Legacy upstream rejected",
+              isMother: false,
+              status: "error",
+              displayStatus: "upstream_rejected",
+              enabled: true,
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const response = await fetchUpstreamAccounts();
+
+  expect(response.items[0]).toMatchObject({
+    enableStatus: "enabled",
+    workStatus: "idle",
+    healthStatus: "needs_reauth",
+    syncState: "syncing",
+  });
+  expect(response.items[1]).toMatchObject({
+    enableStatus: "disabled",
+    workStatus: "idle",
+    healthStatus: "normal",
+    syncState: "idle",
+  });
+  expect(response.items[2]).toMatchObject({
+    enableStatus: "enabled",
+    workStatus: "unavailable",
+    healthStatus: "upstream_rejected",
+    syncState: "idle",
+  });
+});
+it("normalizes current forward proxy fields from upstream account payloads", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          writesEnabled: true,
+          groups: [],
+          hasUngroupedAccounts: false,
+          items: [
+            {
+              id: 21,
+              kind: "oauth_codex",
+              provider: "codex",
+              displayName: "Assigned OAuth",
+              isMother: false,
+              status: "active",
+              enabled: true,
+              currentForwardProxyKey: "jp-edge-01",
+              currentForwardProxyDisplayName: "JP Edge 01",
+              currentForwardProxyState: "assigned",
+            },
+            {
+              id: 22,
+              kind: "api_key_codex",
+              provider: "codex",
+              displayName: "Pending API Key",
+              isMother: false,
+              status: "active",
+              enabled: true,
+              currentForwardProxyState: "pending",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const response = await fetchUpstreamAccounts();
+
+  expect(response.items[0]).toMatchObject({
+    currentForwardProxyKey: "jp-edge-01",
+    currentForwardProxyDisplayName: "JP Edge 01",
+    currentForwardProxyState: "assigned",
+  });
+  expect(response.items[1]).toMatchObject({
+    currentForwardProxyKey: null,
+    currentForwardProxyDisplayName: null,
+    currentForwardProxyState: "pending",
+  });
+});
+it("saves pool routing settings through the dedicated endpoint", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(_input)).toContain("/api/pool/routing-settings");
+    expect(init?.method).toBe("PUT");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      apiKey: "pool-secret",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 180,
+        compactFirstByteTimeoutSecs: 420,
+        imageFirstByteTimeoutSecs: 480,
+        responsesStreamTimeoutSecs: 360,
+        compactStreamTimeoutSecs: 540,
+      },
+      cacheHitProtection: {
+        enabled: true,
+        lowHitRateThresholdPercent: 15,
+        overflowMode: "reroute",
+      },
+    });
+    return new Response(
+      JSON.stringify({
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••••cret",
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 180,
+          compactFirstByteTimeoutSecs: 420,
+          imageFirstByteTimeoutSecs: 480,
+          responsesStreamTimeoutSecs: 360,
+          compactStreamTimeoutSecs: 540,
+        },
+        cacheHitProtection: {
+          enabled: true,
+          lowHitRateThresholdPercent: 15,
+          overflowMode: "reroute",
+          minimumInputTokens: 3840,
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  const response = await updatePoolRoutingSettings({
+    apiKey: "pool-secret",
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 180,
+      compactFirstByteTimeoutSecs: 420,
+      imageFirstByteTimeoutSecs: 480,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
+    },
+    cacheHitProtection: {
+      enabled: true,
+      lowHitRateThresholdPercent: 15,
+      overflowMode: "reroute",
+    },
+  });
+
+  expect(response.apiKeyConfigured).toBe(true);
+  expect(response.writesEnabled).toBe(true);
+  expect(response.maskedApiKey).toBe("pool-live••••••cret");
+  expect(response.maintenance).toEqual({
+    primarySyncIntervalSecs: 300,
+    secondarySyncIntervalSecs: 1800,
+    priorityAvailableAccountCap: 100,
+  });
+  expect(response.timeouts).toEqual({
+    responsesFirstByteTimeoutSecs: 180,
+    compactFirstByteTimeoutSecs: 420,
+    imageFirstByteTimeoutSecs: 480,
+    responsesStreamTimeoutSecs: 360,
+    compactStreamTimeoutSecs: 540,
+  });
+  expect(response.cacheHitProtection).toEqual({
+    enabled: true,
+    lowHitRateThresholdPercent: 15,
+    overflowMode: "reroute",
+    minimumInputTokens: 3840,
+  });
+});
+it("normalizes sticky key conversations for one upstream account", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain("/api/pool/upstream-accounts/101/sticky-keys?limit=20");
+      return new Response(
+        JSON.stringify({
+          rangeStart: "2026-03-10T00:00:00Z",
+          rangeEnd: "2026-03-11T00:00:00Z",
+          selectionMode: "count",
+          selectedLimit: 20,
+          selectedActivityHours: null,
+          implicitFilter: {
+            kind: null,
+            filteredCount: 0,
+          },
+          conversations: [
+            {
+              stickyKey: "sticky-001",
+              requestCount: 2,
+              totalTokens: 30,
+              totalCost: 0.12,
+              createdAt: "2026-03-10T01:00:00Z",
+              lastActivityAt: "2026-03-10T02:00:00Z",
+              recentInvocations: [
+                {
+                  id: 101,
+                  invokeId: "sticky-invoke-101",
+                  occurredAt: "2026-03-10T02:00:00Z",
+                  status: "completed",
+                  failureClass: "none",
+                  routeMode: "sticky",
+                  model: "gpt-5.4",
+                  totalTokens: 30,
+                  cost: 0.12,
+                  proxyDisplayName: "Proxy Alpha",
+                  upstreamAccountId: 101,
+                  upstreamAccountName: "Pool Alpha",
+                  endpoint: "/v1/responses",
+                  source: "proxy",
+                  inputTokens: 18,
+                  outputTokens: 12,
+                  cacheInputTokens: 4,
+                  reasoningTokens: 2,
+                  reasoningEffort: "high",
+                  responseContentEncoding: "br",
+                  requestedServiceTier: "flex",
+                  serviceTier: "scale",
+                  tReqReadMs: 10,
+                  tReqParseMs: 11,
+                  tUpstreamConnectMs: 12,
+                  tUpstreamTtfbMs: 13,
+                  tUpstreamStreamMs: 14,
+                  tRespParseMs: 15,
+                  tPersistMs: 16,
+                  tTotalMs: 91,
+                },
+              ],
+              last24hRequests: [
+                {
+                  occurredAt: "2026-03-10T02:00:00Z",
+                  status: "success",
+                  isSuccess: true,
+                  outcome: "success",
+                  requestTokens: 30,
+                  cumulativeTokens: 30,
+                },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const response = await fetchUpstreamStickyConversations(101, {
+    mode: "count",
+    limit: 20,
+  });
+
+  expect(response.selectionMode).toBe("count");
+  expect(response.selectedLimit).toBe(20);
+  expect(response.selectedActivityHours).toBeNull();
+  expect(response.conversations).toHaveLength(1);
+  expect(response.conversations[0]?.stickyKey).toBe("sticky-001");
+  expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe("sticky-invoke-101");
+  expect(response.conversations[0]?.last24hRequests[0]?.cumulativeTokens).toBe(30);
+  expect(response.conversations[0]?.last24hRequests[0]?.outcome).toBe("success");
+});
+it("sends activity-window prompt cache conversation queries and normalizes metadata", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    expect(String(input)).toContain("/api/stats/prompt-cache-conversations?activityHours=3");
+    return new Response(
+      JSON.stringify({
+        rangeStart: "2026-03-10T21:00:00Z",
+        rangeEnd: "2026-03-11T00:00:00Z",
+        selectionMode: "activityWindow",
+        selectedLimit: null,
+        selectedActivityHours: 3,
+        implicitFilter: {
+          kind: "cappedTo50",
+          filteredCount: 7,
+        },
+        conversations: [
+          {
+            promptCacheKey: "pck-001",
+            requestCount: 2,
+            totalTokens: 30,
+            totalCost: 0.12,
+            createdAt: "2026-03-10T22:00:00Z",
+            lastActivityAt: "2026-03-10T23:00:00Z",
+            manualBinding: {
+              bindingKind: "upstreamAccount",
+              groupName: null,
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            },
+            upstreamAccounts: [
+              {
+                upstreamAccountId: 42,
+                upstreamAccountName: "Pool Alpha",
+                requestCount: 2,
+                totalTokens: 30,
+                totalCost: 0.12,
+                lastActivityAt: "2026-03-10T23:00:00Z",
+              },
+            ],
+            recentInvocations: [
+              {
+                id: 17,
+                invokeId: "invoke-17",
+                occurredAt: "2026-03-10T23:00:00Z",
+                status: "completed",
+                failureClass: "none",
+                routeMode: "pool",
+                model: "gpt-5.4",
+                totalTokens: 30,
+                cost: 0.12,
+                proxyDisplayName: "Proxy Alpha",
+                upstreamAccountId: 42,
+                upstreamAccountName: "Pool Alpha",
+                upstreamAccountPlanType: "enterprise",
+                endpoint: "/v1/responses",
+                source: "proxy",
+                inputTokens: 18,
+                outputTokens: 12,
+                cacheInputTokens: 6,
+                reasoningTokens: 3,
+                reasoningEffort: "high",
+                errorMessage: "[upstream_response_failed] preview error",
+                downstreamStatusCode: 502,
+                downstreamErrorMessage:
+                  "pool upstream responded with 502: failed to contact oauth codex upstream",
+                failureKind: "upstream_response_failed",
+                isActionable: true,
+                responseContentEncoding: "br",
+                requestedServiceTier: "flex",
+                serviceTier: "scale",
+                tReqReadMs: 10,
+                tReqParseMs: 11,
+                tUpstreamConnectMs: 12,
+                tUpstreamTtfbMs: 13,
+                tUpstreamStreamMs: 14,
+                tRespParseMs: 15,
+                tPersistMs: 16,
+                tTotalMs: 91,
+              },
+            ],
+            last24hRequests: [],
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  const response = await fetchPromptCacheConversations({
+    mode: "activityWindow",
+    activityHours: 3,
+  });
+
+  expect(response.selectionMode).toBe("activityWindow");
+  expect(response.selectedActivityHours).toBe(3);
+  expect(response.implicitFilter.kind).toBe("cappedTo50");
+  expect(response.implicitFilter.filteredCount).toBe(7);
+  expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
+  expect(response.conversations[0]?.manualBinding).toEqual({
+    bindingKind: "upstreamAccount",
+    groupName: null,
+    upstreamAccountId: 42,
+    upstreamAccountName: "Pool Alpha",
+  });
+  expect(response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName).toBe("Pool Alpha");
+  expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe("invoke-17");
+  expect(response.conversations[0]?.recentInvocations[0]?.failureClass).toBe("none");
+  expect(response.conversations[0]?.recentInvocations[0]?.routeMode).toBe("pool");
+  expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe("/v1/responses");
+  expect(response.conversations[0]?.recentInvocations[0]?.upstreamAccountPlanType).toBe(
+    "enterprise",
+  );
+  expect(response.conversations[0]?.recentInvocations[0]?.source).toBe("proxy");
+  expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(18);
+  expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(12);
+  expect(response.conversations[0]?.recentInvocations[0]?.cacheInputTokens).toBe(6);
+  expect(response.conversations[0]?.recentInvocations[0]?.reasoningTokens).toBe(3);
+  expect(response.conversations[0]?.recentInvocations[0]?.reasoningEffort).toBe("high");
+  expect(response.conversations[0]?.recentInvocations[0]?.failureKind).toBe(
+    "upstream_response_failed",
+  );
+  expect(response.conversations[0]?.recentInvocations[0]?.downstreamStatusCode).toBe(502);
+  expect(response.conversations[0]?.recentInvocations[0]?.downstreamErrorMessage).toBe(
+    "pool upstream responded with 502: failed to contact oauth codex upstream",
+  );
+  expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(true);
+  expect(response.conversations[0]?.recentInvocations[0]?.responseContentEncoding).toBe("br");
+  expect(response.conversations[0]?.recentInvocations[0]?.requestedServiceTier).toBe("flex");
+  expect(response.conversations[0]?.recentInvocations[0]?.serviceTier).toBe("scale");
+  expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(10);
+  expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(11);
+  expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs).toBe(12);
+  expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs).toBe(13);
+  expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs).toBe(14);
+  expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(15);
+  expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(16);
+  expect(response.conversations[0]?.recentInvocations[0]?.tTotalMs).toBe(91);
+});
+it("supports the precise 5-minute working-conversation query contract", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    expect(String(input)).toContain("/api/stats/prompt-cache-conversations?activityMinutes=5");
+    return new Response(
+      JSON.stringify({
+        rangeStart: "2026-03-10T23:55:00Z",
+        rangeEnd: "2026-03-11T00:00:00Z",
+        selectionMode: "activityWindow",
+        selectedLimit: null,
+        selectedActivityHours: null,
+        selectedActivityMinutes: 5,
+        implicitFilter: {
+          kind: null,
+          filteredCount: 0,
+        },
+        conversations: [],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  const response = await fetchPromptCacheConversations({
+    mode: "activityWindow",
+    activityMinutes: 5,
+  });
+
+  expect(response.selectionMode).toBe("activityWindow");
+  expect(response.selectedActivityHours).toBeNull();
+  expect(response.selectedActivityMinutes).toBe(5);
+});
+it("reads and updates prompt-cache conversation bindings by encoded key", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    expect(url).toContain("/api/stats/prompt-cache-conversation-bindings/pck%2Fwith%20space");
+    if (init?.method === "PATCH") {
+      expect(JSON.parse(String(init.body))).toEqual({
+        bindingKind: "upstreamAccount",
+        upstreamAccountId: 42,
+      });
+      return new Response(
+        JSON.stringify({
+          promptCacheKey: "pck/with space",
+          bindingKind: "upstreamAccount",
+          groupName: null,
+          upstreamAccountId: 42,
+          upstreamAccountName: "Pool Alpha",
+          hasEncryptedSessionOwner: true,
+          encryptedOwnerAccountId: 17,
+          encryptedOwnerAccountName: "Owner One",
+          encryptedOwnerGroupName: "prod",
+          updatedAt: "2026-03-10T23:59:00Z",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        promptCacheKey: "pck/with space",
+        bindingKind: "none",
+        groupName: null,
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        hasEncryptedSessionOwner: false,
+        encryptedOwnerAccountId: null,
+        encryptedOwnerAccountName: null,
+        encryptedOwnerGroupName: null,
+        updatedAt: null,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  const initial = await fetchPromptCacheConversationBinding("pck/with space");
+  const updated = await updatePromptCacheConversationBinding("pck/with space", {
+    bindingKind: "upstreamAccount",
+    upstreamAccountId: 42,
+  });
+
+  expect(initial.bindingKind).toBe("none");
+  expect(initial.hasEncryptedSessionOwner).toBe(false);
+  expect(updated.bindingKind).toBe("upstreamAccount");
+  expect(updated.upstreamAccountName).toBe("Pool Alpha");
+  expect(updated.encryptedOwnerAccountName).toBe("Owner One");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+it("submits bulk prompt-cache manual binding clears as bind-none", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(input)).toBe("/api/stats/prompt-cache-conversation-bindings/bulk-actions");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      action: "bind",
+      bindingKind: "none",
+      promptCacheKeys: ["pck-one"],
+    });
+    return new Response(
+      JSON.stringify({
+        action: "bind",
+        totalRequested: 1,
+        totalSucceeded: 1,
+        totalFailed: 0,
+        items: [
+          {
+            promptCacheKey: "pck-one",
+            ok: true,
+            error: null,
+            binding: {
+              promptCacheKey: "pck-one",
+              bindingKind: "none",
+              groupName: null,
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+              hasEncryptedSessionOwner: true,
+              encryptedOwnerAccountId: 21,
+              encryptedOwnerAccountName: "Owner One",
+              encryptedOwnerGroupName: "CIII",
+              updatedAt: null,
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  const response = await bulkUpdatePromptCacheConversationBindings({
+    action: "bind",
+    bindingKind: "none",
+    promptCacheKeys: ["pck-one"],
+  });
+
+  expect(response.action).toBe("bind");
+  expect(response.totalSucceeded).toBe(1);
+  expect(response.items[0]?.binding?.bindingKind).toBe("none");
+  expect(response.items[0]?.binding?.hasEncryptedSessionOwner).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

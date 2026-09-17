@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import LivePage from "./Live";
 
 const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";
@@ -18,39 +18,30 @@ const componentMocks = vi.hoisted(() => ({
   promptCacheConversationTable: vi.fn(),
 }));
 const storage = new Map<string, string>();
-
 vi.mock("../hooks/useForwardProxyLiveStats", () => ({
   useForwardProxyLiveStats: hookMocks.useForwardProxyLiveStats,
 }));
-
 vi.mock("../hooks/useInvocations", () => ({
   useInvocationStream: hookMocks.useInvocationStream,
 }));
-
 vi.mock("../hooks/usePromptCacheConversations", () => ({
   usePromptCacheConversations: hookMocks.usePromptCacheConversations,
 }));
-
 vi.mock("../hooks/useModelRoutingLive", () => ({
   useModelRoutingLive: hookMocks.useModelRoutingLive,
 }));
-
 vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
 }));
-
 vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
 }));
-
 vi.mock("../features/forward-proxy/ForwardProxyLiveTable", () => ({
   ForwardProxyLiveTable: () => <div data-testid="forward-proxy-live-table" />,
 }));
-
 vi.mock("../features/live/ModelRoutingLivePanel", () => ({
   ModelRoutingLivePanel: () => <div data-testid="model-routing-live-panel" />,
 }));
-
 vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
   PromptCacheConversationTable: (props: {
     stats: {
@@ -82,16 +73,13 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
     );
   },
 }));
-
 vi.mock("../features/invocations/InvocationChart", () => ({
   InvocationChart: () => <div data-testid="invocation-chart" />,
 }));
-
 vi.mock("../features/invocations/InvocationTable", () => ({
   InvocationTable: () => <div data-testid="invocation-table" />,
   InvocationCardList: () => <div data-testid="invocation-table" />,
 }));
-
 vi.mock("../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
@@ -149,10 +137,8 @@ vi.mock("../i18n", () => ({
     },
   }),
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -208,7 +194,6 @@ beforeAll(() => {
     });
   }
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -219,7 +204,6 @@ afterEach(() => {
   root = null;
   vi.clearAllMocks();
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -228,13 +212,11 @@ function render(ui: React.ReactNode) {
     root?.render(<MemoryRouter>{ui}</MemoryRouter>);
   });
 }
-
 function rerender(ui: React.ReactNode) {
   act(() => {
     root?.render(<MemoryRouter>{ui}</MemoryRouter>);
   });
 }
-
 function pressElement(element: HTMLElement) {
   act(() => {
     if (typeof PointerEvent === "function") {
@@ -246,7 +228,6 @@ function pressElement(element: HTMLElement) {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 }
-
 function setupLivePageHooks(activeTab: string | null = "conversations") {
   if (activeTab) storage.set(LIVE_TAB_STORAGE_KEY, activeTab);
   hookMocks.useForwardProxyLiveStats.mockReturnValue({
@@ -276,7 +257,6 @@ function setupLivePageHooks(activeTab: string | null = "conversations") {
     refresh: vi.fn(),
   });
 }
-
 function getPromptCacheSelectionTrigger() {
   const select = host?.querySelector('[data-testid="live-prompt-cache-selection"]');
   if (!(select instanceof HTMLButtonElement)) {
@@ -284,7 +264,6 @@ function getPromptCacheSelectionTrigger() {
   }
   return select;
 }
-
 function remount(ui: React.ReactNode) {
   act(() => {
     root?.unmount();
@@ -294,7 +273,6 @@ function remount(ui: React.ReactNode) {
   root = null;
   render(ui);
 }
-
 function buildConversationStats(promptCacheKeys: string[]) {
   return {
     rangeStart: "2026-03-02T00:00:00Z",
@@ -316,7 +294,6 @@ function buildConversationStats(promptCacheKeys: string[]) {
     })),
   };
 }
-
 function getPromptCacheExpandAllButton() {
   const button = host?.querySelector('[data-testid="live-prompt-cache-expand-all"]');
   if (!(button instanceof HTMLButtonElement)) {
@@ -324,7 +301,6 @@ function getPromptCacheExpandAllButton() {
   }
   return button;
 }
-
 function getPromptCacheExpandAllButtonIcon() {
   const icon = host?.querySelector('[data-testid="live-prompt-cache-expand-all-icon"]');
   if (!(icon instanceof HTMLElement)) {
@@ -332,7 +308,6 @@ function getPromptCacheExpandAllButtonIcon() {
   }
   return icon;
 }
-
 function getPromptCacheConversationTable() {
   const table = host?.querySelector('[data-testid="prompt-cache-conversation-table"]');
   if (!(table instanceof HTMLDivElement)) {
@@ -340,275 +315,261 @@ function getPromptCacheConversationTable() {
   }
   return table;
 }
+it("defaults to routing when no saved tab is present", () => {
+  setupLivePageHooks(null);
 
-describe("LivePage", () => {
-  it("defaults to routing when no saved tab is present", () => {
-    setupLivePageHooks(null);
+  render(<LivePage />);
 
-    render(<LivePage />);
+  expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
+  expect(host?.querySelector('[data-testid="live-prompt-cache-selection"]')).toBeNull();
+  expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+    {
+      window: "1h",
+      limit: 100,
+    },
+    true,
+  );
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "count",
+      limit: 50,
+    },
+    false,
+  );
+});
+it("falls back to routing when the stored tab is invalid", () => {
+  setupLivePageHooks(null);
+  storage.set(LIVE_TAB_STORAGE_KEY, "removed-tab");
 
-    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
-    expect(host?.querySelector('[data-testid="live-prompt-cache-selection"]')).toBeNull();
-    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
-      {
-        window: "1h",
-        limit: 100,
-      },
-      true,
-    );
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "count",
-        limit: 50,
-      },
-      false,
-    );
+  render(<LivePage />);
+
+  expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
+});
+it("uses the shared segmented control for four ordered content-width live workspace tabs", () => {
+  setupLivePageHooks(null);
+
+  render(<LivePage />);
+
+  const tabList = host?.querySelector('[data-testid="live-view-tabs"] [role="tablist"]');
+  const tabs = tabList?.querySelectorAll('[role="tab"]');
+  const routingTab = host?.querySelector("#live-workspace-tab-routing");
+  const routingPanel = host?.querySelector("#live-workspace-panel-routing");
+
+  expect(tabList?.className).toContain("segmented-control");
+  expect(tabList?.className).toContain("w-fit");
+  expect(tabList?.classList.contains("w-full")).toBe(false);
+  expect(tabs).toHaveLength(4);
+  expect(Array.from(tabs ?? []).map((tab) => tab.textContent)).toEqual([
+    "对话",
+    "最新记录",
+    "路由",
+    "代理",
+  ]);
+  expect(routingTab?.getAttribute("data-active")).toBe("true");
+  expect(routingTab?.classList.contains("w-full")).toBe(false);
+  expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
+  expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
+});
+it("stops routing updates after switching tabs and persists the selected tab", () => {
+  setupLivePageHooks(null);
+
+  render(<LivePage />);
+
+  const conversationsTab = host?.querySelector("#live-workspace-tab-conversations");
+  if (!(conversationsTab instanceof HTMLElement)) {
+    throw new Error("missing conversations tab");
+  }
+  pressElement(conversationsTab);
+
+  expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
+  expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
+  expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
+    {
+      window: "1h",
+      limit: 100,
+    },
+    false,
+  );
+  expect(window.localStorage.setItem).toHaveBeenCalledWith(LIVE_TAB_STORAGE_KEY, "conversations");
+});
+it("defaults to 50 conversations when storage is empty", () => {
+  setupLivePageHooks();
+
+  render(<LivePage />);
+
+  const select = getPromptCacheSelectionTrigger();
+
+  expect(window.localStorage.getItem).toHaveBeenCalledWith(PROMPT_CACHE_SELECTION_STORAGE_KEY);
+  expect(select.textContent).toContain("50 个对话");
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "count",
+      limit: 50,
+    },
+    true,
+  );
+});
+it("falls back to 50 conversations when storage contains an invalid value", () => {
+  setupLivePageHooks();
+  storage.set(PROMPT_CACHE_SELECTION_STORAGE_KEY, "count:999");
+
+  render(<LivePage />);
+
+  const select = getPromptCacheSelectionTrigger();
+
+  expect(select.textContent).toContain("50 个对话");
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "count",
+      limit: 50,
+    },
+    true,
+  );
+});
+it("persists the selected count option and restores it after remount", () => {
+  setupLivePageHooks();
+
+  render(<LivePage />);
+
+  const select = getPromptCacheSelectionTrigger();
+
+  expect(host?.querySelector("select")).toBeNull();
+
+  pressElement(select);
+  const option = Array.from(document.body.querySelectorAll("[role='option']")).find(
+    (candidate) => candidate instanceof HTMLElement && candidate.textContent?.includes("20 个对话"),
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error("missing count option");
+  }
+  pressElement(option);
+
+  expect(window.localStorage.setItem).toHaveBeenCalledWith(
+    PROMPT_CACHE_SELECTION_STORAGE_KEY,
+    "count:20",
+  );
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "count",
+      limit: 20,
+    },
+    true,
+  );
+
+  remount(<LivePage />);
+
+  const restoredSelect = getPromptCacheSelectionTrigger();
+  expect(restoredSelect.textContent).toContain("20 个对话");
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "count",
+      limit: 20,
+    },
+    true,
+  );
+});
+it("restores a stored activity-window selection on initial render", () => {
+  setupLivePageHooks();
+  storage.set(PROMPT_CACHE_SELECTION_STORAGE_KEY, "activityWindow:6");
+
+  render(<LivePage />);
+
+  const select = getPromptCacheSelectionTrigger();
+  expect(select.textContent).toContain("近 6 小时活动");
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "activityWindow",
+      activityHours: 6,
+    },
+    true,
+  );
+});
+it("offers mutually exclusive count and activity-window prompt-cache filters", () => {
+  setupLivePageHooks();
+
+  render(<LivePage />);
+
+  const select = getPromptCacheSelectionTrigger();
+
+  pressElement(select);
+  const option = Array.from(document.body.querySelectorAll("[role='option']")).find(
+    (candidate) =>
+      candidate instanceof HTMLElement && candidate.textContent?.includes("近 6 小时活动"),
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error("missing activity window option");
+  }
+  pressElement(option);
+
+  expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
+    {
+      mode: "activityWindow",
+      activityHours: 6,
+    },
+    true,
+  );
+  expect(window.localStorage.setItem).toHaveBeenCalledWith(
+    PROMPT_CACHE_SELECTION_STORAGE_KEY,
+    "activityWindow:6",
+  );
+});
+it("toggles expand-all for the current visible prompt cache conversations", () => {
+  setupLivePageHooks();
+  hookMocks.usePromptCacheConversations.mockReturnValue({
+    stats: buildConversationStats(["pck-1", "pck-2"]),
+    isLoading: false,
+    error: null,
   });
 
-  it("falls back to routing when the stored tab is invalid", () => {
-    setupLivePageHooks(null);
-    storage.set(LIVE_TAB_STORAGE_KEY, "removed-tab");
+  render(<LivePage />);
 
-    render(<LivePage />);
+  const expandAllButton = getPromptCacheExpandAllButton();
+  const expandAllIcon = getPromptCacheExpandAllButtonIcon();
+  const table = getPromptCacheConversationTable();
 
-    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeTruthy();
-  });
+  expect(host?.textContent).toContain("对话");
+  expect(expandAllButton.textContent).toContain("展开所有记录");
+  expect(expandAllIcon.dataset.iconName).toBe("chevron-down");
+  expect(table.dataset.expanded).toBe("");
 
-  it("uses the shared segmented control for four ordered content-width live workspace tabs", () => {
-    setupLivePageHooks(null);
+  pressElement(expandAllButton);
 
-    render(<LivePage />);
+  expect(expandAllButton.textContent).toContain("收起所有记录");
+  expect(expandAllIcon.dataset.iconName).toBe("chevron-up");
+  expect(table.dataset.expanded).toBe("pck-1,pck-2");
 
-    const tabList = host?.querySelector('[data-testid="live-view-tabs"] [role="tablist"]');
-    const tabs = tabList?.querySelectorAll('[role="tab"]');
-    const routingTab = host?.querySelector("#live-workspace-tab-routing");
-    const routingPanel = host?.querySelector("#live-workspace-panel-routing");
+  pressElement(expandAllButton);
 
-    expect(tabList?.className).toContain("segmented-control");
-    expect(tabList?.className).toContain("w-fit");
-    expect(tabList?.classList.contains("w-full")).toBe(false);
-    expect(tabs).toHaveLength(4);
-    expect(Array.from(tabs ?? []).map((tab) => tab.textContent)).toEqual([
-      "对话",
-      "最新记录",
-      "路由",
-      "代理",
-    ]);
-    expect(routingTab?.getAttribute("data-active")).toBe("true");
-    expect(routingTab?.classList.contains("w-full")).toBe(false);
-    expect(routingTab?.getAttribute("aria-controls")).toBe("live-workspace-panel-routing");
-    expect(routingPanel?.getAttribute("aria-labelledby")).toBe("live-workspace-tab-routing");
-  });
+  expect(expandAllButton.textContent).toContain("展开所有记录");
+  expect(expandAllIcon.dataset.iconName).toBe("chevron-down");
+  expect(table.dataset.expanded).toBe("");
+});
+it("keeps expanded rows that stay visible and prunes keys removed by refreshed results", () => {
+  setupLivePageHooks();
+  let currentConversationStats = buildConversationStats(["pck-1", "pck-2"]);
+  hookMocks.usePromptCacheConversations.mockImplementation(() => ({
+    stats: currentConversationStats,
+    isLoading: false,
+    error: null,
+  }));
 
-  it("stops routing updates after switching tabs and persists the selected tab", () => {
-    setupLivePageHooks(null);
+  render(<LivePage />);
 
-    render(<LivePage />);
+  const toggleFirstButton = host?.querySelector(
+    '[data-testid="prompt-cache-conversation-toggle-first"]',
+  );
+  if (!(toggleFirstButton instanceof HTMLButtonElement)) {
+    throw new Error("missing table toggle button");
+  }
 
-    const conversationsTab = host?.querySelector("#live-workspace-tab-conversations");
-    if (!(conversationsTab instanceof HTMLElement)) {
-      throw new Error("missing conversations tab");
-    }
-    pressElement(conversationsTab);
+  pressElement(toggleFirstButton);
+  expect(getPromptCacheConversationTable().dataset.expanded).toBe("pck-1");
 
-    expect(host?.querySelector('[data-testid="model-routing-live-panel"]')).toBeNull();
-    expect(getPromptCacheSelectionTrigger().textContent).toContain("50 个对话");
-    expect(hookMocks.useModelRoutingLive).toHaveBeenLastCalledWith(
-      {
-        window: "1h",
-        limit: 100,
-      },
-      false,
-    );
-    expect(window.localStorage.setItem).toHaveBeenCalledWith(LIVE_TAB_STORAGE_KEY, "conversations");
-  });
+  currentConversationStats = buildConversationStats(["pck-1", "pck-3"]);
+  rerender(<LivePage />);
+  expect(getPromptCacheConversationTable().dataset.expanded).toBe("pck-1");
 
-  it("defaults to 50 conversations when storage is empty", () => {
-    setupLivePageHooks();
-
-    render(<LivePage />);
-
-    const select = getPromptCacheSelectionTrigger();
-
-    expect(window.localStorage.getItem).toHaveBeenCalledWith(PROMPT_CACHE_SELECTION_STORAGE_KEY);
-    expect(select.textContent).toContain("50 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "count",
-        limit: 50,
-      },
-      true,
-    );
-  });
-
-  it("falls back to 50 conversations when storage contains an invalid value", () => {
-    setupLivePageHooks();
-    storage.set(PROMPT_CACHE_SELECTION_STORAGE_KEY, "count:999");
-
-    render(<LivePage />);
-
-    const select = getPromptCacheSelectionTrigger();
-
-    expect(select.textContent).toContain("50 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "count",
-        limit: 50,
-      },
-      true,
-    );
-  });
-
-  it("persists the selected count option and restores it after remount", () => {
-    setupLivePageHooks();
-
-    render(<LivePage />);
-
-    const select = getPromptCacheSelectionTrigger();
-
-    expect(host?.querySelector("select")).toBeNull();
-
-    pressElement(select);
-    const option = Array.from(document.body.querySelectorAll("[role='option']")).find(
-      (candidate) =>
-        candidate instanceof HTMLElement && candidate.textContent?.includes("20 个对话"),
-    );
-    if (!(option instanceof HTMLElement)) {
-      throw new Error("missing count option");
-    }
-    pressElement(option);
-
-    expect(window.localStorage.setItem).toHaveBeenCalledWith(
-      PROMPT_CACHE_SELECTION_STORAGE_KEY,
-      "count:20",
-    );
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "count",
-        limit: 20,
-      },
-      true,
-    );
-
-    remount(<LivePage />);
-
-    const restoredSelect = getPromptCacheSelectionTrigger();
-    expect(restoredSelect.textContent).toContain("20 个对话");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "count",
-        limit: 20,
-      },
-      true,
-    );
-  });
-
-  it("restores a stored activity-window selection on initial render", () => {
-    setupLivePageHooks();
-    storage.set(PROMPT_CACHE_SELECTION_STORAGE_KEY, "activityWindow:6");
-
-    render(<LivePage />);
-
-    const select = getPromptCacheSelectionTrigger();
-    expect(select.textContent).toContain("近 6 小时活动");
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "activityWindow",
-        activityHours: 6,
-      },
-      true,
-    );
-  });
-
-  it("offers mutually exclusive count and activity-window prompt-cache filters", () => {
-    setupLivePageHooks();
-
-    render(<LivePage />);
-
-    const select = getPromptCacheSelectionTrigger();
-
-    pressElement(select);
-    const option = Array.from(document.body.querySelectorAll("[role='option']")).find(
-      (candidate) =>
-        candidate instanceof HTMLElement && candidate.textContent?.includes("近 6 小时活动"),
-    );
-    if (!(option instanceof HTMLElement)) {
-      throw new Error("missing activity window option");
-    }
-    pressElement(option);
-
-    expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith(
-      {
-        mode: "activityWindow",
-        activityHours: 6,
-      },
-      true,
-    );
-    expect(window.localStorage.setItem).toHaveBeenCalledWith(
-      PROMPT_CACHE_SELECTION_STORAGE_KEY,
-      "activityWindow:6",
-    );
-  });
-
-  it("toggles expand-all for the current visible prompt cache conversations", () => {
-    setupLivePageHooks();
-    hookMocks.usePromptCacheConversations.mockReturnValue({
-      stats: buildConversationStats(["pck-1", "pck-2"]),
-      isLoading: false,
-      error: null,
-    });
-
-    render(<LivePage />);
-
-    const expandAllButton = getPromptCacheExpandAllButton();
-    const expandAllIcon = getPromptCacheExpandAllButtonIcon();
-    const table = getPromptCacheConversationTable();
-
-    expect(host?.textContent).toContain("对话");
-    expect(expandAllButton.textContent).toContain("展开所有记录");
-    expect(expandAllIcon.dataset.iconName).toBe("chevron-down");
-    expect(table.dataset.expanded).toBe("");
-
-    pressElement(expandAllButton);
-
-    expect(expandAllButton.textContent).toContain("收起所有记录");
-    expect(expandAllIcon.dataset.iconName).toBe("chevron-up");
-    expect(table.dataset.expanded).toBe("pck-1,pck-2");
-
-    pressElement(expandAllButton);
-
-    expect(expandAllButton.textContent).toContain("展开所有记录");
-    expect(expandAllIcon.dataset.iconName).toBe("chevron-down");
-    expect(table.dataset.expanded).toBe("");
-  });
-
-  it("keeps expanded rows that stay visible and prunes keys removed by refreshed results", () => {
-    setupLivePageHooks();
-    let currentConversationStats = buildConversationStats(["pck-1", "pck-2"]);
-    hookMocks.usePromptCacheConversations.mockImplementation(() => ({
-      stats: currentConversationStats,
-      isLoading: false,
-      error: null,
-    }));
-
-    render(<LivePage />);
-
-    const toggleFirstButton = host?.querySelector(
-      '[data-testid="prompt-cache-conversation-toggle-first"]',
-    );
-    if (!(toggleFirstButton instanceof HTMLButtonElement)) {
-      throw new Error("missing table toggle button");
-    }
-
-    pressElement(toggleFirstButton);
-    expect(getPromptCacheConversationTable().dataset.expanded).toBe("pck-1");
-
-    currentConversationStats = buildConversationStats(["pck-1", "pck-3"]);
-    rerender(<LivePage />);
-    expect(getPromptCacheConversationTable().dataset.expanded).toBe("pck-1");
-
-    currentConversationStats = buildConversationStats(["pck-3"]);
-    rerender(<LivePage />);
-    expect(getPromptCacheConversationTable().dataset.expanded).toBe("");
-  });
+  currentConversationStats = buildConversationStats(["pck-3"]);
+  rerender(<LivePage />);
+  expect(getPromptCacheConversationTable().dataset.expanded).toBe("");
 });

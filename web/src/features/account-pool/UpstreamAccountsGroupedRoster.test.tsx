@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
 const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
@@ -14,7 +14,6 @@ const virtualizerMocks = vi.hoisted(() => ({
     }
   >,
 }));
-
 vi.mock("@tanstack/react-virtual", () => ({
   useWindowVirtualizer: ({
     count,
@@ -83,7 +82,6 @@ import {
 } from "./UpstreamAccountsGroupedRoster";
 
 const OUTER_OVERSCAN = 3;
-
 function outerVirtualizerMetrics() {
   return (
     virtualizerMocks.byOverscan[OUTER_OVERSCAN] ?? {
@@ -93,25 +91,21 @@ function outerVirtualizerMetrics() {
     }
   );
 }
-
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
   sourceTagNames: [],
 };
-
 const tags: AccountTagSummary[] = [
   { id: 1, name: "analytics", routingRule: defaultEffectiveRoutingRule },
   { id: 2, name: "reporting", routingRule: defaultEffectiveRoutingRule },
 ];
-
 const extendedTags: AccountTagSummary[] = [
   ...tags,
   { id: 3, name: "priority-lane", routingRule: defaultEffectiveRoutingRule },
   { id: 4, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
 ];
-
 const labels = {
   selectPage: "Select current page",
   selectRow: (name: string) => `Select ${name}`,
@@ -171,7 +165,6 @@ const labels = {
   policyConcurrency: (count: number) => `Conc ${count}`,
   policyRetry: (count: number) => `Retry ${count}`,
 };
-
 const groupLabels = {
   count: (count: number) => `${count} accounts`,
   concurrency: (value: number) => `Concurrency ${value}`,
@@ -196,7 +189,6 @@ const groupLabels = {
   policyConcurrency: (count: number) => `Conc ${count}`,
   policyRetry: (count: number) => `Retry ${count}`,
 };
-
 function usage(requestCount: number, totalTokens: number, totalCost: number) {
   const cacheInputTokens = Math.round(totalTokens * 0.1);
   const inputTokens = Math.round(totalTokens * 0.55);
@@ -210,7 +202,6 @@ function usage(requestCount: number, totalTokens: number, totalCost: number) {
     cacheInputTokens,
   };
 }
-
 function makeItem(
   id: number,
   overrides: Partial<UpstreamAccountSummary> = {},
@@ -274,7 +265,6 @@ function makeItem(
     ...overrides,
   };
 }
-
 function makeGroup(
   id: string,
   items: UpstreamAccountSummary[],
@@ -294,10 +284,8 @@ function makeGroup(
     ...overrides,
   };
 }
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 afterEach(() => {
   virtualizerMocks.visibleIndexes = null;
   virtualizerMocks.byOverscan = {};
@@ -308,7 +296,6 @@ afterEach(() => {
   host = null;
   root = null;
 });
-
 function createRosterProps(
   groups: UpstreamAccountsGroupedRosterGroup[],
   overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
@@ -327,14 +314,12 @@ function createRosterProps(
     ...overrides,
   } satisfies ComponentProps<typeof UpstreamAccountsGroupedRoster>;
 }
-
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
-
 function renderRoster(
   groups: UpstreamAccountsGroupedRosterGroup[],
   overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
@@ -346,920 +331,898 @@ function renderRoster(
     root?.render(<UpstreamAccountsGroupedRoster {...createRosterProps(groups, overrides)} />);
   });
 }
+it("uses page-level rendering without internal roster scrolling", () => {
+  renderRoster([makeGroup("analytics", [makeItem(1), makeItem(2)])]);
 
-describe("UpstreamAccountsGroupedRoster", () => {
-  it("uses page-level rendering without internal roster scrolling", () => {
-    renderRoster([makeGroup("analytics", [makeItem(1), makeItem(2)])]);
+  const roster = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster"]',
+  ) as HTMLElement | null;
+  const members = host?.querySelector(
+    '[data-testid="upstream-accounts-group-members"]',
+  ) as HTMLElement | null;
 
-    const roster = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLElement | null;
-    const members = host?.querySelector(
-      '[data-testid="upstream-accounts-group-members"]',
-    ) as HTMLElement | null;
+  expect(roster).toBeTruthy();
+  expect(roster?.className).not.toContain("overflow-auto");
+  expect(members).toBeTruthy();
+  expect(members?.className).not.toContain("overflow-auto");
+  expect(members?.style.minHeight).toBe("");
+  expect(members?.style.height).toBe("");
+});
+it("renders a group settings action and keeps group notes out of the summary", () => {
+  const onEditGroupSettings = vi.fn();
+  renderRoster(
+    [
+      makeGroup("analytics", [makeItem(1)], {
+        hasCustomSettings: true,
+        boundProxyLabels: ["JP Edge 01"],
+      }),
+    ],
+    {
+      canEditGroupSettings: true,
+      onEditGroupSettings,
+    },
+  );
 
-    expect(roster).toBeTruthy();
-    expect(roster?.className).not.toContain("overflow-auto");
-    expect(members).toBeTruthy();
-    expect(members?.className).not.toContain("overflow-auto");
-    expect(members?.style.minHeight).toBe("");
-    expect(members?.style.height).toBe("");
+  const settingsButton = host?.querySelector(
+    'button[aria-label="Edit group settings"]',
+  ) as HTMLButtonElement | null;
+  expect(settingsButton).toBeTruthy();
+
+  act(() => {
+    settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("renders a group settings action and keeps group notes out of the summary", () => {
-    const onEditGroupSettings = vi.fn();
-    renderRoster(
+  expect(onEditGroupSettings).toHaveBeenCalledTimes(1);
+  expect(host?.textContent).not.toContain("This note should not render in grouped list mode.");
+});
+it("renders active policy badges for groups and accounts", () => {
+  renderRoster([
+    makeGroup(
+      "analytics",
       [
-        makeGroup("analytics", [makeItem(1)], {
-          hasCustomSettings: true,
-          boundProxyLabels: ["JP Edge 01"],
-        }),
-      ],
-      {
-        canEditGroupSettings: true,
-        onEditGroupSettings,
-      },
-    );
-
-    const settingsButton = host?.querySelector(
-      'button[aria-label="Edit group settings"]',
-    ) as HTMLButtonElement | null;
-    expect(settingsButton).toBeTruthy();
-
-    act(() => {
-      settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(onEditGroupSettings).toHaveBeenCalledTimes(1);
-    expect(host?.textContent).not.toContain("This note should not render in grouped list mode.");
-  });
-
-  it("renders active policy badges for groups and accounts", () => {
-    renderRoster([
-      makeGroup(
-        "analytics",
-        [
-          makeItem(1, {
-            effectiveRoutingRule: {
-              ...defaultEffectiveRoutingRule,
-              allowCutIn: false,
-              fastModeRewriteMode: "force_add",
-              upstream429RetryEnabled: true,
-              upstream429MaxRetries: 3,
-            },
-          }),
-        ],
-        {
-          routingRule: {
-            priorityTier: "no_new",
-            allowCutOut: false,
-            allowCutIn: true,
+        makeItem(1, {
+          effectiveRoutingRule: {
+            ...defaultEffectiveRoutingRule,
+            allowCutIn: false,
             fastModeRewriteMode: "force_add",
-            concurrencyLimit: 4,
             upstream429RetryEnabled: true,
             upstream429MaxRetries: 3,
           },
+        }),
+      ],
+      {
+        routingRule: {
+          priorityTier: "no_new",
+          allowCutOut: false,
+          allowCutIn: true,
+          fastModeRewriteMode: "force_add",
+          concurrencyLimit: 4,
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 3,
         },
-      ),
-    ]);
+      },
+    ),
+  ]);
 
-    expect(host?.textContent).toContain("No new");
-    expect(host?.textContent).toContain("Fast");
-    expect(host?.textContent).toContain("No out");
-    expect(host?.textContent).toContain("No in");
-    expect(host?.textContent).toContain("Conc 4");
-    expect(host?.textContent).toContain("Retry 3");
+  expect(host?.textContent).toContain("No new");
+  expect(host?.textContent).toContain("Fast");
+  expect(host?.textContent).toContain("No out");
+  expect(host?.textContent).toContain("No in");
+  expect(host?.textContent).toContain("Conc 4");
+  expect(host?.textContent).toContain("Retry 3");
+});
+it("reports visible member ids for rendered groups", async () => {
+  const onVisibleAccountIdsChange = vi.fn();
+
+  renderRoster([makeGroup("analytics", [makeItem(1), makeItem(2)])], {
+    onVisibleAccountIdsChange,
   });
+  await flushAsync();
 
-  it("reports visible member ids for rendered groups", async () => {
-    const onVisibleAccountIdsChange = vi.fn();
+  expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([1, 2]);
+});
+it("reports only visible group-card accounts and clears them on unmount", async () => {
+  virtualizerMocks.visibleIndexes = [1];
+  const onVisibleAccountIdsChange = vi.fn();
 
-    renderRoster([makeGroup("analytics", [makeItem(1), makeItem(2)])], {
+  renderRoster(
+    [
+      makeGroup("group-a", [makeItem(1), makeItem(2)]),
+      makeGroup("group-b", [
+        makeItem(3, { groupName: "group-b" }),
+        makeItem(4, { groupName: "group-b" }),
+      ]),
+    ],
+    {
       onVisibleAccountIdsChange,
-    });
-    await flushAsync();
+      memberLayout: "grid",
+      selectionMode: "none",
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    },
+  );
+  await flushAsync();
 
-    expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([1, 2]);
+  expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([3, 4]);
+
+  act(() => {
+    root?.unmount();
   });
+  await flushAsync();
 
-  it("reports only visible group-card accounts and clears them on unmount", async () => {
-    virtualizerMocks.visibleIndexes = [1];
-    const onVisibleAccountIdsChange = vi.fn();
+  expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([]);
+});
+it("hides the group settings action for read-only and ungrouped summaries", () => {
+  renderRoster(
+    [
+      makeGroup("analytics", [makeItem(1)]),
+      makeGroup("__ungrouped__", [makeItem(2, { groupName: null })], {
+        groupName: null,
+        displayName: "Ungrouped",
+      }),
+    ],
+    {
+      canEditGroupSettings: false,
+      onEditGroupSettings: vi.fn(),
+    },
+  );
 
-    renderRoster(
-      [
-        makeGroup("group-a", [makeItem(1), makeItem(2)]),
-        makeGroup("group-b", [
-          makeItem(3, { groupName: "group-b" }),
-          makeItem(4, { groupName: "group-b" }),
-        ]),
-      ],
-      {
-        onVisibleAccountIdsChange,
-        memberLayout: "grid",
-        selectionMode: "none",
-        onToggleSelected: undefined,
-        onToggleSelectAllVisible: undefined,
-      },
-    );
-    await flushAsync();
+  const settingsButtons = host?.querySelectorAll('button[aria-label="Edit group settings"]') ?? [];
 
-    expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([3, 4]);
-
-    act(() => {
-      root?.unmount();
-    });
-    await flushAsync();
-
-    expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([]);
-  });
-
-  it("hides the group settings action for read-only and ungrouped summaries", () => {
-    renderRoster(
-      [
-        makeGroup("analytics", [makeItem(1)]),
-        makeGroup("__ungrouped__", [makeItem(2, { groupName: null })], {
-          groupName: null,
-          displayName: "Ungrouped",
+  expect(settingsButtons).toHaveLength(0);
+});
+it("renders actionable-only status badges in grid cards and hides neutral statuses", async () => {
+  renderRoster(
+    [
+      makeGroup("status-states", [
+        makeItem(11, {
+          displayName: "Working burst lane",
+          workStatus: "working",
+          activeConversationCount: 3,
+          tags: extendedTags,
         }),
-      ],
-      {
-        canEditGroupSettings: false,
-        onEditGroupSettings: vi.fn(),
+        makeItem(12, {
+          displayName: "Temporary degraded lane",
+          workStatus: "degraded",
+        }),
+        makeItem(13, {
+          displayName: "Quota limited lane",
+          workStatus: "rate_limited",
+        }),
+        makeItem(14, {
+          displayName: "Manual sync in progress",
+          displayStatus: "syncing",
+          syncState: "syncing",
+          workStatus: "idle",
+        }),
+        makeItem(15, {
+          displayName: "OAuth needs reauth",
+          displayStatus: "needs_reauth",
+          healthStatus: "needs_reauth",
+          workStatus: "unavailable",
+        }),
+        makeItem(16, {
+          displayName: "Data plane unavailable",
+          displayStatus: "upstream_unavailable",
+          healthStatus: "upstream_unavailable",
+          workStatus: "unavailable",
+        }),
+        makeItem(17, {
+          displayName: "Upstream rejected",
+          displayStatus: "upstream_rejected",
+          healthStatus: "upstream_rejected",
+          workStatus: "unavailable",
+        }),
+        makeItem(18, {
+          displayName: "Disabled fallback key",
+          enabled: false,
+          enableStatus: "disabled",
+          displayStatus: "disabled",
+          workStatus: "idle",
+          healthStatus: "normal",
+          syncState: "idle",
+          kind: "api_key_codex",
+        }),
+        makeItem(19, {
+          displayName: "Other error account",
+          displayStatus: "error_other",
+          healthStatus: "error_other",
+          workStatus: "unavailable",
+        }),
+      ]),
+    ],
+    {
+      memberLayout: "grid",
+      selectionMode: "none",
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    },
+  );
+  await flushAsync();
+
+  const content = host?.textContent ?? "";
+  expect(content).toContain("Working 3");
+  expect(content).toContain("analytics");
+  expect(content).toContain("reporting");
+  expect(content).toContain("+1");
+  expect(content).toContain("degraded");
+  expect(content).toContain("rate_limited");
+  expect(content).toContain("syncing");
+  expect(content).toContain("needs_reauth");
+  expect(content).toContain("upstream_unavailable");
+  expect(content).toContain("upstream_rejected");
+  expect(content).toContain("error_other");
+  expect(content).toContain("disabled");
+  expect(content).not.toContain("Enabled");
+  expect(content).not.toContain("Idle");
+  expect(content).not.toContain("Normal");
+  expect(content).not.toContain("Sync idle");
+  expect(content).not.toContain("prod-apac");
+});
+it("renders routing escape reason and countdown in grid cards", () => {
+  renderRoster(
+    [
+      makeGroup("routing-state", [
+        makeItem(21, {
+          routingBlockReasonCode: "recent_upstream_stream_errors",
+          routingBlockReasonMessage: "recent stream errors",
+          routingBlockUntil: "2099-03-11T12:34:32.000Z",
+        }),
+      ]),
+    ],
+    {
+      memberLayout: "grid",
+      selectionMode: "none",
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+      labels: {
+        ...labels,
+        routingBlockCountdown: () => "01:05",
       },
-    );
+    },
+  );
 
-    const settingsButtons =
-      host?.querySelectorAll('button[aria-label="Edit group settings"]') ?? [];
+  const card = host?.querySelector('[data-testid="upstream-accounts-group-grid-card"]');
+  expect(card?.textContent).toContain("recent stream errors");
+  expect(card?.textContent).toContain("01:05");
+});
+it("renders list-parity identity, support, proxy, and overflow badges in one-line grid rows", async () => {
+  renderRoster(
+    [
+      makeGroup("badge-parity", [
+        makeItem(31, {
+          displayName: "Mother compact duplicate lane",
+          kind: "oauth_codex",
+          isMother: true,
+          duplicateInfo: {
+            peerAccountIds: [41],
+            reasons: ["sharedChatgptAccountId"],
+          },
+          compactSupport: {
+            status: "unsupported",
+            reason: "No available channel for model gpt-5.5",
+          },
+          currentForwardProxyState: "assigned",
+          currentForwardProxyDisplayName:
+            "Very long proxy display name for Tokyo subscription edge",
+          tags: extendedTags,
+        }),
+      ]),
+    ],
+    {
+      memberLayout: "grid",
+      selectionMode: "none",
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    },
+  );
+  await flushAsync();
 
-    expect(settingsButtons).toHaveLength(0);
-  });
+  const card = host?.querySelector(
+    '[data-testid="upstream-accounts-group-grid-card"]',
+  ) as HTMLElement | null;
+  const badgeRow = card?.querySelector(
+    '[data-testid="upstream-accounts-group-grid-card-badges"]',
+  ) as HTMLElement | null;
 
-  it("renders actionable-only status badges in grid cards and hides neutral statuses", async () => {
-    renderRoster(
-      [
-        makeGroup("status-states", [
-          makeItem(11, {
-            displayName: "Working burst lane",
-            workStatus: "working",
-            activeConversationCount: 3,
-            tags: extendedTags,
-          }),
-          makeItem(12, {
-            displayName: "Temporary degraded lane",
-            workStatus: "degraded",
-          }),
-          makeItem(13, {
-            displayName: "Quota limited lane",
-            workStatus: "rate_limited",
-          }),
-          makeItem(14, {
-            displayName: "Manual sync in progress",
-            displayStatus: "syncing",
-            syncState: "syncing",
-            workStatus: "idle",
-          }),
-          makeItem(15, {
-            displayName: "OAuth needs reauth",
-            displayStatus: "needs_reauth",
-            healthStatus: "needs_reauth",
-            workStatus: "unavailable",
-          }),
-          makeItem(16, {
-            displayName: "Data plane unavailable",
-            displayStatus: "upstream_unavailable",
-            healthStatus: "upstream_unavailable",
-            workStatus: "unavailable",
-          }),
-          makeItem(17, {
-            displayName: "Upstream rejected",
-            displayStatus: "upstream_rejected",
-            healthStatus: "upstream_rejected",
-            workStatus: "unavailable",
-          }),
-          makeItem(18, {
-            displayName: "Disabled fallback key",
-            enabled: false,
-            enableStatus: "disabled",
-            displayStatus: "disabled",
-            workStatus: "idle",
-            healthStatus: "normal",
-            syncState: "idle",
-            kind: "api_key_codex",
-          }),
-          makeItem(19, {
-            displayName: "Other error account",
-            displayStatus: "error_other",
-            healthStatus: "error_other",
-            workStatus: "unavailable",
-          }),
-        ]),
-      ],
-      {
-        memberLayout: "grid",
-        selectionMode: "none",
-        onToggleSelected: undefined,
-        onToggleSelectAllVisible: undefined,
-      },
-    );
-    await flushAsync();
+  expect(card?.textContent).toContain("Mother");
+  expect(card?.textContent).toContain("Duplicate");
+  expect(card?.textContent).toContain("Compact unsupported");
+  expect(card?.textContent).toContain("Very long proxy display name");
+  expect(card?.textContent).toContain("OAuth");
+  expect(card?.textContent).toContain("pro");
+  expect(card?.textContent).toContain("analytics");
+  expect(card?.textContent).toContain("reporting");
+  expect(card?.textContent).toContain("priority-lane");
+  expect(card?.textContent).toContain("+1");
+  expect(badgeRow).toBeTruthy();
+  expect(badgeRow?.className).toContain("flex-wrap");
+  expect(
+    card?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card-badges"]'),
+  ).toHaveLength(1);
+});
+it("prioritizes disabled, syncing, and health badges ahead of work-state badges in grid cards", async () => {
+  renderRoster(
+    [
+      makeGroup("precedence", [
+        makeItem(21, {
+          displayName: "Syncing beats rate limit",
+          displayStatus: "syncing",
+          syncState: "syncing",
+          workStatus: "rate_limited",
+        }),
+        makeItem(22, {
+          displayName: "Health beats working",
+          displayStatus: "upstream_unavailable",
+          healthStatus: "upstream_unavailable",
+          workStatus: "working",
+          activeConversationCount: 2,
+        }),
+        makeItem(23, {
+          displayName: "Disabled precedence lane",
+          enabled: false,
+          enableStatus: "disabled",
+          displayStatus: "disabled",
+          workStatus: "degraded",
+        }),
+      ]),
+    ],
+    {
+      memberLayout: "grid",
+      selectionMode: "none",
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    },
+  );
+  await flushAsync();
 
-    const content = host?.textContent ?? "";
-    expect(content).toContain("Working 3");
-    expect(content).toContain("analytics");
-    expect(content).toContain("reporting");
-    expect(content).toContain("+1");
-    expect(content).toContain("degraded");
-    expect(content).toContain("rate_limited");
-    expect(content).toContain("syncing");
-    expect(content).toContain("needs_reauth");
-    expect(content).toContain("upstream_unavailable");
-    expect(content).toContain("upstream_rejected");
-    expect(content).toContain("error_other");
-    expect(content).toContain("disabled");
-    expect(content).not.toContain("Enabled");
-    expect(content).not.toContain("Idle");
-    expect(content).not.toContain("Normal");
-    expect(content).not.toContain("Sync idle");
-    expect(content).not.toContain("prod-apac");
-  });
+  const cards = Array.from(
+    host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? [],
+  ) as HTMLDivElement[];
+  expect(cards).toHaveLength(3);
 
-  it("renders routing escape reason and countdown in grid cards", () => {
-    renderRoster(
-      [
-        makeGroup("routing-state", [
-          makeItem(21, {
-            routingBlockReasonCode: "recent_upstream_stream_errors",
-            routingBlockReasonMessage: "recent stream errors",
-            routingBlockUntil: "2099-03-11T12:34:32.000Z",
-          }),
-        ]),
-      ],
-      {
-        memberLayout: "grid",
-        selectionMode: "none",
-        onToggleSelected: undefined,
-        onToggleSelectAllVisible: undefined,
-        labels: {
-          ...labels,
-          routingBlockCountdown: () => "01:05",
-        },
-      },
-    );
+  expect(cards[0]?.textContent).toContain("syncing");
+  expect(cards[0]?.textContent).not.toContain("rate_limited");
 
-    const card = host?.querySelector('[data-testid="upstream-accounts-group-grid-card"]');
-    expect(card?.textContent).toContain("recent stream errors");
-    expect(card?.textContent).toContain("01:05");
-  });
+  expect(cards[1]?.textContent).toContain("upstream_unavailable");
+  expect(cards[1]?.textContent).not.toContain("Working 2");
 
-  it("renders list-parity identity, support, proxy, and overflow badges in one-line grid rows", async () => {
-    renderRoster(
-      [
-        makeGroup("badge-parity", [
-          makeItem(31, {
-            displayName: "Mother compact duplicate lane",
-            kind: "oauth_codex",
-            isMother: true,
-            duplicateInfo: {
-              peerAccountIds: [41],
-              reasons: ["sharedChatgptAccountId"],
-            },
-            compactSupport: {
-              status: "unsupported",
-              reason: "No available channel for model gpt-5.5",
-            },
-            currentForwardProxyState: "assigned",
-            currentForwardProxyDisplayName:
-              "Very long proxy display name for Tokyo subscription edge",
-            tags: extendedTags,
-          }),
-        ]),
-      ],
-      {
-        memberLayout: "grid",
-        selectionMode: "none",
-        onToggleSelected: undefined,
-        onToggleSelectAllVisible: undefined,
-      },
-    );
-    await flushAsync();
-
-    const card = host?.querySelector(
-      '[data-testid="upstream-accounts-group-grid-card"]',
-    ) as HTMLElement | null;
-    const badgeRow = card?.querySelector(
-      '[data-testid="upstream-accounts-group-grid-card-badges"]',
-    ) as HTMLElement | null;
-
-    expect(card?.textContent).toContain("Mother");
-    expect(card?.textContent).toContain("Duplicate");
-    expect(card?.textContent).toContain("Compact unsupported");
-    expect(card?.textContent).toContain("Very long proxy display name");
-    expect(card?.textContent).toContain("OAuth");
-    expect(card?.textContent).toContain("pro");
-    expect(card?.textContent).toContain("analytics");
-    expect(card?.textContent).toContain("reporting");
-    expect(card?.textContent).toContain("priority-lane");
-    expect(card?.textContent).toContain("+1");
-    expect(badgeRow).toBeTruthy();
-    expect(badgeRow?.className).toContain("flex-wrap");
-    expect(
-      card?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card-badges"]'),
-    ).toHaveLength(1);
-  });
-
-  it("prioritizes disabled, syncing, and health badges ahead of work-state badges in grid cards", async () => {
-    renderRoster(
-      [
-        makeGroup("precedence", [
-          makeItem(21, {
-            displayName: "Syncing beats rate limit",
-            displayStatus: "syncing",
-            syncState: "syncing",
-            workStatus: "rate_limited",
-          }),
-          makeItem(22, {
-            displayName: "Health beats working",
-            displayStatus: "upstream_unavailable",
-            healthStatus: "upstream_unavailable",
-            workStatus: "working",
-            activeConversationCount: 2,
-          }),
-          makeItem(23, {
-            displayName: "Disabled precedence lane",
-            enabled: false,
-            enableStatus: "disabled",
-            displayStatus: "disabled",
-            workStatus: "degraded",
-          }),
-        ]),
-      ],
-      {
-        memberLayout: "grid",
-        selectionMode: "none",
-        onToggleSelected: undefined,
-        onToggleSelectAllVisible: undefined,
-      },
-    );
-    await flushAsync();
-
-    const cards = Array.from(
-      host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? [],
-    ) as HTMLDivElement[];
-    expect(cards).toHaveLength(3);
-
-    expect(cards[0]?.textContent).toContain("syncing");
-    expect(cards[0]?.textContent).not.toContain("rate_limited");
-
-    expect(cards[1]?.textContent).toContain("upstream_unavailable");
-    expect(cards[1]?.textContent).not.toContain("Working 2");
-
-    expect(cards[2]?.textContent).toContain("disabled");
-    expect(cards[2]?.textContent).not.toContain("degraded");
-  });
-
-  it("virtualizes large rosters by group card instead of member rows", () => {
-    const groups = Array.from({ length: 12 }, (_, groupIndex) =>
-      makeGroup(
-        `group-${groupIndex + 1}`,
-        Array.from({ length: 6 }, (_, itemIndex) =>
-          makeItem(groupIndex * 10 + itemIndex + 1, {
-            groupName: `group-${groupIndex + 1}`,
-            displayName: `Group ${groupIndex + 1} Account ${itemIndex + 1}`,
-          }),
-        ),
+  expect(cards[2]?.textContent).toContain("disabled");
+  expect(cards[2]?.textContent).not.toContain("degraded");
+});
+it("virtualizes large rosters by group card instead of member rows", () => {
+  const groups = Array.from({ length: 12 }, (_, groupIndex) =>
+    makeGroup(
+      `group-${groupIndex + 1}`,
+      Array.from({ length: 6 }, (_, itemIndex) =>
+        makeItem(groupIndex * 10 + itemIndex + 1, {
+          groupName: `group-${groupIndex + 1}`,
+          displayName: `Group ${groupIndex + 1} Account ${itemIndex + 1}`,
+        }),
       ),
+    ),
+  );
+
+  renderRoster(groups, {
+    memberLayout: "grid",
+    selectionMode: "none",
+    onToggleSelected: undefined,
+    onToggleSelectAllVisible: undefined,
+  });
+
+  const renderedGroupCards =
+    host?.querySelectorAll('[data-testid="upstream-accounts-group-card"]') ?? [];
+  const gridCards =
+    host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? [];
+
+  expect(renderedGroupCards.length).toBeGreaterThan(0);
+  expect(renderedGroupCards.length).toBeLessThan(groups.length);
+  expect(gridCards.length).toBeGreaterThan(0);
+  expect(gridCards.length).toBe(18);
+});
+it("uses the rendered roster width instead of window.innerWidth for grouped grid columns", () => {
+  const groups = [
+    makeGroup("analytics", [
+      makeItem(1),
+      makeItem(2, { displayName: "Account 2" }),
+      makeItem(3, { displayName: "Account 3" }),
+    ]),
+  ];
+
+  renderRoster(groups, {
+    memberLayout: "grid",
+    selectionMode: "none",
+    onToggleSelected: undefined,
+    onToggleSelectAllVisible: undefined,
+  });
+
+  const roster = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster"]',
+  ) as HTMLDivElement | null;
+  const spacer = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+  ) as HTMLDivElement | null;
+  const membersGrid = host?.querySelector(
+    '[data-testid="upstream-accounts-group-members-grid"]',
+  ) as HTMLDivElement | null;
+  const gridLayout = membersGrid?.querySelector(
+    '[data-testid="upstream-accounts-group-grid-row"]',
+  ) as HTMLDivElement | null;
+
+  expect(roster).toBeTruthy();
+  expect(spacer).toBeTruthy();
+  expect(membersGrid).toBeTruthy();
+  expect(gridLayout).toBeTruthy();
+
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1600,
+  });
+  Object.defineProperty(roster!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 160,
+        left: 0,
+        right: 920,
+        bottom: 760,
+        width: 920,
+        height: 600,
+        x: 0,
+        y: 160,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(spacer!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 160,
+        left: 0,
+        right: 920,
+        bottom: 760,
+        width: 920,
+        height: 600,
+        x: 0,
+        y: 160,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(membersGrid!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 210,
+        left: 0,
+        right: 920,
+        bottom: 560,
+        width: 920,
+        height: 350,
+        x: 0,
+        y: 210,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+
+  act(() => {
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  expect(gridLayout?.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+});
+it("uses the viewport xl breakpoint when estimating grouped grid columns before member widths are measured", () => {
+  const groups = [
+    makeGroup("analytics", [
+      makeItem(1),
+      makeItem(2, { displayName: "Account 2" }),
+      makeItem(3, { displayName: "Account 3" }),
+    ]),
+  ];
+
+  renderRoster(groups, {
+    memberLayout: "grid",
+    selectionMode: "none",
+    onToggleSelected: undefined,
+    onToggleSelectAllVisible: undefined,
+  });
+
+  const roster = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster"]',
+  ) as HTMLDivElement | null;
+  const spacer = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+  ) as HTMLDivElement | null;
+  const membersGrid = host?.querySelector(
+    '[data-testid="upstream-accounts-group-members-grid"]',
+  ) as HTMLDivElement | null;
+  const gridLayout = membersGrid?.querySelector(
+    '[data-testid="upstream-accounts-group-grid-row"]',
+  ) as HTMLDivElement | null;
+
+  expect(roster).toBeTruthy();
+  expect(spacer).toBeTruthy();
+  expect(membersGrid).toBeTruthy();
+  expect(gridLayout).toBeTruthy();
+
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1600,
+  });
+  Object.defineProperty(roster!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 160,
+        left: 0,
+        right: 1180,
+        bottom: 760,
+        width: 1180,
+        height: 600,
+        x: 0,
+        y: 160,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(spacer!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 160,
+        left: 0,
+        right: 1180,
+        bottom: 760,
+        width: 1180,
+        height: 600,
+        x: 0,
+        y: 160,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(membersGrid!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 210,
+        left: 0,
+        right: 1180,
+        bottom: 560,
+        width: 0,
+        height: 350,
+        x: 0,
+        y: 210,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+
+  act(() => {
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  expect(gridLayout?.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+});
+it("restores the three-column desktop grouped grid once the member pane is wide enough", () => {
+  const groups = [
+    makeGroup("analytics", [
+      makeItem(1),
+      makeItem(2, { displayName: "Account 2" }),
+      makeItem(3, { displayName: "Account 3" }),
+    ]),
+  ];
+
+  renderRoster(groups, {
+    memberLayout: "grid",
+    selectionMode: "none",
+    onToggleSelected: undefined,
+    onToggleSelectAllVisible: undefined,
+  });
+
+  const roster = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster"]',
+  ) as HTMLDivElement | null;
+  const spacer = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+  ) as HTMLDivElement | null;
+  const membersGrid = host?.querySelector(
+    '[data-testid="upstream-accounts-group-members-grid"]',
+  ) as HTMLDivElement | null;
+  const gridLayout = membersGrid?.querySelector(
+    '[data-testid="upstream-accounts-group-grid-row"]',
+  ) as HTMLDivElement | null;
+
+  expect(roster).toBeTruthy();
+  expect(spacer).toBeTruthy();
+  expect(membersGrid).toBeTruthy();
+  expect(gridLayout).toBeTruthy();
+
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1660,
+  });
+  Object.defineProperty(roster!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 160,
+        left: 0,
+        right: 1440,
+        bottom: 760,
+        width: 1440,
+        height: 600,
+        x: 0,
+        y: 160,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(spacer!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 160,
+        left: 0,
+        right: 1440,
+        bottom: 760,
+        width: 1440,
+        height: 600,
+        x: 0,
+        y: 160,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(membersGrid!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 210,
+        left: 0,
+        right: 1048,
+        bottom: 560,
+        width: 1048,
+        height: 350,
+        x: 0,
+        y: 210,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+
+  act(() => {
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  expect(gridLayout?.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
+});
+it("keeps the bottom spacer sized to the remaining virtualized groups below the viewport", () => {
+  virtualizerMocks.visibleIndexes = [1, 2];
+  const groups = Array.from({ length: 6 }, (_, index) =>
+    makeGroup(`group-${index + 1}`, [
+      makeItem(index + 1, {
+        groupName: `group-${index + 1}`,
+        displayName: `Group ${index + 1} Account`,
+      }),
+    ]),
+  );
+
+  renderRoster(groups);
+
+  const roster = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster"]',
+  ) as HTMLDivElement | null;
+  const spacer = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+  ) as HTMLDivElement | null;
+  expect(roster).toBeTruthy();
+  expect(spacer).toBeTruthy();
+
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value: 300,
+  });
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: 1440,
+  });
+  Object.defineProperty(roster!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 240,
+        left: 0,
+        right: 1200,
+        bottom: 900,
+        width: 1200,
+        height: 660,
+        x: 0,
+        y: 240,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(spacer!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: 288,
+        left: 0,
+        right: 1200,
+        bottom: 900,
+        width: 1200,
+        height: 612,
+        x: 0,
+        y: 288,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+
+  const initialMeasureCalls = outerVirtualizerMetrics().measureCalls;
+
+  act(() => {
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  const expectedPaddingBottom = outerVirtualizerMetrics()
+    .sizes.slice(3)
+    .reduce((sum, size) => sum + size, 0);
+
+  expect(outerVirtualizerMetrics().lastScrollMargin).toBe(588);
+  expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls);
+  expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`);
+});
+it("keeps the virtualized card gap on the last rendered non-terminal group", () => {
+  virtualizerMocks.visibleIndexes = [1, 2];
+  const groups = Array.from({ length: 6 }, (_, index) =>
+    makeGroup(`group-${index + 1}`, [
+      makeItem(index + 1, {
+        groupName: `group-${index + 1}`,
+        displayName: `Group ${index + 1} Account`,
+      }),
+    ]),
+  );
+
+  renderRoster(groups);
+
+  const renderedGroupCards =
+    host?.querySelectorAll('[data-testid="upstream-accounts-group-card"]') ?? [];
+  const lastRenderedCard = renderedGroupCards[renderedGroupCards.length - 1] as
+    | HTMLElement
+    | undefined;
+
+  expect(renderedGroupCards).toHaveLength(2);
+  expect(lastRenderedCard?.dataset.index).toBe("2");
+  expect(lastRenderedCard?.className).toContain("pb-4");
+});
+it("includes inter-card gaps in the fallback spacer height when the virtualizer has not returned items yet", () => {
+  virtualizerMocks.visibleIndexes = [];
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value: 0,
+  });
+  const groups = Array.from({ length: 6 }, (_, index) =>
+    makeGroup(`group-${index + 1}`, [
+      makeItem(index + 1, {
+        groupName: `group-${index + 1}`,
+        displayName: `Group ${index + 1} Account`,
+      }),
+    ]),
+  );
+
+  renderRoster(groups);
+
+  const spacer = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+  ) as HTMLDivElement | null;
+
+  expect(spacer).toBeTruthy();
+
+  const expectedPaddingBottom = outerVirtualizerMetrics()
+    .sizes.slice(3)
+    .reduce((sum, size) => sum + size, 0);
+
+  expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`);
+});
+it("re-measures cached group heights when the layout mode changes", () => {
+  const groups = Array.from({ length: 4 }, (_, index) =>
+    makeGroup(`group-${index + 1}`, [
+      makeItem(index + 1, {
+        groupName: `group-${index + 1}`,
+      }),
+    ]),
+  );
+
+  renderRoster(groups, { memberLayout: "list" });
+  const initialMeasureCalls = outerVirtualizerMetrics().measureCalls;
+
+  act(() => {
+    root?.render(
+      <UpstreamAccountsGroupedRoster
+        {...createRosterProps(groups, {
+          memberLayout: "grid",
+          selectionMode: "none",
+          onToggleSelected: undefined,
+          onToggleSelectAllVisible: undefined,
+        })}
+      />,
     );
-
-    renderRoster(groups, {
-      memberLayout: "grid",
-      selectionMode: "none",
-      onToggleSelected: undefined,
-      onToggleSelectAllVisible: undefined,
-    });
-
-    const renderedGroupCards =
-      host?.querySelectorAll('[data-testid="upstream-accounts-group-card"]') ?? [];
-    const gridCards =
-      host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? [];
-
-    expect(renderedGroupCards.length).toBeGreaterThan(0);
-    expect(renderedGroupCards.length).toBeLessThan(groups.length);
-    expect(gridCards.length).toBeGreaterThan(0);
-    expect(gridCards.length).toBe(18);
   });
 
-  it("uses the rendered roster width instead of window.innerWidth for grouped grid columns", () => {
-    const groups = [
-      makeGroup("analytics", [
-        makeItem(1),
-        makeItem(2, { displayName: "Account 2" }),
-        makeItem(3, { displayName: "Account 3" }),
-      ]),
-    ];
+  expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls);
+});
+it("recomputes the window scroll margin when grouped toolbar chrome toggles", () => {
+  const groups = Array.from({ length: 3 }, (_, index) =>
+    makeGroup(`group-${index + 1}`, [
+      makeItem(index + 1, {
+        groupName: `group-${index + 1}`,
+      }),
+    ]),
+  );
 
-    renderRoster(groups, {
-      memberLayout: "grid",
-      selectionMode: "none",
-      onToggleSelected: undefined,
-      onToggleSelectAllVisible: undefined,
-    });
+  renderRoster(groups, { memberLayout: "list" });
 
-    const roster = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLDivElement | null;
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null;
-    const membersGrid = host?.querySelector(
-      '[data-testid="upstream-accounts-group-members-grid"]',
-    ) as HTMLDivElement | null;
-    const gridLayout = membersGrid?.querySelector(
-      '[data-testid="upstream-accounts-group-grid-row"]',
-    ) as HTMLDivElement | null;
+  const roster = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster"]',
+  ) as HTMLDivElement | null;
+  const spacer = host?.querySelector(
+    '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+  ) as HTMLDivElement | null;
 
-    expect(roster).toBeTruthy();
-    expect(spacer).toBeTruthy();
-    expect(membersGrid).toBeTruthy();
-    expect(gridLayout).toBeTruthy();
+  expect(roster).toBeTruthy();
+  expect(spacer).toBeTruthy();
 
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: 1600,
-    });
-    Object.defineProperty(roster!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 160,
-          left: 0,
-          right: 920,
-          bottom: 760,
-          width: 920,
-          height: 600,
-          x: 0,
-          y: 160,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(spacer!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 160,
-          left: 0,
-          right: 920,
-          bottom: 760,
-          width: 920,
-          height: 600,
-          x: 0,
-          y: 160,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(membersGrid!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 210,
-          left: 0,
-          right: 920,
-          bottom: 560,
-          width: 920,
-          height: 350,
-          x: 0,
-          y: 210,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-
-    act(() => {
-      window.dispatchEvent(new Event("resize"));
-    });
-
-    expect(gridLayout?.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+  let rosterTop = 220;
+  let spacerTop = 220;
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value: 40,
+  });
+  Object.defineProperty(roster!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: rosterTop,
+        left: 0,
+        right: 1100,
+        bottom: rosterTop + 640,
+        width: 1100,
+        height: 640,
+        x: 0,
+        y: rosterTop,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
+  });
+  Object.defineProperty(spacer!, "getBoundingClientRect", {
+    configurable: true,
+    value: () =>
+      ({
+        top: spacerTop,
+        left: 0,
+        right: 1100,
+        bottom: spacerTop + 600,
+        width: 1100,
+        height: 600,
+        x: 0,
+        y: spacerTop,
+        toJSON: () => ({}),
+      }) satisfies DOMRect,
   });
 
-  it("uses the viewport xl breakpoint when estimating grouped grid columns before member widths are measured", () => {
-    const groups = [
-      makeGroup("analytics", [
-        makeItem(1),
-        makeItem(2, { displayName: "Account 2" }),
-        makeItem(3, { displayName: "Account 3" }),
-      ]),
-    ];
-
-    renderRoster(groups, {
-      memberLayout: "grid",
-      selectionMode: "none",
-      onToggleSelected: undefined,
-      onToggleSelectAllVisible: undefined,
-    });
-
-    const roster = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLDivElement | null;
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null;
-    const membersGrid = host?.querySelector(
-      '[data-testid="upstream-accounts-group-members-grid"]',
-    ) as HTMLDivElement | null;
-    const gridLayout = membersGrid?.querySelector(
-      '[data-testid="upstream-accounts-group-grid-row"]',
-    ) as HTMLDivElement | null;
-
-    expect(roster).toBeTruthy();
-    expect(spacer).toBeTruthy();
-    expect(membersGrid).toBeTruthy();
-    expect(gridLayout).toBeTruthy();
-
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: 1600,
-    });
-    Object.defineProperty(roster!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 160,
-          left: 0,
-          right: 1180,
-          bottom: 760,
-          width: 1180,
-          height: 600,
-          x: 0,
-          y: 160,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(spacer!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 160,
-          left: 0,
-          right: 1180,
-          bottom: 760,
-          width: 1180,
-          height: 600,
-          x: 0,
-          y: 160,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(membersGrid!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 210,
-          left: 0,
-          right: 1180,
-          bottom: 560,
-          width: 0,
-          height: 350,
-          x: 0,
-          y: 210,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-
-    act(() => {
-      window.dispatchEvent(new Event("resize"));
-    });
-
-    expect(gridLayout?.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+  act(() => {
+    window.dispatchEvent(new Event("resize"));
   });
 
-  it("restores the three-column desktop grouped grid once the member pane is wide enough", () => {
-    const groups = [
-      makeGroup("analytics", [
-        makeItem(1),
-        makeItem(2, { displayName: "Account 2" }),
-        makeItem(3, { displayName: "Account 3" }),
-      ]),
-    ];
+  expect(outerVirtualizerMetrics().lastScrollMargin).toBe(260);
 
-    renderRoster(groups, {
-      memberLayout: "grid",
-      selectionMode: "none",
-      onToggleSelected: undefined,
-      onToggleSelectAllVisible: undefined,
-    });
+  rosterTop = 172;
+  spacerTop = 172;
 
-    const roster = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLDivElement | null;
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null;
-    const membersGrid = host?.querySelector(
-      '[data-testid="upstream-accounts-group-members-grid"]',
-    ) as HTMLDivElement | null;
-    const gridLayout = membersGrid?.querySelector(
-      '[data-testid="upstream-accounts-group-grid-row"]',
-    ) as HTMLDivElement | null;
-
-    expect(roster).toBeTruthy();
-    expect(spacer).toBeTruthy();
-    expect(membersGrid).toBeTruthy();
-    expect(gridLayout).toBeTruthy();
-
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: 1660,
-    });
-    Object.defineProperty(roster!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 160,
-          left: 0,
-          right: 1440,
-          bottom: 760,
-          width: 1440,
-          height: 600,
-          x: 0,
-          y: 160,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(spacer!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 160,
-          left: 0,
-          right: 1440,
-          bottom: 760,
-          width: 1440,
-          height: 600,
-          x: 0,
-          y: 160,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(membersGrid!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 210,
-          left: 0,
-          right: 1048,
-          bottom: 560,
-          width: 1048,
-          height: 350,
-          x: 0,
-          y: 210,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-
-    act(() => {
-      window.dispatchEvent(new Event("resize"));
-    });
-
-    expect(gridLayout?.style.gridTemplateColumns).toBe("repeat(3, minmax(0, 1fr))");
-  });
-
-  it("keeps the bottom spacer sized to the remaining virtualized groups below the viewport", () => {
-    virtualizerMocks.visibleIndexes = [1, 2];
-    const groups = Array.from({ length: 6 }, (_, index) =>
-      makeGroup(`group-${index + 1}`, [
-        makeItem(index + 1, {
-          groupName: `group-${index + 1}`,
-          displayName: `Group ${index + 1} Account`,
-        }),
-      ]),
+  act(() => {
+    root?.render(
+      <UpstreamAccountsGroupedRoster
+        {...createRosterProps(groups, {
+          memberLayout: "grid",
+          selectionMode: "none",
+          onToggleSelected: undefined,
+          onToggleSelectAllVisible: undefined,
+        })}
+      />,
     );
-
-    renderRoster(groups);
-
-    const roster = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLDivElement | null;
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null;
-    expect(roster).toBeTruthy();
-    expect(spacer).toBeTruthy();
-
-    Object.defineProperty(window, "scrollY", {
-      configurable: true,
-      value: 300,
-    });
-    Object.defineProperty(window, "innerWidth", {
-      configurable: true,
-      value: 1440,
-    });
-    Object.defineProperty(roster!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 240,
-          left: 0,
-          right: 1200,
-          bottom: 900,
-          width: 1200,
-          height: 660,
-          x: 0,
-          y: 240,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(spacer!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: 288,
-          left: 0,
-          right: 1200,
-          bottom: 900,
-          width: 1200,
-          height: 612,
-          x: 0,
-          y: 288,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-
-    const initialMeasureCalls = outerVirtualizerMetrics().measureCalls;
-
-    act(() => {
-      window.dispatchEvent(new Event("resize"));
-    });
-
-    const expectedPaddingBottom = outerVirtualizerMetrics()
-      .sizes.slice(3)
-      .reduce((sum, size) => sum + size, 0);
-
-    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(588);
-    expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls);
-    expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`);
   });
 
-  it("keeps the virtualized card gap on the last rendered non-terminal group", () => {
-    virtualizerMocks.visibleIndexes = [1, 2];
-    const groups = Array.from({ length: 6 }, (_, index) =>
-      makeGroup(`group-${index + 1}`, [
-        makeItem(index + 1, {
-          groupName: `group-${index + 1}`,
-          displayName: `Group ${index + 1} Account`,
-        }),
-      ]),
-    );
-
-    renderRoster(groups);
-
-    const renderedGroupCards =
-      host?.querySelectorAll('[data-testid="upstream-accounts-group-card"]') ?? [];
-    const lastRenderedCard = renderedGroupCards[renderedGroupCards.length - 1] as
-      | HTMLElement
-      | undefined;
-
-    expect(renderedGroupCards).toHaveLength(2);
-    expect(lastRenderedCard?.dataset.index).toBe("2");
-    expect(lastRenderedCard?.className).toContain("pb-4");
-  });
-
-  it("includes inter-card gaps in the fallback spacer height when the virtualizer has not returned items yet", () => {
-    virtualizerMocks.visibleIndexes = [];
-    Object.defineProperty(window, "scrollY", {
-      configurable: true,
-      value: 0,
-    });
-    const groups = Array.from({ length: 6 }, (_, index) =>
-      makeGroup(`group-${index + 1}`, [
-        makeItem(index + 1, {
-          groupName: `group-${index + 1}`,
-          displayName: `Group ${index + 1} Account`,
-        }),
-      ]),
-    );
-
-    renderRoster(groups);
-
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null;
-
-    expect(spacer).toBeTruthy();
-
-    const expectedPaddingBottom = outerVirtualizerMetrics()
-      .sizes.slice(3)
-      .reduce((sum, size) => sum + size, 0);
-
-    expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`);
-  });
-
-  it("re-measures cached group heights when the layout mode changes", () => {
-    const groups = Array.from({ length: 4 }, (_, index) =>
-      makeGroup(`group-${index + 1}`, [
-        makeItem(index + 1, {
-          groupName: `group-${index + 1}`,
-        }),
-      ]),
-    );
-
-    renderRoster(groups, { memberLayout: "list" });
-    const initialMeasureCalls = outerVirtualizerMetrics().measureCalls;
-
-    act(() => {
-      root?.render(
-        <UpstreamAccountsGroupedRoster
-          {...createRosterProps(groups, {
-            memberLayout: "grid",
-            selectionMode: "none",
-            onToggleSelected: undefined,
-            onToggleSelectAllVisible: undefined,
-          })}
-        />,
-      );
-    });
-
-    expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls);
-  });
-
-  it("recomputes the window scroll margin when grouped toolbar chrome toggles", () => {
-    const groups = Array.from({ length: 3 }, (_, index) =>
-      makeGroup(`group-${index + 1}`, [
-        makeItem(index + 1, {
-          groupName: `group-${index + 1}`,
-        }),
-      ]),
-    );
-
-    renderRoster(groups, { memberLayout: "list" });
-
-    const roster = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster"]',
-    ) as HTMLDivElement | null;
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null;
-
-    expect(roster).toBeTruthy();
-    expect(spacer).toBeTruthy();
-
-    let rosterTop = 220;
-    let spacerTop = 220;
-    Object.defineProperty(window, "scrollY", {
-      configurable: true,
-      value: 40,
-    });
-    Object.defineProperty(roster!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: rosterTop,
-          left: 0,
-          right: 1100,
-          bottom: rosterTop + 640,
-          width: 1100,
-          height: 640,
-          x: 0,
-          y: rosterTop,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-    Object.defineProperty(spacer!, "getBoundingClientRect", {
-      configurable: true,
-      value: () =>
-        ({
-          top: spacerTop,
-          left: 0,
-          right: 1100,
-          bottom: spacerTop + 600,
-          width: 1100,
-          height: 600,
-          x: 0,
-          y: spacerTop,
-          toJSON: () => ({}),
-        }) satisfies DOMRect,
-    });
-
-    act(() => {
-      window.dispatchEvent(new Event("resize"));
-    });
-
-    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(260);
-
-    rosterTop = 172;
-    spacerTop = 172;
-
-    act(() => {
-      root?.render(
-        <UpstreamAccountsGroupedRoster
-          {...createRosterProps(groups, {
-            memberLayout: "grid",
-            selectionMode: "none",
-            onToggleSelected: undefined,
-            onToggleSelectAllVisible: undefined,
-          })}
-        />,
-      );
-    });
-
-    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(212);
-  });
+  expect(outerVirtualizerMetrics().lastScrollMargin).toBe(212);
 });

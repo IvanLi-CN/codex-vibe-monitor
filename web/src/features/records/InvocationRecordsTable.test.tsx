@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type {
   ApiInvocation,
   ApiInvocationRequestBodyResponse,
@@ -17,7 +17,6 @@ const { apiMocks } = vi.hoisted(() => ({
     fetchInvocationResponseBody: vi.fn(),
   },
 }));
-
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
@@ -27,7 +26,6 @@ vi.mock("../../lib/api", async () => {
     fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
   };
 });
-
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
@@ -38,10 +36,8 @@ vi.mock("../../i18n", () => ({
     },
   }),
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -49,7 +45,6 @@ beforeAll(() => {
     value: true,
   });
 });
-
 beforeEach(() => {
   apiMocks.fetchInvocationWorkflowDetail.mockReset();
   apiMocks.fetchInvocationRequestBody.mockReset();
@@ -60,7 +55,6 @@ beforeEach(() => {
   apiMocks.fetchInvocationRequestBody.mockResolvedValue(createRequestBodyFixture());
   apiMocks.fetchInvocationResponseBody.mockResolvedValue(createResponseBodyFixture());
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -70,7 +64,6 @@ afterEach(() => {
   root = null;
   vi.useRealTimers();
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -79,7 +72,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
   return {
     id: 1,
@@ -118,7 +110,6 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     ...overrides,
   };
 }
-
 function createWorkflowDetailFixture(
   record: ApiInvocation,
   overrides: Partial<ApiInvocationWorkflowDetailResponse> = {},
@@ -239,7 +230,6 @@ function createWorkflowDetailFixture(
     timeline: overrides.timeline ?? base.timeline,
   };
 }
-
 function createRequestBodyFixture(
   overrides: Partial<ApiInvocationRequestBodyResponse> = {},
 ): ApiInvocationRequestBodyResponse {
@@ -255,7 +245,6 @@ function createRequestBodyFixture(
     ...overrides,
   };
 }
-
 function createResponseBodyFixture(
   overrides: Partial<ApiInvocationResponseBodyResponse> = {},
 ): ApiInvocationResponseBodyResponse {
@@ -271,7 +260,6 @@ function createResponseBodyFixture(
     ...overrides,
   };
 }
-
 function clickFirstToggle() {
   const button = host?.querySelector(
     'button[aria-label="records.table.showDetails"]',
@@ -281,7 +269,6 @@ function clickFirstToggle() {
     button?.click();
   });
 }
-
 async function flushAsyncWork(rounds = 4) {
   await act(async () => {
     for (let index = 0; index < rounds; index += 1) {
@@ -290,7 +277,6 @@ async function flushAsyncWork(rounds = 4) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   });
 }
-
 async function waitFor(check: () => boolean, timeoutMs = 500) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -298,428 +284,404 @@ async function waitFor(check: () => boolean, timeoutMs = 500) {
     if (check()) return;
   }
 }
+it("shows request compression instead of response content encoding in the record summary", () => {
+  render(
+    <InvocationRecordsTable
+      focus="network"
+      isLoading={false}
+      records={[
+        createRecord({
+          requestCompressionAlgorithm: "zstd",
+          responseContentEncoding: "gzip, br",
+        }),
+      ]}
+    />,
+  );
 
-describe("InvocationRecordsTable", () => {
-  it("shows request compression instead of response content encoding in the record summary", () => {
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            requestCompressionAlgorithm: "zstd",
-            responseContentEncoding: "gzip, br",
-          }),
-        ]}
-      />,
-    );
+  const text = host?.textContent ?? "";
+  expect(text).toContain("zstd");
+  expect(text).not.toContain("gzip, br");
+});
+it("uses TTFT and response duration instead of total duration in record summaries", () => {
+  render(
+    <InvocationRecordsTable
+      focus="network"
+      isLoading={false}
+      records={[createRecord({ firstTokenMs: 620, tUpstreamStreamMs: 480, tTotalMs: 741 })]}
+    />,
+  );
 
-    const text = host?.textContent ?? "";
-    expect(text).toContain("zstd");
-    expect(text).not.toContain("gzip, br");
-  });
+  const text = host?.textContent ?? "";
+  expect(text).toContain("records.table.network.firstToken");
+  expect(text).toContain("records.table.network.responseDuration");
+  expect(text).toContain("0.6 s");
+  expect(text).toContain("0.5 s");
+  expect(text).not.toContain("0.741 s");
+});
+it("renders the WS transport badge for websocket records", () => {
+  render(
+    <InvocationRecordsTable
+      focus="network"
+      isLoading={false}
+      records={[
+        createRecord({
+          id: 1,
+          invokeId: "invoke-ws-transport",
+          transport: "websocket",
+        }),
+      ]}
+    />,
+  );
 
-  it("uses TTFT and response duration instead of total duration in record summaries", () => {
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[createRecord({ firstTokenMs: 620, tUpstreamStreamMs: 480, tTotalMs: 741 })]}
-      />,
-    );
+  const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
+  expect((badges?.length ?? 0) > 0).toBe(true);
+  expect(
+    Array.from(badges ?? []).every(
+      (badge) =>
+        badge.querySelector('[aria-hidden="true"]')?.textContent === "WS" &&
+        badge.textContent?.includes("WebSocket transport") &&
+        badge.getAttribute("title") === "WebSocket",
+    ),
+  ).toBe(true);
+});
+it("does not render the WS transport badge for http or legacy records", () => {
+  render(
+    <InvocationRecordsTable
+      focus="network"
+      isLoading={false}
+      records={[
+        createRecord({
+          id: 2,
+          invokeId: "invoke-http-transport",
+          transport: "http",
+        }),
+        createRecord({
+          id: 3,
+          invokeId: "invoke-legacy-transport",
+          transport: null,
+        }),
+      ]}
+    />,
+  );
 
-    const text = host?.textContent ?? "";
-    expect(text).toContain("records.table.network.firstToken");
-    expect(text).toContain("records.table.network.responseDuration");
-    expect(text).toContain("0.6 s");
-    expect(text).toContain("0.5 s");
-    expect(text).not.toContain("0.741 s");
-  });
+  expect(host?.querySelectorAll('[data-testid="invocation-transport-badge"]')).toHaveLength(0);
+});
+it("renders image endpoints as shared chips while keeping non-image unknown endpoints on the raw fallback", () => {
+  render(
+    <InvocationRecordsTable
+      focus="network"
+      isLoading={false}
+      records={[
+        createRecord({
+          id: 10,
+          invokeId: "invoke-image-gen",
+          endpoint: "/v1/images/generations",
+          imageIntent: "yes",
+          model: "gpt-image-1",
+        }),
+        createRecord({
+          id: 11,
+          invokeId: "invoke-image-edit",
+          endpoint: "/v1/images/edits",
+          imageIntent: "direct_image",
+          model: "gpt-image-1",
+        }),
+        createRecord({
+          id: 12,
+          invokeId: "invoke-image-generic",
+          endpoint: "/v1/images/variations",
+          model: "gpt-image-1",
+        }),
+        createRecord({
+          id: 13,
+          invokeId: "invoke-raw-experimental",
+          endpoint: "/v1/responses/experimental",
+        }),
+      ]}
+    />,
+  );
 
-  it("renders the WS transport badge for websocket records", () => {
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 1,
-            invokeId: "invoke-ws-transport",
-            transport: "websocket",
-          }),
-        ]}
-      />,
-    );
+  expect(host?.querySelector('[data-endpoint-kind="image_gen"]')).not.toBeNull();
+  expect(host?.querySelector('[data-endpoint-kind="image_edit"]')).not.toBeNull();
+  expect(host?.querySelector('[data-endpoint-kind="image"]')).not.toBeNull();
+  expect(host?.querySelector('[data-endpoint-kind="raw"]')).not.toBeNull();
+  expect(host?.textContent ?? "").toContain("table.endpoint.imageGenBadge");
+  expect(host?.textContent ?? "").toContain("table.endpoint.imageEditBadge");
+  expect(host?.textContent ?? "").toContain("table.endpoint.imageBadge");
+  expect(host?.textContent ?? "").toContain("/v1/responses/experimental");
+  expect(host?.textContent ?? "").not.toContain("/v1/images/generations");
+  expect(host?.textContent ?? "").not.toContain("/v1/images/edits");
+  expect(host?.textContent ?? "").not.toContain("/v1/images/variations");
+});
+it("treats completed rows as success in the shared records table", () => {
+  render(
+    <InvocationRecordsTable
+      focus="token"
+      isLoading={false}
+      records={[
+        createRecord({
+          status: "completed",
+        }),
+      ]}
+    />,
+  );
 
-    const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
-    expect((badges?.length ?? 0) > 0).toBe(true);
-    expect(
-      Array.from(badges ?? []).every(
-        (badge) =>
-          badge.querySelector('[aria-hidden="true"]')?.textContent === "WS" &&
-          badge.textContent?.includes("WebSocket transport") &&
-          badge.getAttribute("title") === "WebSocket",
-      ),
-    ).toBe(true);
-  });
+  const text = host?.textContent ?? "";
+  expect(text).toContain("table.status.success");
+  expect(text).not.toContain("completed");
+});
+it("renders warning_success rows with the dedicated warning success badge label", () => {
+  render(
+    <InvocationRecordsTable
+      focus="token"
+      isLoading={false}
+      records={[
+        createRecord({
+          status: "warning_success",
+          failureClass: "none",
+          failureKind: "downstream_closed",
+          downstreamErrorMessage:
+            "[downstream_closed] downstream closed while streaming upstream response",
+        }),
+      ]}
+    />,
+  );
 
-  it("does not render the WS transport badge for http or legacy records", () => {
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 2,
-            invokeId: "invoke-http-transport",
-            transport: "http",
-          }),
-          createRecord({
-            id: 3,
-            invokeId: "invoke-legacy-transport",
-            transport: null,
-          }),
-        ]}
-      />,
-    );
-
-    expect(host?.querySelectorAll('[data-testid="invocation-transport-badge"]')).toHaveLength(0);
-  });
-
-  it("renders image endpoints as shared chips while keeping non-image unknown endpoints on the raw fallback", () => {
-    render(
-      <InvocationRecordsTable
-        focus="network"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 10,
-            invokeId: "invoke-image-gen",
-            endpoint: "/v1/images/generations",
-            imageIntent: "yes",
-            model: "gpt-image-1",
-          }),
-          createRecord({
-            id: 11,
-            invokeId: "invoke-image-edit",
-            endpoint: "/v1/images/edits",
-            imageIntent: "direct_image",
-            model: "gpt-image-1",
-          }),
-          createRecord({
-            id: 12,
-            invokeId: "invoke-image-generic",
-            endpoint: "/v1/images/variations",
-            model: "gpt-image-1",
-          }),
-          createRecord({
-            id: 13,
-            invokeId: "invoke-raw-experimental",
-            endpoint: "/v1/responses/experimental",
-          }),
-        ]}
-      />,
-    );
-
-    expect(host?.querySelector('[data-endpoint-kind="image_gen"]')).not.toBeNull();
-    expect(host?.querySelector('[data-endpoint-kind="image_edit"]')).not.toBeNull();
-    expect(host?.querySelector('[data-endpoint-kind="image"]')).not.toBeNull();
-    expect(host?.querySelector('[data-endpoint-kind="raw"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("table.endpoint.imageGenBadge");
-    expect(host?.textContent ?? "").toContain("table.endpoint.imageEditBadge");
-    expect(host?.textContent ?? "").toContain("table.endpoint.imageBadge");
-    expect(host?.textContent ?? "").toContain("/v1/responses/experimental");
-    expect(host?.textContent ?? "").not.toContain("/v1/images/generations");
-    expect(host?.textContent ?? "").not.toContain("/v1/images/edits");
-    expect(host?.textContent ?? "").not.toContain("/v1/images/variations");
-  });
-
-  it("treats completed rows as success in the shared records table", () => {
-    render(
-      <InvocationRecordsTable
-        focus="token"
-        isLoading={false}
-        records={[
-          createRecord({
-            status: "completed",
-          }),
-        ]}
-      />,
-    );
-
-    const text = host?.textContent ?? "";
-    expect(text).toContain("table.status.success");
-    expect(text).not.toContain("completed");
-  });
-
-  it("renders warning_success rows with the dedicated warning success badge label", () => {
-    render(
-      <InvocationRecordsTable
-        focus="token"
-        isLoading={false}
-        records={[
-          createRecord({
-            status: "warning_success",
-            failureClass: "none",
-            failureKind: "downstream_closed",
-            downstreamErrorMessage:
-              "[downstream_closed] downstream closed while streaming upstream response",
-          }),
-        ]}
-      />,
-    );
-
-    const text = host?.textContent ?? "";
-    expect(text).toContain("table.status.warningSuccess");
-    expect(text).not.toContain("warning_success");
-  });
-
-  it("renders interrupted rows with the dedicated interrupted badge label", () => {
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            status: "interrupted",
-            failureClass: "service_failure",
-            failureKind: "proxy_interrupted",
-            errorMessage:
-              "proxy request was interrupted before completion and was recovered on startup",
-          }),
-        ]}
-      />,
-    );
-
-    const text = host?.textContent ?? "";
-    expect(text).toContain("table.status.interrupted");
-    expect(text).not.toContain("table.status.failed");
-  });
-
-  it("shows the routing icon when request and response models differ", () => {
-    render(
-      <InvocationRecordsTable
-        focus="token"
-        isLoading={false}
-        records={[
-          createRecord({
-            requestModel: "gpt-5.4",
-            responseModel: "gpt-5.5",
-            model: "gpt-5.5",
-          }),
-        ]}
-      />,
-    );
-
-    expect(
-      host?.querySelector('[data-testid="invocation-records-model-routing-indicator"]'),
-    ).not.toBeNull();
-  });
-
-  it("expands into the workflow detail panel and keeps response-model fallback visible", async () => {
-    const record = createRecord({
-      requestModel: undefined,
-      responseModel: undefined,
-      model: "gpt-5-legacy",
-    });
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
-      createWorkflowDetailFixture(record, {
-        hero: {
-          requestModel: "gpt-5-legacy",
-          responseModel: "gpt-5-legacy",
-        },
-      }),
-    );
-
-    render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
-
-    clickFirstToggle();
-    await waitFor(() => (host?.textContent ?? "").includes("工作流时间线"));
-
-    expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(1);
-    expect(host?.textContent ?? "").toContain("gpt-5-legacy");
-  });
-
-  it("keeps only the detail-strip warning icon after a mismatched cost row expands", async () => {
-    const record = createRecord({
-      cost: 0.6375,
-      costAudit: {
-        recorded: {
-          total: 0.6375,
-        },
-        local: {
-          cacheWrite: 0.451,
-          cacheRead: 0.1266,
-          output: 0.0189,
-          reasoning: 0,
-          total: 0.5965,
-        },
-        mismatch: true,
-        reason: "price_version_changed",
-        absoluteDiffUsd: 0.041,
-        recordedPriceVersion: "openai-standard-2026-07-01@response-tier",
-        localPriceVersion: "openai-standard-2026-07-20@response-tier",
-      },
-    });
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
-      createWorkflowDetailFixture(record),
-    );
-
-    render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
-
-    clickFirstToggle();
-    await waitFor(
-      () => host?.querySelector('[data-testid="records-expanded-detail-panel"]') != null,
-    );
-
-    expect(host?.querySelector('[data-testid="records-table-cost-warning"]')).toBeNull();
-    expect(host?.querySelector('[data-testid="records-mobile-cost-warning"]')).toBeNull();
-    expect(host?.querySelectorAll('[data-testid="records-detail-strip-cost-warning"]').length).toBe(
-      2,
-    );
-  });
-
-  it("renders failed workflow detail in the expanded row and exposes the full-details drawer entry", async () => {
-    const record = createRecord({
-      status: "failed",
-      failureClass: "service_failure",
-      failureKind: "upstream_stream_error",
-      errorMessage: "[upstream_stream_error] upstream reset",
-      detailLevel: "structured_only",
-      detailPrunedAt: "2026-03-11T08:09:10Z",
-      detailPruneReason: "success_over_30d",
-    });
-    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
-      createWorkflowDetailFixture(record, {
-        hero: {
-          finalStatus: "failed",
+  const text = host?.textContent ?? "";
+  expect(text).toContain("table.status.warningSuccess");
+  expect(text).not.toContain("warning_success");
+});
+it("renders interrupted rows with the dedicated interrupted badge label", () => {
+  render(
+    <InvocationRecordsTable
+      focus="exception"
+      isLoading={false}
+      records={[
+        createRecord({
+          status: "interrupted",
           failureClass: "service_failure",
-        },
-      }),
-    );
+          failureKind: "proxy_interrupted",
+          errorMessage:
+            "proxy request was interrupted before completion and was recovered on startup",
+        }),
+      ]}
+    />,
+  );
 
-    render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
+  const text = host?.textContent ?? "";
+  expect(text).toContain("table.status.interrupted");
+  expect(text).not.toContain("table.status.failed");
+});
+it("shows the routing icon when request and response models differ", () => {
+  render(
+    <InvocationRecordsTable
+      focus="token"
+      isLoading={false}
+      records={[
+        createRecord({
+          requestModel: "gpt-5.4",
+          responseModel: "gpt-5.5",
+          model: "gpt-5.5",
+        }),
+      ]}
+    />,
+  );
 
-    clickFirstToggle();
-    await waitFor(
-      () => host?.querySelector('[data-testid="records-expanded-detail-panel"]') != null,
-    );
+  expect(
+    host?.querySelector('[data-testid="invocation-records-model-routing-indicator"]'),
+  ).not.toBeNull();
+});
+it("expands into the workflow detail panel and keeps response-model fallback visible", async () => {
+  const record = createRecord({
+    requestModel: undefined,
+    responseModel: undefined,
+    model: "gpt-5-legacy",
+  });
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
+    createWorkflowDetailFixture(record, {
+      hero: {
+        requestModel: "gpt-5-legacy",
+        responseModel: "gpt-5-legacy",
+      },
+    }),
+  );
 
-    expect(host?.querySelector('[data-testid="records-detail-summary-strip"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("table.responseBody.openFullDetails");
-    expect(host?.textContent ?? "").toContain("工作流时间线");
+  render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
+
+  clickFirstToggle();
+  await waitFor(() => (host?.textContent ?? "").includes("工作流时间线"));
+
+  expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(1);
+  expect(host?.textContent ?? "").toContain("gpt-5-legacy");
+});
+it("keeps only the detail-strip warning icon after a mismatched cost row expands", async () => {
+  const record = createRecord({
+    cost: 0.6375,
+    costAudit: {
+      recorded: {
+        total: 0.6375,
+      },
+      local: {
+        cacheWrite: 0.451,
+        cacheRead: 0.1266,
+        output: 0.0189,
+        reasoning: 0,
+        total: 0.5965,
+      },
+      mismatch: true,
+      reason: "price_version_changed",
+      absoluteDiffUsd: 0.041,
+      recordedPriceVersion: "openai-standard-2026-07-01@response-tier",
+      localPriceVersion: "openai-standard-2026-07-20@response-tier",
+    },
+  });
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(createWorkflowDetailFixture(record));
+
+  render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
+
+  clickFirstToggle();
+  await waitFor(() => host?.querySelector('[data-testid="records-expanded-detail-panel"]') != null);
+
+  expect(host?.querySelector('[data-testid="records-table-cost-warning"]')).toBeNull();
+  expect(host?.querySelector('[data-testid="records-mobile-cost-warning"]')).toBeNull();
+  expect(host?.querySelectorAll('[data-testid="records-detail-strip-cost-warning"]').length).toBe(
+    2,
+  );
+});
+it("renders failed workflow detail in the expanded row and exposes the full-details drawer entry", async () => {
+  const record = createRecord({
+    status: "failed",
+    failureClass: "service_failure",
+    failureKind: "upstream_stream_error",
+    errorMessage: "[upstream_stream_error] upstream reset",
+    detailLevel: "structured_only",
+    detailPrunedAt: "2026-03-11T08:09:10Z",
+    detailPruneReason: "success_over_30d",
+  });
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(
+    createWorkflowDetailFixture(record, {
+      hero: {
+        finalStatus: "failed",
+        failureClass: "service_failure",
+      },
+    }),
+  );
+
+  render(<InvocationRecordsTable focus="token" isLoading={false} records={[record]} />);
+
+  clickFirstToggle();
+  await waitFor(() => host?.querySelector('[data-testid="records-expanded-detail-panel"]') != null);
+
+  expect(host?.querySelector('[data-testid="records-detail-summary-strip"]')).not.toBeNull();
+  expect(host?.textContent ?? "").toContain("table.responseBody.openFullDetails");
+  expect(host?.textContent ?? "").toContain("工作流时间线");
+});
+it("opens the full-details drawer and reuses the workflow detail panel", async () => {
+  const record = createRecord({
+    status: "failed",
+    failureClass: "service_failure",
+    failureKind: "downstream_closed",
+    errorMessage: "preview only",
+  });
+  apiMocks.fetchInvocationWorkflowDetail.mockImplementation(async () =>
+    createWorkflowDetailFixture(record),
+  );
+
+  render(<InvocationRecordsTable focus="exception" isLoading={false} records={[record]} />);
+
+  clickFirstToggle();
+  await waitFor(() => (host?.textContent ?? "").includes("table.responseBody.openFullDetails"));
+
+  const button = Array.from(document.body.querySelectorAll("button")).find(
+    (candidate): candidate is HTMLButtonElement =>
+      candidate instanceof HTMLButtonElement &&
+      candidate.textContent === "table.responseBody.openFullDetails",
+  );
+  expect(button).not.toBeNull();
+
+  act(() => {
+    button?.click();
   });
 
-  it("opens the full-details drawer and reuses the workflow detail panel", async () => {
-    const record = createRecord({
-      status: "failed",
-      failureClass: "service_failure",
-      failureKind: "downstream_closed",
-      errorMessage: "preview only",
-    });
-    apiMocks.fetchInvocationWorkflowDetail.mockImplementation(async () =>
-      createWorkflowDetailFixture(record),
-    );
+  await waitFor(
+    () => document.body.textContent?.includes("records.table.fullDetails.title") ?? false,
+  );
+  await waitFor(() => (apiMocks.fetchInvocationWorkflowDetail.mock.calls.length ?? 0) >= 2);
 
-    render(<InvocationRecordsTable focus="exception" isLoading={false} records={[record]} />);
+  expect(document.body.textContent ?? "").toContain(record.invokeId);
+  expect(document.body.textContent ?? "").toContain("工作流时间线");
+  expect(document.body.textContent ?? "").not.toContain("上游请求 ID");
+  expect(document.body.textContent ?? "").not.toContain("X-Request-ID");
+});
+it("does not fetch workflow detail for transient live records", async () => {
+  render(
+    <InvocationRecordsTable
+      focus="exception"
+      isLoading={false}
+      records={[
+        createRecord({
+          id: 0,
+          status: "failed",
+          failureClass: "service_failure",
+          errorMessage: "preview pending placeholder flush",
+        }),
+      ]}
+    />,
+  );
 
-    clickFirstToggle();
-    await waitFor(() => (host?.textContent ?? "").includes("table.responseBody.openFullDetails"));
+  clickFirstToggle();
+  await flushAsyncWork();
 
-    const button = Array.from(document.body.querySelectorAll("button")).find(
-      (candidate): candidate is HTMLButtonElement =>
-        candidate instanceof HTMLButtonElement &&
-        candidate.textContent === "table.responseBody.openFullDetails",
-    );
-    expect(button).not.toBeNull();
+  expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
+  expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
+  expect(host?.textContent ?? "").toContain("调用未落盘");
+  expect(host?.textContent ?? "").not.toContain("table.responseBody.openFullDetails");
+});
+it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
+  render(
+    <InvocationRecordsTable
+      focus="exception"
+      isLoading={false}
+      records={[
+        createRecord({
+          id: 33,
+          invokeId: "invoke-downstream-summary",
+          status: "failed",
+          failureClass: "client_abort",
+          failureKind: "downstream_closed",
+          errorMessage: undefined,
+          downstreamStatusCode: 200,
+          downstreamErrorMessage:
+            "[downstream_closed] downstream closed while streaming upstream response",
+        }),
+      ]}
+    />,
+  );
 
-    act(() => {
-      button?.click();
-    });
+  expect(host?.textContent ?? "").toContain(
+    "[downstream_closed] downstream closed while streaming upstream response",
+  );
+});
+it('renders unknown actionable state as a fallback instead of "no"', () => {
+  render(
+    <InvocationRecordsTable
+      focus="exception"
+      isLoading={false}
+      records={[
+        createRecord({
+          id: 6,
+          status: "failed",
+          failureClass: "service_failure",
+          failureKind: "upstream_timeout",
+          isActionable: undefined,
+          errorMessage: "upstream timeout",
+        }),
+      ]}
+    />,
+  );
 
-    await waitFor(
-      () => document.body.textContent?.includes("records.table.fullDetails.title") ?? false,
-    );
-    await waitFor(() => (apiMocks.fetchInvocationWorkflowDetail.mock.calls.length ?? 0) >= 2);
-
-    expect(document.body.textContent ?? "").toContain(record.invokeId);
-    expect(document.body.textContent ?? "").toContain("工作流时间线");
-    expect(document.body.textContent ?? "").not.toContain("上游请求 ID");
-    expect(document.body.textContent ?? "").not.toContain("X-Request-ID");
-  });
-
-  it("does not fetch workflow detail for transient live records", async () => {
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 0,
-            status: "failed",
-            failureClass: "service_failure",
-            errorMessage: "preview pending placeholder flush",
-          }),
-        ]}
-      />,
-    );
-
-    clickFirstToggle();
-    await flushAsyncWork();
-
-    expect(apiMocks.fetchInvocationWorkflowDetail).not.toHaveBeenCalled();
-    expect(apiMocks.fetchInvocationResponseBody).not.toHaveBeenCalled();
-    expect(host?.textContent ?? "").toContain("调用未落盘");
-    expect(host?.textContent ?? "").not.toContain("table.responseBody.openFullDetails");
-  });
-
-  it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 33,
-            invokeId: "invoke-downstream-summary",
-            status: "failed",
-            failureClass: "client_abort",
-            failureKind: "downstream_closed",
-            errorMessage: undefined,
-            downstreamStatusCode: 200,
-            downstreamErrorMessage:
-              "[downstream_closed] downstream closed while streaming upstream response",
-          }),
-        ]}
-      />,
-    );
-
-    expect(host?.textContent ?? "").toContain(
-      "[downstream_closed] downstream closed while streaming upstream response",
-    );
-  });
-
-  it('renders unknown actionable state as a fallback instead of "no"', () => {
-    render(
-      <InvocationRecordsTable
-        focus="exception"
-        isLoading={false}
-        records={[
-          createRecord({
-            id: 6,
-            status: "failed",
-            failureClass: "service_failure",
-            failureKind: "upstream_timeout",
-            isActionable: undefined,
-            errorMessage: "upstream timeout",
-          }),
-        ]}
-      />,
-    );
-
-    const text = host?.textContent ?? "";
-    expect(text).toContain("records.table.exception.actionable");
-    expect(text).not.toContain("records.table.exception.actionableNo");
-    expect(text).toContain("—");
-  });
+  const text = host?.textContent ?? "";
+  expect(text).toContain("records.table.exception.actionable");
+  expect(text).not.toContain("records.table.exception.actionableNo");
+  expect(text).toContain("—");
 });

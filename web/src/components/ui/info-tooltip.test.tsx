@@ -1,13 +1,12 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { bubbleArrowStyle, bubbleSurfaceStyle } from "./bubble";
 import { InfoTooltip } from "./info-tooltip";
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -26,7 +25,6 @@ beforeAll(() => {
     });
   }
 });
-
 afterEach(() => {
   vi.useRealTimers();
   act(() => {
@@ -36,7 +34,6 @@ afterEach(() => {
   host = null;
   root = null;
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -45,7 +42,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function createRect({
   left,
   top,
@@ -69,211 +65,203 @@ function createRect({
     toJSON: () => ({ left, top, width, height, right: left + width, bottom: top + height }),
   } as DOMRect;
 }
+it("opens on click and closes when clicking outside while keeping tooltip semantics", () => {
+  render(
+    <InfoTooltip
+      label="Explain notice"
+      content="Current results stay on the latest searched snapshot."
+    />,
+  );
 
-describe("InfoTooltip", () => {
-  it("opens on click and closes when clicking outside while keeping tooltip semantics", () => {
-    render(
+  const button = host?.querySelector("button");
+
+  expect(button).toBeInstanceOf(HTMLButtonElement);
+
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  const tooltip = document.body.querySelector('[role="tooltip"]');
+
+  expect(tooltip).toBeInstanceOf(HTMLElement);
+  expect(host?.contains(tooltip as Node)).toBe(false);
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+  expect(button?.getAttribute("aria-describedby")).toBe(tooltip?.id);
+
+  act(() => {
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  });
+
+  const closedTooltip = document.body.querySelector('[role="tooltip"]');
+
+  expect(closedTooltip?.getAttribute("aria-hidden") ?? "true").toBe("true");
+  expect(button?.getAttribute("aria-describedby")).toBeNull();
+});
+it("opens into a portaled anchored bubble and keeps the icon size class", () => {
+  const originalInnerWidth = window.innerWidth;
+  const originalInnerHeight = window.innerHeight;
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 220 });
+
+  render(
+    <InfoTooltip
+      label="Explain notice"
+      content="Current results stay on the latest searched snapshot."
+    />,
+  );
+
+  const button = host?.querySelector("button");
+
+  expect(button).toBeInstanceOf(HTMLButtonElement);
+  expect(host?.innerHTML).toContain("h-[18px] w-[18px]");
+
+  Object.defineProperty(button, "getBoundingClientRect", {
+    configurable: true,
+    value: () => createRect({ left: 140, top: 184, width: 20, height: 20 }),
+  });
+
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
+
+  expect(tooltip).toBeInstanceOf(HTMLElement);
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+  expect(tooltip?.getAttribute("data-side")).not.toBeNull();
+  expect(host?.contains(tooltip as Node)).toBe(false);
+
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: originalInnerHeight,
+  });
+});
+it("passes the nearest theme scope into the portaled tooltip surface", () => {
+  render(
+    <div data-theme="vibe-dark">
       <InfoTooltip
         label="Explain notice"
         content="Current results stay on the latest searched snapshot."
-      />,
-    );
+      />
+    </div>,
+  );
 
-    const button = host?.querySelector("button");
+  const button = host?.querySelector("button");
 
-    expect(button).toBeInstanceOf(HTMLButtonElement);
+  expect(button).toBeInstanceOf(HTMLButtonElement);
 
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const tooltip = document.body.querySelector('[role="tooltip"]');
-
-    expect(tooltip).toBeInstanceOf(HTMLElement);
-    expect(host?.contains(tooltip as Node)).toBe(false);
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-    expect(button?.getAttribute("aria-describedby")).toBe(tooltip?.id);
-
-    act(() => {
-      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-    });
-
-    const closedTooltip = document.body.querySelector('[role="tooltip"]');
-
-    expect(closedTooltip?.getAttribute("aria-hidden") ?? "true").toBe("true");
-    expect(button?.getAttribute("aria-describedby")).toBeNull();
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("opens into a portaled anchored bubble and keeps the icon size class", () => {
-    const originalInnerWidth = window.innerWidth;
-    const originalInnerHeight = window.innerHeight;
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 220 });
+  const tooltip = document.body.querySelector('[role="tooltip"]');
+  const arrow = document.body.querySelector('[data-bubble-arrow="true"]');
 
-    render(
-      <InfoTooltip
-        label="Explain notice"
-        content="Current results stay on the latest searched snapshot."
-      />,
-    );
+  expect(tooltip).toBeInstanceOf(HTMLElement);
+  expect(tooltip?.getAttribute("data-theme")).toBe("vibe-dark");
+  expect(arrow?.getAttribute("data-theme")).toBe("vibe-dark");
+  expect((tooltip as HTMLElement | null)?.style.backgroundColor).toBe(
+    bubbleSurfaceStyle("neutral", "vibe-dark").backgroundColor,
+  );
+  expect((arrow as SVGElement | null)?.style.fill).toBe(
+    bubbleArrowStyle("neutral", "vibe-dark").fill,
+  );
+  expect((tooltip as HTMLElement | null)?.style.boxShadow).toBe(
+    bubbleSurfaceStyle("neutral", "vibe-dark").boxShadow,
+  );
+  expect((tooltip as HTMLElement | null)?.style.backdropFilter).toBe(
+    bubbleSurfaceStyle("neutral", "vibe-dark").backdropFilter,
+  );
+});
+it("keeps hover tooltips open while moving the pointer into the bubble content", () => {
+  vi.useFakeTimers();
 
-    const button = host?.querySelector("button");
+  render(
+    <InfoTooltip
+      label="Explain notice"
+      content="Current results stay on the latest searched snapshot."
+    />,
+  );
 
-    expect(button).toBeInstanceOf(HTMLButtonElement);
-    expect(host?.innerHTML).toContain("h-[18px] w-[18px]");
+  const button = host?.querySelector("button");
+  const trigger = button?.closest("span");
 
-    Object.defineProperty(button, "getBoundingClientRect", {
-      configurable: true,
-      value: () => createRect({ left: 140, top: 184, width: 20, height: 20 }),
-    });
+  expect(button).toBeInstanceOf(HTMLButtonElement);
+  expect(trigger).toBeInstanceOf(HTMLSpanElement);
 
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
-
-    expect(tooltip).toBeInstanceOf(HTMLElement);
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-    expect(tooltip?.getAttribute("data-side")).not.toBeNull();
-    expect(host?.contains(tooltip as Node)).toBe(false);
-
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
-    Object.defineProperty(window, "innerHeight", {
-      configurable: true,
-      value: originalInnerHeight,
-    });
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
   });
 
-  it("passes the nearest theme scope into the portaled tooltip surface", () => {
-    render(
-      <div data-theme="vibe-dark">
-        <InfoTooltip
-          label="Explain notice"
-          content="Current results stay on the latest searched snapshot."
-        />
-      </div>,
-    );
+  const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
 
-    const button = host?.querySelector("button");
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
 
-    expect(button).toBeInstanceOf(HTMLButtonElement);
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const tooltip = document.body.querySelector('[role="tooltip"]');
-    const arrow = document.body.querySelector('[data-bubble-arrow="true"]');
-
-    expect(tooltip).toBeInstanceOf(HTMLElement);
-    expect(tooltip?.getAttribute("data-theme")).toBe("vibe-dark");
-    expect(arrow?.getAttribute("data-theme")).toBe("vibe-dark");
-    expect((tooltip as HTMLElement | null)?.style.backgroundColor).toBe(
-      bubbleSurfaceStyle("neutral", "vibe-dark").backgroundColor,
-    );
-    expect((arrow as SVGElement | null)?.style.fill).toBe(
-      bubbleArrowStyle("neutral", "vibe-dark").fill,
-    );
-    expect((tooltip as HTMLElement | null)?.style.boxShadow).toBe(
-      bubbleSurfaceStyle("neutral", "vibe-dark").boxShadow,
-    );
-    expect((tooltip as HTMLElement | null)?.style.backdropFilter).toBe(
-      bubbleSurfaceStyle("neutral", "vibe-dark").backdropFilter,
-    );
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    tooltip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    vi.advanceTimersByTime(150);
   });
 
-  it("keeps hover tooltips open while moving the pointer into the bubble content", () => {
-    vi.useFakeTimers();
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
 
-    render(
-      <InfoTooltip
-        label="Explain notice"
-        content="Current results stay on the latest searched snapshot."
-      />,
-    );
-
-    const button = host?.querySelector("button");
-    const trigger = button?.closest("span");
-
-    expect(button).toBeInstanceOf(HTMLButtonElement);
-    expect(trigger).toBeInstanceOf(HTMLSpanElement);
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    });
-
-    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
-
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      tooltip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-      vi.advanceTimersByTime(150);
-    });
-
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-
-    act(() => {
-      tooltip?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      vi.advanceTimersByTime(150);
-    });
-
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
-
-    vi.useRealTimers();
+  act(() => {
+    tooltip?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    vi.advanceTimersByTime(150);
   });
 
-  it("keeps the tooltip open when a hovered trigger is clicked to pin it", () => {
-    render(
-      <InfoTooltip
-        label="Explain notice"
-        content="Current results stay on the latest searched snapshot."
-      />,
-    );
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
 
-    const button = host?.querySelector("button");
+  vi.useRealTimers();
+});
+it("keeps the tooltip open when a hovered trigger is clicked to pin it", () => {
+  render(
+    <InfoTooltip
+      label="Explain notice"
+      content="Current results stay on the latest searched snapshot."
+    />,
+  );
 
-    expect(button).toBeInstanceOf(HTMLButtonElement);
+  const button = host?.querySelector("button");
 
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    });
+  expect(button).toBeInstanceOf(HTMLButtonElement);
 
-    const tooltip = document.body.querySelector('[role="tooltip"]');
-
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
-    expect(button?.getAttribute("aria-describedby")).toBe(tooltip?.id);
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
   });
 
-  it("keeps focus on the trigger when the tooltip opens", () => {
-    render(
-      <InfoTooltip
-        label="Explain notice"
-        content="Current results stay on the latest searched snapshot."
-      />,
-    );
+  const tooltip = document.body.querySelector('[role="tooltip"]');
 
-    const button = host?.querySelector("button") as HTMLButtonElement | null;
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
 
-    button?.focus();
-
-    expect(document.activeElement).toBe(button);
-
-    act(() => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(document.activeElement).toBe(button);
-    expect(document.body.querySelector('[role="tooltip"]')?.getAttribute("aria-hidden")).toBe(
-      "false",
-    );
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
+
+  expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+  expect(button?.getAttribute("aria-describedby")).toBe(tooltip?.id);
+});
+it("keeps focus on the trigger when the tooltip opens", () => {
+  render(
+    <InfoTooltip
+      label="Explain notice"
+      content="Current results stay on the latest searched snapshot."
+    />,
+  );
+
+  const button = host?.querySelector("button") as HTMLButtonElement | null;
+
+  button?.focus();
+
+  expect(document.activeElement).toBe(button);
+
+  act(() => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  expect(document.activeElement).toBe(button);
+  expect(document.body.querySelector('[role="tooltip"]')?.getAttribute("aria-hidden")).toBe(
+    "false",
+  );
 });

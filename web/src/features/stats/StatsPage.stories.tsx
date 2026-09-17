@@ -412,7 +412,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
   };
 }
 
-function StatsPageSseBootstrap({ scenario }: { scenario: StatsScenario }) {
+function StatsPageSseBootstrap() {
   useEffect(() => {
     const controller = getStorybookPageSseController();
     if (!controller) return;
@@ -478,7 +478,7 @@ function StatsPageSseBootstrap({ scenario }: { scenario: StatsScenario }) {
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [scenario]);
+  }, []);
 
   return null;
 }
@@ -499,7 +499,7 @@ const meta = {
       return (
         <I18nProvider>
           <StorybookPageEnvironment onRequest={buildStatsRequestHandler(scenario)}>
-            <StatsPageSseBootstrap scenario={scenario} />
+            <StatsPageSseBootstrap />
             <FullPageStorySurface>
               <Story />
             </FullPageStorySurface>

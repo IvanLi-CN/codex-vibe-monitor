@@ -164,7 +164,7 @@ function WorkflowFetchMock({
     return () => {
       globalThis.fetch = originalFetch;
     };
-  }, [recordId, response]);
+  }, [recordId, response, responseBodyPayload, requestBodyPayload]);
 
   return null;
 }
