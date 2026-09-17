@@ -269,96 +269,114 @@ impl SubscriptionHub {
         let mut actions = PromptCacheBindingProjectionActions::default();
         let mut binding_payload = None;
         for topic_key in active_topic_keys {
-            if guard
-                .active_subscribers
-                .get(&topic_key)
-                .copied()
-                .unwrap_or_default()
-                == 0
-            {
-                continue;
+            self.apply_prompt_cache_binding_to_topic(
+                guard,
+                &topic_key,
+                prompt_cache_key,
+                binding,
+                &mut binding_payload,
+                &mut actions,
+            )?;
+        }
+        Ok(actions)
+    }
+
+    fn apply_prompt_cache_binding_to_topic(
+        &self,
+        guard: &mut SubscriptionHubState,
+        topic_key: &str,
+        prompt_cache_key: &str,
+        binding: &PromptCacheConversationBindingResponse,
+        binding_payload: &mut Option<Value>,
+        actions: &mut PromptCacheBindingProjectionActions,
+    ) -> Result<(), ApiError> {
+        if guard
+            .active_subscribers
+            .get(topic_key)
+            .copied()
+            .unwrap_or_default()
+            == 0
+        {
+            return Ok(());
+        }
+        let Some(cached) = guard.topics.get_mut(topic_key) else {
+            return Ok(());
+        };
+        if cached.dirty {
+            cached.prompt_cache_reconcile_required = true;
+            if !cached.prompt_cache_reconcile_scheduled {
+                cached.prompt_cache_reconcile_scheduled = true;
+                actions.reconciles.push(cached.topic.clone());
             }
-            let Some(cached) = guard.topics.get_mut(&topic_key) else {
-                continue;
+            return Ok(());
+        }
+        let working_state = match cached.dashboard_materializer.as_ref() {
+            Some(DashboardTopicMaterializer::WorkingConversations { state }) => Some(state.clone()),
+            _ => None,
+        };
+        let is_working_conversations = working_state.is_some();
+        if !is_working_conversations {
+            cached.prompt_cache_bounded_key_hydration_count = cached
+                .prompt_cache_bounded_key_hydration_count
+                .saturating_add(1);
+        }
+        let changed = if let Some(working_state) = working_state.as_ref() {
+            let Some(changed) = working_state
+                .lock()
+                .expect("working conversations materializer state lock")
+                .apply_binding(prompt_cache_key, binding)
+            else {
+                cached
+                    .prompt_cache_pending_key_hydrations
+                    .insert(prompt_cache_key.to_string());
+                cached.prompt_cache_candidate_refill_required = true;
+                if !cached.prompt_cache_key_hydration_scheduled {
+                    cached.prompt_cache_key_hydration_scheduled = true;
+                    actions.key_hydrations.push(cached.topic.clone());
+                }
+                return Ok(());
             };
-            if cached.dirty {
+            changed
+        } else {
+            if binding_payload.is_none() {
+                *binding_payload = Some(serde_json::to_value(binding)?);
+            }
+            let Some(changed) = patch_prompt_cache_binding_payload(
+                &mut cached.snapshot_payload,
+                prompt_cache_key,
+                binding_payload
+                    .as_ref()
+                    .expect("serialized binding payload"),
+            ) else {
                 cached.prompt_cache_reconcile_required = true;
                 if !cached.prompt_cache_reconcile_scheduled {
                     cached.prompt_cache_reconcile_scheduled = true;
                     actions.reconciles.push(cached.topic.clone());
                 }
-                continue;
-            }
-            let working_state = match cached.dashboard_materializer.as_ref() {
-                Some(DashboardTopicMaterializer::WorkingConversations { state }) => {
-                    Some(state.clone())
-                }
-                _ => None,
+                return Ok(());
             };
-            let is_working_conversations = working_state.is_some();
-            if !is_working_conversations {
-                cached.prompt_cache_bounded_key_hydration_count = cached
-                    .prompt_cache_bounded_key_hydration_count
-                    .saturating_add(1);
-            }
-            let changed = if let Some(working_state) = working_state.as_ref() {
-                let Some(changed) = working_state
-                    .lock()
-                    .expect("working conversations materializer state lock")
-                    .apply_binding(prompt_cache_key, binding)
-                else {
-                    cached
-                        .prompt_cache_pending_key_hydrations
-                        .insert(prompt_cache_key.to_string());
-                    cached.prompt_cache_candidate_refill_required = true;
-                    if !cached.prompt_cache_key_hydration_scheduled {
-                        cached.prompt_cache_key_hydration_scheduled = true;
-                        actions.key_hydrations.push(cached.topic.clone());
-                    }
-                    continue;
-                };
-                changed
-            } else {
-                if binding_payload.is_none() {
-                    binding_payload = Some(serde_json::to_value(binding)?);
-                }
-                let Some(changed) = patch_prompt_cache_binding_payload(
-                    &mut cached.snapshot_payload,
-                    prompt_cache_key,
-                    binding_payload
-                        .as_ref()
-                        .expect("serialized binding payload"),
-                ) else {
-                    cached.prompt_cache_reconcile_required = true;
-                    if !cached.prompt_cache_reconcile_scheduled {
-                        cached.prompt_cache_reconcile_scheduled = true;
-                        actions.reconciles.push(cached.topic.clone());
-                    }
-                    continue;
-                };
-                changed
-            };
-            if !changed {
-                continue;
-            }
-            if is_working_conversations {
-                self.dashboard_topology_counters
-                    .record_materialization(cached.topic.name(), false);
-            }
-            let serialized_payload = serialize_prompt_cache_materializer_payload(
-                working_state.as_ref(),
-                &cached.snapshot_payload,
-            )?;
-            actions
-                .dispatches
-                .push(self.commit_prompt_cache_topic_frame(
-                    cached,
-                    &topic_key,
-                    serialized_payload,
-                    Utc::now(),
-                )?);
+            changed
+        };
+        if !changed {
+            return Ok(());
         }
-        Ok(actions)
+        if is_working_conversations {
+            self.dashboard_topology_counters
+                .record_materialization(cached.topic.name(), false);
+        }
+        let serialized_payload = serialize_prompt_cache_materializer_payload(
+            working_state.as_ref(),
+            &cached.snapshot_payload,
+        )?;
+        actions
+            .dispatches
+            .push(self.commit_prompt_cache_topic_frame(
+                cached,
+                topic_key,
+                serialized_payload,
+                Utc::now(),
+            )?);
+        Ok(())
     }
 
     async fn apply_prompt_cache_sticky_route_projection(

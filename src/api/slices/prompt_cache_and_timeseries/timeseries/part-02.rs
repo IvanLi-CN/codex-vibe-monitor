@@ -223,12 +223,12 @@ impl TimeseriesTopicMaterializedBase {
         state: &AppState,
         params: &TimeseriesQuery,
     ) -> Result<Self, ApiError> {
-        // Hold the terminal writer behind a SQLite write reservation while capturing both the
-        // durable baseline and the in-memory terminal watermark. A row ID is not a version: a
-        // terminal write can replace an older running row without advancing the row cursor.
+        // Hold the terminal writer gate while capturing a consistent read snapshot and the
+        // in-memory terminal watermark. A deferred transaction keeps reads available while an
+        // unrelated SQLite writer holds a WAL write reservation.
         let reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
         let reconcile_guard = reconcile_gate.lock().await;
-        let barrier = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let barrier = state.pool.begin().await?;
         drop(reconcile_guard);
 
         let build_result = Self::build_from_stable_persistence(state, params).await;

@@ -408,6 +408,12 @@ impl SubscriptionTopic {
             | Self::DashboardWorkingConversationsCurrent { .. } => {
                 build_dashboard_json_payload(self, state).await
             }
+            _ => self.build_payload_from_data_topic(state).await,
+        }
+    }
+
+    async fn build_payload_from_data_topic(&self, state: Arc<AppState>) -> Result<Value, ApiError> {
+        match self {
             Self::InvocationWindow {
                 limit,
                 model,
@@ -497,6 +503,7 @@ impl SubscriptionTopic {
                 )
                 .await
             }
+            _ => unreachable!("non-data topic reached data topic payload builder"),
         }
     }
 }
