@@ -2,7 +2,6 @@ use super::*;
 
 mod error_distribution_and_sse;
 #[expect(
-    clippy::too_many_arguments,
     clippy::type_complexity,
     reason = "Existing internal query adapters preserve established call-site contracts."
 )]

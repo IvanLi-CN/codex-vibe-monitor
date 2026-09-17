@@ -319,7 +319,6 @@ export default function RecordsPage() {
     requestedUpstreamAccountId,
     resetDraft,
     search,
-    setPage,
     updateDraft,
   ]);
 
@@ -468,6 +467,9 @@ export default function RecordsPage() {
   const requesterIpBucket = suggestions?.requesterIp;
   const serviceTierBucket = suggestions?.serviceTier;
   const reasoningEffortBucket = suggestions?.reasoningEffort;
+  const modelSuggestionItems = (
+    draft.modelTarget === "response" ? responseModelBucket : requestModelBucket
+  )?.items;
   const draftValidation = validateInvocationRecordsDraft(draft);
   const hasDraftValidationErrors = Object.values(draftValidation).some((value) => value !== null);
   const timeRangeError =
@@ -508,11 +510,8 @@ export default function RecordsPage() {
   );
 
   const modelOptions = useMemo(
-    () =>
-      mapSuggestionBucketToOptions(
-        (draft.modelTarget === "response" ? responseModelBucket : requestModelBucket)?.items,
-      ),
-    [draft.modelTarget, requestModelBucket?.items, responseModelBucket?.items],
+    () => mapSuggestionBucketToOptions(modelSuggestionItems),
+    [modelSuggestionItems],
   );
   const endpointOptions = useMemo(
     () => mapSuggestionBucketToOptions(endpointBucket?.items),
@@ -547,6 +546,7 @@ export default function RecordsPage() {
     [reasoningEffortBucket?.items],
   );
 
+  // Keep the active filter summary derived from the last applied query.
   const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
     if (!appliedDraft) return [];
 
@@ -697,7 +697,6 @@ export default function RecordsPage() {
 
     return chips;
   }, [appliedDraft, rangeOptions, t]);
-
   const handleClearDraft = () => {
     customRangeTouchedRef.current = false;
     setModelSearchInput("");
@@ -917,13 +916,14 @@ export default function RecordsPage() {
             </Button>
           </div>
 
-          <div
+          <fieldset
             className="flex flex-wrap gap-2"
             data-testid="records-active-filters"
             aria-label={t("records.filters.active")}
           >
-            {activeFilterChips.map((chip) =>
-              chip.clearKeys?.length ? (
+            {activeFilterChips.map((chip) => {
+              const clearKeys = chip.clearKeys;
+              return clearKeys?.length ? (
                 <Chip
                   asChild
                   size="default"
@@ -937,7 +937,7 @@ export default function RecordsPage() {
                   <button
                     type="button"
                     className="inline-flex max-w-full items-center gap-1.5 text-left text-xs font-medium"
-                    onClick={() => handleRemoveActiveFilter(chip.clearKeys!)}
+                    onClick={() => handleRemoveActiveFilter(clearKeys)}
                   >
                     <span className="truncate">{chip.label}</span>
                     <AppIcon name="close" className="h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -959,9 +959,9 @@ export default function RecordsPage() {
                     <span className="truncate">{chip.label}</span>
                   </button>
                 </Chip>
-              ),
-            )}
-          </div>
+              );
+            })}
+          </fieldset>
         </div>
       </section>
 

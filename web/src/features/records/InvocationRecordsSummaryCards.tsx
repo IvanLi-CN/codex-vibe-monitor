@@ -17,6 +17,100 @@ interface SummaryMetric {
   toneClass?: string;
 }
 
+interface SummaryMetricBuilderOptions {
+  focus: InvocationFocus;
+  t: (key: string) => string;
+  formatNumber: (value?: number | null) => string;
+  formatMs: (value?: number | null) => string;
+  formatSeconds: (value?: number | null) => string;
+  formatCost: (value?: number | null) => string;
+  summary: InvocationRecordsSummaryResponse | null;
+}
+
+function buildSummaryMetrics({
+  focus,
+  t,
+  formatNumber,
+  formatMs,
+  formatSeconds,
+  formatCost,
+  summary,
+}: SummaryMetricBuilderOptions): SummaryMetric[] {
+  switch (focus) {
+    case "network":
+      return [
+        {
+          label: t("records.summary.network.avgFirstToken"),
+          value: formatMs(summary?.network.avgFirstTokenMs),
+          toneClass: "text-info",
+        },
+        {
+          label: t("records.summary.network.p95FirstToken"),
+          value: formatMs(summary?.network.p95FirstTokenMs),
+        },
+        {
+          label: t("records.summary.network.avgResponseDuration"),
+          value: formatSeconds(summary?.network.avgResponseDurationMs),
+          toneClass: "text-primary",
+        },
+        {
+          label: t("records.summary.network.p95ResponseDuration"),
+          value: formatSeconds(summary?.network.p95ResponseDurationMs),
+        },
+      ];
+    case "exception":
+      return [
+        {
+          label: t("records.summary.exception.failures"),
+          value: formatNumber(summary?.exception.failureCount),
+          toneClass: "text-error",
+        },
+        {
+          label: t("records.summary.exception.service"),
+          value: formatNumber(summary?.exception.serviceFailureCount),
+        },
+        {
+          label: t("records.summary.exception.client"),
+          value: formatNumber(summary?.exception.clientFailureCount),
+        },
+        {
+          label: t("records.summary.exception.abort"),
+          value: formatNumber(summary?.exception.clientAbortCount),
+        },
+        {
+          label: t("records.summary.exception.actionable"),
+          value: formatNumber(summary?.exception.actionableFailureCount),
+          toneClass: "text-warning",
+        },
+      ];
+    default:
+      return [
+        {
+          label: t("records.summary.token.requests"),
+          value: formatNumber(summary?.token.requestCount),
+          toneClass: "text-primary",
+        },
+        {
+          label: t("records.summary.token.cacheWrite"),
+          value: formatNumber(summary?.token.cacheWriteTokens),
+        },
+        {
+          label: t("records.summary.token.cacheInput"),
+          value: formatNumber(summary?.token.cacheInputTokens),
+        },
+        {
+          label: t("records.summary.token.output"),
+          value: formatNumber(summary?.token.outputTokens),
+          toneClass: "text-info",
+        },
+        {
+          label: t("records.summary.token.amount"),
+          value: formatCost(summary?.token.totalCost),
+        },
+      ];
+  }
+}
+
 function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
 
@@ -78,81 +172,15 @@ export function InvocationRecordsSummaryCards({
   const formatSeconds = (value?: number | null) => formatSecondsFromMilliseconds(value, localeTag);
   const formatCost = (value?: number | null) => currencyFormatter.format(value ?? 0);
 
-  const metrics: SummaryMetric[] = (() => {
-    switch (focus) {
-      case "network":
-        return [
-          {
-            label: t("records.summary.network.avgFirstToken"),
-            value: formatMs(summary?.network.avgFirstTokenMs),
-            toneClass: "text-info",
-          },
-          {
-            label: t("records.summary.network.p95FirstToken"),
-            value: formatMs(summary?.network.p95FirstTokenMs),
-          },
-          {
-            label: t("records.summary.network.avgResponseDuration"),
-            value: formatSeconds(summary?.network.avgResponseDurationMs),
-            toneClass: "text-primary",
-          },
-          {
-            label: t("records.summary.network.p95ResponseDuration"),
-            value: formatSeconds(summary?.network.p95ResponseDurationMs),
-          },
-        ];
-      case "exception":
-        return [
-          {
-            label: t("records.summary.exception.failures"),
-            value: formatNumber(summary?.exception.failureCount),
-            toneClass: "text-error",
-          },
-          {
-            label: t("records.summary.exception.service"),
-            value: formatNumber(summary?.exception.serviceFailureCount),
-          },
-          {
-            label: t("records.summary.exception.client"),
-            value: formatNumber(summary?.exception.clientFailureCount),
-          },
-          {
-            label: t("records.summary.exception.abort"),
-            value: formatNumber(summary?.exception.clientAbortCount),
-          },
-          {
-            label: t("records.summary.exception.actionable"),
-            value: formatNumber(summary?.exception.actionableFailureCount),
-            toneClass: "text-warning",
-          },
-        ];
-      default:
-        return [
-          {
-            label: t("records.summary.token.requests"),
-            value: formatNumber(summary?.token.requestCount),
-            toneClass: "text-primary",
-          },
-          {
-            label: t("records.summary.token.cacheWrite"),
-            value: formatNumber(summary?.token.cacheWriteTokens),
-          },
-          {
-            label: t("records.summary.token.cacheInput"),
-            value: formatNumber(summary?.token.cacheInputTokens),
-          },
-          {
-            label: t("records.summary.token.output"),
-            value: formatNumber(summary?.token.outputTokens),
-            toneClass: "text-info",
-          },
-          {
-            label: t("records.summary.token.amount"),
-            value: formatCost(summary?.token.totalCost),
-          },
-        ];
-    }
-  })();
+  const metrics = buildSummaryMetrics({
+    focus,
+    t,
+    formatNumber,
+    formatMs,
+    formatSeconds,
+    formatCost,
+    summary,
+  });
 
   return (
     <div className="space-y-3">

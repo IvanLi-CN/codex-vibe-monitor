@@ -32,74 +32,87 @@ function statusRole(variant: BubbleVariant) {
   return variant === "error" ? "alert" : "status";
 }
 
-export function FloatingFieldBubble({
+function FloatingFieldBubbleInline({
   id,
   message,
-  variant = "error",
+  variant,
   className,
-  placement = "input-corner",
   anchor,
   anchorClassName,
-}: FloatingFieldBubbleProps) {
-  const role = statusRole(variant);
-  const [anchorElement, setAnchorElement] = useState<HTMLSpanElement | null>(null);
-  const portalTheme = usePortaledTheme(anchorElement);
-
-  if (placement === "label-inline") {
-    return (
-      <Popover open modal={false}>
-        <PopoverAnchor asChild>
-          <span
-            ref={setAnchorElement}
-            aria-hidden={anchor ? undefined : true}
-            className={cn(
-              anchor
-                ? "inline-flex shrink-0 items-center"
-                : "inline-flex h-4 w-4 shrink-0 translate-y-0.5",
-              anchorClassName,
-            )}
-          >
-            {anchor}
-          </span>
-        </PopoverAnchor>
-        <PopoverContent
-          id={id}
-          data-theme={portalTheme}
-          style={bubbleSurfaceStyle(variant, portalTheme)}
-          role={role}
-          aria-live="polite"
-          onOpenAutoFocus={(event) => event.preventDefault()}
-          onCloseAutoFocus={(event) => event.preventDefault()}
-          side="left"
-          align="center"
-          sideOffset={2}
-          arrowPadding={INLINE_ARROW_PADDING}
-          avoidCollisions
-          collisionPadding={12}
-          sticky="partial"
+  portalTheme,
+  role,
+  setAnchorElement,
+}: FloatingFieldBubbleProps & {
+  variant: BubbleVariant;
+  portalTheme: ReturnType<typeof usePortaledTheme>;
+  role: "alert" | "status";
+  setAnchorElement: (element: HTMLSpanElement | null) => void;
+}) {
+  return (
+    <Popover open modal={false}>
+      <PopoverAnchor asChild>
+        <span
+          ref={setAnchorElement}
+          aria-hidden={anchor ? undefined : true}
           className={cn(
-            bubbleContentClassName(variant),
-            "pointer-events-none w-[min(20rem,calc(100vw-1rem))]",
-            className,
+            anchor
+              ? "inline-flex shrink-0 items-center"
+              : "inline-flex h-4 w-4 shrink-0 translate-y-0.5",
+            anchorClassName,
           )}
         >
-          {message}
-          <PopoverArrow
-            data-theme={portalTheme}
-            data-bubble-arrow="true"
-            width={INLINE_ARROW_WIDTH}
-            height={INLINE_ARROW_HEIGHT}
-            className={bubbleArrowClassName()}
-            style={{
-              ...bubbleArrowStyle(variant, portalTheme),
-              transform: "translateX(-1px)",
-            }}
-          />
-        </PopoverContent>
-      </Popover>
-    );
-  }
+          {anchor}
+        </span>
+      </PopoverAnchor>
+      <PopoverContent
+        id={id}
+        data-theme={portalTheme}
+        style={bubbleSurfaceStyle(variant, portalTheme)}
+        role={role}
+        aria-live="polite"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+        side="left"
+        align="center"
+        sideOffset={2}
+        arrowPadding={INLINE_ARROW_PADDING}
+        avoidCollisions
+        collisionPadding={12}
+        sticky="partial"
+        className={cn(
+          bubbleContentClassName(variant),
+          "pointer-events-none w-[min(20rem,calc(100vw-1rem))]",
+          className,
+        )}
+      >
+        {message}
+        <PopoverArrow
+          data-theme={portalTheme}
+          data-bubble-arrow="true"
+          width={INLINE_ARROW_WIDTH}
+          height={INLINE_ARROW_HEIGHT}
+          className={bubbleArrowClassName()}
+          style={{ ...bubbleArrowStyle(variant, portalTheme), transform: "translateX(-1px)" }}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
 
+function FloatingFieldBubbleCorner({
+  id,
+  message,
+  variant,
+  className,
+  portalTheme,
+  role,
+  setAnchorElement,
+}: Pick<FloatingFieldBubbleProps, "id" | "message" | "className"> & {
+  variant: BubbleVariant;
+  portalTheme: ReturnType<typeof usePortaledTheme>;
+  role: "alert" | "status";
+  setAnchorElement: (element: HTMLSpanElement | null) => void;
+}) {
   return (
     <Popover open modal={false}>
       <PopoverAnchor asChild>
@@ -141,5 +154,44 @@ export function FloatingFieldBubble({
         />
       </PopoverContent>
     </Popover>
+  );
+}
+
+export function FloatingFieldBubble({
+  id,
+  message,
+  variant = "error",
+  className,
+  placement = "input-corner",
+  anchor,
+  anchorClassName,
+}: FloatingFieldBubbleProps) {
+  const role = statusRole(variant);
+  const [anchorElement, setAnchorElement] = useState<HTMLSpanElement | null>(null);
+  const portalTheme = usePortaledTheme(anchorElement);
+
+  return placement === "label-inline" ? (
+    <FloatingFieldBubbleInline
+      id={id}
+      message={message}
+      variant={variant}
+      className={className}
+      placement={placement}
+      anchor={anchor}
+      anchorClassName={anchorClassName}
+      portalTheme={portalTheme}
+      role={role}
+      setAnchorElement={setAnchorElement}
+    />
+  ) : (
+    <FloatingFieldBubbleCorner
+      id={id}
+      message={message}
+      variant={variant}
+      className={className}
+      portalTheme={portalTheme}
+      role={role}
+      setAnchorElement={setAnchorElement}
+    />
   );
 }

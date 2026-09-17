@@ -851,9 +851,7 @@ export function UpstreamAccountsGroupedRoster({
     if (spacerElement && spacerElement !== containerElement) {
       observer.observe(spacerElement);
     }
-    if (memberElement && memberElement !== spacerElement && memberElement !== containerElement) {
-      observer.observe(memberElement);
-    }
+    if (memberLayout === "grid" && memberElement) observer.observe(memberElement);
     if (document.body) {
       observer.observe(document.body);
     }

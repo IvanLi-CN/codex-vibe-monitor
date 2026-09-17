@@ -8,6 +8,13 @@ import { usePortaledTheme } from "./use-portaled-theme";
 
 const LONG_PRESS_DELAY_MS = 360;
 
+function clearLongPressTimer(timerRef: React.RefObject<number | null>) {
+  if (timerRef.current != null) {
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }
+}
+
 function tokenList(className?: string) {
   return className?.split(/\s+/).filter(Boolean) ?? [];
 }
@@ -82,70 +89,50 @@ interface TooltipProps {
   triggerProps?: React.HTMLAttributes<HTMLElement> & Record<string, unknown>;
 }
 
-export function Tooltip({
-  content,
-  children,
-  container,
-  className,
-  contentClassName,
-  arrowClassName,
-  side = "top",
-  sideOffset = 10,
+interface TooltipContentProps {
+  content: React.ReactNode;
+  container: HTMLElement | null | undefined;
+  hostValue: HTMLElement | null | undefined;
+  contentRef: React.Ref<HTMLDivElement>;
+  portalTheme: ReturnType<typeof usePortaledTheme>;
+  contentStyle: React.CSSProperties;
+  arrowStyle: React.CSSProperties;
+  contentClassName?: string;
+  arrowClassName?: string;
+  side: NonNullable<TooltipProps["side"]>;
+  sideOffset: number;
+}
+
+function useTooltipTriggerState({
   open,
-  clickToOpen = false,
-  triggerElement = "span",
+  clickToOpen,
   triggerProps,
-}: TooltipProps) {
+}: Pick<TooltipProps, "open" | "clickToOpen" | "triggerProps">) {
   const longPressTimerRef = React.useRef<number | null>(null);
   const [hoverOpen, setHoverOpen] = React.useState(false);
   const [clickOpen, setClickOpen] = React.useState(false);
   const [longPressOpen, setLongPressOpen] = React.useState(false);
   const [rootElement, setRootElement] = React.useState<HTMLElement | null>(null);
-  const resolvedContainer = useResolvedOverlayContainer(container);
-  const { hostElement, ref: contentRef } = useOverlayHostElement<HTMLDivElement>(undefined);
-  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container);
-  const portalTheme = usePortaledTheme(rootElement);
-  const contentStyle = React.useMemo(
-    () => resolveTooltipContentStyle(contentClassName, portalTheme),
-    [contentClassName, portalTheme],
-  );
-  const arrowStyle = React.useMemo(
-    () => resolveTooltipArrowStyle(arrowClassName, portalTheme),
-    [arrowClassName, portalTheme],
-  );
-
-  const clearLongPressTimer = React.useCallback(() => {
-    if (longPressTimerRef.current != null) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  }, []);
-
-  React.useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+  React.useEffect(() => () => clearLongPressTimer(longPressTimerRef), []);
 
   const handlePointerDown = React.useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
       if (open !== undefined || event.button !== 0) return;
-      clearLongPressTimer();
+      clearLongPressTimer(longPressTimerRef);
       longPressTimerRef.current = window.setTimeout(() => {
         setLongPressOpen(true);
         longPressTimerRef.current = null;
       }, LONG_PRESS_DELAY_MS);
     },
-    [clearLongPressTimer, open],
+    [open],
   );
-
   const handlePointerRelease = React.useCallback(() => {
     if (open !== undefined) return;
-    clearLongPressTimer();
+    clearLongPressTimer(longPressTimerRef);
     setLongPressOpen(false);
-  }, [clearLongPressTimer, open]);
-
-  const resolvedOpen = open ?? (hoverOpen || clickOpen || longPressOpen);
-  const triggerClassName = cn(triggerElement === "div" ? "flex" : "inline-flex", className);
+  }, [open]);
   const triggerEventProps = {
     ref: setRootElement,
-    className: triggerClassName,
     ...triggerProps,
     onBlur: (event: React.FocusEvent<HTMLElement>) => {
       triggerProps?.onBlur?.(event);
@@ -178,48 +165,127 @@ export function Tooltip({
     onPointerCancel: handlePointerRelease,
     onPointerLeave: handlePointerRelease,
   };
+  return {
+    rootElement,
+    resolvedOpen: open ?? (hoverOpen || clickOpen || longPressOpen),
+    triggerEventProps,
+  };
+}
+
+function TooltipContent({
+  content,
+  container,
+  hostValue,
+  contentRef,
+  portalTheme,
+  contentStyle,
+  arrowStyle,
+  contentClassName,
+  arrowClassName,
+  side,
+  sideOffset,
+}: TooltipContentProps) {
+  const resolvedContainer = useResolvedOverlayContainer(container);
+  return (
+    <TooltipPrimitive.Portal container={resolvedContainer ?? undefined}>
+      <OverlayHostProvider value={hostValue}>
+        <TooltipPrimitive.Content
+          data-theme={portalTheme}
+          ref={contentRef}
+          side={side}
+          sideOffset={sideOffset}
+          style={contentStyle}
+          className={cn(
+            "z-50 max-w-[min(20rem,calc(100vw-1rem))] rounded-xl border px-3 py-2",
+            "text-left text-xs text-base-content outline-none",
+            "data-[state=delayed-open]:animate-in data-[state=closed]:animate-out",
+            "data-[state=closed]:fade-out-0 data-[state=delayed-open]:fade-in-0",
+            "data-[state=closed]:zoom-out-95 data-[state=delayed-open]:zoom-in-95",
+            "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2",
+            "data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
+            contentClassName,
+          )}
+        >
+          {content}
+          <TooltipPrimitive.Arrow
+            data-theme={portalTheme}
+            style={arrowStyle}
+            className={cn(arrowClassName)}
+            width={14}
+            height={8}
+          />
+        </TooltipPrimitive.Content>
+      </OverlayHostProvider>
+    </TooltipPrimitive.Portal>
+  );
+}
+
+function TooltipSurface({
+  content,
+  children,
+  container,
+  className,
+  contentClassName,
+  arrowClassName,
+  side = "top",
+  sideOffset = 10,
+  open,
+  clickToOpen = false,
+  triggerElement = "span",
+  triggerProps,
+}: TooltipProps) {
+  const { rootElement, resolvedOpen, triggerEventProps } = useTooltipTriggerState({
+    open,
+    clickToOpen,
+    triggerProps,
+  });
+  const resolvedContainer = useResolvedOverlayContainer(container);
+  const { hostElement, ref: contentRef } = useOverlayHostElement<HTMLDivElement>(undefined);
+  const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container);
+  const portalTheme = usePortaledTheme(rootElement);
+  const contentStyle = React.useMemo(
+    () => resolveTooltipContentStyle(contentClassName, portalTheme),
+    [contentClassName, portalTheme],
+  );
+  const arrowStyle = React.useMemo(
+    () => resolveTooltipArrowStyle(arrowClassName, portalTheme),
+    [arrowClassName, portalTheme],
+  );
+
+  const triggerClassName = cn(triggerElement === "div" ? "flex" : "inline-flex", className);
+  const triggerEventPropsWithClassName = {
+    ...triggerEventProps,
+    className: triggerClassName,
+  };
 
   return (
     <TooltipPrimitive.Provider delayDuration={120}>
       <TooltipPrimitive.Root open={resolvedOpen}>
         <TooltipPrimitive.Trigger asChild>
           {triggerElement === "div" ? (
-            <div {...triggerEventProps}>{children}</div>
+            <div {...triggerEventPropsWithClassName}>{children}</div>
           ) : (
-            <span {...triggerEventProps}>{children}</span>
+            <span {...triggerEventPropsWithClassName}>{children}</span>
           )}
         </TooltipPrimitive.Trigger>
-        <TooltipPrimitive.Portal container={resolvedContainer ?? undefined}>
-          <OverlayHostProvider value={hostValue}>
-            <TooltipPrimitive.Content
-              data-theme={portalTheme}
-              ref={contentRef}
-              side={side}
-              sideOffset={sideOffset}
-              style={contentStyle}
-              className={cn(
-                "z-50 max-w-[min(20rem,calc(100vw-1rem))] rounded-xl border px-3 py-2",
-                "text-left text-xs text-base-content outline-none",
-                "data-[state=delayed-open]:animate-in data-[state=closed]:animate-out",
-                "data-[state=closed]:fade-out-0 data-[state=delayed-open]:fade-in-0",
-                "data-[state=closed]:zoom-out-95 data-[state=delayed-open]:zoom-in-95",
-                "data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2",
-                "data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
-                contentClassName,
-              )}
-            >
-              {content}
-              <TooltipPrimitive.Arrow
-                data-theme={portalTheme}
-                style={arrowStyle}
-                className={cn(arrowClassName)}
-                width={14}
-                height={8}
-              />
-            </TooltipPrimitive.Content>
-          </OverlayHostProvider>
-        </TooltipPrimitive.Portal>
+        <TooltipContent
+          content={content}
+          container={container}
+          hostValue={hostValue}
+          contentRef={contentRef}
+          portalTheme={portalTheme}
+          contentStyle={contentStyle}
+          arrowStyle={arrowStyle}
+          contentClassName={contentClassName}
+          arrowClassName={arrowClassName}
+          side={side}
+          sideOffset={sideOffset}
+        />
       </TooltipPrimitive.Root>
     </TooltipPrimitive.Provider>
   );
+}
+
+export function Tooltip(props: TooltipProps) {
+  return <TooltipSurface {...props} />;
 }

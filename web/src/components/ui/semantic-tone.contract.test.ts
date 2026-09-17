@@ -46,6 +46,13 @@ function walkSourceFiles(root: string): string[] {
   });
 }
 
+function readCssSource(root: string): string {
+  return walkSourceFiles(root)
+    .filter((filePath) => filePath.endsWith(".css"))
+    .map((filePath) => readFileSync(filePath, "utf8"))
+    .join("\n");
+}
+
 describe("semantic tone source contract", () => {
   it("blocks filled-content text tokens on low-opacity semantic surfaces", () => {
     const offenders = walkSourceFiles(sourceRoot)
@@ -99,7 +106,7 @@ describe("semantic tone source contract", () => {
   });
 
   it("defines opaque surface, border, and ink tokens for every tone in both themes", () => {
-    const css = readFileSync(join(sourceRoot, "index.css"), "utf8");
+    const css = readCssSource(sourceRoot);
     expect(css).not.toContain("--endpoint-ink-image-edit");
     const declarations = new Map<
       string,
@@ -137,7 +144,7 @@ describe("semantic tone source contract", () => {
   });
 
   it("keeps shared tone-ink utility variables defined for non-Chip callers", () => {
-    const css = readFileSync(join(sourceRoot, "index.css"), "utf8");
+    const css = readCssSource(sourceRoot);
     for (const tone of ["primary", "secondary", "accent", "info", "success", "warning", "error"]) {
       expect(css).toMatch(new RegExp(`--tone-ink-${tone}:`));
     }
