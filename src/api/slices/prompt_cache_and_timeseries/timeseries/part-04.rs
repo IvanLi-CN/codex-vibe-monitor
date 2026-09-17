@@ -26,6 +26,28 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
     }
 }
 
+async fn timeseries_projection_batch_needs_defer(
+    state: &AppState,
+    tx: &mut SqliteConnection,
+    source_snapshot_id: i64,
+    coverage_generation: Option<u64>,
+) -> Result<bool, ApiError> {
+    let durable_recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM timeseries_minute_projection_v2_recovery WHERE consumer = ?1 AND invalidation_pending = 1)",
+    )
+    .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+    .fetch_one(&mut *tx)
+    .await?
+        != 0;
+    let new_coverage = state
+        .terminal_projection_hub
+        .timeseries_coverage_invalidation_pending();
+    Ok(durable_recovery_pending
+        || resolve_invocation_snapshot_id_tx(&mut *tx, InvocationSourceScope::All).await?
+            != source_snapshot_id
+        || new_coverage != coverage_generation)
+}
+
 async fn prepare_timeseries_restart_generation(
     state: &AppState,
     cancellation: &CancellationToken,
