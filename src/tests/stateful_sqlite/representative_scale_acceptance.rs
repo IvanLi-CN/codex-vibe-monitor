@@ -10,11 +10,7 @@ const CURRENT_LIMIT: i64 = 50;
 const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(30);
 const ALL_TIME_DEADLINE: Duration = Duration::from_secs(1_800);
 
-#[tokio::test]
-async fn summary_representative_scale_acceptance() {
-    let state =
-        test_state_with_openai_base(url::Url::parse("http://127.0.0.1:9").expect("valid test URL"))
-            .await;
+async fn seed_representative_scale_fixture(state: &Arc<AppState>) {
     let payload = format!(
         r#"{{"fixtureContract":"{FIXTURE_CONTRACT_VERSION}","padding":"{}"}}"#,
         "x".repeat(FIXTURE_PAYLOAD_BYTES)
@@ -42,20 +38,10 @@ async fn summary_representative_scale_acceptance() {
         FIXTURE_ROWS as usize * payload.len() >= MIN_RAW_SOURCE_BYTES,
         "fixture must contain at least 214 MiB of raw source text"
     );
+}
 
-    let bootstrap_started = Instant::now();
-    hydrate_summary_snapshots(state.as_ref())
-        .await
-        .expect("current and rolling bootstrap must publish");
-    let bootstrap_elapsed = bootstrap_started.elapsed();
-    assert!(
-        bootstrap_elapsed <= BOOTSTRAP_DEADLINE,
-        "bootstrap exceeded {}s: {:?}",
-        BOOTSTRAP_DEADLINE.as_secs(),
-        bootstrap_elapsed
-    );
-
-    let expected = json!({
+fn expected_representative_summary() -> serde_json::Value {
+    json!({
         "totalCount": FIXTURE_ROWS,
         "successCount": FIXTURE_ROWS,
         "failureCount": 0,
@@ -87,7 +73,10 @@ async fn summary_representative_scale_acceptance() {
                 "zeroUpdateStreak": 0,
             },
         },
-    });
+    })
+}
+
+async fn assert_representative_windows(state: &Arc<AppState>, expected: &serde_json::Value) {
     for window in ["current", "1d", "7d", "30d", "today"] {
         let mut expected_for_window = if window == "current" {
             let mut current = expected.clone();
@@ -150,7 +139,9 @@ async fn summary_representative_scale_acceptance() {
             "independent oracle mismatch for {window}"
         );
     }
+}
 
+async fn assert_representative_all_time(state: &Arc<AppState>, expected: &serde_json::Value) {
     let all_time_started = Instant::now();
     refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
         .await
@@ -175,9 +166,33 @@ async fn summary_representative_scale_acceptance() {
     .expect("all-time projection must be exact");
     assert_eq!(
         serde_json::to_value(response).expect("serialize all-time response"),
-        expected,
+        *expected,
         "independent oracle mismatch for all-time"
     );
+}
+
+#[tokio::test]
+async fn summary_representative_scale_acceptance() {
+    let state =
+        test_state_with_openai_base(url::Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    seed_representative_scale_fixture(&state).await;
+
+    let bootstrap_started = Instant::now();
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("current and rolling bootstrap must publish");
+    let bootstrap_elapsed = bootstrap_started.elapsed();
+    assert!(
+        bootstrap_elapsed <= BOOTSTRAP_DEADLINE,
+        "bootstrap exceeded {}s: {:?}",
+        BOOTSTRAP_DEADLINE.as_secs(),
+        bootstrap_elapsed
+    );
+
+    let expected = expected_representative_summary();
+    assert_representative_windows(&state, &expected).await;
+    assert_representative_all_time(&state, &expected).await;
 
     // Keep the fixture contract in the test binary so the selected acceptance remains reproducible.
     assert_eq!(FIXTURE_CONTRACT_VERSION, "summary-representative-scale-v2");
