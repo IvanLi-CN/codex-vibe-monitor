@@ -49,69 +49,61 @@ impl SummaryProjectionBuildPipelineState {
         }
     }
 
-    fn initialize_coverage(&mut self, mode: SummaryProjectionBuildMode) {
-        let preserve_archive_gaps = matches!(mode, SummaryProjectionBuildMode::RollingDelta);
+    fn initialize_previous_archive_gap_coverage(&mut self, mode: SummaryProjectionBuildMode) {
+        if !matches!(mode, SummaryProjectionBuildMode::RollingDelta) {
+            return;
+        }
         let previous = &self.initial.previous_all_time;
         let derived = &mut self.derived;
-        if preserve_archive_gaps {
-            derived.unavailable_boundary_archive_ranges =
-                previous.unavailable_boundary_archive_ranges.clone();
-            derived.unavailable_unmaterialized_archive_current_ranges = previous
-                .unavailable_unmaterialized_archive_current_ranges
-                .clone();
-            derived.unavailable_boundary_archive_account_ranges =
-                previous.unavailable_boundary_archive_account_ranges.clone();
-            derived.unavailable_unmaterialized_archive_account_current_ranges = previous
-                .unavailable_unmaterialized_archive_account_current_ranges
-                .clone();
-            derived.unavailable_unmaterialized_archive_account_exact_ranges = previous
-                .unavailable_unmaterialized_archive_account_ranges
-                .clone();
-            derived.unavailable_unmaterialized_archive_exact_ranges =
-                previous.unavailable_unmaterialized_archive_ranges.clone();
+        derived.unavailable_boundary_archive_ranges =
+            previous.unavailable_boundary_archive_ranges.clone();
+        derived.unavailable_unmaterialized_archive_current_ranges = previous
+            .unavailable_unmaterialized_archive_current_ranges
+            .clone();
+        derived.unavailable_boundary_archive_account_ranges =
+            previous.unavailable_boundary_archive_account_ranges.clone();
+        derived.unavailable_unmaterialized_archive_account_current_ranges = previous
+            .unavailable_unmaterialized_archive_account_current_ranges
+            .clone();
+        derived.unavailable_unmaterialized_archive_account_exact_ranges = previous
+            .unavailable_unmaterialized_archive_account_ranges
+            .clone();
+        derived.unavailable_unmaterialized_archive_exact_ranges =
+            previous.unavailable_unmaterialized_archive_ranges.clone();
+    }
+
+    fn initialize_unknown_boundary_coverage(&mut self) {
+        let unknown_ranges = &self
+            .initial
+            .boundary
+            .paged_boundary_manifest_unknown_coverage_ranges;
+        if unknown_ranges.is_empty() {
+            return;
         }
+        self.derived
+            .unavailable_unmaterialized_archive_exact_ranges
+            .extend(unknown_ranges.iter().copied());
+        self.derived
+            .unavailable_unmaterialized_archive_current_ranges
+            .extend(unknown_ranges.iter().copied());
+    }
+
+    fn initialize_unknown_account_archive_coverage(&mut self) {
         let exact_horizon = ExactUtcRange {
             start: self.initial.window.archive_start,
             end: self.initial.end,
         };
-        if !self
-            .initial
-            .boundary
-            .paged_boundary_manifest_unknown_coverage_ranges
-            .is_empty()
-        {
-            derived
-                .unavailable_unmaterialized_archive_exact_ranges
-                .extend(
-                    self.initial
-                        .boundary
-                        .paged_boundary_manifest_unknown_coverage_ranges
-                        .iter()
-                        .copied(),
-                );
-            derived
-                .unavailable_unmaterialized_archive_current_ranges
-                .extend(
-                    self.initial
-                        .boundary
-                        .paged_boundary_manifest_unknown_coverage_ranges
-                        .iter()
-                        .copied(),
-                );
-        }
-        derived
+        let current_archive = &self.initial.current_archive;
+        self.derived
             .unavailable_unmaterialized_archive_account_exact_ranges
             .extend(
-                self.initial
-                    .current_archive
+                current_archive
                     .current_archive_admission
                     .iter()
                     .filter_map(|archive| {
                         if archive.has_materialized_historical_rollups()
                             || !summary_projection_archive_has_coverage_bounds(archive)
-                            || self
-                                .initial
-                                .current_archive
+                            || current_archive
                                 .current_archive_account_manifest_refreshed_paths
                                 .contains(archive.file_path())
                         {
@@ -120,7 +112,7 @@ impl SummaryProjectionBuildPipelineState {
                         summary_projection_archive_overlap_range(archive, exact_horizon)
                     }),
             );
-        derived
+        self.derived
             .unavailable_unmaterialized_archive_account_exact_ranges
             .extend(
                 self.initial
@@ -129,6 +121,10 @@ impl SummaryProjectionBuildPipelineState {
                     .iter()
                     .copied(),
             );
+    }
+
+    fn initialize_unknown_live_coverage(&mut self) {
+        let derived = &mut self.derived;
         for candidate in self
             .initial
             .live_indexes
@@ -156,6 +152,13 @@ impl SummaryProjectionBuildPipelineState {
                     .insert(bucket);
             }
         }
+    }
+
+    fn initialize_coverage(&mut self, mode: SummaryProjectionBuildMode) {
+        self.initialize_previous_archive_gap_coverage(mode);
+        self.initialize_unknown_boundary_coverage();
+        self.initialize_unknown_account_archive_coverage();
+        self.initialize_unknown_live_coverage();
     }
 
     fn promote_current_records(

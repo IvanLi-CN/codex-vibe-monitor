@@ -101,6 +101,97 @@ fn dashboard_activity_snapshot_cache_success_outcome(
     }
 }
 
+fn finalize_dashboard_activity_snapshot_cache_in_flight(
+    request: &DashboardActivitySnapshotCacheRequest<'_>,
+    data: &mut DashboardActivitySnapshotBuildData,
+    routing_rules_changed: bool,
+    cache: &mut DashboardActivitySnapshotCacheState,
+    in_flight: Option<DashboardActivitySnapshotInFlight>,
+) {
+    let Some(in_flight) = in_flight else {
+        return;
+    };
+    if let Ok(snapshot) = &data.result
+        && !routing_rules_changed
+        && data.expiry_tracking_failure_reason.is_none()
+    {
+        let response = snapshot.clone();
+        let expiry_terminal_deltas = std::mem::take(&mut data.expiry_terminal_deltas);
+        cache.entries.insert(
+            request.selection.clone(),
+            DashboardActivitySnapshotCacheEntry {
+                cached_at: Instant::now(),
+                last_reconcile_attempted_at: Instant::now(),
+                last_reconcile_failed: false,
+                baseline_snapshot_cursor: data.snapshot_cursor_after_build,
+                expiry_covered_until: data.expiry_covered_until,
+                expiry_terminal_deltas,
+                expiry_delta_estimated_bytes: data.expiry_delta_estimated_bytes,
+                response,
+            },
+        );
+        prune_dashboard_activity_snapshot_entries(cache, Some(&request.selection));
+        prune_dashboard_activity_terminal_deltas(cache);
+        clear_dashboard_activity_hard_limit_after_baseline(&mut cache.read_model);
+    } else if data.expiry_tracking_failure_reason.is_some() {
+        cache.entries.remove(&request.selection);
+    }
+    let _ = in_flight.signal.send(true);
+}
+
+fn finalize_dashboard_activity_snapshot_cache_last_good_fallback(
+    request: &DashboardActivitySnapshotCacheRequest<'_>,
+    metrics: DashboardActivitySnapshotCacheMetrics,
+    coalesced_waiter_count: usize,
+    db_build_elapsed_ms: u64,
+    refresh_reason: &'static str,
+    cache: &mut DashboardActivitySnapshotCacheState,
+    error: ApiError,
+) -> Result<DashboardActivitySnapshotCacheBuildAction, ApiError> {
+    let Some(entry) = cache.entries.get_mut(&request.selection) else {
+        return Err(error);
+    };
+    mark_dashboard_activity_reconcile_failed(entry);
+    let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
+    tracing::warn!(
+        selection_fingerprint = request.selection_fingerprint,
+        refresh_reason,
+        cache_entry_age_ms,
+        db_build_elapsed_ms,
+        error = ?error,
+        "dashboard activity reconciliation failed; retained last-good snapshot"
+    );
+    Ok(DashboardActivitySnapshotCacheBuildAction::Return(Box::new(
+        (
+            entry.response.clone(),
+            DashboardActivitySnapshotCacheOutcome {
+                cache_hit_or_miss: "last_good_fallback",
+                cache_bypass_reason: "reconcile_failed",
+                coalesced_waiter_count,
+                db_build_elapsed_ms,
+                cache_ttl_ms: request.cache_ttl_ms,
+                cache_entry_age_ms,
+                cache_entry_count: metrics.cache_entry_count,
+                in_flight_count: metrics.in_flight_count,
+                refresh_reason: "reconcile_failed",
+                selection_fingerprint: request.selection_fingerprint,
+                terminal_delta_count: metrics.terminal_delta_count,
+                duplicate_delta_count: metrics.duplicate_delta_count,
+                pending_delta_count: metrics.pending_delta_count,
+                pending_delta_estimated_bytes: metrics.pending_delta_estimated_bytes,
+                persisted_ack_pending_count: metrics.persisted_ack_pending_count,
+                delta_pruned_count: metrics.delta_pruned_count,
+                expiry_delta_count: 0,
+                hard_limit_reason: metrics.hard_limit_reason,
+                baseline_cursor: entry.baseline_snapshot_cursor,
+                sequence_gap_count: metrics.sequence_gap_count,
+                build_attempted: true,
+                snapshot_origin: "last_good",
+            },
+        ),
+    )))
+}
+
 fn finalize_dashboard_activity_snapshot_cache_build_result(
     request: &DashboardActivitySnapshotCacheRequest<'_>,
     build_started_at: Instant,
@@ -112,32 +203,14 @@ fn finalize_dashboard_activity_snapshot_cache_build_result(
 ) -> Result<DashboardActivitySnapshotCacheBuildAction, ApiError> {
     let db_build_elapsed_ms = build_started_at.elapsed().as_millis() as u64;
     let DashboardActivitySnapshotCacheFinalizationState { cache, in_flight } = state;
-    if let Some(in_flight) = in_flight {
-        if let Ok(snapshot) = &data.result
-            && !routing_rules_changed
-            && data.expiry_tracking_failure_reason.is_none()
-        {
-            cache.entries.insert(
-                request.selection.clone(),
-                DashboardActivitySnapshotCacheEntry {
-                    cached_at: Instant::now(),
-                    last_reconcile_attempted_at: Instant::now(),
-                    last_reconcile_failed: false,
-                    baseline_snapshot_cursor: data.snapshot_cursor_after_build,
-                    expiry_covered_until: data.expiry_covered_until,
-                    expiry_terminal_deltas: data.expiry_terminal_deltas,
-                    expiry_delta_estimated_bytes: data.expiry_delta_estimated_bytes,
-                    response: snapshot.clone(),
-                },
-            );
-            prune_dashboard_activity_snapshot_entries(cache, Some(&request.selection));
-            prune_dashboard_activity_terminal_deltas(cache);
-            clear_dashboard_activity_hard_limit_after_baseline(&mut cache.read_model);
-        } else if data.expiry_tracking_failure_reason.is_some() {
-            cache.entries.remove(&request.selection);
-        }
-        let _ = in_flight.signal.send(true);
-    }
+    let mut data = data;
+    finalize_dashboard_activity_snapshot_cache_in_flight(
+        request,
+        &mut data,
+        routing_rules_changed,
+        cache,
+        in_flight,
+    );
     if routing_rules_changed {
         return Ok(DashboardActivitySnapshotCacheBuildAction::Retry);
     }
@@ -157,49 +230,14 @@ fn finalize_dashboard_activity_snapshot_cache_build_result(
                 ),
             ),
         ))),
-        Err(error) => {
-            let Some(entry) = cache.entries.get_mut(&request.selection) else {
-                return Err(error);
-            };
-            mark_dashboard_activity_reconcile_failed(entry);
-            let cache_entry_age_ms = entry.cached_at.elapsed().as_millis() as u64;
-            tracing::warn!(
-                selection_fingerprint = request.selection_fingerprint,
-                refresh_reason,
-                cache_entry_age_ms,
-                db_build_elapsed_ms,
-                error = ?error,
-                "dashboard activity reconciliation failed; retained last-good snapshot"
-            );
-            Ok(DashboardActivitySnapshotCacheBuildAction::Return(Box::new(
-                (
-                    entry.response.clone(),
-                    DashboardActivitySnapshotCacheOutcome {
-                        cache_hit_or_miss: "last_good_fallback",
-                        cache_bypass_reason: "reconcile_failed",
-                        coalesced_waiter_count,
-                        db_build_elapsed_ms,
-                        cache_ttl_ms: request.cache_ttl_ms,
-                        cache_entry_age_ms,
-                        cache_entry_count: metrics.cache_entry_count,
-                        in_flight_count: metrics.in_flight_count,
-                        refresh_reason: "reconcile_failed",
-                        selection_fingerprint: request.selection_fingerprint,
-                        terminal_delta_count: metrics.terminal_delta_count,
-                        duplicate_delta_count: metrics.duplicate_delta_count,
-                        pending_delta_count: metrics.pending_delta_count,
-                        pending_delta_estimated_bytes: metrics.pending_delta_estimated_bytes,
-                        persisted_ack_pending_count: metrics.persisted_ack_pending_count,
-                        delta_pruned_count: metrics.delta_pruned_count,
-                        expiry_delta_count: 0,
-                        hard_limit_reason: metrics.hard_limit_reason,
-                        baseline_cursor: entry.baseline_snapshot_cursor,
-                        sequence_gap_count: metrics.sequence_gap_count,
-                        build_attempted: true,
-                        snapshot_origin: "last_good",
-                    },
-                ),
-            )))
-        }
+        Err(error) => finalize_dashboard_activity_snapshot_cache_last_good_fallback(
+            request,
+            metrics,
+            coalesced_waiter_count,
+            db_build_elapsed_ms,
+            refresh_reason,
+            cache,
+            error,
+        ),
     }
 }

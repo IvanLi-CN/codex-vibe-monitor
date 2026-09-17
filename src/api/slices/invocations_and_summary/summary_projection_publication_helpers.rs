@@ -685,72 +685,118 @@ fn add_summary_projection_checkpoint_account_exact_records(
     }
 }
 
+fn publish_summary_projection_checkpoint_account(
+    context: &mut SummaryProjectionCheckpointPublicationContext<'_>,
+    account_id: i64,
+    totals: StatsTotals,
+    replacement_buckets: &HashSet<i64>,
+) {
+    let mut usage = UsageBreakdownAccumulator::default();
+    for (key, value) in &context.hourly_rollup_usage {
+        if key.1 == Some(account_id) && !replacement_buckets.contains(&key.0) {
+            usage.merge_response(value);
+        }
+    }
+    for bucket in &context.snapshot_totals.replacement_buckets {
+        if let Some(snapshot) = context
+            .snapshot_totals
+            .account_usage_by_bucket
+            .get(&(*bucket, account_id))
+        {
+            usage.merge_response(&snapshot.clone().into_response());
+        }
+    }
+    let mut response = totals.into_response();
+    let usage_response = usage.into_response();
+    if usage_response.cache_read_tokens > 0
+        || usage_response.cache_write_tokens > 0
+        || usage_response.output_tokens > 0
+        || usage_response.costs.is_some()
+        || !usage_response.models.is_empty()
+    {
+        response.usage_breakdown = Some(usage_response);
+    }
+    response.non_success_cost = Some(totals.non_success_cost);
+    response.maintenance = context.next.maintenance.clone();
+    let in_progress = context
+        .next
+        .in_progress_by_account
+        .get(&Some(account_id))
+        .copied()
+        .unwrap_or_default();
+    response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+    response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+    response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+    response.in_progress_phase_counts = Some(in_progress.phase_counts);
+    context
+        .next
+        .all_time_by_account
+        .insert(Some(account_id), response);
+    context
+        .next
+        .all_time_account_refreshed_at
+        .insert(account_id, context.reduction_started_at);
+    context
+        .next
+        .freshness
+        .account_all_time_eligible
+        .insert(account_id);
+    context
+        .next
+        .all_time_account_terminal_sequence_watermarks
+        .entry(account_id)
+        .and_modify(|watermark| {
+            *watermark =
+                (*watermark).max(context.generation_fence.durable_terminal_sequence_watermark)
+        })
+        .or_insert(context.generation_fence.durable_terminal_sequence_watermark);
+    context.account_ids.insert(account_id);
+}
+
+fn publish_summary_projection_checkpoint_empty_account(
+    context: &mut SummaryProjectionCheckpointPublicationContext<'_>,
+    account_id: i64,
+) {
+    let in_progress = context
+        .next
+        .in_progress_by_account
+        .get(&Some(account_id))
+        .copied()
+        .unwrap_or_default();
+    let mut response = StatsTotals::default().into_response();
+    response.non_success_cost = Some(0.0);
+    response.maintenance = context.next.maintenance.clone();
+    response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+    response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+    response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+    response.in_progress_phase_counts = Some(in_progress.phase_counts);
+    context
+        .next
+        .all_time_by_account
+        .insert(Some(account_id), response);
+    context
+        .next
+        .all_time_account_refreshed_at
+        .insert(account_id, context.reduction_started_at);
+    context
+        .next
+        .freshness
+        .account_all_time_eligible
+        .insert(account_id);
+}
+
 fn publish_summary_projection_checkpoint_accounts(
     context: &mut SummaryProjectionCheckpointPublicationContext<'_>,
     totals: HashMap<i64, StatsTotals>,
     replacement_buckets: HashSet<i64>,
 ) -> Result<()> {
     for (account_id, totals) in totals {
-        let mut usage = UsageBreakdownAccumulator::default();
-        for (key, value) in &context.hourly_rollup_usage {
-            if key.1 == Some(account_id) && !replacement_buckets.contains(&key.0) {
-                usage.merge_response(value);
-            }
-        }
-        for bucket in &context.snapshot_totals.replacement_buckets {
-            if let Some(snapshot) = context
-                .snapshot_totals
-                .account_usage_by_bucket
-                .get(&(*bucket, account_id))
-            {
-                usage.merge_response(&snapshot.clone().into_response());
-            }
-        }
-        let mut response = totals.into_response();
-        let usage_response = usage.into_response();
-        if usage_response.cache_read_tokens > 0
-            || usage_response.cache_write_tokens > 0
-            || usage_response.output_tokens > 0
-            || usage_response.costs.is_some()
-            || !usage_response.models.is_empty()
-        {
-            response.usage_breakdown = Some(usage_response);
-        }
-        response.non_success_cost = Some(totals.non_success_cost);
-        response.maintenance = context.next.maintenance.clone();
-        let in_progress = context
-            .next
-            .in_progress_by_account
-            .get(&Some(account_id))
-            .copied()
-            .unwrap_or_default();
-        response.in_progress_conversation_count = Some(in_progress.in_progress_count);
-        response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
-        response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
-        response.in_progress_phase_counts = Some(in_progress.phase_counts);
-        context
-            .next
-            .all_time_by_account
-            .insert(Some(account_id), response);
-        context
-            .next
-            .all_time_account_refreshed_at
-            .insert(account_id, context.reduction_started_at);
-        context
-            .next
-            .freshness
-            .account_all_time_eligible
-            .insert(account_id);
-        context
-            .next
-            .all_time_account_terminal_sequence_watermarks
-            .entry(account_id)
-            .and_modify(|watermark| {
-                *watermark =
-                    (*watermark).max(context.generation_fence.durable_terminal_sequence_watermark)
-            })
-            .or_insert(context.generation_fence.durable_terminal_sequence_watermark);
-        context.account_ids.insert(account_id);
+        publish_summary_projection_checkpoint_account(
+            context,
+            account_id,
+            totals,
+            &replacement_buckets,
+        );
     }
     for account_id in context.next.known_account_ids.clone() {
         if context
@@ -760,32 +806,7 @@ fn publish_summary_projection_checkpoint_accounts(
         {
             continue;
         }
-        let in_progress = context
-            .next
-            .in_progress_by_account
-            .get(&Some(account_id))
-            .copied()
-            .unwrap_or_default();
-        let mut response = StatsTotals::default().into_response();
-        response.non_success_cost = Some(0.0);
-        response.maintenance = context.next.maintenance.clone();
-        response.in_progress_conversation_count = Some(in_progress.in_progress_count);
-        response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
-        response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
-        response.in_progress_phase_counts = Some(in_progress.phase_counts);
-        context
-            .next
-            .all_time_by_account
-            .insert(Some(account_id), response);
-        context
-            .next
-            .all_time_account_refreshed_at
-            .insert(account_id, context.reduction_started_at);
-        context
-            .next
-            .freshness
-            .account_all_time_eligible
-            .insert(account_id);
+        publish_summary_projection_checkpoint_empty_account(context, account_id);
     }
     context
         .next
