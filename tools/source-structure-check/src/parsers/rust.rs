@@ -154,6 +154,9 @@ fn structural_suppressions(path: &str, source: &str) -> Vec<Diagnostic> {
                 continue;
             };
             let attribute_end = offset + relative_end + 1;
+            if attribute_applies_to_module(source, attribute_end) {
+                continue;
+            }
             let attribute = &source[attribute_start..attribute_end];
             if !attribute.contains("allow")
                 && !attribute.contains("expect")
@@ -176,6 +179,21 @@ fn structural_suppressions(path: &str, source: &str) -> Vec<Diagnostic> {
         }
     }
     diagnostics
+}
+
+fn attribute_applies_to_module(source: &str, attribute_end: usize) -> bool {
+    let mut following = source[attribute_end..].trim_start();
+    let Some(rest) = following.strip_prefix("pub") else {
+        return following.starts_with("mod ");
+    };
+    following = rest.trim_start();
+    if following.starts_with('(') {
+        let Some(visibility_end) = following.find(')') else {
+            return false;
+        };
+        following = following[visibility_end + 1..].trim_start();
+    }
+    following.starts_with("mod ")
 }
 
 struct NestingVisitor {
