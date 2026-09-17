@@ -1,5 +1,3 @@
-use super::*;
-
 async fn ensure_pool_oauth_session_tables(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"

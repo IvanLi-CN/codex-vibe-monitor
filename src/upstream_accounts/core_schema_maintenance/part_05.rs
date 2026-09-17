@@ -1,5 +1,3 @@
-use super::*;
-
 async fn ensure_pool_account_model_routes_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"

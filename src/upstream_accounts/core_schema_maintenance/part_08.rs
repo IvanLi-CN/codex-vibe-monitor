@@ -1,5 +1,3 @@
-use super::*;
-
 async fn ensure_pool_group_notes_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"

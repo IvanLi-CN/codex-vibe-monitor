@@ -1,5 +1,3 @@
-use super::*;
-
 async fn ensure_pool_routing_settings_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -203,6 +201,14 @@ async fn finish_pool_routing_settings(
     .await
     .context("failed to ensure pool_routing_settings.capability_axis_split_migrated")?;
 
+    ensure_pool_routing_settings_default_row_and_migrations(pool).await?;
+
+    Ok(())
+}
+
+async fn ensure_pool_routing_settings_default_row_and_migrations(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     sqlx::query(
         r#"
         INSERT OR IGNORE INTO pool_routing_settings (
@@ -227,6 +233,5 @@ async fn finish_pool_routing_settings(
     ensure_upstream_account_capability_axis_split_migrated(pool).await?;
     repair_responses_lite_image_tool_capability_observations(pool).await?;
     ensure_api_key_transit_proxy_bindings_migrated(pool).await?;
-
     Ok(())
 }

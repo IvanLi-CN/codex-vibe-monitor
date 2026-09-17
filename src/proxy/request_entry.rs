@@ -1,4 +1,5 @@
 include!("request_entry/part_01.rs");
+include!("request_entry/part_02.rs");
 include!("request_entry/part_03.rs");
 #[derive(Debug)]
 pub(crate) struct PoolUpstreamError {

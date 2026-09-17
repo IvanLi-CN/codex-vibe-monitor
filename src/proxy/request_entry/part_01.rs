@@ -133,18 +133,11 @@ pub(crate) async fn proxy_openai_v1_common(
     let proxy_request_id = next_proxy_request_id();
     let started_at = Instant::now();
     let invoke_id = generate_unique_proxy_invoke_id(&state.pool).await;
-    let method_for_log = method.clone();
-    let uri_for_log = original_uri.clone();
-    log_proxy_request_started(
-        proxy_request_id,
-        &method_for_log,
-        &uri_for_log,
-        &headers,
-        peer_ip,
-    );
+    let (method_for_log, uri_for_log) =
+        clone_and_log_proxy_request(proxy_request_id, &method, &original_uri, &headers, peer_ip);
     let target_url = match build_proxy_target_url(&state, &original_uri, &invoke_id) {
         Ok(url) => url,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let proxy_request_permit = acquire_proxy_request_permit_for_request(
         state.as_ref(),
@@ -154,13 +147,8 @@ pub(crate) async fn proxy_openai_v1_common(
     )
     .await;
     let capture_target = capture_target_for_request(original_uri.path(), &method);
-    let transport_request_observer = downstream_transport
-        .as_ref()
-        .map(DownstreamTransportObserver::begin_request);
-    let downstream_request_observer = capture_target
-        .is_some()
-        .then_some(transport_request_observer)
-        .flatten();
+    let downstream_request_observer =
+        begin_downstream_request_observer(downstream_transport.as_ref(), capture_target);
     let admitted_runtime_snapshot = emit_admitted_proxy_runtime_snapshot(
         state.as_ref(),
         proxy_request_id,
@@ -181,7 +169,7 @@ pub(crate) async fn proxy_openai_v1_common(
     }
 
     let route_context_started = Instant::now();
-    let runtime_timeouts = match resolve_proxy_route_context(RouteContextRequest {
+    let runtime_timeouts = match resolve_proxy_route_context_with_timing(RouteContextRequest {
         state: state.as_ref(),
         proxy_request_id,
         method: &method_for_log,
@@ -197,13 +185,6 @@ pub(crate) async fn proxy_openai_v1_common(
         Ok(route_context) => route_context,
         Err(response) => return response,
     };
-    debug!(
-        proxy_request_id,
-        route_context_elapsed = route_context_started.elapsed().as_millis() as u64,
-        "proxy route context resolved"
-    );
-    let pool_route_active = true;
-
     let response = Box::pin(proxy_openai_v1_inner(ProxyOpenaiV1Request {
         state,
         proxy_request_id,
@@ -214,7 +195,7 @@ pub(crate) async fn proxy_openai_v1_common(
         body,
         target_url,
         peer_ip,
-        pool_route_active,
+        pool_route_active: true,
         runtime_timeouts,
         proxy_request_permit,
         admitted_runtime_snapshot,
@@ -230,58 +211,6 @@ pub(crate) async fn proxy_openai_v1_common(
         started_at,
         &invoke_id,
     )
-}
-
-fn log_proxy_request_started(
-    proxy_request_id: u64,
-    method: &Method,
-    uri: &Uri,
-    headers: &HeaderMap,
-    peer_ip: Option<IpAddr>,
-) {
-    let request_content_length = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok());
-    info!(
-        proxy_request_id,
-        method = %method,
-        uri = %uri,
-        proxy_request_started = true,
-        has_body = request_may_have_body(method, headers),
-        content_length = ?request_content_length,
-        peer_ip = ?peer_ip,
-        "openai proxy request started"
-    );
-}
-
-fn build_proxy_target_url(
-    state: &AppState,
-    original_uri: &Uri,
-    invoke_id: &str,
-) -> Result<Url, Response> {
-    build_proxy_upstream_url(&state.config.openai_upstream_base_url, original_uri).map_err(|err| {
-        let error_text = err.to_string();
-        let status = if error_text.contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
-            || error_text.contains(PROXY_INVALID_REQUEST_TARGET)
-            || error_text.contains("failed to parse proxy upstream url")
-        {
-            StatusCode::BAD_REQUEST
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        build_proxy_error_response(
-            ProxyErrorResponse {
-                status,
-                message: format!("failed to build upstream url: {err}"),
-                cvm_id: None,
-                retry_after_secs: None,
-                code: None,
-                blocked_binding: None,
-            },
-            invoke_id,
-        )
-    })
 }
 
 async fn emit_admitted_proxy_runtime_snapshot(

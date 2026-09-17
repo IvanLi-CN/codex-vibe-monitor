@@ -1,5 +1,3 @@
-use super::*;
-
 async fn ensure_pool_limit_samples(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"

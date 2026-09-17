@@ -1,6 +1,7 @@
 pub(crate) const API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_ACTION: &str =
     "api_key_transit_proxy_binding_migrated";
 const API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_SOURCE: &str = "account_migration";
+type ApiKeyTransitProxyAccountRow = (i64, String, Option<String>, i64, Option<String>);
 
 pub(crate) async fn ensure_api_key_transit_proxy_bindings_migrated(
     pool: &Pool<Sqlite>,
@@ -9,7 +10,7 @@ pub(crate) async fn ensure_api_key_transit_proxy_bindings_migrated(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .context("failed to begin API Key transit proxy binding migration")?;
-    let accounts = sqlx::query_as::<_, (i64, String, Option<String>, i64, Option<String>)>(
+    let accounts = sqlx::query_as::<_, ApiKeyTransitProxyAccountRow>(
         r#"
         SELECT id, display_name, group_name, is_mother, bound_proxy_keys_json
         FROM pool_upstream_accounts
@@ -31,7 +32,7 @@ pub(crate) async fn ensure_api_key_transit_proxy_bindings_migrated(
 
 async fn migrate_api_key_transit_proxy_accounts(
     tx: &mut sqlx::SqliteConnection,
-    accounts: Vec<(i64, String, Option<String>, i64, Option<String>)>,
+    accounts: Vec<ApiKeyTransitProxyAccountRow>,
     now: &str,
 ) -> Result<usize> {
     let mut migrated_count = 0;

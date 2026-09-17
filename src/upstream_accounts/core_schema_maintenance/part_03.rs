@@ -1,5 +1,3 @@
-use super::*;
-
 const POOL_UPSTREAM_ACCOUNTS_TABLE_SQL: &str = r#"
         CREATE TABLE IF NOT EXISTS pool_upstream_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
