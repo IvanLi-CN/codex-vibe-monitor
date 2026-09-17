@@ -866,7 +866,6 @@ where
     .await?;
     Ok(())
 }
-
 pub(crate) async fn upsert_sticky_route(
     pool: &Pool<Sqlite>,
     sticky_key: &str,
@@ -1070,6 +1069,7 @@ pub(crate) async fn delete_sticky_route_if_matches(
     .await
 }
 
+// Keep route identity and causal fencing visible at this boundary.
 #[expect(
     clippy::too_many_arguments,
     reason = "Sticky clear fencing carries the route identity, generation, and causal attempt metadata."

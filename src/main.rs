@@ -4,26 +4,6 @@
     reason = "All-target Clippy checks production and test compilation units separately; shared internal helpers are intentionally target-dependent."
 )]
 
-use std::{
-    borrow::Cow,
-    collections::hash_map::DefaultHasher,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
-    convert::Infallible,
-    env, fmt,
-    future::Future,
-    hash::{Hash, Hasher},
-    net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
-    pin::Pin,
-    process::Stdio,
-    str::FromStr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
-};
-
 use anyhow::{Context, Result, anyhow, bail};
 use async_compression::{
     Level as AsyncCompressionLevel,
@@ -42,7 +22,8 @@ use axum::{
     body::{Body, Bytes, HttpBody},
     extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
     extract::{
-        ConnectInfo, DefaultBodyLimit, Extension, OriginalUri, Path as AxumPath, Query, State,
+        ConnectInfo, DefaultBodyLimit, Extension, FromRequest, FromRequestParts, OriginalUri,
+        Path as AxumPath, Query, State,
     },
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, uri::Authority},
     response::{Html, IntoResponse, Json, Response, Sse},
@@ -77,6 +58,25 @@ use sqlx::{
 };
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::{
+    borrow::Cow,
+    collections::hash_map::DefaultHasher,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    convert::Infallible,
+    env, fmt,
+    future::Future,
+    hash::{Hash, Hasher},
+    net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
+    pin::Pin,
+    process::Stdio,
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},

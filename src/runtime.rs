@@ -960,7 +960,6 @@ where
     )
     .await
 }
-
 pub(crate) fn begin_runtime_shutdown(cancel: &CancellationToken) {
     if !cancel.is_cancelled() {
         info!("shutdown signal received; beginning graceful shutdown");

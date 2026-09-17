@@ -570,27 +570,27 @@ pub(crate) async fn pool_route_large_oauth_responses_file_backed_body_rewrites_a
 
     let account = large_oauth_resolved_account(account_id);
 
-    let upstream = send_pool_request_with_failover(
+    let upstream = send_pool_request_with_failover(PoolFailoverRequest {
         state,
-        626262,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+        proxy_request_id: 626262,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::File {
+        body: Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: body.len(),
         }),
-        Duration::from_secs(5),
-        None,
-        None,
-        None,
-        Some(account),
-        PoolFailoverProgress::default(),
-        1,
-    )
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: None,
+        runtime_snapshot_context: None,
+        sticky_key: None,
+        preferred_account: Some(account),
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect("large oauth responses body should stay on oauth route");
 

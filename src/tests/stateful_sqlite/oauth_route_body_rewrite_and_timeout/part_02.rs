@@ -116,27 +116,27 @@ pub(crate) async fn pool_route_oauth_responses_file_backed_body_above_rewrite_li
 
     let account = oauth_passthrough_account(account_id, "Responses OAuth", "oauth-responses");
 
-    let upstream = send_pool_request_with_failover(
+    let upstream = send_pool_request_with_failover(PoolFailoverRequest {
         state,
-        515151,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+        proxy_request_id: 515151,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::File {
+        body: Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: body.len(),
         }),
-        Duration::from_secs(5),
-        None,
-        None,
-        None,
-        Some(account),
-        PoolFailoverProgress::default(),
-        1,
-    )
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: None,
+        runtime_snapshot_context: None,
+        sticky_key: None,
+        preferred_account: Some(account),
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect("oversized oauth responses body should stay on oauth route");
 
@@ -214,12 +214,12 @@ pub(crate) async fn pool_route_oauth_responses_compressed_file_backed_body_stays
 
     let account = oauth_passthrough_account(account_id, "Compressed OAuth", "oauth-compressed");
 
-    let upstream = send_pool_request_with_failover(
+    let upstream = send_pool_request_with_failover(PoolFailoverRequest {
         state,
-        525252,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([
+        proxy_request_id: 525252,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([
             (
                 http_header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
@@ -229,18 +229,18 @@ pub(crate) async fn pool_route_oauth_responses_compressed_file_backed_body_stays
                 HeaderValue::from_static("gzip"),
             ),
         ]),
-        Some(PoolReplayBodySnapshot::File {
+        body: Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: compressed_body.len(),
         }),
-        Duration::from_secs(5),
-        None,
-        None,
-        None,
-        Some(account),
-        PoolFailoverProgress::default(),
-        1,
-    )
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: None,
+        runtime_snapshot_context: None,
+        sticky_key: None,
+        preferred_account: Some(account),
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect("compressed oauth responses body should stay on oauth route");
 

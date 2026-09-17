@@ -260,21 +260,23 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_wakes_when_model_
     let started = Instant::now();
     let mut wait_deadline = None;
     let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-        state.as_ref(),
-        None,
-        Some(model),
-        &[],
-        &HashSet::new(),
-        None,
-        None,
-        None,
-        true,
-        &mut wait_deadline,
-        Some(Instant::now() + Duration::from_secs(1)),
-        "/v1/responses",
-        crate::ImageIntent::Unknown,
-        false,
-        Some("model-reservation-waiter"),
+        PoolAccountWaitRequest {
+            state: state.as_ref(),
+            sticky_key: None,
+            requested_model: Some(model),
+            excluded_ids: &[],
+            excluded_upstream_route_keys: &HashSet::new(),
+            required_upstream_route_key: None,
+            binding_constraint: None,
+            conversation_override: None,
+            wait_for_no_available: true,
+            wait_deadline: &mut wait_deadline,
+            total_timeout_deadline: Some(Instant::now() + Duration::from_secs(1)),
+            endpoint: "/v1/responses",
+            image_intent: crate::ImageIntent::Unknown,
+            codex_imagegen_request: false,
+            reservation_key: Some("model-reservation-waiter"),
+        },
     )
     .await
     .expect("waiter should resolve after the availability event");

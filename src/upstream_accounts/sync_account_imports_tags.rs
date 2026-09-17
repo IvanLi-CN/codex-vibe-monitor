@@ -927,7 +927,6 @@ pub(crate) async fn persist_oauth_credentials(
     tx.commit().await?;
     Ok(())
 }
-
 pub(crate) async fn persist_usage_snapshot(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1914,7 +1913,6 @@ pub(crate) async fn load_duplicate_info_map(
 
     Ok(duplicate_info)
 }
-
 pub(crate) async fn load_duplicate_info_for_account(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -2000,7 +1998,7 @@ pub(crate) async fn load_duplicate_info_for_account(
                 NULLIF(TRIM(account.plan_type), '')
             ) AS plan_type
         FROM pool_upstream_accounts account
-        WHERE account.kind = 
+        WHERE account.kind =
         "#,
     );
     query
@@ -2796,7 +2794,6 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
     apply_effective_routing_rules_to_summaries(pool, config, &mut items).await?;
     Ok(items)
 }
-
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct LatestUpstreamAccountSampleByAccountRow {
     account_id: i64,
@@ -3788,7 +3785,6 @@ pub(crate) fn build_summary_from_row(
         ),
     }
 }
-
 pub(crate) fn apply_node_shunt_routing_block_reasons_to_summaries(
     items: &mut [UpstreamAccountSummary],
     assignments: &UpstreamAccountNodeShuntAssignments,

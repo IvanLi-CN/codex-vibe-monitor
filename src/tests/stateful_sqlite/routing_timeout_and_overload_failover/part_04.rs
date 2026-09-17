@@ -57,20 +57,20 @@ pub(crate) async fn failover_preserves_assigned_account_when_sticky_owner_is_pre
             .await;
     seed_sticky_preflight_block(&state, sticky_account).await;
 
-    let err = send_pool_request_with_failover(
-        state.clone(),
-        700701,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+    let err = send_pool_request_with_failover(PoolFailoverRequest {
+        state: state.clone(),
+        proxy_request_id: 700701,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::Memory(Bytes::from_static(
+        body: Some(PoolReplayBodySnapshot::Memory(Bytes::from_static(
             br#"{"input":"hello"}"#,
         ))),
-        Duration::from_secs(5),
-        Some(PoolUpstreamAttemptTraceContext {
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: Some(PoolUpstreamAttemptTraceContext {
             invoke_id: "sticky-preflight-blocked-invoke".to_string(),
             occurred_at: shanghai_now_string(),
             endpoint: "/v1/responses".to_string(),
@@ -79,12 +79,12 @@ pub(crate) async fn failover_preserves_assigned_account_when_sticky_owner_is_pre
             upstream_base_url_host: None,
             request_model: None,
         }),
-        None,
-        Some("sticky-preflight-blocked"),
-        None,
-        PoolFailoverProgress::default(),
-        1,
-    )
+        runtime_snapshot_context: None,
+        sticky_key: Some("sticky-preflight-blocked"),
+        preferred_account: None,
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect_err("sticky preflight block should fail");
 

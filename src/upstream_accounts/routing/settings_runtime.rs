@@ -862,7 +862,6 @@ pub(crate) fn build_pool_routing_runtime_cache(
     };
     Ok(cache)
 }
-
 pub(crate) async fn refresh_pool_routing_runtime_cache(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {

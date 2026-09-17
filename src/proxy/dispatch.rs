@@ -1,3 +1,4 @@
+include!("dispatch/part_01.rs");
 use super::*;
 
 pub(crate) fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
@@ -179,16 +180,28 @@ fn proxy_stream_write_error_is_post_terminal(successful_terminal_forwarded: bool
     successful_terminal_forwarded
 }
 
-pub(crate) async fn wait_for_downstream_body_terminal_until(
-    downstream_body_terminal_rx: &mut watch::Receiver<DownstreamBodyTerminalState>,
-    deadline: Instant,
-    successful_terminal_forwarded: &mut bool,
-    downstream_body_available: &mut bool,
-    downstream_closed: &mut bool,
-    downstream_write_error_kind: &mut Option<&'static str>,
-    last_upstream_chunk_received_at: Option<Instant>,
-    last_upstream_chunk_gap_ms: &mut Option<u64>,
-) {
+pub(crate) struct DownstreamBodyTerminalWait<'a> {
+    pub(crate) receiver: &'a mut watch::Receiver<DownstreamBodyTerminalState>,
+    pub(crate) deadline: Instant,
+    pub(crate) successful_terminal_forwarded: &'a mut bool,
+    pub(crate) downstream_body_available: &'a mut bool,
+    pub(crate) downstream_closed: &'a mut bool,
+    pub(crate) downstream_write_error_kind: &'a mut Option<&'static str>,
+    pub(crate) last_upstream_chunk_received_at: Option<Instant>,
+    pub(crate) last_upstream_chunk_gap_ms: &'a mut Option<u64>,
+}
+
+pub(crate) async fn wait_for_downstream_body_terminal_until(wait: DownstreamBodyTerminalWait<'_>) {
+    let DownstreamBodyTerminalWait {
+        receiver: downstream_body_terminal_rx,
+        deadline,
+        successful_terminal_forwarded,
+        downstream_body_available,
+        downstream_closed,
+        downstream_write_error_kind,
+        last_upstream_chunk_received_at,
+        last_upstream_chunk_gap_ms,
+    } = wait;
     loop {
         let state = *downstream_body_terminal_rx.borrow_and_update();
         match state {
@@ -236,23 +249,99 @@ pub(crate) async fn wait_for_downstream_body_terminal_until(
     }
 }
 
-pub(crate) async fn proxy_openai_v1_inner(
+pub(crate) struct ProxyOpenaiV1Request {
+    pub(crate) state: Arc<AppState>,
+    pub(crate) proxy_request_id: u64,
+    pub(crate) invoke_id: String,
+    pub(crate) original_uri: Uri,
+    pub(crate) method: Method,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Body,
+    pub(crate) target_url: Url,
+    pub(crate) peer_ip: Option<IpAddr>,
+    pub(crate) pool_route_active: bool,
+    pub(crate) runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    pub(crate) proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
+    pub(crate) admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
+    pub(crate) downstream_request_observer: Option<DownstreamRequestObserver>,
+    pub(crate) proxy_request_started_at: Instant,
+}
+
+async fn proxy_openai_v1_hijacked_models(
     state: Arc<AppState>,
     proxy_request_id: u64,
-    invoke_id: String,
-    original_uri: Uri,
-    method: Method,
-    headers: HeaderMap,
-    body: Body,
     target_url: Url,
-    peer_ip: Option<IpAddr>,
-    pool_route_active: bool,
-    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
-    mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
-    admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
-    downstream_request_observer: Option<DownstreamRequestObserver>,
-    proxy_request_started_at: Instant,
+    headers: HeaderMap,
 ) -> Result<Response, ProxyErrorResponse> {
+    let proxy_settings = state.proxy_model_settings.read().await.clone();
+    let mut payload = build_preset_models_payload(&proxy_settings.enabled_preset_models);
+    let mut merge_status: Option<&'static str> = None;
+    if proxy_settings.merge_upstream_enabled {
+        match fetch_upstream_models_payload(
+            state,
+            target_url,
+            &headers,
+            proxy_settings.upstream_429_max_retries,
+        )
+        .await
+        {
+            Ok(upstream_payload) => match merge_models_payload_with_upstream(
+                &upstream_payload,
+                &proxy_settings.enabled_preset_models,
+            ) {
+                Ok(merged_payload) => {
+                    payload = merged_payload;
+                    merge_status = Some(PROXY_MODEL_MERGE_STATUS_SUCCESS);
+                }
+                Err(err) => {
+                    warn!(
+                        proxy_request_id,
+                        error = %err,
+                        "failed to merge upstream model list; falling back to preset models"
+                    );
+                    merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
+                }
+            },
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "failed to fetch upstream model list for merge; falling back to preset models"
+                );
+                merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
+            }
+        }
+    }
+    let mut response = Json(payload).into_response();
+    if let Some(status) = merge_status {
+        response.headers_mut().insert(
+            HeaderName::from_static(PROXY_MODEL_MERGE_STATUS_HEADER),
+            HeaderValue::from_static(status),
+        );
+    }
+    Ok(response)
+}
+
+pub(crate) async fn proxy_openai_v1_inner(
+    request: ProxyOpenaiV1Request,
+) -> Result<Response, ProxyErrorResponse> {
+    let ProxyOpenaiV1Request {
+        state,
+        proxy_request_id,
+        invoke_id,
+        original_uri,
+        method,
+        headers,
+        body,
+        target_url,
+        peer_ip,
+        pool_route_active,
+        runtime_timeouts,
+        mut proxy_request_permit,
+        admitted_runtime_snapshot,
+        downstream_request_observer,
+        proxy_request_started_at,
+    } = request;
     if !pool_route_active {
         // `/v1/*` is pool-only; non-pool traffic must stop here instead of reviving the
         // removed reverse-proxy/direct path.
@@ -265,57 +354,11 @@ pub(crate) async fn proxy_openai_v1_inner(
             blocked_binding: None,
         });
     }
-
     if method == Method::GET && is_models_list_path(original_uri.path()) {
-        let proxy_settings = state.proxy_model_settings.read().await.clone();
-        if proxy_settings.hijack_enabled {
-            let mut payload = build_preset_models_payload(&proxy_settings.enabled_preset_models);
-            let mut merge_status: Option<&'static str> = None;
-            if proxy_settings.merge_upstream_enabled {
-                match fetch_upstream_models_payload(
-                    state.clone(),
-                    target_url.clone(),
-                    &headers,
-                    proxy_settings.upstream_429_max_retries,
-                )
-                .await
-                {
-                    Ok(upstream_payload) => match merge_models_payload_with_upstream(
-                        &upstream_payload,
-                        &proxy_settings.enabled_preset_models,
-                    ) {
-                        Ok(merged_payload) => {
-                            payload = merged_payload;
-                            merge_status = Some(PROXY_MODEL_MERGE_STATUS_SUCCESS);
-                        }
-                        Err(err) => {
-                            warn!(
-                                proxy_request_id,
-                                error = %err,
-                                "failed to merge upstream model list; falling back to preset models"
-                            );
-                            merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
-                        }
-                    },
-                    Err(err) => {
-                        warn!(
-                            proxy_request_id,
-                            error = %err,
-                            "failed to fetch upstream model list for merge; falling back to preset models"
-                        );
-                        merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
-                    }
-                }
-            }
-
-            let mut response = Json(payload).into_response();
-            if let Some(status) = merge_status {
-                response.headers_mut().insert(
-                    HeaderName::from_static(PROXY_MODEL_MERGE_STATUS_HEADER),
-                    HeaderValue::from_static(status),
-                );
-            }
-            return Ok(response);
+        let models_hijack_enabled = state.proxy_model_settings.read().await.hijack_enabled;
+        if models_hijack_enabled {
+            return proxy_openai_v1_hijacked_models(state, proxy_request_id, target_url, headers)
+                .await;
         }
 
         return proxy_openai_v1_via_pool(
@@ -330,26 +373,25 @@ pub(crate) async fn proxy_openai_v1_inner(
         )
         .await;
     }
-
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
         let tracked_invoke_id = invoke_id.clone();
-        return proxy_openai_v1_capture_target(
+        return proxy_openai_v1_capture_target(ProxyOpenaiV1CaptureTargetRequest {
             state,
             proxy_request_id,
             invoke_id,
-            &original_uri,
+            original_uri,
             headers,
             body,
-            target,
+            capture_target: target,
             target_url,
             peer_ip,
             pool_route_active,
             runtime_timeouts,
-            proxy_request_permit.take(),
+            proxy_request_permit: proxy_request_permit.take(),
             admitted_runtime_snapshot,
             downstream_request_observer,
             proxy_request_started_at,
-        )
+        })
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
             retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
@@ -361,7 +403,7 @@ pub(crate) async fn proxy_openai_v1_inner(
         });
     }
 
-    return proxy_openai_v1_via_pool(
+    proxy_openai_v1_via_pool(
         state,
         proxy_request_id,
         &original_uri,
@@ -371,7 +413,7 @@ pub(crate) async fn proxy_openai_v1_inner(
         runtime_timeouts,
         proxy_request_permit.take(),
     )
-    .await;
+    .await
 }
 
 pub(crate) fn capture_target_for_request(
@@ -418,192 +460,52 @@ fn build_local_capture_error_resp_raw(envelope: &ProxyErrorResponseEnvelope) -> 
 }
 
 pub(crate) async fn persist_pre_attempt_proxy_capture_error(
-    state: Arc<AppState>,
-    proxy_request_id: u64,
-    capture_started: Instant,
-    invoke_id: &str,
-    occurred_at: &str,
-    capture_target: ProxyCaptureTarget,
-    request_info: &RequestCaptureInfo,
-    requester_ip: Option<&str>,
-    request_chain_metadata: &RequestChainMetadata,
-    sticky_key: Option<&str>,
-    prompt_cache_key: Option<&str>,
-    client_attribution_context: &ClientPromptCacheAttributionContext,
-    request_body_for_capture: Option<Bytes>,
-    request_body_snapshot: PoolReplayBodySnapshot,
-    request_body_logging_enabled: bool,
-    t_req_read_ms: f64,
-    t_req_parse_ms: f64,
-    status: StatusCode,
-    failure_kind: &'static str,
-    error_message: &str,
-    terminal_attempt_summary: Option<&PoolAttemptSummary>,
-    terminal_account: Option<&PoolResolvedAccount>,
-    terminal_connect_latency_ms: Option<f64>,
-    terminal_error: Option<&PoolUpstreamError>,
-    terminal_request_compression_algorithm: Option<&str>,
-    response_envelope_override: Option<ProxyErrorResponseEnvelope>,
+    request: PreAttemptProxyCaptureError<'_>,
 ) -> bool {
-    let response_envelope = response_envelope_override
-        .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
-    let req_raw = match request_body_for_capture {
+    let response_envelope = request
+        .response_envelope_override
+        .clone()
+        .unwrap_or_else(|| {
+            build_local_capture_error_envelope(
+                request.invoke_id,
+                request.status,
+                request.error_message,
+            )
+        });
+    let req_raw = match request.request_body_for_capture.clone() {
         Some(bytes) => spawn_raw_payload_file_write(
-            state.as_ref(),
-            invoke_id,
+            request.state.as_ref(),
+            request.invoke_id,
             "request",
             bytes,
-            request_body_logging_enabled,
+            request.request_body_logging_enabled,
         ),
         None => spawn_raw_payload_snapshot_write(
-            state.clone(),
-            invoke_id,
+            request.state.clone(),
+            request.invoke_id,
             "request",
-            request_body_snapshot,
-            request_body_logging_enabled,
+            request.request_body_snapshot.clone(),
+            request.request_body_logging_enabled,
         ),
     }
     .finish()
     .await;
-    let usage = ParsedUsage::default();
-    let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
-        &state.pricing_catalog,
-        request_info.model.as_deref(),
-        &usage,
-        None,
-        ProxyPricingMode::ResponseTier,
-    )
-    .await;
-    let mut record = ProxyCaptureRecord {
-        invoke_id: invoke_id.to_string(),
-        occurred_at: occurred_at.to_string(),
-        model: request_info.model.clone(),
-        usage,
-        cost,
-        cost_breakdown: None,
-        cost_estimated,
-        price_version,
-        status: if status.is_server_error() {
-            format!("http_{}", status.as_u16())
-        } else {
-            "failed".to_string()
-        },
-        error_message: Some(format!("[{failure_kind}] {error_message}")),
-        failure_kind: Some(failure_kind.to_string()),
-        payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
-            target: capture_target,
-            status,
-            is_stream: request_info.is_stream,
-            request_contains_encrypted_content: request_info.contains_encrypted_content,
-            response_contains_encrypted_content: false,
-            compaction_request_kind: request_info.compaction_request_kind,
-            compaction_response_kind: None,
-            image_intent: request_info.image_intent.as_deref(),
-            request_model: request_info.model.as_deref(),
-            requested_service_tier: request_info.requested_service_tier.as_deref(),
-            billing_service_tier: None,
-            reasoning_effort: request_info.reasoning_effort.as_deref(),
-            response_model: None,
-            usage_missing_reason: None,
-            request_parse_error: request_info.parse_error.as_deref(),
-            request_compression_algorithm: terminal_request_compression_algorithm,
-            request_compression_mode: None,
-            request_compression_logical_body_bytes: None,
-            request_compression_transmitted_body_bytes: None,
-            request_compression_transmission_complete: None,
-            failure_kind: Some(failure_kind),
-            requester_ip,
-            request_user_agent: request_chain_metadata.user_agent.as_deref(),
-            request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-            request_forwarded: request_chain_metadata.forwarded.as_deref(),
-            request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-            upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-            route_mode: INVOCATION_ROUTE_MODE_POOL,
-            sticky_key,
-            prompt_cache_key,
-            prompt_cache_key_attribution_source: request_info
-                .prompt_cache_key_attribution_source
-                .as_deref(),
-            client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-            client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
-                .filter(|fingerprints| !fingerprints.is_empty()),
-            upstream_account_id: terminal_account.map(|account| account.account_id),
-            upstream_account_name: terminal_account.map(|account| account.display_name.as_str()),
-            upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
-            upstream_base_url_host: terminal_account
-                .and_then(|account| account.upstream_base_url.host_str()),
-            oauth_account_header_attached: None,
-            oauth_account_id_shape: None,
-            oauth_forwarded_header_count: None,
-            oauth_forwarded_header_names: None,
-            oauth_fingerprint_version: None,
-            oauth_forwarded_header_fingerprints: None,
-            oauth_prompt_cache_header_forwarded: None,
-            oauth_request_body_prefix_fingerprint: None,
-            oauth_request_body_prefix_bytes: None,
-            oauth_request_body_snapshot_kind: None,
-            oauth_responses_body_mode: None,
-            oauth_responses_rewrite: None,
-            service_tier: None,
-            stream_terminal_event: None,
-            upstream_error_code: terminal_error
-                .and_then(|error| error.upstream_error_code.as_deref()),
-            upstream_error_message: terminal_error
-                .and_then(|error| error.upstream_error_message.as_deref()),
-            downstream_status_code: Some(status),
-            downstream_error_message: Some(error_message),
-            upstream_request_id: terminal_error
-                .and_then(|error| error.upstream_request_id.as_deref()),
-            response_content_encoding: None,
-            stream_failure_origin: None,
-            upstream_read_error_kind: None,
-            content_encoding_chain: None,
-            forwarded_chunk_count: None,
-            forwarded_bytes: None,
-            usage_observed: None,
-            downstream_close_phase: None,
-            downstream_write_error_kind: None,
-            last_upstream_chunk_gap_ms: None,
-            upstream_approx_upload_bytes: None,
-            upstream_approx_download_bytes: None,
-            proxy_display_name: None,
-            proxy_weight_delta: None,
-            pool_attempt_count: terminal_attempt_summary.map(|summary| summary.pool_attempt_count),
-            pool_distinct_account_count: terminal_attempt_summary
-                .map(|summary| summary.pool_distinct_account_count),
-            pool_attempt_terminal_reason: terminal_attempt_summary
-                .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
-                .or(Some(failure_kind)),
-            blocked_binding: terminal_error.and_then(|error| error.blocked_binding.as_ref()),
-        })),
-        raw_response: response_envelope.body_text.clone(),
-        response_body_preview_enabled: true,
-        req_raw,
-        resp_raw: build_local_capture_error_resp_raw(&response_envelope),
-        timings: StageTimings {
-            t_total_ms: capture_started.elapsed().as_secs_f64() * 1_000.0,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms: terminal_connect_latency_ms.unwrap_or_default(),
-            t_upstream_ttfb_ms: 0.0,
-            first_token_ms: None,
-            t_upstream_stream_ms: 0.0,
-            t_resp_parse_ms: 0.0,
-            t_persist_ms: 0.0,
-        },
-    };
+    let mut record =
+        build_pre_attempt_proxy_capture_record(&request, response_envelope, req_raw).await;
     set_proxy_capture_record_pool_routing_no_candidate_audit(
         &mut record,
-        terminal_attempt_summary
+        request
+            .terminal_attempt_summary
             .and_then(|summary| summary.pool_routing_no_candidate_audit.as_ref()),
     );
     if let Err(err) =
-        persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record).await
+        persist_and_broadcast_proxy_capture(request.state.as_ref(), request.capture_started, record)
+            .await
     {
         warn!(
-            proxy_request_id,
+            request.proxy_request_id,
             error = %err,
-            failure_kind,
+            request.failure_kind,
             "failed to persist pre-attempt proxy capture terminal record"
         );
         false
@@ -612,23 +514,99 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     }
 }
 
+async fn build_pre_attempt_proxy_capture_record(
+    request: &PreAttemptProxyCaptureError<'_>,
+    response_envelope: ProxyErrorResponseEnvelope,
+    req_raw: RawPayloadMeta,
+) -> ProxyCaptureRecord {
+    let usage = ParsedUsage::default();
+    let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
+        &request.state.pricing_catalog,
+        request.request_info.model.as_deref(),
+        &usage,
+        None,
+        ProxyPricingMode::ResponseTier,
+    )
+    .await;
+    ProxyCaptureRecord {
+        invoke_id: request.invoke_id.to_string(),
+        occurred_at: request.occurred_at.to_string(),
+        model: request.request_info.model.clone(),
+        usage,
+        cost,
+        cost_breakdown: None,
+        cost_estimated,
+        price_version,
+        status: if request.status.is_server_error() {
+            format!("http_{}", request.status.as_u16())
+        } else {
+            "failed".to_string()
+        },
+        error_message: Some(format!(
+            "[{}] {}",
+            request.failure_kind, request.error_message
+        )),
+        failure_kind: Some(request.failure_kind.to_string()),
+        payload: Some(build_proxy_payload_summary(
+            build_pre_attempt_proxy_capture_payload(request),
+        )),
+        raw_response: response_envelope.body_text.clone(),
+        response_body_preview_enabled: true,
+        req_raw,
+        resp_raw: build_local_capture_error_resp_raw(&response_envelope),
+        timings: StageTimings {
+            t_total_ms: request.capture_started.elapsed().as_secs_f64() * 1_000.0,
+            t_req_read_ms: request.t_req_read_ms,
+            t_req_parse_ms: request.t_req_parse_ms,
+            t_upstream_connect_ms: request.terminal_connect_latency_ms.unwrap_or_default(),
+            t_upstream_ttfb_ms: 0.0,
+            first_token_ms: None,
+            t_upstream_stream_ms: 0.0,
+            t_resp_parse_ms: 0.0,
+            t_persist_ms: 0.0,
+        },
+    }
+}
+
+pub(crate) struct ProxyOpenaiV1CaptureTargetRequest {
+    pub(crate) state: Arc<AppState>,
+    pub(crate) proxy_request_id: u64,
+    pub(crate) invoke_id: String,
+    pub(crate) original_uri: Uri,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Body,
+    pub(crate) capture_target: ProxyCaptureTarget,
+    pub(crate) target_url: Url,
+    pub(crate) peer_ip: Option<IpAddr>,
+    pub(crate) pool_route_active: bool,
+    pub(crate) runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    pub(crate) proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
+    pub(crate) admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
+    pub(crate) downstream_request_observer: Option<DownstreamRequestObserver>,
+    pub(crate) proxy_request_started_at: Instant,
+}
+
 pub(crate) async fn proxy_openai_v1_capture_target(
-    state: Arc<AppState>,
-    proxy_request_id: u64,
-    invoke_id: String,
-    original_uri: &Uri,
-    headers: HeaderMap,
-    body: Body,
-    capture_target: ProxyCaptureTarget,
-    target_url: Url,
-    peer_ip: Option<IpAddr>,
-    pool_route_active: bool,
-    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
-    mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
-    admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
-    downstream_request_observer: Option<DownstreamRequestObserver>,
-    proxy_request_started_at: Instant,
+    request: ProxyOpenaiV1CaptureTargetRequest,
 ) -> Result<Response, (StatusCode, String)> {
+    let ProxyOpenaiV1CaptureTargetRequest {
+        state,
+        proxy_request_id,
+        invoke_id,
+        original_uri,
+        headers,
+        body,
+        capture_target,
+        target_url,
+        peer_ip,
+        pool_route_active,
+        runtime_timeouts,
+        mut proxy_request_permit,
+        admitted_runtime_snapshot,
+        downstream_request_observer,
+        proxy_request_started_at,
+    } = request;
+    let original_uri = &original_uri;
     if !pool_route_active {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -694,7 +672,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
     }
     let proxy_settings = state.proxy_model_settings.read().await.clone();
-
     let req_read_started = Instant::now();
     let request_body_snapshot = match read_request_body_snapshot_with_partial_limit(
         body,
@@ -730,7 +707,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             )
             .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
-
             warn!(
                 proxy_request_id,
                 status = %read_err.status,
@@ -739,7 +715,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 elapsed_ms = t_req_read_ms,
                 "openai proxy request body read failed"
             );
-
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -979,35 +954,38 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Err(err) => {
                 let status = StatusCode::BAD_GATEWAY;
                 let message = format!("failed to resolve prompt cache conversation binding: {err}");
-                let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                    state.clone(),
-                    proxy_request_id,
-                    capture_started,
-                    &invoke_id,
-                    &occurred_at,
-                    capture_target,
-                    &request_info,
-                    requester_ip.as_deref(),
-                    &request_chain_metadata,
-                    sticky_key.as_deref(),
-                    prompt_cache_key.as_deref(),
-                    &client_attribution_context,
-                    semantic_projection.request_body_for_capture.clone(),
-                    semantic_projection.upstream_snapshot.clone(),
-                    proxy_settings.request_body_logging_enabled,
-                    t_req_read_ms,
-                    elapsed_ms(req_parse_started),
-                    status,
-                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
-                    &message,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await;
+                let terminal_invocation_persisted =
+                    persist_pre_attempt_proxy_capture_error(PreAttemptProxyCaptureError {
+                        state: state.clone(),
+                        proxy_request_id,
+                        capture_started,
+                        invoke_id: &invoke_id,
+                        occurred_at: &occurred_at,
+                        capture_target,
+                        request_info: &request_info,
+                        requester_ip: requester_ip.as_deref(),
+                        request_chain_metadata: &request_chain_metadata,
+                        sticky_key: sticky_key.as_deref(),
+                        prompt_cache_key: prompt_cache_key.as_deref(),
+                        client_attribution_context: &client_attribution_context,
+                        request_body_for_capture: semantic_projection
+                            .request_body_for_capture
+                            .clone(),
+                        request_body_snapshot: semantic_projection.upstream_snapshot.clone(),
+                        request_body_logging_enabled: proxy_settings.request_body_logging_enabled,
+                        t_req_read_ms,
+                        t_req_parse_ms: elapsed_ms(req_parse_started),
+                        status,
+                        failure_kind: PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                        error_message: &message,
+                        terminal_attempt_summary: None,
+                        terminal_account: None,
+                        terminal_connect_latency_ms: None,
+                        terminal_error: None,
+                        terminal_request_compression_algorithm: None,
+                        response_envelope_override: None,
+                    })
+                    .await;
                 if terminal_invocation_persisted {
                     disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
@@ -1029,35 +1007,38 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 let status = StatusCode::BAD_GATEWAY;
                 let message =
                     format!("failed to resolve prompt cache conversation overrides: {err}");
-                let terminal_invocation_persisted = persist_pre_attempt_proxy_capture_error(
-                    state.clone(),
-                    proxy_request_id,
-                    capture_started,
-                    &invoke_id,
-                    &occurred_at,
-                    capture_target,
-                    &request_info,
-                    requester_ip.as_deref(),
-                    &request_chain_metadata,
-                    sticky_key.as_deref(),
-                    prompt_cache_key.as_deref(),
-                    &client_attribution_context,
-                    semantic_projection.request_body_for_capture.clone(),
-                    semantic_projection.upstream_snapshot.clone(),
-                    proxy_settings.request_body_logging_enabled,
-                    t_req_read_ms,
-                    elapsed_ms(req_parse_started),
-                    status,
-                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
-                    &message,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await;
+                let terminal_invocation_persisted =
+                    persist_pre_attempt_proxy_capture_error(PreAttemptProxyCaptureError {
+                        state: state.clone(),
+                        proxy_request_id,
+                        capture_started,
+                        invoke_id: &invoke_id,
+                        occurred_at: &occurred_at,
+                        capture_target,
+                        request_info: &request_info,
+                        requester_ip: requester_ip.as_deref(),
+                        request_chain_metadata: &request_chain_metadata,
+                        sticky_key: sticky_key.as_deref(),
+                        prompt_cache_key: prompt_cache_key.as_deref(),
+                        client_attribution_context: &client_attribution_context,
+                        request_body_for_capture: semantic_projection
+                            .request_body_for_capture
+                            .clone(),
+                        request_body_snapshot: semantic_projection.upstream_snapshot.clone(),
+                        request_body_logging_enabled: proxy_settings.request_body_logging_enabled,
+                        t_req_read_ms,
+                        t_req_parse_ms: elapsed_ms(req_parse_started),
+                        status,
+                        failure_kind: PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                        error_message: &message,
+                        terminal_attempt_summary: None,
+                        terminal_account: None,
+                        terminal_connect_latency_ms: None,
+                        terminal_error: None,
+                        terminal_request_compression_algorithm: None,
+                        response_envelope_override: None,
+                    })
+                    .await;
                 if terminal_invocation_persisted {
                     disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
@@ -1078,7 +1059,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let upstream_body_snapshot = semantic_projection.upstream_snapshot.clone();
-
     let initial_running_record = build_running_proxy_capture_record(
         &invoke_id,
         &occurred_at,
@@ -1112,7 +1092,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             "failed to broadcast initial running proxy capture snapshot"
         );
     }
-
     let mut upstream_headers = headers.clone();
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);
@@ -1160,25 +1139,25 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         transport_bytes_live_counted,
         reservation_guard,
     ) = if pool_route_active {
-        match send_pool_request_with_failover_and_binding_constraint(
-            state.clone(),
+        match send_pool_request_with_failover_and_binding_constraint(PoolFailoverBindingRequest {
+            state: state.clone(),
             proxy_request_id,
-            Method::POST,
+            method: Method::POST,
             original_uri,
-            &upstream_headers,
-            Some(upstream_body_snapshot),
+            headers: &upstream_headers,
+            body: Some(upstream_body_snapshot),
             handshake_timeout,
-            pool_attempt_trace_context.clone(),
-            pool_attempt_runtime_snapshot.clone(),
-            sticky_key.as_deref(),
-            request_info.sticky_key.as_deref(),
-            prompt_cache_binding_constraint.clone(),
-            prompt_cache_conversation_override.clone(),
-            None,
-            PoolFailoverProgress::default(),
-            POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
-            false,
-        )
+            trace_context: pool_attempt_trace_context.clone(),
+            runtime_snapshot_context: pool_attempt_runtime_snapshot.clone(),
+            sticky_key: sticky_key.as_deref(),
+            sticky_event_prompt_cache_key: request_info.sticky_key.as_deref(),
+            binding_constraint: prompt_cache_binding_constraint.clone(),
+            conversation_override: prompt_cache_conversation_override.clone(),
+            preferred_account: None,
+            failover_progress: PoolFailoverProgress::default(),
+            same_account_attempts: POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+            persist_terminal_invocation: false,
+        })
         .await
         {
             Ok(response) => (
@@ -1706,7 +1685,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             proxy_settings.request_body_logging_enabled,
         ),
     });
-
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(
         pool_account.as_ref(),
@@ -1905,7 +1883,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             return Err((StatusCode::BAD_GATEWAY, message));
         }
     };
-
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let response_is_event_stream = capture_target != ProxyCaptureTarget::StandaloneSearch
         && upstream_response
@@ -1985,7 +1962,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         response_builder =
             response_builder.header(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
     }
-
     let state_for_task = state.clone();
     let request_info_for_task = request_info.clone();
     let client_attribution_context_for_task = client_attribution_context.clone();
@@ -2036,7 +2012,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     if let Some(observation) = downstream_request_observer.as_ref() {
         observation.activate_reset_monitor();
     }
-
     tokio::spawn(async move {
         let mut reservation_guard = reservation_guard_for_task;
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease_for_task;
@@ -2096,7 +2071,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut last_upstream_chunk_received_at: Option<Instant> = None;
         let mut last_downstream_forwarded_chunk_at: Option<Instant> = None;
         let mut last_upstream_chunk_gap_ms: Option<u64> = None;
-
         if let Some(chunk) = prefetched_first_chunk_for_task {
             let chunk_received_at =
                 prefetched_first_chunk_received_at_for_task.unwrap_or_else(Instant::now);
@@ -2610,16 +2584,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let downstream_terminal_grace_deadline =
             Instant::now() + PROXY_DOWNSTREAM_WRITE_ERROR_GRACE_PERIOD;
         if !downstream_closed && stream_error.is_none() {
-            wait_for_downstream_body_terminal_until(
-                &mut downstream_body_terminal_rx,
-                downstream_terminal_grace_deadline,
-                &mut successful_terminal_forwarded,
-                &mut downstream_body_available,
-                &mut downstream_closed,
-                &mut downstream_write_error_kind,
+            wait_for_downstream_body_terminal_until(DownstreamBodyTerminalWait {
+                receiver: &mut downstream_body_terminal_rx,
+                deadline: downstream_terminal_grace_deadline,
+                successful_terminal_forwarded: &mut successful_terminal_forwarded,
+                downstream_body_available: &mut downstream_body_available,
+                downstream_closed: &mut downstream_closed,
+                downstream_write_error_kind: &mut downstream_write_error_kind,
                 last_upstream_chunk_received_at,
-                &mut last_upstream_chunk_gap_ms,
-            )
+                last_upstream_chunk_gap_ms: &mut last_upstream_chunk_gap_ms,
+            })
             .await;
         }
         if !downstream_closed
@@ -3484,7 +3458,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             )
         })
 }
-
 fn should_capture_ttft(
     capture_target: ProxyCaptureTarget,
     request_info: &RequestCaptureInfo,
@@ -3869,16 +3842,16 @@ mod dispatch_tests {
 
         tokio::time::timeout(
             Duration::from_millis(200),
-            wait_for_downstream_body_terminal_until(
-                &mut rx,
-                Instant::now() + Duration::from_millis(25),
-                &mut false,
-                &mut downstream_body_available,
-                &mut downstream_closed,
-                &mut downstream_write_error_kind,
-                None,
-                &mut last_upstream_chunk_gap_ms,
-            ),
+            wait_for_downstream_body_terminal_until(DownstreamBodyTerminalWait {
+                receiver: &mut rx,
+                deadline: Instant::now() + Duration::from_millis(25),
+                successful_terminal_forwarded: &mut false,
+                downstream_body_available: &mut downstream_body_available,
+                downstream_closed: &mut downstream_closed,
+                downstream_write_error_kind: &mut downstream_write_error_kind,
+                last_upstream_chunk_received_at: None,
+                last_upstream_chunk_gap_ms: &mut last_upstream_chunk_gap_ms,
+            }),
         )
         .await
         .expect("body-terminal wait should not hang forever");
@@ -3900,16 +3873,16 @@ mod dispatch_tests {
             let _ = tx.send(DownstreamBodyTerminalState::Dropped);
         });
 
-        wait_for_downstream_body_terminal_until(
-            &mut rx,
-            Instant::now() + Duration::from_millis(200),
-            &mut false,
-            &mut downstream_body_available,
-            &mut downstream_closed,
-            &mut downstream_write_error_kind,
-            Some(Instant::now()),
-            &mut last_upstream_chunk_gap_ms,
-        )
+        wait_for_downstream_body_terminal_until(DownstreamBodyTerminalWait {
+            receiver: &mut rx,
+            deadline: Instant::now() + Duration::from_millis(200),
+            successful_terminal_forwarded: &mut false,
+            downstream_body_available: &mut downstream_body_available,
+            downstream_closed: &mut downstream_closed,
+            downstream_write_error_kind: &mut downstream_write_error_kind,
+            last_upstream_chunk_received_at: Some(Instant::now()),
+            last_upstream_chunk_gap_ms: &mut last_upstream_chunk_gap_ms,
+        })
         .await;
         send_drop.await.expect("join drop sender");
         assert!(!downstream_body_available);
@@ -3948,16 +3921,16 @@ mod dispatch_tests {
             *terminal_rx.borrow_and_update(),
             DownstreamBodyTerminalState::SuccessfulTerminalCompleted
         );
-        wait_for_downstream_body_terminal_until(
-            &mut terminal_rx,
-            Instant::now() + Duration::from_millis(25),
-            &mut successful_terminal_forwarded,
-            &mut downstream_body_available,
-            &mut downstream_closed,
-            &mut downstream_write_error_kind,
-            Some(Instant::now()),
-            &mut last_upstream_chunk_gap_ms,
-        )
+        wait_for_downstream_body_terminal_until(DownstreamBodyTerminalWait {
+            receiver: &mut terminal_rx,
+            deadline: Instant::now() + Duration::from_millis(25),
+            successful_terminal_forwarded: &mut successful_terminal_forwarded,
+            downstream_body_available: &mut downstream_body_available,
+            downstream_closed: &mut downstream_closed,
+            downstream_write_error_kind: &mut downstream_write_error_kind,
+            last_upstream_chunk_received_at: Some(Instant::now()),
+            last_upstream_chunk_gap_ms: &mut last_upstream_chunk_gap_ms,
+        })
         .await;
 
         assert!(successful_terminal_forwarded);
@@ -3974,16 +3947,16 @@ mod dispatch_tests {
         let mut downstream_write_error_kind = None;
         let mut last_upstream_chunk_gap_ms = None;
 
-        wait_for_downstream_body_terminal_until(
-            &mut rx,
-            Instant::now() + Duration::from_millis(25),
-            &mut true,
-            &mut downstream_body_available,
-            &mut downstream_closed,
-            &mut downstream_write_error_kind,
-            Some(Instant::now()),
-            &mut last_upstream_chunk_gap_ms,
-        )
+        wait_for_downstream_body_terminal_until(DownstreamBodyTerminalWait {
+            receiver: &mut rx,
+            deadline: Instant::now() + Duration::from_millis(25),
+            successful_terminal_forwarded: &mut true,
+            downstream_body_available: &mut downstream_body_available,
+            downstream_closed: &mut downstream_closed,
+            downstream_write_error_kind: &mut downstream_write_error_kind,
+            last_upstream_chunk_received_at: Some(Instant::now()),
+            last_upstream_chunk_gap_ms: &mut last_upstream_chunk_gap_ms,
+        })
         .await;
 
         drop(tx);
