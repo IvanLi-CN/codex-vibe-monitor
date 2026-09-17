@@ -67,16 +67,22 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
     state: &crate::AppState,
     options: &mut PoolAccountWaitOptions<'_>,
 ) -> anyhow::Result<crate::proxy::PoolAccountResolutionWithWait> {
-    crate::proxy::resolve_pool_account_for_request_with_wait(
+    crate::proxy::resolve_pool_account_for_request_with_wait(crate::proxy::PoolAccountWaitRequest {
         state,
-        options.sticky_key,
-        options.requested_model,
-        options.excluded_ids,
-        options.excluded_upstream_route_keys,
-        options.required_upstream_route_key,
-        options.wait_for_no_available,
-        options.wait_deadline,
-        options.total_timeout_deadline,
-    )
+        sticky_key: options.sticky_key,
+        requested_model: options.requested_model,
+        excluded_ids: options.excluded_ids,
+        excluded_upstream_route_keys: options.excluded_upstream_route_keys,
+        required_upstream_route_key: options.required_upstream_route_key,
+        binding_constraint: None,
+        conversation_override: None,
+        wait_for_no_available: options.wait_for_no_available,
+        wait_deadline: options.wait_deadline,
+        total_timeout_deadline: options.total_timeout_deadline,
+        endpoint: "",
+        image_intent: crate::ImageIntent::Unknown,
+        codex_imagegen_request: false,
+        reservation_key: None,
+    })
     .await
 }

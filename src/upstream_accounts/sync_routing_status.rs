@@ -905,7 +905,6 @@ pub(crate) fn apply_account_routing_policy_override(
         ),
     );
 }
-
 pub(crate) fn merge_concurrency_limits(current: i64, next: i64) -> i64 {
     match (current, next) {
         (0, 0) => 0,
@@ -1761,7 +1760,6 @@ pub(crate) fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> 
         )
     )
 }
-
 pub(crate) fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,

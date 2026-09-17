@@ -404,7 +404,6 @@ pub(crate) async fn prepare_upstream_websocket(
     let mut ws_retry_account_ids = HashSet::new();
     let mut last_failure: Option<WsAttemptFailure> = None;
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-
     let upstream_websocket_default_enabled = state
         .proxy_model_settings
         .read()
@@ -434,22 +433,23 @@ pub(crate) async fn prepare_upstream_websocket(
         }
 
         let mut no_available_wait_deadline = None;
-        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation(
-            state.as_ref(),
+        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation(PoolAccountWaitRequest {
+            state: state.as_ref(),
             sticky_key,
             requested_model,
-            &excluded_account_ids,
-            &excluded_upstream_route_keys,
-            None,
-            binding_constraint.as_ref(),
-            conversation_override.as_ref(),
-            true,
-            &mut no_available_wait_deadline,
-            None,
-            original_uri.path(),
-            crate::ImageIntent::Unknown,
-            Some(&reservation_key),
-        )
+            excluded_ids: &excluded_account_ids,
+            excluded_upstream_route_keys: &excluded_upstream_route_keys,
+            required_upstream_route_key: None,
+            binding_constraint: binding_constraint.as_ref(),
+            conversation_override: conversation_override.as_ref(),
+            wait_for_no_available: true,
+            wait_deadline: &mut no_available_wait_deadline,
+            total_timeout_deadline: None,
+            endpoint: original_uri.path(),
+            image_intent: crate::ImageIntent::Unknown,
+            codex_imagegen_request: false,
+            reservation_key: Some(&reservation_key),
+        })
         .await
         {
             Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
@@ -1244,7 +1244,6 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ),
     })
 }
-
 pub(crate) struct TimestampedWsDownstreamMessage {
     message: AxumWsMessage,
     received_at: Instant,
@@ -2125,7 +2124,6 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     )
     .await;
 }
-
 pub(crate) struct WsUsageTracker {
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
@@ -3151,7 +3149,6 @@ pub(crate) async fn persist_ws_usage_event(
     )
     .await
 }
-
 pub(crate) fn mark_websocket_payload_transport(payload: String) -> Result<String> {
     let mut value = serde_json::from_str::<Value>(&payload)
         .context("failed to parse websocket proxy payload summary")?;

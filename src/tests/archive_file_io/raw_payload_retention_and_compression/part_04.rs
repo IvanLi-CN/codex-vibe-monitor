@@ -532,30 +532,30 @@ pub(crate) async fn send_pool_request_with_failover_defers_armed_guard_when_pend
 
     let account = build_test_pool_resolved_account(account_id, &upstream_base);
 
-    let mut upstream = send_pool_request_with_failover(
-        state.clone(),
-        6767,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+    let mut upstream = send_pool_request_with_failover(PoolFailoverRequest {
+        state: state.clone(),
+        proxy_request_id: 6767,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::Memory(Bytes::from(
+        body: Some(PoolReplayBodySnapshot::Memory(Bytes::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
                 "input": [{"role": "user", "content": "hello"}]
             }))
             .expect("serialize request body"),
         ))),
-        Duration::from_secs(5),
-        Some(trace),
-        Some(runtime_snapshot),
-        Some("sticky-guard-deferred"),
-        Some(account),
-        PoolFailoverProgress::default(),
-        1,
-    )
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: Some(trace),
+        runtime_snapshot_context: Some(runtime_snapshot),
+        sticky_key: Some("sticky-guard-deferred"),
+        preferred_account: Some(account),
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect("request should still succeed without a persisted pending attempt row");
 
@@ -634,30 +634,30 @@ pub(crate) async fn send_pool_request_with_failover_disarms_guard_after_streamin
 
     let account = build_test_pool_resolved_account(account_id, &upstream_base);
 
-    let upstream = send_pool_request_with_failover(
-        state.clone(),
-        6768,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+    let upstream = send_pool_request_with_failover(PoolFailoverRequest {
+        state: state.clone(),
+        proxy_request_id: 6768,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::Memory(Bytes::from(
+        body: Some(PoolReplayBodySnapshot::Memory(Bytes::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
                 "input": [{"role": "user", "content": "hello"}]
             }))
             .expect("serialize request body"),
         ))),
-        Duration::from_secs(5),
-        Some(trace),
-        Some(runtime_snapshot),
-        Some("sticky-guard-streaming-phase-persisted"),
-        Some(account),
-        PoolFailoverProgress::default(),
-        1,
-    )
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: Some(trace),
+        runtime_snapshot_context: Some(runtime_snapshot),
+        sticky_key: Some("sticky-guard-streaming-phase-persisted"),
+        preferred_account: Some(account),
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect("request should succeed when streaming-phase persistence succeeds");
 
@@ -736,30 +736,30 @@ pub(crate) async fn send_pool_request_with_failover_keeps_early_phase_guard_arme
 
     let account = build_test_pool_resolved_account(account_id, &upstream_base);
 
-    let upstream = send_pool_request_with_failover(
-        state.clone(),
-        6768,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+    let upstream = send_pool_request_with_failover(PoolFailoverRequest {
+        state: state.clone(),
+        proxy_request_id: 6768,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::Memory(Bytes::from(
+        body: Some(PoolReplayBodySnapshot::Memory(Bytes::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
                 "input": [{"role": "user", "content": "hello"}]
             }))
             .expect("serialize request body"),
         ))),
-        Duration::from_secs(5),
-        Some(trace),
-        Some(runtime_snapshot),
-        Some("sticky-guard-streaming-phase"),
-        Some(account),
-        PoolFailoverProgress::default(),
-        1,
-    )
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: Some(trace),
+        runtime_snapshot_context: Some(runtime_snapshot),
+        sticky_key: Some("sticky-guard-streaming-phase"),
+        preferred_account: Some(account),
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect("request should still succeed when streaming-phase persistence is suppressed");
 

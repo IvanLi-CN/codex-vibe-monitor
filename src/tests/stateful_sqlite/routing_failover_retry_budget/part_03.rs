@@ -613,24 +613,25 @@ pub(crate) async fn failover_route_selection_task_preserves_the_external_deadlin
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
-    let (resolution, wait_deadline) = resolve_pool_account_for_failover_on_fresh_task(
-        state,
-        None,
-        None,
-        Vec::new(),
-        HashSet::new(),
-        None,
-        None,
-        None,
-        true,
-        None,
-        Some(Instant::now() + Duration::from_millis(40)),
-        "/v1/responses".to_string(),
-        crate::ImageIntent::Unknown,
-        false,
-        "deadline-selection-task".to_string(),
-    )
-    .await;
+    let (resolution, wait_deadline) =
+        resolve_pool_account_for_failover_on_fresh_task(PoolAccountFreshTaskRequest {
+            state,
+            sticky_key: None,
+            requested_model: None,
+            excluded_ids: Vec::new(),
+            excluded_upstream_route_keys: HashSet::new(),
+            required_upstream_route_key: None,
+            binding_constraint: None,
+            conversation_override: None,
+            wait_for_no_available: true,
+            wait_deadline: None,
+            total_timeout_deadline: Some(Instant::now() + Duration::from_millis(40)),
+            endpoint: "/v1/responses".to_string(),
+            image_intent: crate::ImageIntent::Unknown,
+            codex_imagegen_request: false,
+            reservation_key: "deadline-selection-task".to_string(),
+        })
+        .await;
     let elapsed = started.elapsed();
 
     assert!(

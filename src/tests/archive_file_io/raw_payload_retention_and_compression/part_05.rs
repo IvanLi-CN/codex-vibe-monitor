@@ -825,16 +825,16 @@ pub(crate) async fn send_pool_request_with_failover_returns_owner_unavailable_fo
     .await
     .expect("persist encrypted session owner");
 
-    let err = send_pool_request_with_failover(
-        state.clone(),
-        710001,
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
+    let err = send_pool_request_with_failover(PoolFailoverRequest {
+        state: state.clone(),
+        proxy_request_id: 710001,
+        method: Method::POST,
+        original_uri: &"/v1/responses".parse().expect("valid uri"),
+        headers: &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )]),
-        Some(PoolReplayBodySnapshot::Memory(Bytes::from(
+        body: Some(PoolReplayBodySnapshot::Memory(Bytes::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
                 "input": [{
@@ -844,8 +844,8 @@ pub(crate) async fn send_pool_request_with_failover_returns_owner_unavailable_fo
             }))
             .expect("serialize encrypted owner request body"),
         ))),
-        Duration::from_secs(5),
-        Some(PoolUpstreamAttemptTraceContext {
+        handshake_timeout: Duration::from_secs(5),
+        trace_context: Some(PoolUpstreamAttemptTraceContext {
             invoke_id: "proxy-710001-encrypted-owner-unavailable".to_string(),
             occurred_at: shanghai_now_string(),
             endpoint: "/v1/responses".to_string(),
@@ -854,7 +854,7 @@ pub(crate) async fn send_pool_request_with_failover_returns_owner_unavailable_fo
             upstream_base_url_host: None,
             request_model: None,
         }),
-        Some(PoolAttemptRuntimeSnapshotContext {
+        runtime_snapshot_context: Some(PoolAttemptRuntimeSnapshotContext {
             capture_target: ProxyCaptureTarget::Responses,
             request_info: RequestCaptureInfo {
                 model: Some("gpt-5.4".to_string()),
@@ -867,11 +867,11 @@ pub(crate) async fn send_pool_request_with_failover_returns_owner_unavailable_fo
             t_req_read_ms: 1.0,
             t_req_parse_ms: 1.0,
         }),
-        Some("encrypted-owner-unavailable-request-key"),
-        None,
-        PoolFailoverProgress::default(),
-        1,
-    )
+        sticky_key: Some("encrypted-owner-unavailable-request-key"),
+        preferred_account: None,
+        failover_progress: PoolFailoverProgress::default(),
+        same_account_attempts: 1,
+    })
     .await
     .expect_err("encrypted owner lock should fail before rerouting");
 

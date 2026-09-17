@@ -850,7 +850,6 @@ pub(crate) async fn record_capability_observation_admitted(
     )
     .await
 }
-
 pub(crate) async fn record_capability_observation_admitted_with_observed_at(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1705,7 +1704,6 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     .await
     .map(|_| ())
 }
-
 pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1810,6 +1808,8 @@ pub(crate) async fn record_suppressed_pool_route_status_change(
     )
     .await
 }
+// Keep the public wrapper separate from the evidence-rich implementation.
+// The explicit expectation documents the compatibility-heavy call contract.
 #[expect(
     clippy::too_many_arguments,
     reason = "Temporary model health records retain the complete upstream evidence contract."

@@ -906,7 +906,6 @@ pub(crate) async fn locate_upstream_account_attempt(
     .map_err(internal_error_tuple)?;
     Ok(Json(response))
 }
-
 async fn load_upstream_account_attempt_page(
     state: &AppState,
     account_id: i64,
@@ -1780,7 +1779,6 @@ pub(crate) fn parse_list_forward_proxy_binding_nodes_query(
     }
     Ok(params)
 }
-
 pub(crate) fn parse_list_upstream_accounts_query(
     uri: &Uri,
 ) -> Result<ListUpstreamAccountsQuery, String> {

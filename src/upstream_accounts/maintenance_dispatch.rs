@@ -876,7 +876,6 @@ pub(crate) async fn current_maintenance_interval_for_queued_high_frequency_candi
         offset += batch.len();
     }
 }
-
 pub(crate) async fn execute_queued_maintenance_sync(
     state: &AppState,
     plan: MaintenanceDispatchPlan,

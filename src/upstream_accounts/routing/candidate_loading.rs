@@ -884,7 +884,6 @@ pub(crate) async fn prepare_pool_account_with_scopes(
         }
     }
 }
-
 pub(crate) async fn prepare_pool_account_identity_only(
     state: &AppState,
     row: &UpstreamAccountRow,

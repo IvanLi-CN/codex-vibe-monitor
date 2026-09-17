@@ -1,3 +1,4 @@
+include!("route_selection/part_01.rs");
 use std::{future::Future, pin::Pin};
 
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -947,7 +948,6 @@ impl<'de> Visitor<'de> for SelectiveSemanticVisitor<'_> {
         Ok(())
     }
 }
-
 impl<'de> Deserialize<'de> for SelectiveRequestSemantics {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1439,7 +1439,7 @@ pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
     attempt_count: usize,
     distinct_account_count: usize,
 ) -> Option<ProxyErrorResponse> {
-    let err = build_single_account_binding_blocked_error(
+    let err = build_single_account_binding_blocked_error(SingleAccountBindingBlockedErrorRequest {
         state,
         binding_constraint,
         owner_auto_guard_active,
@@ -1448,7 +1448,7 @@ pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
         message,
         attempt_count,
         distinct_account_count,
-    )
+    })
     .await?;
     if let Some(trace_context) = trace_context
         && let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
@@ -1798,7 +1798,6 @@ pub(crate) fn infer_request_compaction_kind(
         _ => None,
     }
 }
-
 pub(crate) fn proxy_openai_v1_via_pool(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -1939,42 +1938,47 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     })?;
                     (
                         send_pool_request_with_failover_and_binding_constraint(
-                            state.clone(),
-                            proxy_request_id,
-                            method,
-                            original_uri,
-                            &headers,
-                            Some(request_body_snapshot),
-                            handshake_timeout,
-                            Some(pool_attempt_trace_context),
-                            Some(PoolAttemptRuntimeSnapshotContext {
-                                capture_target: capture_target
-                                    .unwrap_or(ProxyCaptureTarget::Responses),
-                                request_info: RequestCaptureInfo {
-                                    model: requested_model,
-                                    contains_encrypted_content: request_contains_encrypted_content,
-                                    image_intent: Some(request_image_intent.as_str().to_string()),
-                                    compaction_request_kind: request_compaction_kind,
-                                    ..RequestCaptureInfo::default()
+                            PoolFailoverBindingRequest {
+                                state: state.clone(),
+                                proxy_request_id,
+                                method,
+                                original_uri,
+                                headers: &headers,
+                                body: Some(request_body_snapshot),
+                                handshake_timeout,
+                                trace_context: Some(pool_attempt_trace_context),
+                                runtime_snapshot_context: Some(PoolAttemptRuntimeSnapshotContext {
+                                    capture_target: capture_target
+                                        .unwrap_or(ProxyCaptureTarget::Responses),
+                                    request_info: RequestCaptureInfo {
+                                        model: requested_model,
+                                        contains_encrypted_content:
+                                            request_contains_encrypted_content,
+                                        image_intent: Some(
+                                            request_image_intent.as_str().to_string(),
+                                        ),
+                                        compaction_request_kind: request_compaction_kind,
+                                        ..RequestCaptureInfo::default()
+                                    },
+                                    hosted_image_intent: None,
+                                    prompt_cache_key: effective_prompt_cache_key.clone(),
+                                    owner_auto_guard_active,
+                                    t_req_read_ms: 0.0,
+                                    t_req_parse_ms: 0.0,
+                                }),
+                                sticky_key: body_sticky_key.as_deref(),
+                                sticky_event_prompt_cache_key: body_sticky_key.as_deref(),
+                                binding_constraint: prompt_cache_binding_constraint,
+                                conversation_override,
+                                preferred_account: None,
+                                failover_progress: PoolFailoverProgress {
+                                    responses_total_timeout_started_at:
+                                        responses_total_timeout_started_at_from_request,
+                                    ..PoolFailoverProgress::default()
                                 },
-                                hosted_image_intent: None,
-                                prompt_cache_key: effective_prompt_cache_key.clone(),
-                                owner_auto_guard_active,
-                                t_req_read_ms: 0.0,
-                                t_req_parse_ms: 0.0,
-                            }),
-                            body_sticky_key.as_deref(),
-                            body_sticky_key.as_deref(),
-                            prompt_cache_binding_constraint,
-                            conversation_override,
-                            None,
-                            PoolFailoverProgress {
-                                responses_total_timeout_started_at:
-                                    responses_total_timeout_started_at_from_request,
-                                ..PoolFailoverProgress::default()
+                                same_account_attempts: POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                                persist_terminal_invocation: capture_target.is_some(),
                             },
-                            POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
-                            capture_target.is_some(),
                         )
                         .await
                         .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
@@ -2546,23 +2550,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         let initial_account = if prompt_cache_binding_constraint.is_some()
                             || conversation_override.is_some()
                         {
-                            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-                        state.as_ref(),
-                        body_sticky_key.as_deref(),
-                        requested_model.as_deref(),
-                        &[],
-                        &HashSet::new(),
-                        None,
-	                        prompt_cache_binding_constraint.as_ref(),
-	                        conversation_override.as_ref(),
-	                        true,
-	                        &mut no_available_wait_deadline,
-	                        pre_attempt_total_timeout_deadline,
-	                        capability_endpoint,
-	                        request_image_intent,
-	                        codex_imagegen_request,
-                            Some(&pool_routing_reservation_key),
-	                    )
+                            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(pool_account_wait_request!(
+                                state.as_ref(),
+                                body_sticky_key.as_deref(),
+                                requested_model.as_deref(),
+                                prompt_cache_binding_constraint.as_ref(),
+                                conversation_override.as_ref(),
+                                &mut no_available_wait_deadline,
+                                pre_attempt_total_timeout_deadline,
+                                capability_endpoint,
+                                request_image_intent,
+                                codex_imagegen_request,
+                                Some(&pool_routing_reservation_key),
+                            ))
                     .await;
                             let (initial_account, updated_no_available_wait_deadline) =
                                 unwrap_via_pool_initial_account(
@@ -2587,21 +2587,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             // again once it is available so this fast path takes the same atomic
                             // account/model reservation as all other pool routes.
                             let resolution =
-                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
+                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(pool_account_wait_request!(
                                     state.as_ref(),
                                     body_sticky_key.as_deref(),
                                     requested_model.as_deref(),
-                                    &[],
-                                    &HashSet::new(),
                                     None,
-                                    true,
+                                    None,
                                     &mut no_available_wait_deadline,
                                     pre_attempt_total_timeout_deadline,
                                     capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
                                     Some(&pool_routing_reservation_key),
-                                )
+                                ))
                                 .await;
                             let (initial_account, updated_no_available_wait_deadline) =
                                 unwrap_via_pool_initial_account(
@@ -2623,21 +2621,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             initial_account
                         } else {
                             let resolution =
-                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
+                                resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(pool_account_wait_request!(
                                     state.as_ref(),
                                     body_sticky_key.as_deref(),
                                     requested_model.as_deref(),
-                                    &[],
-                                    &HashSet::new(),
                                     None,
-                                    true,
+                                    None,
                                     &mut no_available_wait_deadline,
                                     pre_attempt_total_timeout_deadline,
                                     capability_endpoint,
                                     request_image_intent,
                                     codex_imagegen_request,
                                     Some(&pool_routing_reservation_key),
-                                )
+                                ))
                                 .await;
                             let (initial_account, updated_no_available_wait_deadline) =
                                 unwrap_via_pool_initial_account(
@@ -2712,23 +2708,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         .await
                         .map_err(|(status, message)| plain_proxy_error(status, message))?;
                         let mut no_available_wait_deadline = None;
-                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-                    state.as_ref(),
-                    body_sticky_key.as_deref(),
-                    requested_model.as_deref(),
-                    &[],
-                    &HashSet::new(),
-                    None,
-                    prompt_cache_binding_constraint.as_ref(),
-                    conversation_override.as_ref(),
-                    true,
-                    &mut no_available_wait_deadline,
-                    pre_attempt_total_timeout_deadline,
-                        capability_endpoint,
-                        request_image_intent,
-                        codex_imagegen_request,
-                        Some(&pool_routing_reservation_key),
-                )
+                        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(pool_account_wait_request!(
+                            state.as_ref(),
+                            body_sticky_key.as_deref(),
+                            requested_model.as_deref(),
+                            prompt_cache_binding_constraint.as_ref(),
+                            conversation_override.as_ref(),
+                            &mut no_available_wait_deadline,
+                            pre_attempt_total_timeout_deadline,
+                            capability_endpoint,
+                            request_image_intent,
+                            codex_imagegen_request,
+                            Some(&pool_routing_reservation_key),
+                        ))
                 .await;
                         let (initial_account, no_available_wait_deadline) =
                             unwrap_via_pool_initial_account(
@@ -2767,47 +2759,52 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     };
                     (
                         send_pool_request_with_failover_and_binding_constraint(
-                            state.clone(),
-                            proxy_request_id,
-                            method,
-                            original_uri,
-                            &headers,
-                            Some(request_body_snapshot),
-                            handshake_timeout,
-                            Some(build_via_pool_attempt_trace_context(
+                            PoolFailoverBindingRequest {
+                                state: state.clone(),
                                 proxy_request_id,
-                                original_uri.path(),
-                                body_sticky_key.clone(),
-                            )),
-                            Some(PoolAttemptRuntimeSnapshotContext {
-                                capture_target: capture_target
-                                    .unwrap_or(ProxyCaptureTarget::Responses),
-                                request_info: RequestCaptureInfo {
-                                    model: request_body_model,
-                                    contains_encrypted_content: request_contains_encrypted_content,
-                                    image_intent: Some(request_image_intent.as_str().to_string()),
-                                    compaction_request_kind: request_compaction_kind,
-                                    ..RequestCaptureInfo::default()
+                                method,
+                                original_uri,
+                                headers: &headers,
+                                body: Some(request_body_snapshot),
+                                handshake_timeout,
+                                trace_context: Some(build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    body_sticky_key.clone(),
+                                )),
+                                runtime_snapshot_context: Some(PoolAttemptRuntimeSnapshotContext {
+                                    capture_target: capture_target
+                                        .unwrap_or(ProxyCaptureTarget::Responses),
+                                    request_info: RequestCaptureInfo {
+                                        model: request_body_model,
+                                        contains_encrypted_content:
+                                            request_contains_encrypted_content,
+                                        image_intent: Some(
+                                            request_image_intent.as_str().to_string(),
+                                        ),
+                                        compaction_request_kind: request_compaction_kind,
+                                        ..RequestCaptureInfo::default()
+                                    },
+                                    hosted_image_intent: None,
+                                    prompt_cache_key: body_prompt_cache_key.clone(),
+                                    owner_auto_guard_active,
+                                    t_req_read_ms: 0.0,
+                                    t_req_parse_ms: 0.0,
+                                }),
+                                sticky_key: body_sticky_key.as_deref(),
+                                sticky_event_prompt_cache_key: body_sticky_key.as_deref(),
+                                binding_constraint: prompt_cache_binding_constraint,
+                                conversation_override,
+                                preferred_account: Some(initial_account),
+                                failover_progress: PoolFailoverProgress {
+                                    responses_total_timeout_started_at:
+                                        responses_total_timeout_started_at_from_request,
+                                    no_available_wait_deadline,
+                                    ..PoolFailoverProgress::default()
                                 },
-                                hosted_image_intent: None,
-                                prompt_cache_key: body_prompt_cache_key.clone(),
-                                owner_auto_guard_active,
-                                t_req_read_ms: 0.0,
-                                t_req_parse_ms: 0.0,
-                            }),
-                            body_sticky_key.as_deref(),
-                            body_sticky_key.as_deref(),
-                            prompt_cache_binding_constraint,
-                            conversation_override,
-                            Some(initial_account),
-                            PoolFailoverProgress {
-                                responses_total_timeout_started_at:
-                                    responses_total_timeout_started_at_from_request,
-                                no_available_wait_deadline,
-                                ..PoolFailoverProgress::default()
+                                same_account_attempts: POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                                persist_terminal_invocation: capture_target.is_some(),
                             },
-                            POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
-                            capture_target.is_some(),
                         )
                         .await
                         .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
@@ -2838,38 +2835,40 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         .unwrap_or(ProxyCaptureTarget::Responses);
                 (
                     send_pool_request_with_failover_and_binding_constraint(
-                        state.clone(),
-                        proxy_request_id,
-                        method,
-                        original_uri,
-                        &headers,
-                        None,
-                        handshake_timeout,
-                        Some(build_via_pool_attempt_trace_context(
+                        PoolFailoverBindingRequest {
+                            state: state.clone(),
                             proxy_request_id,
-                            original_uri.path(),
-                            header_sticky_key.clone(),
-                        )),
-                        Some(PoolAttemptRuntimeSnapshotContext {
-                            capture_target: header_capture_target,
-                            request_info: RequestCaptureInfo::default(),
-                            hosted_image_intent: None,
-                            prompt_cache_key: header_prompt_cache_key.clone(),
-                            owner_auto_guard_active,
-                            t_req_read_ms: 0.0,
-                            t_req_parse_ms: 0.0,
-                        }),
-                        header_sticky_key.as_deref(),
-                        None,
-                        prompt_cache_binding_constraint,
-                        conversation_override,
-                        None,
-                        PoolFailoverProgress {
-                            responses_total_timeout_started_at,
-                            ..PoolFailoverProgress::default()
+                            method,
+                            original_uri,
+                            headers: &headers,
+                            body: None,
+                            handshake_timeout,
+                            trace_context: Some(build_via_pool_attempt_trace_context(
+                                proxy_request_id,
+                                original_uri.path(),
+                                header_sticky_key.clone(),
+                            )),
+                            runtime_snapshot_context: Some(PoolAttemptRuntimeSnapshotContext {
+                                capture_target: header_capture_target,
+                                request_info: RequestCaptureInfo::default(),
+                                hosted_image_intent: None,
+                                prompt_cache_key: header_prompt_cache_key.clone(),
+                                owner_auto_guard_active,
+                                t_req_read_ms: 0.0,
+                                t_req_parse_ms: 0.0,
+                            }),
+                            sticky_key: header_sticky_key.as_deref(),
+                            sticky_event_prompt_cache_key: None,
+                            binding_constraint: prompt_cache_binding_constraint,
+                            conversation_override,
+                            preferred_account: None,
+                            failover_progress: PoolFailoverProgress {
+                                responses_total_timeout_started_at,
+                                ..PoolFailoverProgress::default()
+                            },
+                            same_account_attempts,
+                            persist_terminal_invocation: capture_target.is_some(),
                         },
-                        same_account_attempts,
-                        capture_target.is_some(),
                     )
                     .await
                     .map_err(|err| proxy_error_response_from_pool_upstream_error(err, None))?,
@@ -3378,7 +3377,6 @@ pub(crate) fn proxy_openai_v1_via_pool(
             })
     })
 }
-
 pub(crate) async fn send_forward_proxy_request_with_429_retry(
     state: Arc<AppState>,
     method: Method,

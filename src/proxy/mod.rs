@@ -1,14 +1,6 @@
 use super::*;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Proxy dispatch adapters preserve established call-site contracts."
-)]
 mod dispatch;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Failover adapters preserve established call-site contracts."
-)]
 mod failover;
 mod payload_utils;
 mod raw_capture;

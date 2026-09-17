@@ -858,7 +858,6 @@ pub(crate) fn spawn_imported_oauth_validation_job(
         schedule_imported_oauth_validation_job_cleanup(runtime, job_id);
     });
 }
-
 pub(crate) fn spawn_bulk_upstream_account_sync_job(
     state: Arc<AppState>,
     runtime: Arc<UpstreamAccountsRuntime>,
