@@ -111,6 +111,8 @@ include!("invocations_and_summary/summary_endpoints.rs");
 
 include!("invocations_and_summary/tests/attempt_response_body_query.rs");
 include!("invocations_and_summary/tests/dashboard_activity_read_model.rs");
+include!("invocations_and_summary/tests/dashboard_activity_routing.rs");
+include!("invocations_and_summary/tests/dashboard_activity_ttft_fallback.rs");
 include!("invocations_and_summary/tests/dashboard_network_timeseries.rs");
 include!("invocations_and_summary/tests/dashboard_recent_network_window_response.rs");
 include!("invocations_and_summary/tests/invocation_cost_audit.rs");
