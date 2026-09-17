@@ -3248,7 +3248,6 @@ pub(crate) async fn load_persisted_invocation_identity_tx(
     .map_err(Into::into)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_existing_proxy_invocation_record_tx(
     tx: &mut SqliteConnection,
     id: i64,

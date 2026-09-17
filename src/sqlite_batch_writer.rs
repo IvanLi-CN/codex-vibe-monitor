@@ -1303,6 +1303,36 @@ pub(crate) struct SqliteBatchWriter {
     auto_flush_terminal_for_test: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(test)]
+macro_rules! flush_dependencies {
+    ($($dependency:expr),+ $(,)?) => {
+        SqliteBatchFlushDependencies($($dependency),+)
+    };
+}
+
+#[cfg(test)]
+macro_rules! flush_pending_batch_inner {
+    ($pool:expr, $batch:expr, $pricing_catalog:expr, $prompt_cache_conversation_cache:expr,
+     $terminal_runtime_store:expr, $dashboard_activity_snapshot_cache:expr,
+     $summary_delta_hub:expr, $terminal_projection_hub:expr,
+     $dashboard_reconcile_gate:expr $(,)?) => {
+        flush_pending_batch_inner(
+            $pool,
+            $batch,
+            $pricing_catalog,
+            flush_dependencies!(
+                $prompt_cache_conversation_cache,
+                $terminal_runtime_store,
+                $dashboard_activity_snapshot_cache,
+                $summary_delta_hub,
+                $terminal_projection_hub,
+                $dashboard_reconcile_gate,
+                &std::sync::Arc::new(std::sync::Mutex::new(None)),
+            ),
+        )
+    };
+}
+
 impl SqliteBatchWriter {
     pub(crate) fn spawn(
         pool: Pool<Sqlite>,
@@ -1348,23 +1378,23 @@ impl SqliteBatchWriter {
         #[cfg(test)]
         let journal_sync_handle = None;
         let cache_for_task = prompt_cache_conversation_cache.clone();
-        let handle = tokio::spawn(run_sqlite_batch_writer(
+        let handle = tokio::spawn(run_sqlite_batch_writer(SqliteBatchWriterConfig {
             pool,
-            database_path.to_path_buf(),
+            database_path: database_path.to_path_buf(),
             write_receiver,
             control_receiver,
-            accounting.clone(),
-            Some(cache_for_task),
-            Some(pricing_catalog),
-            terminal_runtime_store.clone(),
-            dashboard_activity_snapshot_cache.clone(),
-            summary_delta_hub.clone(),
-            terminal_projection_hub.clone(),
-            dashboard_reconcile_gate.clone(),
-            terminal_journal.clone(),
-            queued_p1_count.clone(),
-            p1_priority_gate.clone(),
-        ));
+            accounting: accounting.clone(),
+            prompt_cache_conversation_cache: Some(cache_for_task),
+            pricing_catalog: Some(pricing_catalog),
+            terminal_runtime_store: terminal_runtime_store.clone(),
+            dashboard_activity_snapshot_cache: dashboard_activity_snapshot_cache.clone(),
+            summary_delta_hub: summary_delta_hub.clone(),
+            terminal_projection_hub: terminal_projection_hub.clone(),
+            dashboard_reconcile_gate: dashboard_reconcile_gate.clone(),
+            terminal_journal: terminal_journal.clone(),
+            queued_p1_count: queued_p1_count.clone(),
+            p1_priority_gate: p1_priority_gate.clone(),
+        }));
         let writer = Arc::new(Self {
             write_sender,
             queued_p1_count,
@@ -1915,7 +1945,7 @@ impl SqliteBatchWriter {
         let summary_delta_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
-        let deferred = flush_pending_batch_inner(
+        let deferred = flush_pending_batch_inner!(
             pool,
             &batch,
             pricing_catalog.as_ref(),
@@ -1929,7 +1959,7 @@ impl SqliteBatchWriter {
         .await
         .expect("flush pending sqlite batch writes");
         if !deferred.is_empty() {
-            flush_pending_batch_inner(
+            flush_pending_batch_inner!(
                 pool,
                 &deferred,
                 pricing_catalog.as_ref(),
@@ -1968,7 +1998,7 @@ impl SqliteBatchWriter {
             for write in writes {
                 batch.push(write);
             }
-            let deferred = flush_pending_batch_inner(
+            let deferred = flush_pending_batch_inner!(
                 pool,
                 &batch,
                 None,
@@ -2003,26 +2033,77 @@ impl SqliteBatchWriter {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_sqlite_batch_writer(
+#[cfg(test)]
+macro_rules! flush_pending_batch_accounted {
+    ($accounting:expr, $pool:expr, $pricing_catalog:expr, $batch:expr, $reason:expr,
+     $prompt_cache_conversation_cache:expr, $terminal_runtime_store:expr,
+     $dashboard_activity_snapshot_cache:expr, $summary_delta_hub:expr,
+     $terminal_projection_hub:expr, $dashboard_reconcile_gate:expr, $terminal_journal:expr $(,)?) => {
+        flush_pending_batch_accounted(
+            $accounting,
+            $pool,
+            $pricing_catalog,
+            $batch,
+            $reason,
+            flush_dependencies!(
+                $prompt_cache_conversation_cache,
+                $terminal_runtime_store,
+                $dashboard_activity_snapshot_cache,
+                $summary_delta_hub,
+                $terminal_projection_hub,
+                $dashboard_reconcile_gate,
+                $terminal_journal,
+            ),
+        )
+    };
+}
+
+struct SqliteBatchWriterConfig {
     pool: Pool<Sqlite>,
     database_path: std::path::PathBuf,
-    mut write_receiver: mpsc::Receiver<SqliteBatchWrite>,
-    mut control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
+    write_receiver: mpsc::Receiver<SqliteBatchWrite>,
+    control_receiver: mpsc::Receiver<SqliteBatchWriterControl>,
     accounting: Arc<PendingQueueAccounting>,
     prompt_cache_conversation_cache: Option<Arc<Mutex<PromptCacheConversationsCacheState>>>,
     pricing_catalog: Option<Arc<RwLock<PricingCatalog>>>,
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
-    dashboard_activity_snapshot_cache: Arc<
-        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
-    >,
+    dashboard_activity_snapshot_cache:
+        Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
     summary_delta_hub: Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     queued_p1_count: Arc<AtomicUsize>,
     p1_priority_gate: Arc<std::sync::Mutex<()>>,
-) {
+}
+
+async fn run_sqlite_batch_writer(config: SqliteBatchWriterConfig) {
+    let SqliteBatchWriterConfig {
+        pool,
+        database_path,
+        mut write_receiver,
+        mut control_receiver,
+        accounting,
+        prompt_cache_conversation_cache,
+        pricing_catalog,
+        terminal_runtime_store,
+        dashboard_activity_snapshot_cache,
+        summary_delta_hub,
+        terminal_projection_hub,
+        dashboard_reconcile_gate,
+        terminal_journal,
+        queued_p1_count,
+        p1_priority_gate,
+    } = config;
+    let flush_dependencies = SqliteBatchFlushDependencies(
+        prompt_cache_conversation_cache.as_ref(),
+        &terminal_runtime_store,
+        &dashboard_activity_snapshot_cache,
+        &summary_delta_hub,
+        &terminal_projection_hub,
+        &dashboard_reconcile_gate,
+        &terminal_journal,
+    );
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut deferred_ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
@@ -2108,13 +2189,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 pricing_catalog.as_ref(),
                                 flush_batch,
                                 FlushReason::Barrier,
-                                prompt_cache_conversation_cache.as_ref(),
-                                &terminal_runtime_store,
-                                &dashboard_activity_snapshot_cache,
-                                &summary_delta_hub,
-                                &terminal_projection_hub,
-                                &dashboard_reconcile_gate,
-                                &terminal_journal,
+                                flush_dependencies,
                             )
                             .await
                             else {
@@ -2259,13 +2334,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     pricing_catalog.as_ref(),
                                     flush_batch,
                                     FlushReason::Shutdown,
-                                    prompt_cache_conversation_cache.as_ref(),
-                                    &terminal_runtime_store,
-                                    &dashboard_activity_snapshot_cache,
-                                    &summary_delta_hub,
-                                    &terminal_projection_hub,
-                                    &dashboard_reconcile_gate,
-                                    &terminal_journal,
+                                    flush_dependencies,
                                 ),
                             )
                             .await
@@ -2436,13 +2505,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         pricing_catalog.as_ref(),
                         flush_batch,
                         FlushReason::Interval,
-                        prompt_cache_conversation_cache.as_ref(),
-                        &terminal_runtime_store,
-                        &dashboard_activity_snapshot_cache,
-                        &summary_delta_hub,
-                        &terminal_projection_hub,
-                        &dashboard_reconcile_gate,
-                        &terminal_journal,
+                        flush_dependencies,
                     )
                     .await
                 {
@@ -2556,19 +2619,13 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
                         let retained = match timeout_at(
                             shutdown_deadline.into(),
-                            flush_pending_batch_accounted(
+                                flush_pending_batch_accounted(
                                 &accounting,
                                 &pool,
                                 pricing_catalog.as_ref(),
                                 flush_batch,
                                 FlushReason::Shutdown,
-                                prompt_cache_conversation_cache.as_ref(),
-                                &terminal_runtime_store,
-                                &dashboard_activity_snapshot_cache,
-                                &summary_delta_hub,
-                                &terminal_projection_hub,
-                                &dashboard_reconcile_gate,
-                                &terminal_journal,
+                                    flush_dependencies,
                             ),
                         )
                         .await
@@ -2725,13 +2782,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             pricing_catalog.as_ref(),
                             flush_batch,
                             FlushReason::RowLimit,
-                            prompt_cache_conversation_cache.as_ref(),
-                            &terminal_runtime_store,
-                            &dashboard_activity_snapshot_cache,
-                            &summary_delta_hub,
-                            &terminal_projection_hub,
-                            &dashboard_reconcile_gate,
-                            &terminal_journal,
+                            flush_dependencies,
                         )
                         .await
                     {
@@ -2822,13 +2873,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         pricing_catalog.as_ref(),
                         flush_batch,
                         flush_reason,
-                        prompt_cache_conversation_cache.as_ref(),
-                        &terminal_runtime_store,
-                        &dashboard_activity_snapshot_cache,
-                        &summary_delta_hub,
-                        &terminal_projection_hub,
-                        &dashboard_reconcile_gate,
-                        &terminal_journal,
+                        flush_dependencies,
                     )
                     .await
                 {
@@ -2981,26 +3026,27 @@ fn take_next_bounded_batch(pending: &mut PendingBatch) -> PendingBatch {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "The accounting wrapper mirrors the single-writer ownership boundaries."
-)]
+#[derive(Clone, Copy)]
+struct SqliteBatchFlushDependencies<'a>(
+    Option<&'a Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    &'a Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
+    &'a Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
+    &'a Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
+    &'a Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
+    &'a Arc<Mutex<()>>,
+    &'a Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+);
+
 async fn flush_pending_batch_accounted(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
     pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
     batch: PendingBatch,
     reason: FlushReason,
-    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
-    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
-    dashboard_activity_snapshot_cache: &Arc<
-        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
-    >,
-    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
-    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
-    dashboard_reconcile_gate: &Arc<Mutex<()>>,
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    dependencies: SqliteBatchFlushDependencies<'_>,
 ) -> Option<RetainedBatch> {
+    let SqliteBatchFlushDependencies(_, terminal_runtime_store, _, _, _, _, terminal_journal) =
+        dependencies;
     let was_retained_retry = batch.retained_for_retry;
     let submitted_system_task_ids = batch
         .system_task_finishes
@@ -3015,13 +3061,7 @@ async fn flush_pending_batch_accounted(
         pricing_catalog,
         batch,
         reason,
-        prompt_cache_conversation_cache,
-        terminal_runtime_store,
-        dashboard_activity_snapshot_cache,
-        summary_delta_hub,
-        terminal_projection_hub,
-        dashboard_reconcile_gate,
-        terminal_journal,
+        dependencies,
     )
     .await;
     let completed_system_task_ids =
@@ -3239,26 +3279,16 @@ fn release_shutdown_pending_batch(
     quarantine_error.map_or(Ok(()), Err)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Flush dependencies mirror the single-writer ownership boundaries."
-)]
-pub(crate) async fn flush_pending_batch(
+async fn flush_pending_batch(
     accounting: &PendingQueueAccounting,
     pool: &Pool<Sqlite>,
     pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
     mut batch: PendingBatch,
     reason: FlushReason,
-    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
-    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
-    dashboard_activity_snapshot_cache: &Arc<
-        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
-    >,
-    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
-    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
-    dashboard_reconcile_gate: &Arc<Mutex<()>>,
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    dependencies: SqliteBatchFlushDependencies<'_>,
 ) -> Option<RetainedBatch> {
+    let SqliteBatchFlushDependencies(_, terminal_runtime_store, _, _, _, _, terminal_journal) =
+        dependencies;
     if batch.is_empty() {
         return None;
     }
@@ -3283,18 +3313,8 @@ pub(crate) async fn flush_pending_batch(
             .await;
         let lock_wait_ms = permit.lock_wait().as_millis() as u64;
         let execute_started = Instant::now();
-        let initial_result = flush_pending_batch_inner(
-            pool,
-            &p1_batch,
-            pricing_catalog,
-            prompt_cache_conversation_cache,
-            terminal_runtime_store,
-            dashboard_activity_snapshot_cache,
-            summary_delta_hub,
-            terminal_projection_hub,
-            dashboard_reconcile_gate,
-        )
-        .await;
+        let initial_result =
+            flush_pending_batch_inner(pool, &p1_batch, pricing_catalog, dependencies).await;
         let mut poison_record_count = 0_usize;
         let p1_result = match initial_result {
             Err(err) if !is_sqlite_lock_error(&err) => {
@@ -3303,18 +3323,8 @@ pub(crate) async fn flush_pending_batch(
                 for terminal in p1_batch.terminal_invocations.values() {
                     let mut singleton = PendingBatch::default();
                     singleton.push(SqliteBatchWrite::TerminalInvocation(terminal.clone()));
-                    match flush_pending_batch_inner(
-                        pool,
-                        &singleton,
-                        pricing_catalog,
-                        prompt_cache_conversation_cache,
-                        terminal_runtime_store,
-                        dashboard_activity_snapshot_cache,
-                        summary_delta_hub,
-                        terminal_projection_hub,
-                        dashboard_reconcile_gate,
-                    )
-                    .await
+                    match flush_pending_batch_inner(pool, &singleton, pricing_catalog, dependencies)
+                        .await
                     {
                         Ok(singleton_deferred) => deferred.merge_p2(singleton_deferred),
                         Err(singleton_err) if !is_sqlite_lock_error(&singleton_err) => {
@@ -3486,18 +3496,8 @@ pub(crate) async fn flush_pending_batch(
     let mut system_task_failure = None;
     let mut system_task_lock_failure = false;
     if let Some(system_task_batch) = system_task_batch.as_ref() {
-        match flush_pending_batch_inner(
-            pool,
-            system_task_batch,
-            pricing_catalog,
-            prompt_cache_conversation_cache,
-            terminal_runtime_store,
-            dashboard_activity_snapshot_cache,
-            summary_delta_hub,
-            terminal_projection_hub,
-            dashboard_reconcile_gate,
-        )
-        .await
+        match flush_pending_batch_inner(pool, system_task_batch, pricing_catalog, dependencies)
+            .await
         {
             Ok(system_task_deferred) => deferred_batch.merge_p2(system_task_deferred),
             Err(err) => {
@@ -3523,19 +3523,7 @@ pub(crate) async fn flush_pending_batch(
         .as_ref()
         .is_some_and(crate::db_pressure::is_db_pressure_error);
 
-    match flush_pending_batch_inner(
-        pool,
-        &batch,
-        pricing_catalog,
-        prompt_cache_conversation_cache,
-        terminal_runtime_store,
-        dashboard_activity_snapshot_cache,
-        summary_delta_hub,
-        terminal_projection_hub,
-        dashboard_reconcile_gate,
-    )
-    .await
-    {
+    match flush_pending_batch_inner(pool, &batch, pricing_catalog, dependencies).await {
         Ok(main_deferred) => {
             deferred_batch.merge_p2(main_deferred);
             if let Some(system_task_error) = system_task_failure.as_ref() {
@@ -3751,26 +3739,16 @@ pub(crate) fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String 
     values.join(",")
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Flush dependencies mirror the single-writer ownership boundaries."
-)]
-pub(crate) async fn flush_pending_batch_inner(
+async fn flush_pending_batch_inner(
     pool: &Pool<Sqlite>,
     batch: &PendingBatch,
     pricing_catalog: Option<&Arc<RwLock<PricingCatalog>>>,
-    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
-    terminal_runtime_store: &Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
-    dashboard_activity_snapshot_cache: &Arc<
-        std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
-    >,
-    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
-    terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
-    dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    dependencies: SqliteBatchFlushDependencies<'_>,
 ) -> Result<PendingBatch> {
+    let SqliteBatchFlushDependencies(p, r, d, s, t, g, _) = dependencies;
     let mut deferred_batch = PendingBatch::default();
     let mut should_invalidate_prompt_cache_conversations = false;
-    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+    let _dashboard_reconcile_guard = g.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
         let mut terminal_tx = pool.begin().await?;
@@ -3891,10 +3869,7 @@ pub(crate) async fn flush_pending_batch_inner(
         persisted_terminals
     {
         deferred_batch.add_startup_backfill_wake_tasks(&terminal.startup_backfill_tasks);
-        let dashboard_cache = dashboard_activity_snapshot_cache
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone());
+        let dashboard_cache = d.lock().ok().and_then(|guard| guard.clone());
         if let Some(cache) = dashboard_cache {
             acknowledge_dashboard_activity_terminal_record(
                 &cache,
@@ -3905,10 +3880,7 @@ pub(crate) async fn flush_pending_batch_inner(
             )
             .await;
         }
-        let summary_delta_hub = summary_delta_hub
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone());
+        let summary_delta_hub = s.lock().ok().and_then(|guard| guard.clone());
         if let (Some((summary_delta, replayed_after_restart)), Some(hub)) =
             (summary_delta, summary_delta_hub)
         {
@@ -3918,11 +3890,7 @@ pub(crate) async fn flush_pending_batch_inner(
                 hub.acknowledge_summary_delta(summary_delta).await;
             }
         }
-        if let Some(hub) = terminal_projection_hub
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-        {
+        if let Some(hub) = t.lock().ok().and_then(|guard| guard.clone()) {
             if terminal.terminal_projection_event_ids.is_empty() {
                 hub.acknowledge_persisted(
                     None,
@@ -4002,9 +3970,7 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        if should_invalidate_prompt_cache_conversations
-            && let Some(cache) = prompt_cache_conversation_cache
-        {
+        if should_invalidate_prompt_cache_conversations && let Some(cache) = p {
             invalidate_prompt_cache_conversations_cache(cache).await;
         }
         return Ok(deferred_batch);
@@ -4141,10 +4107,7 @@ pub(crate) async fn flush_pending_batch_inner(
     tx.commit().await?;
 
     if !terminal_overlay_keys.is_empty()
-        && let Some(runtime_store) = terminal_runtime_store
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().cloned())
+        && let Some(runtime_store) = r.lock().ok().and_then(|guard| guard.as_ref().cloned())
     {
         for (invoke_id, occurred_at) in terminal_overlay_keys {
             let removed = runtime_store.remove_persisted_terminal_overlay(&invoke_id, &occurred_at);
@@ -4157,9 +4120,7 @@ pub(crate) async fn flush_pending_batch_inner(
         }
     }
 
-    if should_invalidate_prompt_cache_conversations
-        && let Some(cache) = prompt_cache_conversation_cache
-    {
+    if should_invalidate_prompt_cache_conversations && let Some(cache) = p {
         invalidate_prompt_cache_conversations_cache(cache).await;
     }
     Ok(deferred_batch)
@@ -4783,7 +4744,7 @@ mod tests {
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
 
-        let deferred = flush_pending_batch_inner(
+        let deferred = flush_pending_batch_inner!(
             &pool,
             &batch,
             None,
@@ -4810,7 +4771,7 @@ mod tests {
         );
         assert_eq!(deferred.startup_backfill_wake_tasks, vec![task]);
 
-        flush_pending_batch_inner(
+        flush_pending_batch_inner!(
             &pool,
             &deferred,
             None,
@@ -4878,7 +4839,7 @@ mod tests {
                 .is_empty(),
             "a queued terminal must not be visible to Summary before SQLite commit"
         );
-        flush_pending_batch_inner(
+        flush_pending_batch_inner!(
             &pool,
             &batch,
             None,
@@ -4979,7 +4940,7 @@ mod tests {
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
 
-        flush_pending_batch_inner(
+        flush_pending_batch_inner!(
             &pool,
             &batch,
             None,
@@ -5132,7 +5093,7 @@ mod tests {
         let projection_hub = Arc::new(std::sync::Mutex::new(None));
         let reconcile_gate = Arc::new(Mutex::new(()));
 
-        let error = flush_pending_batch_inner(
+        let error = flush_pending_batch_inner!(
             &pool,
             &batch,
             None,
@@ -5183,7 +5144,7 @@ mod tests {
         batch.push_accounted(write, &accounting);
         let submitted_bytes = batch.estimated_memory_bytes();
 
-        let retained = flush_pending_batch_accounted(
+        let retained = flush_pending_batch_accounted!(
             &accounting,
             &pool,
             None,
@@ -5208,7 +5169,7 @@ mod tests {
         assert_eq!(snapshot.retry_count, 0);
         assert_eq!(snapshot.state, "healthy");
 
-        let retried = flush_pending_batch_accounted(
+        let retried = flush_pending_batch_accounted!(
             &accounting,
             &pool,
             None,
