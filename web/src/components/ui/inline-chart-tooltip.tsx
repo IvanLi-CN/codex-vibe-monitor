@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useState } 
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
 import { floatingSurfaceStyle } from "./floating-surface";
-import { useInlineChartInteraction } from "./use-inline-chart-interaction";
+import { type TooltipAnchor, useInlineChartInteraction } from "./use-inline-chart-interaction";
 import { usePortaledTheme } from "./use-portaled-theme";
 
 const TOOLTIP_OFFSET = 12;
@@ -62,48 +62,16 @@ function serializeTooltipForAssistiveTech(tooltip: InlineChartTooltipData | null
   return [tooltip.title, ...tooltip.rows.map((row) => `${row.label} ${row.value}`)].join(", ");
 }
 
-export function InlineChartTooltipSurface({
-  items,
-  defaultIndex,
-  ariaLabel,
-  interactionHint,
-  linkedActiveIndex = null,
-  onActiveIndexChange,
-  className,
-  chartClassName,
-  children,
-}: InlineChartTooltipSurfaceProps) {
-  const hintId = useId();
-  const tooltipId = useId();
-  const liveRegionId = useId();
-  const { containerRef, tooltipRef, state, anchor, getContainerProps, getItemProps } =
-    useInlineChartInteraction({
-      itemCount: items.length,
-      defaultIndex,
-    });
+function useInlineChartTooltipPosition(
+  isOpen: boolean,
+  anchor: TooltipAnchor | null,
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  tooltipRef: React.RefObject<HTMLDivElement | null>,
+) {
   const [position, setPosition] = useState<TooltipPosition | null>(null);
-  const portalTheme = usePortaledTheme(containerRef.current);
-
-  const activeTooltip = useMemo(() => {
-    if (state.activeIndex == null) return null;
-    return items[state.activeIndex] ?? null;
-  }, [items, state.activeIndex]);
-  const activeTooltipAnnouncement = useMemo(
-    () => serializeTooltipForAssistiveTech(activeTooltip),
-    [activeTooltip],
-  );
-  const describedBy = useMemo(
-    () => [hintId, activeTooltipAnnouncement ? liveRegionId : null].filter(Boolean).join(" "),
-    [activeTooltipAnnouncement, hintId, liveRegionId],
-  );
-  const highlightedIndex = state.isOpen ? state.activeIndex : linkedActiveIndex;
-
-  useEffect(() => {
-    onActiveIndexChange?.(state.isOpen ? state.activeIndex : null);
-  }, [onActiveIndexChange, state.activeIndex, state.isOpen]);
 
   useLayoutEffect(() => {
-    if (!state.isOpen || !anchor || !containerRef.current || !tooltipRef.current) {
+    if (!isOpen || !anchor || !containerRef.current || !tooltipRef.current) {
       setPosition(null);
       return undefined;
     }
@@ -111,7 +79,6 @@ export function InlineChartTooltipSurface({
     const container = containerRef.current;
     const tooltip = tooltipRef.current;
     const ownerWindow = container.ownerDocument.defaultView ?? window;
-
     const updatePosition = () => {
       const containerRect = container.getBoundingClientRect();
       const tooltipRect = tooltip.getBoundingClientRect();
@@ -139,7 +106,6 @@ export function InlineChartTooltipSurface({
         TOOLTIP_PADDING,
         ownerWindow.innerHeight - tooltipRect.height - TOOLTIP_PADDING,
       );
-
       setPosition({
         x: Math.min(Math.max(nextX, TOOLTIP_PADDING), maxX),
         y: Math.min(Math.max(nextY, TOOLTIP_PADDING), maxY),
@@ -151,14 +117,33 @@ export function InlineChartTooltipSurface({
     updatePosition();
     ownerWindow.addEventListener("resize", updatePosition);
     ownerWindow.addEventListener("scroll", updatePosition, true);
-
     return () => {
       ownerWindow.removeEventListener("resize", updatePosition);
       ownerWindow.removeEventListener("scroll", updatePosition, true);
     };
-  }, [anchor, containerRef, state.isOpen, tooltipRef]);
+  }, [anchor, containerRef, isOpen, tooltipRef]);
 
-  const tooltipNode = activeTooltip ? (
+  return position;
+}
+
+interface InlineChartTooltipNodeProps {
+  tooltip: InlineChartTooltipData;
+  tooltipId: string;
+  tooltipRef: React.RefObject<HTMLDivElement | null>;
+  portalTheme: ReturnType<typeof usePortaledTheme>;
+  activeIndex: number | null;
+  position: TooltipPosition | null;
+}
+
+function InlineChartTooltipNode({
+  tooltip,
+  tooltipId,
+  tooltipRef,
+  portalTheme,
+  activeIndex,
+  position,
+}: InlineChartTooltipNodeProps) {
+  return (
     <div
       id={tooltipId}
       ref={tooltipRef}
@@ -166,7 +151,7 @@ export function InlineChartTooltipSurface({
       role="tooltip"
       aria-hidden={!position}
       data-inline-chart-tooltip="true"
-      data-active-index={state.activeIndex ?? undefined}
+      data-active-index={activeIndex ?? undefined}
       style={{
         ...floatingSurfaceStyle("neutral", portalTheme),
         left: position?.x ?? 0,
@@ -182,10 +167,10 @@ export function InlineChartTooltipSurface({
       )}
     >
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
-        {activeTooltip.title}
+        {tooltip.title}
       </div>
       <div className="mt-2 space-y-1.5">
-        {activeTooltip.rows.map((row) => (
+        {tooltip.rows.map((row) => (
           <div key={`${row.label}-${row.value}`} className="flex items-start gap-2">
             <span
               className={cn("mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full", toneClasses(row.tone))}
@@ -201,6 +186,58 @@ export function InlineChartTooltipSurface({
         ))}
       </div>
     </div>
+  );
+}
+
+export function InlineChartTooltipSurface({
+  items,
+  defaultIndex,
+  ariaLabel,
+  interactionHint,
+  linkedActiveIndex = null,
+  onActiveIndexChange,
+  className,
+  chartClassName,
+  children,
+}: InlineChartTooltipSurfaceProps) {
+  const hintId = useId();
+  const tooltipId = useId();
+  const liveRegionId = useId();
+  const { containerRef, tooltipRef, state, anchor, getContainerProps, getItemProps } =
+    useInlineChartInteraction({
+      itemCount: items.length,
+      defaultIndex,
+    });
+  const portalTheme = usePortaledTheme(containerRef.current);
+  const position = useInlineChartTooltipPosition(state.isOpen, anchor, containerRef, tooltipRef);
+
+  const activeTooltip = useMemo(() => {
+    if (state.activeIndex == null) return null;
+    return items[state.activeIndex] ?? null;
+  }, [items, state.activeIndex]);
+  const activeTooltipAnnouncement = useMemo(
+    () => serializeTooltipForAssistiveTech(activeTooltip),
+    [activeTooltip],
+  );
+  const describedBy = useMemo(
+    () => [hintId, activeTooltipAnnouncement ? liveRegionId : null].filter(Boolean).join(" "),
+    [activeTooltipAnnouncement, hintId, liveRegionId],
+  );
+  const highlightedIndex = state.isOpen ? state.activeIndex : linkedActiveIndex;
+
+  useEffect(() => {
+    onActiveIndexChange?.(state.isOpen ? state.activeIndex : null);
+  }, [onActiveIndexChange, state.activeIndex, state.isOpen]);
+
+  const tooltipNode = activeTooltip ? (
+    <InlineChartTooltipNode
+      tooltip={activeTooltip}
+      tooltipId={tooltipId}
+      tooltipRef={tooltipRef}
+      portalTheme={portalTheme}
+      activeIndex={state.activeIndex}
+      position={position}
+    />
   ) : null;
 
   const ownerDocument = containerRef.current?.ownerDocument;

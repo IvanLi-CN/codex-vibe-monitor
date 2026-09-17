@@ -359,8 +359,8 @@ function MetricTile({
           data-testid={valueTestId ? `${valueTestId}-stacked-meta` : undefined}
           className="mt-3 grid min-h-[4.75rem] grid-cols-1 gap-y-2 text-xs leading-5"
         >
-          {stackedMetaItems.map((item, index) => (
-            <div key={`${item.label}-${index}`} className="min-w-0">
+          {stackedMetaItems.map((item) => (
+            <div key={item.label} className="min-w-0">
               <div className="flex min-w-0 items-baseline gap-1">
                 <span className="shrink-0 whitespace-nowrap text-base-content/52">
                   {item.label}
@@ -382,7 +382,7 @@ function MetricTile({
         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
           {inlineSecondaryItems.map((item, index) => (
             <div
-              key={`${item.label}-${index}`}
+              key={item.label}
               className={cn("min-w-0", index % 2 === 1 ? "justify-self-end text-right" : undefined)}
             >
               <div className="flex min-w-0 items-baseline gap-1">

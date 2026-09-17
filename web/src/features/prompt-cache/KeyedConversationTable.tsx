@@ -223,11 +223,9 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
       ) ?? [],
     [geometry?.segments, localeTag, numberFormatter, tooltipLabels],
   );
-
   if (!geometry) {
     return <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>;
   }
-
   const defaultIndex = Math.max(0, geometry.segments.length - 1);
 
   return (
@@ -246,6 +244,8 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
             viewBox={`0 0 ${geometry.width} ${geometry.height}`}
             className="h-11 w-full rounded-md border border-base-300/55 bg-base-100/35"
             data-chart-kind="keyed-conversation-sparkline"
+            role="img"
+            aria-label={ariaLabel}
           >
             <line
               x1={0}
@@ -266,9 +266,9 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
                 strokeDasharray="3 2"
               />
             ) : null}
-            {geometry.jumps.map((jump, index) => (
+            {geometry.jumps.map((jump) => (
               <line
-                key={`jump-${index}`}
+                key={`jump-${jump.x}-${jump.y1}-${jump.y2}`}
                 x1={jump.x}
                 y1={jump.y1}
                 x2={jump.x}
@@ -280,7 +280,7 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
             {geometry.segments.map((segment, index) => {
               const isActive = activeIndex === index;
               return (
-                <g key={`${conversationKey}-segment-${index}`}>
+                <g key={`${conversationKey}-segment-${segment.startEpoch}-${segment.endEpoch}`}>
                   <line
                     x1={segment.x1}
                     y1={segment.y}

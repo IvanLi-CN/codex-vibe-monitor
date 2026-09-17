@@ -42,17 +42,44 @@ import {
   validateInvocationRecordsDraft,
 } from "../lib/invocationRecords";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
-import {
-  buildActiveFilterChips,
-  type ClearableRecordFilterKey,
-  formatCustomRange,
-} from "./records-filter-utils";
 
 const inputClassName =
   "h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60";
 
 const SUGGESTION_DEBOUNCE_MS = 250;
 const NEW_DATA_REFRESH_MIN_LOADING_MS = 600;
+
+type ClearableRecordFilterKey = Exclude<
+  keyof InvocationRecordsDraftFilters,
+  "rangePreset" | "customFrom" | "customTo"
+>;
+
+interface ActiveFilterChip {
+  id: string;
+  label: string;
+  clearKeys?: ClearableRecordFilterKey[];
+}
+
+function formatCustomRange(from: string, to: string) {
+  const values = [from, to].filter(Boolean).map((value) => value.replace("T", " "));
+  return values.join(" - ");
+}
+
+function formatNumericRange(min: string, max: string) {
+  const normalizedMin = min.trim();
+  const normalizedMax = max.trim();
+  if (normalizedMin && normalizedMax) return `${normalizedMin} - ${normalizedMax}`;
+  if (normalizedMin) return `>= ${normalizedMin}`;
+  if (normalizedMax) return `<= ${normalizedMax}`;
+  return "";
+}
+
+function formatListSummary(values: string[]) {
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  if (normalized.length === 0) return "";
+  if (normalized.length <= 2) return normalized.join(", ");
+  return `${normalized.slice(0, 2).join(", ")} +${normalized.length - 2}`;
+}
 
 function resolveModelSuggestionField(target: InvocationModelTarget): InvocationSuggestionField {
   return target === "response" ? "responseModel" : "requestModel";
@@ -440,6 +467,9 @@ export default function RecordsPage() {
   const requesterIpBucket = suggestions?.requesterIp;
   const serviceTierBucket = suggestions?.serviceTier;
   const reasoningEffortBucket = suggestions?.reasoningEffort;
+  const modelSuggestionItems = (
+    draft.modelTarget === "response" ? responseModelBucket : requestModelBucket
+  )?.items;
   const draftValidation = validateInvocationRecordsDraft(draft);
   const hasDraftValidationErrors = Object.values(draftValidation).some((value) => value !== null);
   const timeRangeError =
@@ -480,17 +510,8 @@ export default function RecordsPage() {
   );
 
   const modelOptions = useMemo(
-    () =>
-      mapSuggestionBucketToOptions(
-        (draft.modelTarget === "response" ? responseModelBucket : requestModelBucket)?.items,
-      ),
-    [
-      draft.modelTarget,
-      requestModelBucket?.items,
-      responseModelBucket?.items,
-      responseModelBucket,
-      requestModelBucket,
-    ],
+    () => mapSuggestionBucketToOptions(modelSuggestionItems),
+    [modelSuggestionItems],
   );
   const endpointOptions = useMemo(
     () => mapSuggestionBucketToOptions(endpointBucket?.items),
@@ -525,11 +546,157 @@ export default function RecordsPage() {
     [reasoningEffortBucket?.items],
   );
 
-  const activeFilterChips = useMemo(
-    () => buildActiveFilterChips(appliedDraft, rangeOptions, t),
-    [appliedDraft, rangeOptions, t],
-  );
+  // Keep the active filter summary derived from the last applied query.
+  const activeFilterChips = useMemo<ActiveFilterChip[]>(() => {
+    if (!appliedDraft) return [];
 
+    const rangeLabel =
+      appliedDraft.rangePreset === "custom"
+        ? formatCustomRange(appliedDraft.customFrom, appliedDraft.customTo) ||
+          t("records.filters.rangePreset.custom")
+        : (rangeOptions.find((option) => option.value === appliedDraft.rangePreset)?.label ??
+          t("records.filters.rangePreset"));
+    const chips: ActiveFilterChip[] = [
+      {
+        id: "range",
+        label: `${t("records.filters.rangePreset")}: ${rangeLabel}`,
+      },
+    ];
+    const add = (draftKey: ClearableRecordFilterKey, label: string, value: string) => {
+      const normalized = value.trim();
+      if (!normalized) return;
+      chips.push({
+        id: draftKey,
+        clearKeys: [draftKey],
+        label: `${label}: ${normalized}`,
+      });
+    };
+    const addRange = (
+      id: string,
+      label: string,
+      value: string,
+      clearKeys: ClearableRecordFilterKey[],
+    ) => {
+      const normalized = value.trim();
+      if (!normalized) return;
+      chips.push({ id, clearKeys, label: `${label}: ${normalized}` });
+    };
+
+    const statusLabels: Record<string, string> = {
+      success: t("records.filters.status.success"),
+      warning_success: t("records.filters.status.warningSuccess"),
+      failed: t("records.filters.status.failed"),
+      interrupted: t("records.filters.status.interrupted"),
+      running: t("records.filters.status.running"),
+      pending: t("records.filters.status.pending"),
+    };
+    const failureClassLabels: Record<string, string> = {
+      service_failure: t("records.filters.failureClass.service"),
+      client_failure: t("records.filters.failureClass.client"),
+      client_abort: t("records.filters.failureClass.abort"),
+    };
+    const upstreamScopeLabels: Record<string, string> = {
+      internal: t("records.filters.upstreamScope.internal"),
+      external: t("records.filters.upstreamScope.external"),
+    };
+    const transportLabels: Record<string, string> = {
+      http: t("records.filters.transport.http"),
+      websocket: t("records.filters.transport.websocket"),
+    };
+    const modelTargetLabels: Record<InvocationModelTarget, string> = {
+      request: t("records.filters.modelTarget.request"),
+      response: t("records.filters.modelTarget.response"),
+    };
+    const modelReroutedLabels: Record<Exclude<InvocationModelRerouteFilter, "all">, string> = {
+      rerouted: t("records.filters.modelRerouted.rerouted"),
+      notRerouted: t("records.filters.modelRerouted.notRerouted"),
+    };
+    const appliedModels =
+      appliedDraft.models.length > 0
+        ? appliedDraft.models
+        : appliedDraft.model.trim()
+          ? [appliedDraft.model.trim()]
+          : [];
+    const appliedReasoningEfforts =
+      appliedDraft.reasoningEfforts.length > 0
+        ? appliedDraft.reasoningEfforts
+        : appliedDraft.reasoningEffort.trim()
+          ? [appliedDraft.reasoningEffort.trim()]
+          : [];
+    const modelFilterSummaryParts = [
+      appliedModels.length > 0 ? modelTargetLabels[appliedDraft.modelTarget] : null,
+      appliedModels.length > 0 ? formatListSummary(appliedModels) : null,
+      appliedReasoningEfforts.length > 0
+        ? `${t("records.filters.reasoningEffort")}: ${formatListSummary(appliedReasoningEfforts)}`
+        : null,
+      appliedDraft.modelRerouted !== "all" ? modelReroutedLabels[appliedDraft.modelRerouted] : null,
+    ].filter((value): value is string => Boolean(value));
+
+    add(
+      "status",
+      t("records.filters.status"),
+      statusLabels[appliedDraft.status] ?? appliedDraft.status,
+    );
+    if (modelFilterSummaryParts.length > 0) {
+      chips.push({
+        id: "modelSelection",
+        clearKeys: [
+          "model",
+          "models",
+          "modelTarget",
+          "modelRerouted",
+          "reasoningEffort",
+          "reasoningEfforts",
+        ],
+        label: `${t("records.filters.model")}: ${modelFilterSummaryParts.join(" · ")}`,
+      });
+    }
+    add("endpoint", t("records.filters.endpoint"), appliedDraft.endpoint);
+    add(
+      "failureClass",
+      t("records.filters.failureClass"),
+      failureClassLabels[appliedDraft.failureClass] ?? appliedDraft.failureClass,
+    );
+    add("invokeId", t("records.filters.invokeId"), appliedDraft.invokeId);
+    add("attemptId", t("records.filters.attemptId"), appliedDraft.attemptId);
+    add("failureKind", t("records.filters.failureKind"), appliedDraft.failureKind);
+    add("promptCacheKey", t("records.filters.promptCacheKey"), appliedDraft.promptCacheKey);
+    add(
+      "upstreamScope",
+      t("records.filters.upstreamScope"),
+      upstreamScopeLabels[appliedDraft.upstreamScope] ?? appliedDraft.upstreamScope,
+    );
+    if (appliedDraft.upstreamAccount.trim()) {
+      chips.push({
+        id: "upstreamAccount",
+        clearKeys: ["upstreamAccount", "upstreamAccountId"],
+        label: `${t("records.filters.upstreamAccount")}: ${appliedDraft.upstreamAccount.trim()}`,
+      });
+    }
+    add(
+      "transport",
+      t("records.filters.transport"),
+      transportLabels[appliedDraft.transport] ?? appliedDraft.transport,
+    );
+    add("proxyDisplayName", t("records.filters.proxyDisplayName"), appliedDraft.proxyDisplayName);
+    add("serviceTier", t("records.filters.serviceTier"), appliedDraft.serviceTier);
+    add("requesterIp", t("records.filters.requesterIp"), appliedDraft.requesterIp);
+    add("keyword", t("records.filters.keyword"), appliedDraft.keyword);
+    addRange(
+      "totalTokensRange",
+      t("records.filters.totalTokensRange"),
+      formatNumericRange(appliedDraft.minTotalTokens, appliedDraft.maxTotalTokens),
+      ["minTotalTokens", "maxTotalTokens"],
+    );
+    addRange(
+      "totalMsRange",
+      t("records.filters.totalMsRange"),
+      formatNumericRange(appliedDraft.minTotalMs, appliedDraft.maxTotalMs),
+      ["minTotalMs", "maxTotalMs"],
+    );
+
+    return chips;
+  }, [appliedDraft, rangeOptions, t]);
   const handleClearDraft = () => {
     customRangeTouchedRef.current = false;
     setModelSearchInput("");
@@ -749,9 +916,14 @@ export default function RecordsPage() {
             </Button>
           </div>
 
-          <div className="flex flex-wrap gap-2" data-testid="records-active-filters">
-            {activeFilterChips.map((chip) =>
-              chip.clearKeys?.length ? (
+          <fieldset
+            className="flex flex-wrap gap-2"
+            data-testid="records-active-filters"
+            aria-label={t("records.filters.active")}
+          >
+            {activeFilterChips.map((chip) => {
+              const clearKeys = chip.clearKeys;
+              return clearKeys?.length ? (
                 <Chip
                   asChild
                   size="default"
@@ -765,7 +937,7 @@ export default function RecordsPage() {
                   <button
                     type="button"
                     className="inline-flex max-w-full items-center gap-1.5 text-left text-xs font-medium"
-                    onClick={() => handleRemoveActiveFilter(chip.clearKeys ?? [])}
+                    onClick={() => handleRemoveActiveFilter(clearKeys)}
                   >
                     <span className="truncate">{chip.label}</span>
                     <AppIcon name="close" className="h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -787,9 +959,9 @@ export default function RecordsPage() {
                     <span className="truncate">{chip.label}</span>
                   </button>
                 </Chip>
-              ),
-            )}
-          </div>
+              );
+            })}
+          </fieldset>
         </div>
       </section>
 

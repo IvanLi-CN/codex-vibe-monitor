@@ -251,6 +251,25 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
+  source-structure-check:
+    name: Source Structure Check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install repo tooling
+        run: bun install --frozen-lockfile
+
+      - name: Run full source-quality gate
+        run: bun run check:source-quality
+
   repository-tooling-checks:
     name: Repository Tooling Checks
     runs-on: ubuntu-24.04
