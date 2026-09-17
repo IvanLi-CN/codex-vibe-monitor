@@ -11,4 +11,3 @@ pub(crate) use sqlx::SqlitePool;
 pub(crate) use sqlx::error::DatabaseError;
 pub(crate) use sqlx::error::ErrorKind;
 pub(crate) use std::sync::Mutex as StdMutex;
-pub(crate) use tokio::sync::Notify;

@@ -33,7 +33,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_reads_materialized_
 
     let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(6));
     let archived_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &live_row_at,
@@ -187,10 +187,11 @@ pub(crate) async fn list_upstream_accounts_keeps_actual_usage_null_until_batch_h
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
         .expect("persist roster usage snapshot");
-    insert_window_actual_usage_invocation(
+    let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(1));
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
+        &live_row_at,
         Some(2100),
         Some(900),
         Some(300),
@@ -243,10 +244,12 @@ pub(crate) async fn get_upstream_account_window_usage_returns_batch_actual_usage
     persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
         .await
         .expect("persist hydrate usage snapshot");
-    insert_window_actual_usage_invocation(
+    let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(1));
+    let archived_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
+        &live_row_at,
         Some(2100),
         Some(900),
         Some(300),
@@ -254,10 +257,10 @@ pub(crate) async fn get_upstream_account_window_usage_returns_batch_actual_usage
         Some(0.033),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::days(2)),
+        &archived_row_at,
         Some(700),
         Some(200),
         Some(100),
@@ -303,10 +306,11 @@ pub(crate) async fn get_upstream_account_window_usage_does_not_double_count_part
     )
     .await;
 
-    insert_window_actual_usage_invocation(
+    let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(20));
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(20)),
+        &live_row_at,
         Some(1200),
         Some(600),
         Some(200),
@@ -353,10 +357,11 @@ pub(crate) async fn get_upstream_account_window_usage_falls_back_to_live_raw_row
     )
     .await;
 
-    insert_window_actual_usage_invocation(
+    let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(2));
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(2)),
+        &live_row_at,
         Some(1200),
         Some(600),
         Some(200),
@@ -447,10 +452,11 @@ pub(crate) async fn get_upstream_account_window_usage_merges_hourly_rows_when_li
     )
     .await;
 
-    insert_window_actual_usage_invocation(
+    let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(1));
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
+        &live_row_at,
         Some(2100),
         Some(900),
         Some(300),
@@ -520,7 +526,7 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
     let boundary_row_at =
         shanghai_local_iso(now - ChronoDuration::hours(5) + ChronoDuration::seconds(15));
     let full_minute_row_at = shanghai_local_iso(now - ChronoDuration::hours(4));
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &boundary_row_at,
@@ -531,7 +537,7 @@ async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact
         Some(0.016),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &full_minute_row_at,
@@ -665,10 +671,11 @@ pub(crate) async fn get_upstream_account_window_usage_includes_archived_partial_
         .await
         .expect("materialize historical rollups");
 
-    insert_window_actual_usage_invocation(
+    let live_row_at = shanghai_local_iso(now - ChronoDuration::minutes(20));
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
-        &shanghai_local_iso(now - ChronoDuration::minutes(20)),
+        &live_row_at,
         Some(1200),
         Some(600),
         Some(200),
@@ -719,7 +726,7 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_serializes_ac
 
     let primary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(25));
     let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(1));
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &primary_row_at,
@@ -730,7 +737,7 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_serializes_ac
         Some(0.033),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &secondary_row_at,
@@ -1038,7 +1045,7 @@ async fn seed_benchmark_accounts(state: &Arc<AppState>) -> Vec<i64> {
             .await;
         }
         let live_tail_at = shanghai_local_iso(now - ChronoDuration::minutes((index % 45) as i64));
-        insert_window_actual_usage_invocation(
+        insert_window_actual_usage_invocation!(
             &state.pool,
             account_id,
             &live_tail_at,

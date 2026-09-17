@@ -1,7 +1,7 @@
 // Backend test-suite entry grouped by resource profile; behavior is preserved via real modules.
 #![allow(unused_imports)]
 
-use super::*;
+pub(crate) use super::*;
 
 mod archive_file_io;
 mod lightweight;
@@ -51,30 +51,31 @@ async fn resolve_pool_account_for_request(
 }
 
 #[cfg(test)]
-#[derive(Default)]
-struct PoolAccountWaitOptions<'a> {
-    required_upstream_route_key: Option<&'a str>,
-    wait_for_no_available: bool,
-    wait_deadline: Option<std::time::Instant>,
-    total_timeout_deadline: Option<std::time::Instant>,
+pub(crate) struct PoolAccountWaitOptions<'a> {
+    pub(crate) sticky_key: Option<&'a str>,
+    pub(crate) requested_model: Option<&'a str>,
+    pub(crate) excluded_ids: &'a [i64],
+    pub(crate) excluded_upstream_route_keys: &'a std::collections::HashSet<String>,
+    pub(crate) required_upstream_route_key: Option<&'a str>,
+    pub(crate) wait_for_no_available: bool,
+    pub(crate) wait_deadline: &'a mut Option<std::time::Instant>,
+    pub(crate) total_timeout_deadline: Option<std::time::Instant>,
 }
 
-async fn resolve_pool_account_for_request_with_wait(
+#[cfg(test)]
+pub(crate) async fn resolve_pool_account_for_request_with_wait(
     state: &crate::AppState,
-    sticky_key: Option<&str>,
-    excluded_ids: &[i64],
-    excluded_upstream_route_keys: &std::collections::HashSet<String>,
     options: &mut PoolAccountWaitOptions<'_>,
 ) -> anyhow::Result<crate::proxy::PoolAccountResolutionWithWait> {
     crate::proxy::resolve_pool_account_for_request_with_wait(
         state,
-        sticky_key,
-        None,
-        excluded_ids,
-        excluded_upstream_route_keys,
+        options.sticky_key,
+        options.requested_model,
+        options.excluded_ids,
+        options.excluded_upstream_route_keys,
         options.required_upstream_route_key,
         options.wait_for_no_available,
-        &mut options.wait_deadline,
+        options.wait_deadline,
         options.total_timeout_deadline,
     )
     .await

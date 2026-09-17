@@ -117,20 +117,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_accepts_recovery_
     });
 
     let started = Instant::now();
+    let mut wait_deadline = None;
     let mut options = PoolAccountWaitOptions {
+        sticky_key: None,
+        requested_model: None,
+        excluded_ids: &[],
+        excluded_upstream_route_keys: &HashSet::new(),
+        required_upstream_route_key: None,
         wait_for_no_available: true,
+        wait_deadline: &mut wait_deadline,
         total_timeout_deadline: Some(Instant::now() + Duration::from_secs(5)),
-        ..Default::default()
     };
-    let resolution = resolve_pool_account_for_request_with_wait(
-        state.as_ref(),
-        None,
-        &[],
-        &HashSet::new(),
-        &mut options,
-    )
-    .await
-    .expect("helper resolution should succeed");
+    let resolution = resolve_pool_account_for_request_with_wait(state.as_ref(), &mut options)
+        .await
+        .expect("helper resolution should succeed");
     let elapsed = started.elapsed();
 
     delayed_release_task
@@ -191,20 +191,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_wakes_when_a_rout
     });
 
     let started = Instant::now();
+    let mut wait_deadline = None;
     let mut options = PoolAccountWaitOptions {
+        sticky_key: None,
+        requested_model: None,
+        excluded_ids: &[],
+        excluded_upstream_route_keys: &HashSet::new(),
+        required_upstream_route_key: None,
         wait_for_no_available: true,
+        wait_deadline: &mut wait_deadline,
         total_timeout_deadline: Some(Instant::now() + Duration::from_secs(1)),
-        ..Default::default()
     };
-    let resolution = resolve_pool_account_for_request_with_wait(
-        state.as_ref(),
-        None,
-        &[],
-        &HashSet::new(),
-        &mut options,
-    )
-    .await
-    .expect("waiter should resolve after account creation publishes availability");
+    let resolution = resolve_pool_account_for_request_with_wait(state.as_ref(), &mut options)
+        .await
+        .expect("waiter should resolve after account creation publishes availability");
     let elapsed = started.elapsed();
     create_task
         .join()
@@ -646,20 +646,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_rejects_recovery_
     });
 
     let started = Instant::now();
+    let mut wait_deadline = None;
     let mut options = PoolAccountWaitOptions {
+        sticky_key: None,
+        requested_model: None,
+        excluded_ids: &[],
+        excluded_upstream_route_keys: &HashSet::new(),
+        required_upstream_route_key: None,
         wait_for_no_available: true,
+        wait_deadline: &mut wait_deadline,
         total_timeout_deadline: Some(Instant::now() + Duration::from_millis(40)),
-        ..Default::default()
     };
-    let resolution = resolve_pool_account_for_request_with_wait(
-        state.as_ref(),
-        None,
-        &[],
-        &HashSet::new(),
-        &mut options,
-    )
-    .await
-    .expect("helper resolution should succeed");
+    let resolution = resolve_pool_account_for_request_with_wait(state.as_ref(), &mut options)
+        .await
+        .expect("helper resolution should succeed");
     let elapsed = started.elapsed();
 
     delayed_release_task
