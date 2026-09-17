@@ -1,5 +1,8 @@
 use super::*;
-use crate::api::{RuntimeStickyMutation, upsert_runtime_prompt_cache_conversation_sticky_route};
+use crate::api::{
+    RuntimePromptCacheStickyRouteRequest, RuntimeStickyMutation,
+    upsert_runtime_prompt_cache_conversation_sticky_route,
+};
 use crate::upstream_accounts::{
     bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
     delete_sticky_route_if_matches_with_cause, load_sticky_affinity_generation, load_sticky_route,

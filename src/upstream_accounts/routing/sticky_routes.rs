@@ -1242,22 +1242,10 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
             .flatten();
             let (trigger_attempt_id, invoke_id, routing_source) = attempt_context
                 .as_ref()
-                .map(|(_, attempt_public_id, invoke_id, routing_source)| {
-                    (
-                        attempt_public_id.clone(),
-                        invoke_id.clone(),
-                        routing_source.clone(),
-                    )
-                })
+                .map(|context| (context.1.clone(), context.2.clone(), context.3.clone()))
                 .unwrap_or((None, None, None));
             if prompt_cache_key == Some(sticky_key) {
-                crate::api::append_runtime_sticky_target_cleared_event_executor(
-                    conn.as_mut(),
-                    sticky_key,
-                    account_id,
-                    account_name,
-                    now_iso,
-                    invoke_id,
+                let routing_context =
                     crate::api::PromptCacheConversationOperationRoutingContext {
                         reason_code: cause_reason_code
                             .unwrap_or("automaticStickyClear")
@@ -1268,21 +1256,26 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
                         trigger_attempt_id,
                         causing_attempt_id: None,
                         causing_http_status: None,
-                    },
-                    crate::api::PromptCacheConversationOperationRoutingScope {
-                        kind: if exact_model_route.is_some() {
-                            "model".to_string()
-                        } else {
-                            "all".to_string()
-                        },
-                        model_key: exact_model_route
-                            .as_ref()
-                            .and_then(|_| model_key.clone()),
-                        request_model: exact_model_route.as_ref().and_then(|_| {
-                            request_model.filter(|request_model| {
-                                model_key.as_deref() != Some(request_model.as_str())
-                            })
-                        }),
+                    };
+                let routing_scope_model_key = exact_model_route.as_ref().and(model_key.clone());
+                let routing_scope_request_model = exact_model_route.as_ref().and(
+                    request_model.filter(|request_model| model_key.as_deref() != Some(request_model.as_str())),
+                );
+                let routing_scope = crate::api::PromptCacheConversationOperationRoutingScope {
+                    kind: exact_model_route.as_ref().map_or("all", |_| "model").to_string(),
+                    model_key: routing_scope_model_key,
+                    request_model: routing_scope_request_model,
+                };
+                crate::api::append_runtime_sticky_target_cleared_event_executor(
+                    conn.as_mut(),
+                    crate::api::RuntimeStickyTargetClearedEvent {
+                        prompt_cache_key: sticky_key.to_string(),
+                        account_id,
+                        account_name,
+                        occurred_at: now_iso.to_string(),
+                        invoke_id,
+                        routing_context,
+                        routing_scope,
                     },
                 )
                 .await?;

@@ -285,6 +285,8 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
     Ok(())
 }
 
+// Model recovery is independently fenced by the attempt timestamp, so it
+// must still run when a newer account-level failure makes the account update stale.
 async fn record_pool_route_success_inner(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -305,9 +307,6 @@ async fn record_pool_route_success_inner(
             .with_timezone(&Shanghai)
             .naive_local(),
     );
-    // Model recovery is independently fenced by the attempt timestamp, so it
-    // must still run when a newer account-level failure makes the account
-    // update stale.
     let model_route_recovered = if let Some(attempt_id) = attempt_id {
         record_model_route_success_from_attempt_admitted(
             pool,
@@ -398,13 +397,15 @@ async fn record_pool_route_success_inner(
     if let Some(sticky_key) = sticky_key {
         sticky_mutation = upsert_runtime_prompt_cache_conversation_sticky_route(
             pool,
-            sticky_key,
-            prompt_cache_key,
-            account_id,
-            &sticky_now_iso,
-            invoke_id,
-            attempt_id,
-            sticky_affinity_generation,
+            RuntimePromptCacheStickyRouteRequest {
+                sticky_key,
+                prompt_cache_key,
+                upstream_account_id: account_id,
+                now_iso: &sticky_now_iso,
+                invoke_id,
+                attempt_id,
+                sticky_affinity_generation,
+            },
         )
         .await?;
         if sticky_mutation == RuntimeStickyMutation::Unchanged
@@ -1809,7 +1810,6 @@ pub(crate) async fn record_suppressed_pool_route_status_change(
     )
     .await
 }
-
 #[expect(
     clippy::too_many_arguments,
     reason = "Temporary model health records retain the complete upstream evidence contract."
