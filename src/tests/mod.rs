@@ -1,4 +1,5 @@
 // Backend test-suite entry grouped by resource profile; behavior is preserved via real modules.
+#![allow(unused_imports)]
 
 use super::*;
 
@@ -8,6 +9,14 @@ mod stateful_sqlite;
 mod support;
 
 pub(crate) use lightweight::*;
+pub(crate) use stateful_sqlite::parallel_work_stats_and_timeseries::part_01::{
+    SeedInvocationArchiveBatchRow, assert_f64_close, seed_invocation_archive_batch,
+    seed_invocation_archive_batch_with_details,
+};
+pub(crate) use stateful_sqlite::system_status_and_account_roster::part_02::test_state_with_openai_base_and_pool_no_available_wait;
+pub(crate) use stateful_sqlite::system_status_and_account_roster::part_03::{
+    insert_test_pool_oauth_account, seed_pool_routing_api_key,
+};
 pub(crate) use stateful_sqlite::*;
 pub(crate) use support::*;
 
@@ -42,19 +51,20 @@ async fn resolve_pool_account_for_request(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Test compatibility adapter mirrors the production resolver signature."
-)]
+#[derive(Default)]
+struct PoolAccountWaitOptions<'a> {
+    required_upstream_route_key: Option<&'a str>,
+    wait_for_no_available: bool,
+    wait_deadline: Option<std::time::Instant>,
+    total_timeout_deadline: Option<std::time::Instant>,
+}
+
 async fn resolve_pool_account_for_request_with_wait(
     state: &crate::AppState,
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &std::collections::HashSet<String>,
-    required_upstream_route_key: Option<&str>,
-    wait_for_no_available: bool,
-    wait_deadline: &mut Option<std::time::Instant>,
-    total_timeout_deadline: Option<std::time::Instant>,
+    options: &mut PoolAccountWaitOptions<'_>,
 ) -> anyhow::Result<crate::proxy::PoolAccountResolutionWithWait> {
     crate::proxy::resolve_pool_account_for_request_with_wait(
         state,
@@ -62,10 +72,10 @@ async fn resolve_pool_account_for_request_with_wait(
         None,
         excluded_ids,
         excluded_upstream_route_keys,
-        required_upstream_route_key,
-        wait_for_no_available,
-        wait_deadline,
-        total_timeout_deadline,
+        options.required_upstream_route_key,
+        options.wait_for_no_available,
+        &mut options.wait_deadline,
+        options.total_timeout_deadline,
     )
     .await
 }

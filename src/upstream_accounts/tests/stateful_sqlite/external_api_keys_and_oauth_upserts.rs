@@ -120,24 +120,40 @@ fn test_external_oauth_credentials(
     }
 }
 
+struct ExternalUpsertMetadata<'a> {
+    display_name: &'a str,
+    group_name: Option<&'a str>,
+    note: Option<&'a str>,
+}
+
+fn external_upsert_metadata<'a>(
+    display_name: &'a str,
+    group_name: Option<&'a str>,
+    note: Option<&'a str>,
+) -> ExternalUpsertMetadata<'a> {
+    ExternalUpsertMetadata {
+        display_name,
+        group_name,
+        note,
+    }
+}
+
 fn test_external_upsert_request(
     email: &str,
     account_id: &str,
     user_id: &str,
     access_token: &str,
     refresh_token: &str,
-    display_name: &str,
-    group_name: Option<&str>,
-    note: Option<&str>,
+    metadata: ExternalUpsertMetadata<'_>,
 ) -> ExternalUpstreamAccountUpsertRequest {
     ExternalUpstreamAccountUpsertRequest {
         metadata: ExternalUpstreamAccountMetadataRequest {
-            display_name: Some(display_name.to_string()),
-            group_name: group_name.map(str::to_string),
+            display_name: Some(metadata.display_name.to_string()),
+            group_name: metadata.group_name.map(str::to_string),
             group_bound_proxy_keys: None,
             group_node_shunt_enabled: None,
             group_single_account_rotation_enabled: None,
-            note: note.map(str::to_string),
+            note: metadata.note.map(str::to_string),
             group_note: None,
             concurrency_limit: None,
             enabled: Some(true),
@@ -232,9 +248,7 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
             "user_partner_alpha",
             "alpha-access",
             "alpha-refresh",
-            "Partner Alpha OAuth",
-            None,
-            Some("initial note"),
+            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
         )),
     )
     .await
@@ -251,9 +265,7 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
             "user_partner_alpha",
             "alpha-access",
             "alpha-refresh",
-            "Partner Alpha OAuth",
-            None,
-            Some("initial note"),
+            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
         )),
     )
     .await
@@ -270,9 +282,7 @@ async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
             "user_partner_alpha",
             "alpha-access",
             "alpha-refresh",
-            "Partner Alpha OAuth",
-            None,
-            Some("initial note"),
+            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
         )),
     )
     .await
@@ -448,9 +458,7 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
             "user_shared_a",
             "access-a-1",
             "refresh-a-1",
-            "Shared Client A",
-            None,
-            Some("note-a-1"),
+            external_upsert_metadata("Shared Client A", None, Some("note-a-1")),
         )),
     )
     .await
@@ -474,9 +482,7 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
             "user_shared_a",
             "access-a-2",
             "refresh-a-2",
-            "Shared Client A Updated",
-            None,
-            Some("note-a-2"),
+            external_upsert_metadata("Shared Client A Updated", None, Some("note-a-2")),
         )),
     )
     .await
@@ -525,9 +531,7 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
             "user_shared_b",
             "access-b-1",
             "refresh-b-1",
-            "Shared Client B",
-            None,
-            Some("note-b-1"),
+            external_upsert_metadata("Shared Client B", None, Some("note-b-1")),
         )),
     )
     .await
@@ -650,9 +654,7 @@ async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_
             "user_email_preserve",
             "preserve-access-1",
             "preserve-refresh-1",
-            "External Email Preserve",
-            None,
-            None,
+            external_upsert_metadata("External Email Preserve", None, None),
         )),
     )
     .await
@@ -686,9 +688,7 @@ async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_
             "user_email_preserve",
             "preserve-access-2",
             "preserve-refresh-2",
-            "External Email Preserve",
-            None,
-            None,
+            external_upsert_metadata("External Email Preserve", None, None),
         )),
     )
     .await
@@ -753,9 +753,7 @@ async fn external_oauth_patch_updates_metadata_without_overwriting_credentials()
             "user_patch",
             "patch-access-1",
             "patch-refresh-1",
-            "Patch Original",
-            None,
-            Some("before patch"),
+            external_upsert_metadata("Patch Original", None, Some("before patch")),
         )),
     )
     .await
@@ -869,9 +867,7 @@ async fn external_oauth_patch_preserves_system_tags_when_tag_ids_is_empty() {
             "user_patch_tags",
             "patch-access-tags-1",
             "patch-refresh-tags-1",
-            "Patch Tags Original",
-            None,
-            Some("before patch"),
+            external_upsert_metadata("Patch Tags Original", None, Some("before patch")),
         )),
     )
     .await
@@ -1069,9 +1065,7 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic",
             "atomic-access-1",
             "atomic-refresh-1",
-            "Atomic Existing",
-            None,
-            Some("before atomic failure"),
+            external_upsert_metadata("Atomic Existing", None, Some("before atomic failure")),
         )),
     )
     .await
@@ -1087,9 +1081,7 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic_conflict",
             "atomic-conflict-access",
             "atomic-conflict-refresh",
-            "Conflicting Display Name",
-            None,
-            Some("conflict holder"),
+            external_upsert_metadata("Conflicting Display Name", None, Some("conflict holder")),
         )),
     )
     .await
@@ -1130,9 +1122,11 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic",
             "atomic-access-2",
             "atomic-refresh-2",
-            "Conflicting Display Name",
-            None,
-            Some("after atomic failure"),
+            external_upsert_metadata(
+                "Conflicting Display Name",
+                None,
+                Some("after atomic failure"),
+            ),
         )),
     )
     .await
