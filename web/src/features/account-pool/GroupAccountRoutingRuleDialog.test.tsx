@@ -2,7 +2,7 @@
 import type * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import type { GroupAccountRoutingRule } from "../../lib/api";
 import {
   buildDefaultStatusChangeReasons,
@@ -18,13 +18,11 @@ class MockPointerEvent extends MouseEvent {
     this.pointerType = init.pointerType ?? "mouse";
   }
 }
-
 class MockResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
 }
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -52,10 +50,8 @@ beforeAll(() => {
     value: MockResizeObserver,
   });
 });
-
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -64,7 +60,6 @@ afterEach(() => {
   root = null;
   host = null;
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -73,7 +68,6 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function setCompactViewport(matches: boolean) {
   const originalMatchMedia = window.matchMedia;
   Object.defineProperty(window, "matchMedia", {
@@ -93,7 +87,6 @@ function setCompactViewport(matches: boolean) {
     });
   };
 }
-
 const labels = {
   allowCutOut: "Cut out is not blocked",
   allowCutIn: "Cut in is not blocked",
@@ -172,7 +165,6 @@ const labels = {
   cancel: "Cancel",
   validation: "Review the routing policy before saving.",
 };
-
 const defaultRule: GroupAccountRoutingRule = {
   allowCutOut: true,
   allowCutIn: true,
@@ -186,90 +178,10 @@ const defaultRule: GroupAccountRoutingRule = {
   availableModels: [],
   statusChangeReasons: buildDefaultStatusChangeReasons(),
 };
-
-describe("GroupAccountRoutingRuleDialog", () => {
-  it("uses inline radio groups for discrete routing policies on desktop", () => {
-    const restoreViewport = setCompactViewport(false);
-    const onSubmit = vi.fn();
-    try {
-      render(
-        <GroupAccountRoutingRuleDialog
-          open
-          title="Group policy"
-          description="Shared routing policy"
-          submitLabel="Apply group policy"
-          rule={defaultRule}
-          onClose={() => undefined}
-          onSubmit={onSubmit}
-          labels={labels}
-        />,
-      );
-
-      const policyLabels = ["Preferred usage", "Fast mode", "Image tools", "Request compression"];
-      for (const label of policyLabels) {
-        expect(document.querySelector(`[role="radiogroup"][aria-label="${label}"]`)).toBeInstanceOf(
-          HTMLElement,
-        );
-        expect(document.querySelector(`[role="combobox"][aria-label="${label}"]`)).toBeNull();
-      }
-
-      const fastModeGroup = document.querySelector(
-        '[role="radiogroup"][aria-label="Fast mode"]',
-      ) as HTMLElement | null;
-      const forceAdd = Array.from(
-        fastModeGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
-      ).find((button) => button.textContent?.trim() === "Force add");
-      expect(forceAdd).toBeInstanceOf(HTMLButtonElement);
-      act(() => {
-        forceAdd?.click();
-      });
-
-      const submit = Array.from(document.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === "Apply group policy",
-      );
-      expect(submit).toBeInstanceOf(HTMLButtonElement);
-      act(() => {
-        submit?.click();
-      });
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ fastModeRewriteMode: "force_add" }),
-      );
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("keeps discrete routing policies as selects on compact viewports", () => {
-    const restoreViewport = setCompactViewport(true);
-    try {
-      render(
-        <GroupAccountRoutingRuleDialog
-          open
-          title="Group policy"
-          description="Shared routing policy"
-          submitLabel="Apply group policy"
-          rule={defaultRule}
-          onClose={() => undefined}
-          onSubmit={() => undefined}
-          labels={labels}
-        />,
-      );
-
-      const policyLabels = ["Preferred usage", "Fast mode", "Image tools", "Request compression"];
-      for (const label of policyLabels) {
-        expect(document.querySelector(`[role="combobox"][aria-label="${label}"]`)).toBeInstanceOf(
-          HTMLButtonElement,
-        );
-        expect(document.querySelector(`[role="radiogroup"][aria-label="${label}"]`)).toBeNull();
-      }
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("submits the default image tool rewrite mode", () => {
-    const onSubmit = vi.fn();
+it("uses inline radio groups for discrete routing policies on desktop", () => {
+  const restoreViewport = setCompactViewport(false);
+  const onSubmit = vi.fn();
+  try {
     render(
       <GroupAccountRoutingRuleDialog
         open
@@ -283,60 +195,43 @@ describe("GroupAccountRoutingRuleDialog", () => {
       />,
     );
 
-    expect(document.body.textContent).toContain("Image tools");
-    expect(document.body.textContent).toContain("Request compression");
+    const policyLabels = ["Preferred usage", "Fast mode", "Image tools", "Request compression"];
+    for (const label of policyLabels) {
+      expect(document.querySelector(`[role="radiogroup"][aria-label="${label}"]`)).toBeInstanceOf(
+        HTMLElement,
+      );
+      expect(document.querySelector(`[role="combobox"][aria-label="${label}"]`)).toBeNull();
+    }
+
+    const fastModeGroup = document.querySelector(
+      '[role="radiogroup"][aria-label="Fast mode"]',
+    ) as HTMLElement | null;
+    const forceAdd = Array.from(
+      fastModeGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+    ).find((button) => button.textContent?.trim() === "Force add");
+    expect(forceAdd).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      forceAdd?.click();
+    });
+
     const submit = Array.from(document.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Apply group policy",
     );
     expect(submit).toBeInstanceOf(HTMLButtonElement);
-
     act(() => {
       submit?.click();
     });
 
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        imageToolRewriteMode: "keep_original",
-        codexImagegenRewriteMode: "keep_original",
-        priorityTier: "normal",
-        fastModeRewriteMode: "keep_original",
-      }),
+      expect.objectContaining({ fastModeRewriteMode: "force_add" }),
     );
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        availableModels: [],
-      }),
-    );
-  });
-
-  it("preserves an inherited Codex imagegen policy as null", () => {
-    const onSubmit = vi.fn();
-    render(
-      <GroupAccountRoutingRuleDialog
-        open
-        title="Group policy"
-        description="Shared routing policy"
-        submitLabel="Apply group policy"
-        rule={{ ...defaultRule, codexImagegenRewriteMode: null }}
-        onClose={() => undefined}
-        onSubmit={onSubmit}
-        labels={labels}
-      />,
-    );
-
-    const submit = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Apply group policy",
-    );
-    act(() => {
-      submit?.click();
-    });
-
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ codexImagegenRewriteMode: null }),
-    );
-  });
-
-  it("keeps the Lite clarification inside a focusable image-tool help icon", () => {
+  } finally {
+    restoreViewport();
+  }
+});
+it("keeps discrete routing policies as selects on compact viewports", () => {
+  const restoreViewport = setCompactViewport(true);
+  try {
     render(
       <GroupAccountRoutingRuleDialog
         open
@@ -346,253 +241,336 @@ describe("GroupAccountRoutingRuleDialog", () => {
         rule={defaultRule}
         onClose={() => undefined}
         onSubmit={() => undefined}
-        labels={{
-          ...labels,
-          imageToolRewriteHint:
-            "Hosted Full Responses only. Configure Codex Full and Lite imagegen separately.",
-        }}
-      />,
-    );
-
-    const help = document.querySelector('button[aria-label="Image tools help"]');
-    expect(help).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      (help as HTMLButtonElement).focus();
-    });
-    expect(document.body.textContent).toContain(
-      "Configure Codex Full and Lite imagegen separately.",
-    );
-  });
-
-  it("saves upstream 429 retry as a single 0..5 selector where 0 disables retry", () => {
-    const onSubmit = vi.fn();
-    render(
-      <GroupAccountRoutingRuleDialog
-        open
-        title="Group policy"
-        description="Shared routing policy"
-        submitLabel="Apply group policy"
-        rule={{
-          ...defaultRule,
-          upstream429RetryEnabled: true,
-          upstream429MaxRetries: 3,
-        }}
-        onClose={() => undefined}
-        onSubmit={onSubmit}
         labels={labels}
       />,
     );
 
-    const retryGroup = document.querySelector(
-      '[role="radiogroup"][aria-label="Upstream 429 retry"]',
-    ) as HTMLElement | null;
-    expect(retryGroup).not.toBeNull();
-    const zeroRetry = Array.from(
-      retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
-    ).find((button) => button.textContent?.trim() === "0");
-    expect(zeroRetry).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      zeroRetry?.click();
-    });
+    const policyLabels = ["Preferred usage", "Fast mode", "Image tools", "Request compression"];
+    for (const label of policyLabels) {
+      expect(document.querySelector(`[role="combobox"][aria-label="${label}"]`)).toBeInstanceOf(
+        HTMLButtonElement,
+      );
+      expect(document.querySelector(`[role="radiogroup"][aria-label="${label}"]`)).toBeNull();
+    }
+  } finally {
+    restoreViewport();
+  }
+});
+it("submits the default image tool rewrite mode", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={defaultRule}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
 
-    const submit = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Apply group policy",
-    );
-    expect(submit).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      submit?.click();
-    });
+  expect(document.body.textContent).toContain("Image tools");
+  expect(document.body.textContent).toContain("Request compression");
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  expect(submit).toBeInstanceOf(HTMLButtonElement);
 
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        upstream429RetryEnabled: false,
-        upstream429MaxRetries: 0,
-      }),
-    );
+  act(() => {
+    submit?.click();
   });
 
-  it("preserves an explicit empty model override after clearing existing models", () => {
-    const onSubmit = vi.fn();
-    render(
-      <GroupAccountRoutingRuleDialog
-        open
-        title="Group policy"
-        description="Shared routing policy"
-        submitLabel="Apply group policy"
-        rule={{ ...defaultRule, availableModels: ["gpt-5.5"] }}
-        onClose={() => undefined}
-        onSubmit={onSubmit}
-        labels={labels}
-      />,
-    );
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      imageToolRewriteMode: "keep_original",
+      codexImagegenRewriteMode: "keep_original",
+      priorityTier: "normal",
+      fastModeRewriteMode: "keep_original",
+    }),
+  );
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.not.objectContaining({
+      availableModels: [],
+    }),
+  );
+});
+it("preserves an inherited Codex imagegen policy as null", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={{ ...defaultRule, codexImagegenRewriteMode: null }}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
 
-    const removeButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.getAttribute("aria-label") === "Remove model gpt-5.5",
-    );
-    expect(removeButton).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      removeButton?.click();
-    });
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  act(() => {
+    submit?.click();
+  });
 
-    const submit = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Apply group policy",
-    );
-    expect(submit).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      submit?.click();
-    });
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({ codexImagegenRewriteMode: null }),
+  );
+});
+it("keeps the Lite clarification inside a focusable image-tool help icon", () => {
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={defaultRule}
+      onClose={() => undefined}
+      onSubmit={() => undefined}
+      labels={{
+        ...labels,
+        imageToolRewriteHint:
+          "Hosted Full Responses only. Configure Codex Full and Lite imagegen separately.",
+      }}
+    />,
+  );
 
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
+  const help = document.querySelector('button[aria-label="Image tools help"]');
+  expect(help).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    (help as HTMLButtonElement).focus();
+  });
+  expect(document.body.textContent).toContain("Configure Codex Full and Lite imagegen separately.");
+});
+it("saves upstream 429 retry as a single 0..5 selector where 0 disables retry", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={{
+        ...defaultRule,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 3,
+      }}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
+
+  const retryGroup = document.querySelector(
+    '[role="radiogroup"][aria-label="Upstream 429 retry"]',
+  ) as HTMLElement | null;
+  expect(retryGroup).not.toBeNull();
+  const zeroRetry = Array.from(
+    retryGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [],
+  ).find((button) => button.textContent?.trim() === "0");
+  expect(zeroRetry).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    zeroRetry?.click();
+  });
+
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  expect(submit).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    submit?.click();
+  });
+
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    }),
+  );
+});
+it("preserves an explicit empty model override after clearing existing models", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={{ ...defaultRule, availableModels: ["gpt-5.5"] }}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
+
+  const removeButton = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.getAttribute("aria-label") === "Remove model gpt-5.5",
+  );
+  expect(removeButton).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    removeButton?.click();
+  });
+
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  expect(submit).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    submit?.click();
+  });
+
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      availableModels: [],
+    }),
+  );
+});
+it("submits an explicit empty model override after touching an inherited empty model list", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      changedFieldsOnly
+      rule={defaultRule}
+      availableModelOptions={["gpt-5.5"]}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
+
+  const input = document.querySelector('input[name="availableModelInput"]');
+  expect(input).toBeInstanceOf(HTMLInputElement);
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  expect(valueSetter).toBeTypeOf("function");
+  act(() => {
+    valueSetter?.call(input, "gpt-5.5");
+    input?.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const addButton = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Add custom model id",
+  );
+  expect(addButton).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    addButton?.click();
+  });
+
+  const removeButton = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.getAttribute("aria-label") === "Remove model gpt-5.5",
+  );
+  expect(removeButton).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    removeButton?.click();
+  });
+
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  expect(submit).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    submit?.click();
+  });
+
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      availableModels: [],
+    }),
+  );
+});
+it("preserves an untouched explicit empty model override when changing another field", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={{
+        ...defaultRule,
         availableModels: [],
-      }),
-    );
+        availableModelsDefined: true,
+      }}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
+
+  const cutOutSwitch = Array.from(document.querySelectorAll('button[role="switch"]')).find(
+    (button) => button.closest("div")?.textContent?.includes("Block cut out"),
+  );
+  expect(cutOutSwitch).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    cutOutSwitch?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("submits an explicit empty model override after touching an inherited empty model list", () => {
-    const onSubmit = vi.fn();
-    render(
-      <GroupAccountRoutingRuleDialog
-        open
-        title="Group policy"
-        description="Shared routing policy"
-        submitLabel="Apply group policy"
-        changedFieldsOnly
-        rule={defaultRule}
-        availableModelOptions={["gpt-5.5"]}
-        onClose={() => undefined}
-        onSubmit={onSubmit}
-        labels={labels}
-      />,
-    );
-
-    const input = document.querySelector('input[name="availableModelInput"]');
-    expect(input).toBeInstanceOf(HTMLInputElement);
-    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    expect(valueSetter).toBeTypeOf("function");
-    act(() => {
-      valueSetter?.call(input, "gpt-5.5");
-      input?.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-
-    const addButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Add custom model id",
-    );
-    expect(addButton).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      addButton?.click();
-    });
-
-    const removeButton = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.getAttribute("aria-label") === "Remove model gpt-5.5",
-    );
-    expect(removeButton).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      removeButton?.click();
-    });
-
-    const submit = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Apply group policy",
-    );
-    expect(submit).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      submit?.click();
-    });
-
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        availableModels: [],
-      }),
-    );
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  expect(submit).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    submit?.click();
   });
 
-  it("preserves an untouched explicit empty model override when changing another field", () => {
-    const onSubmit = vi.fn();
-    render(
-      <GroupAccountRoutingRuleDialog
-        open
-        title="Group policy"
-        description="Shared routing policy"
-        submitLabel="Apply group policy"
-        rule={{
-          ...defaultRule,
-          availableModels: [],
-          availableModelsDefined: true,
-        }}
-        onClose={() => undefined}
-        onSubmit={onSubmit}
-        labels={labels}
-      />,
-    );
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      allowCutOut: false,
+      availableModels: [],
+    }),
+  );
+});
+it("renders a flat reason list without category headings and still updates individual reasons", () => {
+  const onSubmit = vi.fn();
+  render(
+    <GroupAccountRoutingRuleDialog
+      open
+      title="Group policy"
+      description="Shared routing policy"
+      submitLabel="Apply group policy"
+      rule={defaultRule}
+      onClose={() => undefined}
+      onSubmit={onSubmit}
+      labels={labels}
+    />,
+  );
 
-    const cutOutSwitch = Array.from(document.querySelectorAll('button[role="switch"]')).find(
-      (button) => button.closest("div")?.textContent?.includes("Block cut out"),
-    );
-    expect(cutOutSwitch).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      cutOutSwitch?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+  expect(document.body.textContent).not.toContain("Auth & permission");
+  expect(document.body.textContent).not.toContain("429 & quota");
+  expect(document.body.textContent).not.toContain("Transport & 5xx");
 
-    const submit = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Apply group policy",
-    );
-    expect(submit).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      submit?.click();
-    });
-
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        allowCutOut: false,
-        availableModels: [],
-      }),
-    );
+  const authToggle = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="401 invalid credentials"]',
+  );
+  expect(authToggle).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    authToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("renders a flat reason list without category headings and still updates individual reasons", () => {
-    const onSubmit = vi.fn();
-    render(
-      <GroupAccountRoutingRuleDialog
-        open
-        title="Group policy"
-        description="Shared routing policy"
-        submitLabel="Apply group policy"
-        rule={defaultRule}
-        onClose={() => undefined}
-        onSubmit={onSubmit}
-        labels={labels}
-      />,
-    );
-
-    expect(document.body.textContent).not.toContain("Auth & permission");
-    expect(document.body.textContent).not.toContain("429 & quota");
-    expect(document.body.textContent).not.toContain("Transport & 5xx");
-
-    const authToggle = document.querySelector<HTMLButtonElement>(
-      'button[aria-label="401 invalid credentials"]',
-    );
-    expect(authToggle).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      authToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const submit = Array.from(document.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Apply group policy",
-    );
-    expect(submit).toBeInstanceOf(HTMLButtonElement);
-    act(() => {
-      submit?.click();
-    });
-
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        statusChangeReasons: expect.objectContaining({
-          upstream_http_401: false,
-          upstream_http_402: true,
-          upstream_http_403: true,
-          reauth_required: true,
-        }),
-      }),
-    );
+  const submit = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Apply group policy",
+  );
+  expect(submit).toBeInstanceOf(HTMLButtonElement);
+  act(() => {
+    submit?.click();
   });
+
+  expect(onSubmit).toHaveBeenCalledWith(
+    expect.objectContaining({
+      statusChangeReasons: expect.objectContaining({
+        upstream_http_401: false,
+        upstream_http_402: true,
+        upstream_http_403: true,
+        reauth_required: true,
+      }),
+    }),
+  );
 });

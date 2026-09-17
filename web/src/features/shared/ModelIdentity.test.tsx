@@ -28,7 +28,7 @@ describe("ModelIdentity", () => {
   ])("renders %s with its fixed identity color", (model, iconName, colorClassName) => {
     const markup = renderToStaticMarkup(<ModelIdentity model={model} />);
 
-    expect(markup).toContain(`data-model-icon=\"${iconName}\"`);
+    expect(markup).toContain(`data-model-icon="${iconName}"`);
     expect(markup).toContain(colorClassName);
   });
 

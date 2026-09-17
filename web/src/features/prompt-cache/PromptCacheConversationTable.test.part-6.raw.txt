@@ -1,0 +1,661 @@
+/** @vitest-environment jsdom */
+
+it("keeps an inline policy draft protected when a remote topic arrives during its save", async () => {
+  const initialBinding: PromptCacheConversationBindingResponse = {
+    promptCacheKey: "pck-inline-conflict",
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
+    allowSwitchUpstream: null,
+    fastModeRewriteMode: "keep_original",
+    imageToolRewriteMode: null,
+    availableModels: null,
+    forwardProxyKey: null,
+    forwardProxyKeys: [],
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "account",
+      compactFirstByteTimeoutSecs: "account",
+      responsesStreamTimeoutSecs: "account",
+      compactStreamTimeoutSecs: "root",
+    },
+    policyFieldSources: {
+      allowSwitchUpstream: "account",
+      fastModeRewriteMode: "account",
+      imageToolRewriteMode: "account",
+      availableModels: "account",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-03-02T12:00:00Z",
+  };
+  let resolveSave: ((value: PromptCacheConversationBindingResponse) => void) | undefined;
+  apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue(initialBinding);
+  apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+    () =>
+      new Promise<PromptCacheConversationBindingResponse>((resolve) => {
+        resolveSave = resolve;
+      }),
+  );
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 1,
+    total: 0,
+    page: 1,
+    pageSize: 200,
+    records: [],
+  });
+
+  const stats: PromptCacheConversationsResponse = {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-inline-conflict",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+      }),
+    ],
+  };
+
+  renderInteractive(stats);
+  await act(async () => {
+    findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+  await clickDrawerTab("设置");
+
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(
+    requireTestValue(findButtonByAriaLabel("编辑对话覆盖: FAST 模式"), "edit FAST button"),
+  );
+  await user.click(
+    document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
+  );
+  await user.click(requireTestValue(findSelectOption("强制添加"), "force add option"));
+  await vi.waitFor(() =>
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
+  );
+
+  detailTopicMocks.current.binding.data = {
+    ...initialBinding,
+    fastModeRewriteMode: "force_remove",
+    policyFieldSources: {
+      ...initialBinding.policyFieldSources,
+      fastModeRewriteMode: "conversation",
+    },
+    updatedAt: "2026-03-02T12:01:00Z",
+  };
+  renderInteractive(stats);
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("编辑期间，此对话的路由绑定已在其他位置更新。");
+  expect(
+    document.querySelector('[role="combobox"][aria-label="FAST 模式"]')?.textContent,
+  ).toContain("强制添加");
+
+  await act(async () => {
+    resolveSave?.({
+      ...initialBinding,
+      fastModeRewriteMode: "force_add",
+      policyFieldSources: {
+        ...initialBinding.policyFieldSources,
+        allowSwitchUpstream: initialBinding.policyFieldSources?.allowSwitchUpstream ?? "account",
+        imageToolRewriteMode: initialBinding.policyFieldSources?.imageToolRewriteMode ?? "account",
+        availableModels: initialBinding.policyFieldSources?.availableModels ?? "account",
+        forwardProxyKey: initialBinding.policyFieldSources?.forwardProxyKey ?? "account",
+        fastModeRewriteMode: "conversation",
+      },
+      updatedAt: "2026-03-02T12:02:00Z",
+    });
+  });
+  await flushInteractive();
+
+  expect(document.body.textContent).not.toContain("编辑期间，此对话的路由绑定已在其他位置更新。");
+  expect(
+    document.querySelector('[role="combobox"][aria-label="FAST 模式"]')?.textContent,
+  ).toContain("强制添加");
+});
+it("preserves an unapplied available-models draft when a remote topic arrives", async () => {
+  const initialBinding: PromptCacheConversationBindingResponse = {
+    promptCacheKey: "pck-model-draft",
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
+    allowSwitchUpstream: null,
+    fastModeRewriteMode: "keep_original",
+    imageToolRewriteMode: null,
+    availableModels: null,
+    forwardProxyKey: null,
+    forwardProxyKeys: [],
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "account",
+      compactFirstByteTimeoutSecs: "account",
+      responsesStreamTimeoutSecs: "account",
+      compactStreamTimeoutSecs: "root",
+    },
+    policyFieldSources: {
+      allowSwitchUpstream: "account",
+      fastModeRewriteMode: "account",
+      imageToolRewriteMode: "account",
+      availableModels: "account",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-03-02T12:00:00Z",
+  };
+  detailTopicMocks.current.binding.data = initialBinding;
+
+  const stats: PromptCacheConversationsResponse = {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-model-draft",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+      }),
+    ],
+  };
+
+  renderInteractive(stats);
+  await act(async () => {
+    findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+  await clickDrawerTab("设置");
+
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(
+    requireTestValue(findButtonByAriaLabel("编辑对话覆盖: 可用模型"), "edit models button"),
+  );
+  const availableModelsInput = findInputByAriaLabel("可用模型");
+  expect(availableModelsInput).not.toBeNull();
+  await user.type(
+    requireTestValue(availableModelsInput, "available models input"),
+    "gpt-local-draft",
+  );
+
+  detailTopicMocks.current.binding.data = {
+    ...initialBinding,
+    availableModels: ["gpt-remote"],
+    policyFieldSources: {
+      ...initialBinding.policyFieldSources,
+      availableModels: "conversation",
+    },
+    updatedAt: "2026-03-02T12:01:00Z",
+  };
+  renderInteractive(stats);
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("编辑期间，此对话的路由绑定已在其他位置更新。");
+  expect(findInputByAriaLabel("可用模型")?.value).toBe("gpt-local-draft");
+});
+it("shows inline field errors when a conversation override save fails", async () => {
+  apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+    promptCacheKey: "pck-policy-error",
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    allowSwitchUpstream: null,
+    fastModeRewriteMode: "keep_original",
+    imageToolRewriteMode: null,
+    availableModels: null,
+    forwardProxyKey: null,
+    forwardProxyKeys: [],
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 120,
+      compactFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "account",
+      compactFirstByteTimeoutSecs: "account",
+      responsesStreamTimeoutSecs: "account",
+      compactStreamTimeoutSecs: "root",
+    },
+    policyFieldSources: {
+      allowSwitchUpstream: "account",
+      fastModeRewriteMode: "account",
+      imageToolRewriteMode: "account",
+      availableModels: "account",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-03-02T12:00:00Z",
+  });
+  apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+    writesEnabled: true,
+    items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+    groups: [{ groupName: "prod", accountCount: 1 }],
+    forwardProxyNodes: [],
+    hasUngroupedAccounts: false,
+    total: 1,
+    page: 1,
+    pageSize: 500,
+    metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+    routing: null,
+  });
+  apiMocks.updatePromptCacheConversationBinding.mockRejectedValueOnce(
+    new Error("override update failed"),
+  );
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 1,
+    total: 0,
+    page: 1,
+    pageSize: 200,
+    records: [],
+  });
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-policy-error",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  await clickDrawerTab("设置");
+
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  await user.click(
+    requireTestValue(findButtonByAriaLabel("编辑对话覆盖: 切出"), "edit switch-out button"),
+  );
+  await user.click(document.querySelector('[role="combobox"][aria-label="切出"]') as HTMLElement);
+  await user.click(requireTestValue(findSelectOption("保持当前上游"), "keep upstream option"));
+  await flushInteractive();
+
+  await vi.waitFor(() => expect(document.body.textContent).toContain("override update failed"));
+});
+it("does not allow saving a default binding draft after load failure", async () => {
+  apiMocks.fetchPromptCacheConversationBinding.mockRejectedValue(new Error("binding load failed"));
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 1,
+    total: 0,
+    page: 1,
+    pageSize: 200,
+    records: [],
+  });
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-binding",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  await clickDrawerTab("路由");
+
+  expect(document.body.textContent).toContain("binding load failed");
+  const saveButton = findButtonByAriaLabel("保存");
+  expect(saveButton?.disabled).toBe(true);
+  await act(async () => {
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+});
+it("defaults the drawer to overview and resets tabs after reopening", async () => {
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 1,
+    total: 0,
+    page: 1,
+    pageSize: 200,
+    records: [],
+  });
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-tab-reset",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("对话调用总览");
+  expect(document.body.textContent).not.toContain("路由绑定");
+
+  await clickDrawerTab("路由");
+  expect(document.body.textContent).toContain("路由绑定");
+
+  const closeButton = findButtonByAriaLabel("关闭调用记录抽屉");
+  await act(async () => {
+    closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("对话调用总览");
+  expect(document.body.textContent).not.toContain("路由绑定");
+});
+it("keeps a single historical invocation visible in the activity chart", async () => {
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+    snapshotId: 900,
+    newRecordsCount: 0,
+    totalCount: 1,
+    successCount: 1,
+    failureCount: 0,
+    totalCost: 0.31,
+    totalTokens: 1500,
+    token: {
+      requestCount: 1,
+      totalTokens: 1500,
+      avgTokensPerRequest: 1500,
+      cacheInputTokens: 300,
+      totalCost: 0.31,
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs: 12345,
+      p95TotalMs: 12345,
+    },
+    exception: {
+      failureCount: 0,
+      serviceFailureCount: 0,
+      clientFailureCount: 0,
+      clientAbortCount: 0,
+      actionableFailureCount: 0,
+    },
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 901,
+    total: 1,
+    page: 1,
+    pageSize: 200,
+    records: [
+      {
+        id: 71,
+        invokeId: "single-history-71",
+        occurredAt: "2026-02-01T12:30:00Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 1500,
+        cost: 0.31,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-single-history",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Proxy West",
+        createdAt: "2026-02-01T12:30:00Z",
+      },
+    ],
+  });
+  const singleHistorySummary = await apiMocks.fetchInvocationRecordsSummary({});
+  const singleHistoryResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 200 });
+  apiMocks.fetchInvocationRecords.mockClear();
+  detailTopicMocks.current.overview.data = {
+    summary: singleHistorySummary,
+    records: singleHistoryResponse.records,
+    chartTotal: singleHistoryResponse.total,
+    chartIsSampled: false,
+    chartRangeStart: "2026-02-01T12:30:00Z",
+    chartRangeEnd: "2026-02-01T12:30:00Z",
+  };
+  detailTopicMocks.current.calls.data = {
+    ...singleHistoryResponse,
+    pageSize: 50,
+  };
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-single-history",
+        requestCount: 1,
+        totalTokens: 1500,
+        totalCost: 0.31,
+        createdAt: "2026-02-01T12:30:00Z",
+        lastActivityAt: "2026-02-01T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  expect(historyButton).toBeTruthy();
+
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  await clickDrawerTab("概览");
+
+  const chart = document.querySelector('[data-testid="conversation-activity-chart"]');
+  expect(chart?.getAttribute("data-visible-total-count")).toBe("1");
+  expect(chart?.getAttribute("data-visible-span")).toBe("1");
+  expect(chart?.getAttribute("data-chart-range-start")).toBe("2026-02-01T12:30:00.000Z");
+  expect(chart?.getAttribute("data-chart-range-end")).toBe("2026-02-01T12:31:00.000Z");
+
+  await clickDrawerTab("调用");
+  expect(document.body.textContent).toContain("Proxy West");
+});
+it("confirms before saving a group binding when an encrypted owner exists in the same group", async () => {
+  apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+    promptCacheKey: "pck-binding",
+    bindingKind: "none",
+    groupName: null,
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: true,
+    encryptedOwnerAccountId: 42,
+    encryptedOwnerAccountName: "Pool Alpha",
+    encryptedOwnerGroupName: "prod",
+    updatedAt: "2026-03-02T12:00:00Z",
+  });
+  apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+    writesEnabled: true,
+    items: [
+      createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
+      createUpstreamAccountSummary(77, "Pool Beta", "prod"),
+    ],
+    groups: [{ groupName: "prod", accountCount: 2 }],
+    forwardProxyNodes: [],
+    hasUngroupedAccounts: false,
+    total: 2,
+    page: 1,
+    pageSize: 500,
+    metrics: { total: 2, oauth: 0, apiKey: 2, attention: 0 },
+    routing: null,
+  });
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 1,
+    total: 0,
+    page: 1,
+    pageSize: 200,
+    records: [],
+  });
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-binding",
+        requestCount: 1,
+        totalTokens: 100,
+        totalCost: 0.01,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  await clickDrawerTab("路由");
+
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const kindSelect = document.querySelector(
+    '[role="combobox"][aria-label="绑定类型"]',
+  ) as HTMLElement | null;
+  await user.click(requireTestValue(kindSelect, "binding kind select"));
+  await user.click(requireTestValue(findSelectOption("分组"), "group option"));
+  await flushInteractive();
+
+  const groupSelect = document.querySelector(
+    '[role="combobox"][aria-label="分组绑定目标"]',
+  ) as HTMLElement | null;
+  await user.click(requireTestValue(groupSelect, "group select"));
+  await user.click(requireTestValue(findSelectOption("prod"), "prod option"));
+
+  const saveButton = findButtonByAriaLabel("保存");
+  await act(async () => {
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  const confirmDialog = document.body.querySelector('[role="alertdialog"]');
+  expect(confirmDialog?.textContent).toContain("这个对话已经绑定加密会话 owner：Pool Alpha · prod");
+  expect(confirmDialog?.textContent).toContain("invalid_encrypted_content");
+  expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+
+  const cancelButton = Array.from(confirmDialog?.querySelectorAll("button") ?? []).find((button) =>
+    button.textContent?.includes("取消"),
+  );
+  await act(async () => {
+    cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  expect(document.body.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+
+  apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+    promptCacheKey: "pck-binding",
+    bindingKind: "group",
+    groupName: "prod",
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    hasEncryptedSessionOwner: true,
+    encryptedOwnerAccountId: 42,
+    encryptedOwnerAccountName: "Pool Alpha",
+    encryptedOwnerGroupName: "prod",
+    updatedAt: "2026-03-02T12:05:00Z",
+  });
+
+  await act(async () => {
+    saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+  const reopenedDialog = document.body.querySelector('[role="alertdialog"]');
+  const continueButton = Array.from(reopenedDialog?.querySelectorAll("button") ?? []).find(
+    (button) => button.textContent?.includes("继续更改"),
+  );
+  await act(async () => {
+    continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith("pck-binding", {
+    bindingKind: "group",
+    groupName: "prod",
+  });
+});

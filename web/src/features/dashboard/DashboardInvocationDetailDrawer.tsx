@@ -85,51 +85,38 @@ function formatOccurredAtLabel(value: string, formatter: Intl.DateTimeFormat) {
   return formatter.format(parsed);
 }
 
-export function DashboardInvocationDetailDrawer({
+function useInvocationRecordLookup({
   open,
-  invocationId,
-  selection,
-  onClose,
-  onOpenUpstreamAccount,
-}: DashboardInvocationDetailDrawerProps) {
-  const { t, locale } = useTranslation();
-  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const titleId = useId();
+  effectiveInvocationId,
+  selectionRecord,
+}: {
+  open: boolean;
+  effectiveInvocationId: string | null;
+  selectionRecord: ApiInvocation | null;
+}) {
   const requestSeqRef = useRef(0);
   const [retryRevision, setRetryRevision] = useState(0);
   const [fullRecord, setFullRecord] = useState<ApiInvocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const effectiveInvocationId = invocationId ?? selection?.invocation.record.invokeId ?? null;
-  const dateTimeFormatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat(localeTag, {
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      }),
-    [localeTag],
-  );
-
+  const fullRecordRef = useRef<ApiInvocation | null>(null);
+  const selectionRecordRef = useRef<ApiInvocation | null>(null);
+  fullRecordRef.current = fullRecord;
+  selectionRecordRef.current = selectionRecord;
   useEffect(() => {
     if (!open || !effectiveInvocationId) {
       requestSeqRef.current += 1;
       setRetryRevision(0);
       setFullRecord(null);
+      fullRecordRef.current = null;
       setIsLoading(false);
       setLoadError(null);
       return;
     }
-
-    const selectedRecord =
-      selection?.invocation.record.invokeId === effectiveInvocationId
-        ? selection.invocation.record
-        : null;
     const transientRecord =
-      fullRecord?.invokeId === effectiveInvocationId ? fullRecord : selectedRecord;
+      fullRecordRef.current?.invokeId === effectiveInvocationId
+        ? fullRecordRef.current
+        : selectionRecordRef.current;
     const isRetryLookup = retryRevision > 0 && transientRecord != null && !(transientRecord.id > 0);
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
@@ -138,7 +125,6 @@ export function DashboardInvocationDetailDrawer({
       setIsLoading(true);
     }
     setLoadError(null);
-
     void fetchInvocationRecords({
       invokeId: effectiveInvocationId,
       pageSize: 1,
@@ -149,6 +135,7 @@ export function DashboardInvocationDetailDrawer({
         if (requestSeq !== requestSeqRef.current) return;
         const exactRecord =
           response.records.find((record) => record.invokeId === effectiveInvocationId) ?? null;
+        fullRecordRef.current = exactRecord;
         setFullRecord(exactRecord);
       })
       .catch((error) => {
@@ -156,19 +143,9 @@ export function DashboardInvocationDetailDrawer({
         setLoadError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
-        if (requestSeq === requestSeqRef.current && !isRetryLookup) {
-          setIsLoading(false);
-        }
+        if (requestSeq === requestSeqRef.current && !isRetryLookup) setIsLoading(false);
       });
   }, [effectiveInvocationId, open, retryRevision]);
-
-  const selectionRecord =
-    selection?.invocation.record.invokeId === effectiveInvocationId
-      ? selection.invocation.record
-      : null;
-  const effectiveTransientRecord =
-    fullRecord?.invokeId === effectiveInvocationId ? fullRecord : selectionRecord;
-
   useEffect(() => {
     if (
       selectionRecord != null &&
@@ -181,8 +158,9 @@ export function DashboardInvocationDetailDrawer({
       setIsLoading(false);
       setLoadError(null);
     }
-  }, [effectiveInvocationId, fullRecord?.id, selectionRecord]);
-
+  }, [effectiveInvocationId, fullRecord, selectionRecord]);
+  const effectiveTransientRecord =
+    fullRecord?.invokeId === effectiveInvocationId ? fullRecord : selectionRecord;
   useEffect(() => {
     if (
       !open ||
@@ -195,12 +173,47 @@ export function DashboardInvocationDetailDrawer({
     ) {
       return;
     }
-
-    const retryTimer = window.setTimeout(() => {
-      setRetryRevision((current) => current + 1);
-    }, TRANSIENT_RECORD_LOOKUP_RETRY_MS);
+    const retryTimer = window.setTimeout(
+      () => setRetryRevision((current) => current + 1),
+      TRANSIENT_RECORD_LOOKUP_RETRY_MS,
+    );
     return () => window.clearTimeout(retryTimer);
   }, [effectiveInvocationId, effectiveTransientRecord, isLoading, loadError, open]);
+  return { fullRecord, isLoading, loadError };
+}
+
+export function DashboardInvocationDetailDrawer({
+  open,
+  invocationId,
+  selection,
+  onClose,
+  onOpenUpstreamAccount,
+}: DashboardInvocationDetailDrawerProps) {
+  const { t, locale } = useTranslation();
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const titleId = useId();
+  const effectiveInvocationId = invocationId ?? selection?.invocation.record.invokeId ?? null;
+  const selectionRecord =
+    selection?.invocation.record.invokeId === effectiveInvocationId
+      ? selection.invocation.record
+      : null;
+  const { fullRecord, isLoading, loadError } = useInvocationRecordLookup({
+    open,
+    effectiveInvocationId,
+    selectionRecord,
+  });
+  const dateTimeFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(localeTag, {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }),
+    [localeTag],
+  );
 
   const recordForHeader = fullRecord ?? selectionRecord;
   const statusMeta = resolveStatusMeta(

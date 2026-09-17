@@ -1,0 +1,685 @@
+/** @vitest-environment jsdom */
+
+it("shows account skeletons immediately without flashing the empty state", () => {
+  upstreamAccountActivityMock.data = null;
+  upstreamAccountActivityMock.isLoading = false;
+
+  renderSection(createResponse([]));
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-grid-skeleton"]'),
+  ).not.toBeNull();
+  const skeletonCard = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-grid-skeleton"] > div',
+  );
+  expect(skeletonCard?.className).toContain("h-full");
+  expect(skeletonCard?.className).toContain("desktop1660:min-h-[31.5rem]");
+  expect(host?.textContent).toContain("账号加载中");
+  expect(host?.textContent).not.toContain("当前范围内暂无活动上游账号");
+});
+it("keeps hydrated recent rows visible while a background recent refresh is pending", () => {
+  upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+  upstreamAccountActivityMock.recentLoading = true;
+
+  renderSection(createResponse([]));
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  expect(host?.textContent).toContain("acct-invoke-1");
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-recent-skeleton"]'),
+  ).toBeNull();
+});
+it("does not render the header refresh status during short background account refreshes", async () => {
+  vi.useFakeTimers();
+  upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+  upstreamAccountActivityMock.isRefreshing = true;
+
+  renderSection(createResponse([]));
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
+  if (!(accountGrid instanceof HTMLElement)) {
+    throw new Error("missing account grid");
+  }
+
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]'),
+  ).toBeNull();
+  expect(
+    Array.from(host?.querySelectorAll('[role="status"]') ?? []).some(
+      (element) =>
+        element.closest('[data-testid="dashboard-upstream-account-refresh-status"]') == null,
+    ),
+  ).toBe(false);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(299);
+  });
+
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]'),
+  ).toBeNull();
+  expect(
+    Array.from(host?.querySelectorAll('[role="status"]') ?? []).some(
+      (element) =>
+        element.closest('[data-testid="dashboard-upstream-account-refresh-status"]') == null,
+    ),
+  ).toBe(false);
+
+  vi.useRealTimers();
+});
+it("shows the header refresh status only after the delay and keeps it visible briefly after refresh ends", async () => {
+  vi.useFakeTimers();
+  const response = createResponse([]);
+  upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+  upstreamAccountActivityMock.isRefreshing = true;
+
+  renderSection(response);
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const accountGrid = host?.querySelector('[data-testid="dashboard-upstream-account-grid"]');
+  if (!(accountGrid instanceof HTMLElement)) {
+    throw new Error("missing account grid");
+  }
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+
+  const refreshStatus = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-refresh-status"]',
+  );
+  const refreshText = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-refresh-text"]',
+  );
+  const refreshSpinner = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-refresh-spinner"]',
+  );
+  if (
+    !(refreshStatus instanceof HTMLElement) ||
+    !(refreshText instanceof HTMLElement) ||
+    !(refreshSpinner instanceof HTMLElement)
+  ) {
+    throw new Error("missing refresh status");
+  }
+
+  expect(refreshStatus.getAttribute("aria-label")).toBe("正在更新账号汇总");
+  expect(refreshText.textContent).toBe("刷新中");
+  expect(refreshText.className).toContain("hidden");
+  expect(refreshText.className).toContain("desktop:inline");
+  expect(refreshStatus.className).not.toContain("rounded-full");
+  expect(refreshStatus.className).not.toContain("border");
+  expect(
+    Array.from(host?.querySelectorAll('[role="status"]') ?? []).filter(
+      (element) =>
+        element.closest('[data-testid="dashboard-upstream-account-refresh-status"]') != null,
+    ),
+  ).toHaveLength(1);
+
+  upstreamAccountActivityMock.isRefreshing = false;
+  rerenderSection(response);
+
+  expect(host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]')).toBe(
+    refreshStatus,
+  );
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(599);
+  });
+
+  expect(host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]')).toBe(
+    refreshStatus,
+  );
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-refresh-status"]'),
+  ).toBeNull();
+
+  vi.useRealTimers();
+});
+it("stacks workspace controls below the description on compact screens", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-compact-header", [
+        createPreview({
+          id: 70,
+          invokeId: "invoke-compact-header",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+  );
+
+  const controls = host?.querySelector('[data-testid="dashboard-working-conversations-controls"]');
+  if (!(controls instanceof HTMLElement)) {
+    throw new Error("missing workspace controls");
+  }
+  expect(controls.className).toContain("flex-col");
+  expect(controls.querySelector('[role="tablist"]')?.className).toContain("w-full");
+  expect(controls.querySelectorAll('[role="tab"]')[0]?.className).toContain("flex-1");
+  expect(controls.querySelectorAll('[role="tab"]')[1]?.className).toContain("flex-1");
+});
+it("keeps workspace tabs before badge and sort controls", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-header-order", [
+        createPreview({
+          id: 71,
+          invokeId: "invoke-header-order",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+  );
+
+  const controls = host?.querySelector('[data-testid="dashboard-working-conversations-controls"]');
+  if (!(controls instanceof HTMLElement)) {
+    throw new Error("missing workspace controls");
+  }
+
+  const firstChild = controls.firstElementChild;
+  const secondChild = controls.children.item(1);
+  expect(firstChild?.getAttribute("role")).toBe("tablist");
+  expect(secondChild?.getAttribute("data-testid")).toBe("dashboard-working-conversations-actions");
+  expect(
+    secondChild?.querySelector('[data-testid="dashboard-workspace-sort-button"]'),
+  ).not.toBeNull();
+  expect(secondChild?.textContent).toContain("当前对话 1 条");
+});
+it("lazy-loads upstream account activity only after the account tab is opened", () => {
+  const upstreamActivity = createUpstreamAccountActivityResponse();
+  upstreamActivity.accounts[0].modelPerformance = {
+    available: false,
+    total: {
+      tokensPerMinute: 640,
+      streamingResponseRate: 19.8,
+      avgResponseMs: 860,
+      avgFirstTokenMs: 2_867.5,
+      wallClockUsageDurationMs: 42_000,
+      cumulativeUsageDurationMs: 51_000,
+      parallelism: 1.2,
+    },
+    models: [],
+  };
+  upstreamActivity.accounts[0].currentAvgResponseMs = 860;
+  upstreamAccountActivityMock.data = upstreamActivity;
+
+  renderSection(
+    createResponse([
+      createConversation("pck-lazy-load", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-lazy-load",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+  );
+
+  expect(upstreamAccountActivityMock.calls[0]).toEqual({
+    range: "today",
+    enabled: false,
+  });
+  expect(host?.textContent).toContain("当前对话 1 条");
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  expect(upstreamAccountActivityMock.calls.at(-1)).toEqual({
+    range: "today",
+    enabled: true,
+  });
+  expect(host?.textContent).toContain("当前活动账号 1 个");
+  expect(host?.textContent).toContain("最近 4 条调用");
+  const totalNetworkSpeed = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-total-network-speed"]',
+  );
+  expect(totalNetworkSpeed).not.toBeNull();
+  expect(totalNetworkSpeed?.getAttribute("title")).toBeNull();
+  expect(totalNetworkSpeed?.textContent).toContain("1.5");
+  expect(totalNetworkSpeed?.textContent).toContain("KiB/s");
+  expect(totalNetworkSpeed?.textContent).toContain("5");
+  expect(totalNetworkSpeed?.textContent).toContain("MiB/s");
+  expect(host?.textContent).not.toContain("账号状态");
+  expect(host?.querySelector('[data-testid="dashboard-upstream-account-status"]')).toBeNull();
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.className,
+  ).not.toContain("desktop1660:min-h-[31.5rem]");
+  expect(host?.textContent).not.toContain("繁忙");
+  expect(host?.textContent).not.toContain("关注");
+  expect(host?.textContent).not.toContain("稳定");
+  expect(host?.textContent).not.toContain("渠道 Pool Alpha");
+  expect(host?.textContent).not.toContain("Primary");
+  expect(host?.textContent).not.toContain("按调用计数，不按对话去重");
+  expect(host?.textContent).not.toContain("仍在重试链路中的调用");
+  expect(host?.textContent).not.toContain("最近 4 条调用里仍有活动或异常");
+  expect(
+    host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]').length,
+  ).toBe(4);
+  expect(
+    host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-identity-chip"]')
+      .length,
+  ).toBe(4);
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]'),
+  ).not.toBeNull();
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]')?.textContent,
+  ).not.toContain("#42");
+  const firstRecentRow = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-row"]',
+  );
+  expect(firstRecentRow?.textContent).toMatch(/一般|Normal/);
+  expect(firstRecentRow?.textContent).toContain("Token 200");
+  expect(firstRecentRow?.textContent).not.toContain("RQ ");
+  expect(firstRecentRow?.textContent).not.toContain("UP ");
+  expect(firstRecentRow?.textContent).not.toContain("ED ");
+  expect(
+    firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-ttft"]'),
+  ).not.toBeNull();
+  expect(
+    firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-request"]'),
+  ).not.toBeNull();
+  expect(
+    firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+  ).toBeNull();
+  expect(
+    firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
+  ).not.toMatch(/rounded|border|bg-/);
+  expect(
+    firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-request"]')?.className,
+  ).not.toMatch(/rounded|border|bg-/);
+  const firstRecentLatencyPills = firstRecentRow?.querySelector(
+    '[data-testid="dashboard-compact-latency-pills"]',
+  );
+  expect(firstRecentLatencyPills?.getAttribute("aria-label")).toMatch(/TTFT|TTFT/i);
+  expect(firstRecentLatencyPills?.className).toContain("gap-1");
+  expect(firstRecentLatencyPills?.getAttribute("aria-label")).not.toMatch(/\d\s+s/);
+
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
+  ).toBeNull();
+  const accountHeader = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-header-row"]',
+  );
+  const accountHeaderText = accountHeader?.textContent;
+  expect(accountHeaderText).toContain("3");
+  expect(accountHeaderText).not.toContain("并行对话");
+  expect(accountHeaderText).not.toContain("重试");
+  const headerPlanBadge = accountHeader?.querySelector("[data-plan='enterprise']");
+  expect(headerPlanBadge?.textContent).toBe("Ent");
+  expect(accountHeader?.querySelector('[aria-label="进行中 3"]')).not.toBeNull();
+  expect(accountHeader?.querySelector('[aria-label="TPM 640"]')).not.toBeNull();
+  expect(accountHeader?.querySelector('[aria-label="消费速率 0.12"]')).not.toBeNull();
+  expect(
+    accountHeader?.querySelector('[data-testid="dashboard-upstream-account-routing-settings"]'),
+  ).toBeNull();
+  const networkSpeed = accountHeader?.querySelector(
+    '[data-testid="dashboard-upstream-account-network-speed"]',
+  );
+  expect(networkSpeed).toBeNull();
+  const inProgressMetric = accountHeader?.querySelector('[aria-label="进行中 3"]');
+  expect(inProgressMetric).toBeInstanceOf(HTMLElement);
+  const latencyBreakdown = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-latency-breakdown"]',
+  );
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-card"]')?.textContent,
+  ).toContain("2.87 s");
+  expect(latencyBreakdown?.textContent).toContain("860");
+
+  const requestBreakdown = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-request-breakdown"]',
+  );
+  expect(requestBreakdown?.textContent).toContain("6");
+  expect(requestBreakdown?.textContent).toContain("2");
+  expect(requestBreakdown?.textContent).not.toContain("成");
+  expect(requestBreakdown?.textContent).not.toContain("失");
+  expect(requestBreakdown?.textContent).not.toContain("非");
+
+  const requestSegments = Array.from(
+    requestBreakdown?.querySelectorAll('[data-testid="dashboard-upstream-account-segment"]') ?? [],
+  );
+  expect(requestSegments).toHaveLength(3);
+  expect(requestSegments[0]?.textContent).toContain("6");
+  expect(requestSegments[1]?.textContent).toContain("2");
+  expect(requestSegments[2]?.textContent).toContain("0");
+  expect(requestSegments[0]?.parentElement?.getAttribute("aria-label")).toContain("成功 6");
+  expect(requestSegments[1]?.parentElement?.getAttribute("aria-label")).toContain("失败 2");
+  expect(requestSegments[2]?.parentElement?.getAttribute("aria-label")).toContain("其他 0");
+
+  const costBreakdown = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-cost-breakdown"]',
+  );
+  const accountCardText = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-card"]',
+  )?.textContent;
+  expect(accountCardText).toContain("0.72");
+  expect(accountCardText).not.toContain("$0.72");
+  expect(costBreakdown?.textContent).toContain("$0.22");
+  expect(costBreakdown?.textContent).toContain("30.6%");
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-cost-icon"]'),
+  ).not.toBeNull();
+  expect(
+    host?.querySelector('[data-testid="dashboard-upstream-account-token-icon"]'),
+  ).not.toBeNull();
+
+  const tokenBreakdown = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-token-breakdown"]',
+  );
+  expect(accountCardText).toContain("3,200");
+  expect(tokenBreakdown?.textContent).toContain("25%");
+  expect(tokenBreakdown?.textContent).toContain("350");
+
+  const recentBreakdown = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-recent-breakdown"]',
+  );
+  expect(recentBreakdown?.textContent).toContain("排队中");
+  expect(recentBreakdown?.textContent).toContain("请求中");
+  expect(recentBreakdown?.textContent).toContain("响应中");
+  expect(recentBreakdown?.textContent).toContain("失败");
+  expect(recentBreakdown?.textContent).toContain("成功");
+  expect(recentBreakdown?.textContent).toContain("6");
+  expect(recentBreakdown?.textContent).toContain("1");
+  const phaseSegments = Array.from(
+    recentBreakdown?.querySelectorAll('[data-testid="invocation-phase-segment"]') ?? [],
+  );
+  expect(phaseSegments).toHaveLength(3);
+  for (const phaseSegment of phaseSegments) {
+    expect(phaseSegment.getAttribute("data-phase-motion")).toBe("static");
+    const icon = phaseSegment.querySelector('[data-testid="invocation-phase-icon"]');
+    expect(icon).toBeInstanceOf(HTMLElement);
+    expect(icon?.className).not.toContain("animate-invocation-phase-requesting");
+    expect(icon?.className).not.toContain("animate-pulse");
+    expect(icon?.className).not.toContain("animate-spin");
+  }
+});
+it("shows aggregated upstream network speed in the header while the conversation tab stays active", () => {
+  const upstreamActivity = createUpstreamAccountActivityResponse();
+  upstreamActivity.accounts.push({
+    ...upstreamActivity.accounts[0],
+    accountKey: "upstream:77",
+    upstreamAccountId: 77,
+    displayName: "Pool Beta",
+    requestCount: 3,
+    successCount: 3,
+    failureCount: 0,
+    nonSuccessCount: 0,
+    totalTokens: 600,
+    successTokens: 600,
+    nonSuccessTokens: 0,
+    failureTokens: 0,
+    failureCost: 0,
+    totalCost: 0.18,
+    uploadBytesPerSecond: 512,
+    downloadBytesPerSecond: 1024 * 1024,
+    recentInvocations: [],
+  });
+  upstreamActivity.networkRealtimeRate = {
+    sampleStart: "2026-04-04T10:04:59Z",
+    sampleEnd: "2026-04-04T10:05:00Z",
+    sampleSeconds: 1,
+    uploadBytesPerSecond: 2_048,
+    downloadBytesPerSecond: 6 * 1024 * 1024,
+    uploadBytes: 2_048,
+    downloadBytes: 6 * 1024 * 1024,
+  };
+
+  renderSection(
+    createResponse([
+      createConversation("pck-header-network-speed", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-header-network-speed",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+    {
+      upstreamAccountActivity: upstreamActivity,
+    },
+  );
+
+  expect(host?.textContent).toContain("当前对话 1 条");
+  const totalNetworkSpeed = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-total-network-speed"]',
+  );
+  expect(totalNetworkSpeed).not.toBeNull();
+  expect(totalNetworkSpeed?.getAttribute("title")).toBeNull();
+  expect(totalNetworkSpeed?.textContent).toContain("2");
+  expect(totalNetworkSpeed?.textContent).toContain("KiB/s");
+  expect(totalNetworkSpeed?.textContent).toContain("6");
+  expect(totalNetworkSpeed?.textContent).toContain("MiB/s");
+});
+it("renders a fallback for upstream account in-progress invocations when live counts are unavailable", () => {
+  const response = createUpstreamAccountActivityResponse();
+  upstreamAccountActivityMock.data = {
+    ...response,
+    accounts: [
+      {
+        ...response.accounts[0],
+        inProgressInvocationCount: null,
+        inProgressPhaseCounts: null,
+        retryInvocationCount: null,
+      },
+    ],
+  };
+
+  renderSection(
+    createResponse([
+      createConversation("pck-upstream-yesterday-live-counts", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-upstream-yesterday-live-counts",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "success",
+        }),
+      ]),
+    ]),
+    { activeRange: "yesterday" },
+  );
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const accountHeader = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-header-row"]',
+  );
+  const accountHeaderText = accountHeader?.textContent;
+  expect(accountHeader?.querySelector('[aria-label="进行中 —"]')).not.toBeNull();
+  expect(accountHeaderText).toContain("—");
+  expect(accountHeaderText).not.toContain("并行对话");
+});
+it("opens detailed metric tooltips from the whole upstream account metric cards", async () => {
+  const upstreamActivity = createUpstreamAccountActivityResponse();
+  upstreamActivity.accounts[0].modelPerformance = {
+    available: false,
+    total: {
+      tokensPerMinute: 640,
+      streamingResponseRate: 19.8,
+      avgResponseMs: 860,
+      avgFirstTokenMs: 2_867.5,
+      wallClockUsageDurationMs: 42_000,
+      cumulativeUsageDurationMs: 51_000,
+      parallelism: 1.2,
+    },
+    models: [],
+  };
+  upstreamAccountActivityMock.data = upstreamActivity;
+
+  renderSection(
+    createResponse([
+      createConversation("pck-upstream-metric-tooltips", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-upstream-metric-tooltips",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+  );
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  expect(
+    host?.querySelectorAll('[data-testid="dashboard-upstream-account-metric-card"]'),
+  ).toHaveLength(4);
+
+  const costTrigger = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-metric-card"][data-metric="cost"]',
+  );
+  if (!(costTrigger instanceof HTMLElement)) {
+    throw new Error("missing cost metric trigger");
+  }
+
+  act(() => {
+    fireEvent.click(costTrigger);
+  });
+
+  await waitFor(() => {
+    const tooltipText = document.body.textContent ?? "";
+    expect(tooltipText).toContain("用量明细");
+    expect(tooltipText).toContain("缓存写入");
+    expect(tooltipText).toContain("缓存读取");
+    expect(tooltipText).toContain("总计");
+    expect(document.body.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
+    expect(tooltipText).toContain("$0.34");
+  });
+
+  const tokenTrigger = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-metric-card"][data-metric="token"]',
+  );
+  if (!(tokenTrigger instanceof HTMLElement)) {
+    throw new Error("missing token metric trigger");
+  }
+
+  act(() => {
+    fireEvent.click(tokenTrigger);
+  });
+
+  await waitFor(() => {
+    const tooltipText = document.body.textContent ?? "";
+    expect(tooltipText).toContain("用量明细");
+    expect(tooltipText).toContain("3,200");
+    expect(tooltipText).toContain("缓存写入");
+    expect(tooltipText).toContain("缓存读取");
+    expect(tooltipText).toContain("缓存命中率");
+    expect(tooltipText).toContain("输出");
+    expect(tooltipText).toContain("总计");
+    expect(document.body.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
+  });
+
+  const requestTrigger = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-metric-card"][data-metric="requests"]',
+  );
+  if (!(requestTrigger instanceof HTMLElement)) {
+    throw new Error("missing request metric trigger");
+  }
+
+  act(() => {
+    fireEvent.click(requestTrigger);
+  });
+
+  await waitFor(() => {
+    const tooltipText = document.body.textContent ?? "";
+    expect(tooltipText).toContain("请求数");
+    expect(tooltipText).toContain("8");
+    expect(tooltipText).toContain("成功率");
+    expect(tooltipText).toContain("75%");
+    expect(tooltipText).toContain("非成功率");
+    expect(tooltipText).toContain("25%");
+  });
+
+  const latencyTrigger = host?.querySelector(
+    '[data-testid="dashboard-upstream-account-metric-card"][data-metric="latency"]',
+  );
+  if (!(latencyTrigger instanceof HTMLElement)) {
+    throw new Error("missing latency metric trigger");
+  }
+
+  act(() => {
+    fireEvent.click(latencyTrigger);
+  });
+
+  await waitFor(() => {
+    const tooltipText = document.body.textContent ?? "";
+    expect(tooltipText).toContain("TTFT");
+    expect(tooltipText).toContain("2.87 s");
+    expect(tooltipText).toContain("响应时间");
+    expect(tooltipText).toContain("860");
+    expect(tooltipText).toContain("阶段首字节");
+    expect(tooltipText).toContain("420");
+  });
+});

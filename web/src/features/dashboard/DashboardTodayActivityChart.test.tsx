@@ -1,967 +1,559 @@
-/** @vitest-environment jsdom */
-import type { ReactNode } from "react";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
-  getDashboardPerformanceDiagnosticsSnapshot,
-  resetDashboardPerformanceDiagnostics,
-} from "../../lib/dashboardPerformanceDiagnostics";
-import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
-import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
-
-let latestChartData: Array<Record<string, unknown>> = [];
-const storage = new Map<string, string>();
-const localStorageMock = {
-  getItem: (key: string) => storage.get(key) ?? null,
-  setItem: (key: string, value: string) => {
-    storage.set(key, value);
-  },
-  removeItem: (key: string) => {
-    storage.delete(key);
-  },
-  clear: () => {
-    storage.clear();
-  },
-};
-let host: HTMLDivElement | null = null;
-let root: Root | null = null;
-
-vi.mock("recharts", () => ({
-  ResponsiveContainer: ({ children }: { children: ReactNode }) => (
-    <div data-testid="responsive">{children}</div>
-  ),
-  CartesianGrid: () => <div data-testid="grid" />,
-  XAxis: ({ domain }: { domain?: [number, number] }) => (
-    <div data-testid="x-axis" data-domain={domain == null ? "" : domain.join(":")} />
-  ),
-  YAxis: ({
-    yAxisId,
-    tickFormatter,
-  }: {
-    yAxisId?: string;
-    tickFormatter?: (value: number) => string;
-  }) => (
-    <div
-      data-testid="y-axis"
-      data-y-axis-id={yAxisId ?? ""}
-      data-negative-tick={tickFormatter?.(-42) ?? ""}
-    />
-  ),
-  Tooltip: ({
-    content,
-  }: {
-    content?: (props: {
-      active: boolean;
-      label: number;
-      payload: Array<{ payload: Record<string, unknown> }>;
-    }) => ReactNode;
-  }) => {
-    const point =
-      latestChartData.find(
-        (item) => typeof item.inFlightCount === "number" && Number(item.inFlightCount) > 0,
-      ) ?? latestChartData.find((item) => typeof item.chartSuccessCount === "number");
-    return (
-      <div data-testid="tooltip">
-        {point
-          ? content?.({
-              active: true,
-              label: Number(point.index ?? 0),
-              payload: [{ payload: point }],
-            })
-          : null}
-      </div>
-    );
-  },
-  Legend: () => <div data-testid="legend" />,
-  ReferenceLine: () => <div data-testid="reference-line" />,
-  Area: ({
-    dataKey,
-    yAxisId,
-    name,
-    strokeWidth,
-    stackId,
-  }: {
-    dataKey?: string;
-    yAxisId?: string;
-    name?: string;
-    strokeWidth?: number;
-    stackId?: string;
-  }) => (
-    <div
-      data-testid="area-series"
-      data-data-key={dataKey ?? ""}
-      data-y-axis-id={yAxisId ?? ""}
-      data-name={name ?? ""}
-      data-stroke-width={String(strokeWidth ?? "")}
-      data-stack-id={stackId ?? ""}
-    />
-  ),
-  Line: ({
-    data,
-    dataKey,
-    dot,
-    yAxisId,
-    name,
-    strokeWidth,
-    strokeOpacity,
-    connectNulls,
-  }: {
-    data?: Array<Record<string, unknown>>;
-    dataKey?: string;
-    dot?: false | Record<string, unknown>;
-    yAxisId?: string;
-    name?: string;
-    strokeWidth?: number;
-    strokeOpacity?: number;
-    connectNulls?: boolean;
-  }) => (
-    <div
-      data-testid="line-series"
-      data-data-key={dataKey ?? ""}
-      data-y-axis-id={yAxisId ?? ""}
-      data-name={name ?? ""}
-      data-stroke-width={String(strokeWidth ?? "")}
-      data-stroke-opacity={String(strokeOpacity ?? "")}
-      data-dot={dot === false ? "false" : dot ? "visible" : ""}
-      data-connect-nulls={String(connectNulls ?? "")}
-      data-data-length={String(data?.length ?? "")}
-    />
-  ),
-  Bar: ({
-    stackId,
-    dataKey,
-    barSize,
-    radius,
-    shape,
-  }: {
-    stackId?: string;
-    dataKey?: string;
-    barSize?: number;
-    radius?: number[];
-    shape?: ReactNode;
-  }) => (
-    <div
-      data-testid="bar-series"
-      data-stack-id={stackId ?? ""}
-      data-data-key={dataKey ?? ""}
-      data-bar-size={String(barSize ?? "")}
-      data-radius={radius == null ? "" : radius.join(":")}
-      data-has-shape={shape == null ? "false" : "true"}
-    />
-  ),
-  AreaChart: ({ children }: { children: ReactNode }) => (
-    <div data-testid="area-chart">{children}</div>
-  ),
-  ComposedChart: ({
-    children,
-    barGap,
-    data,
-    stackOffset,
-  }: {
-    children: ReactNode;
-    barGap?: string | number;
-    data?: Array<Record<string, unknown>>;
-    stackOffset?: string;
-  }) => {
-    latestChartData = data ?? [];
-    return (
-      <div
-        data-testid="composed-chart"
-        data-bar-gap={String(barGap ?? "")}
-        data-stack-offset={stackOffset ?? ""}
-        data-data-length={String(latestChartData.length)}
-      >
-        {children}
-      </div>
-    );
-  },
-}));
+import { expect, it, vi } from "vitest";
 
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
-    locale: "zh",
+    locale: "en",
     t: (key: string) => key,
   }),
 }));
-
 vi.mock("../../theme", () => ({
   useTheme: () => ({
     themeMode: "light",
   }),
 }));
 
-const response = {
-  rangeStart: "2026-04-08 00:00:00",
-  rangeEnd: "2026-04-08 00:03:22",
-  bucketSeconds: 60,
-  points: [
-    {
-      bucketStart: "2026-04-08 00:00:00",
-      bucketEnd: "2026-04-08 00:00:59",
-      totalCount: 3,
-      successCount: 2,
-      failureCount: 1,
-      totalTokens: 120,
-      totalCost: 0.5,
-      nonSuccessCost: 0.2,
-    },
-    {
-      bucketStart: "2026-04-08 00:02:00",
-      bucketEnd: "2026-04-08 00:02:59",
-      totalCount: 4,
-      successCount: 4,
-      failureCount: 0,
-      totalTokens: 200,
-      totalCost: 0.75,
-      nonSuccessCost: 0,
-    },
-  ],
-};
+import {
+  host,
+  rechartsMock,
+  render,
+  response,
+  setCompactViewport,
+} from "./DashboardTodayActivityChart.test-support";
 
-const tokenBreakdownResponse = {
-  ...response,
-  points: [
-    {
-      ...response.points[0],
-      totalTokens: 120,
-      inputTokens: 80,
-      outputTokens: 40,
-      cacheInputTokens: 50,
-      reasoningTokens: 10,
-    },
-    {
-      ...response.points[1],
-      totalTokens: 200,
-      inputTokens: 140,
-      outputTokens: 60,
-      cacheInputTokens: 100,
-      reasoningTokens: 20,
-    },
-  ],
-};
+vi.mock("recharts", () => rechartsMock);
 
-const invalidReasoningBreakdownResponse = {
-  ...tokenBreakdownResponse,
-  points: tokenBreakdownResponse.points.map((point, index) =>
-    index === 0 ? { ...point, reasoningTokens: -1 } : point,
-  ),
-};
+import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
+import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
 
-beforeAll(() => {
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: localStorageMock,
+function expectEndOfDayBucket(data: ReturnType<typeof buildTodayMinuteChartData>) {
+  expect(data.at(-1)).toMatchObject({
+    label: "23:59",
+    chartSuccessCount: null,
+    chartInFlightCount: null,
+    chartQueuedInFlightCount: null,
+    chartRunningInFlightCount: null,
+    chartFailureCountNegative: null,
+    cumulativeCost: null,
+    cumulativeSuccessCost: null,
+    cumulativeNonSuccessCost: null,
+    cumulativeTokens: null,
+    chartCumulativeCost: null,
+    chartCumulativeSuccessCost: null,
+    chartCumulativeNonSuccessCost: null,
+    chartCumulativeTokens: null,
   });
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    writable: true,
-    value: true,
+}
+
+it("builds a continuous minute series and preserves cumulative totals", () => {
+  const data = buildTodayMinuteChartData(response, {
+    now: new Date(2026, 3, 8, 0, 3, 22),
+    localeTag: "en-US",
   });
+
+  expect(data).toHaveLength(24 * 60);
+  expect(data[0]).toMatchObject({
+    successCount: 2,
+    failureCount: 1,
+    inFlightCount: 0,
+    failureCountNegative: -1,
+    chartSuccessCount: 2,
+    chartInFlightCount: 0,
+    chartQueuedInFlightCount: 0,
+    chartRunningInFlightCount: 0,
+    chartFailureCountNegative: -1,
+    totalCount: 3,
+    successCost: 0.3,
+    nonSuccessCost: 0.2,
+    cumulativeCost: 0.5,
+    cumulativeSuccessCost: 0.3,
+    cumulativeNonSuccessCost: 0.2,
+    cumulativeTokens: 120,
+    chartCumulativeCost: 0.5,
+    chartCumulativeSuccessCost: 0.3,
+    chartCumulativeNonSuccessCost: 0.2,
+    chartCumulativeTokens: 120,
+  });
+  expect(data[1]).toMatchObject({
+    successCount: 0,
+    failureCount: 0,
+    inFlightCount: 0,
+    totalCount: 0,
+    successCost: 0,
+    nonSuccessCost: 0,
+    cumulativeCost: 0.5,
+    cumulativeSuccessCost: 0.3,
+    cumulativeNonSuccessCost: 0.2,
+    cumulativeTokens: 120,
+    chartSuccessCount: 0,
+    chartInFlightCount: 0,
+    chartQueuedInFlightCount: 0,
+    chartRunningInFlightCount: 0,
+    chartFailureCountNegative: 0,
+    chartCumulativeCost: 0.5,
+    chartCumulativeSuccessCost: 0.3,
+    chartCumulativeNonSuccessCost: 0.2,
+    chartCumulativeTokens: 120,
+  });
+  expect(data[2]).toMatchObject({
+    successCount: 4,
+    failureCount: 0,
+    inFlightCount: 0,
+    totalCount: 4,
+    successCost: 0.75,
+    nonSuccessCost: 0,
+    cumulativeCost: 1.25,
+    cumulativeSuccessCost: 1.05,
+    cumulativeNonSuccessCost: 0.2,
+    cumulativeTokens: 320,
+    chartSuccessCount: 4,
+    chartInFlightCount: 0,
+    chartQueuedInFlightCount: 0,
+    chartRunningInFlightCount: 0,
+    chartFailureCountNegative: 0,
+    chartCumulativeCost: 1.25,
+    chartCumulativeSuccessCost: 1.05,
+    chartCumulativeNonSuccessCost: 0.2,
+    chartCumulativeTokens: 320,
+  });
+  expect(data[3]).toMatchObject({
+    successCount: 0,
+    failureCount: 0,
+    inFlightCount: 0,
+    totalCount: 0,
+    successCost: 0,
+    nonSuccessCost: 0,
+    cumulativeCost: 1.25,
+    cumulativeSuccessCost: 1.05,
+    cumulativeNonSuccessCost: 0.2,
+    cumulativeTokens: 320,
+    chartSuccessCount: 0,
+    chartInFlightCount: 0,
+    chartQueuedInFlightCount: 0,
+    chartRunningInFlightCount: 0,
+    chartFailureCountNegative: 0,
+    chartCumulativeCost: 1.25,
+    chartCumulativeSuccessCost: 1.05,
+    chartCumulativeNonSuccessCost: 0.2,
+    chartCumulativeTokens: 320,
+  });
+  expectEndOfDayBucket(data);
 });
-
-afterEach(() => {
-  act(() => {
-    root?.unmount();
-  });
-  host?.remove();
-  host = null;
-  root = null;
-  latestChartData = [];
-  window.localStorage.clear();
-  resetDashboardPerformanceDiagnostics();
-});
-
-function render(ui: React.ReactNode) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  root = createRoot(host);
-  act(() => {
-    root?.render(ui);
-  });
-}
-
-function rerender(ui: React.ReactNode) {
-  act(() => {
-    root?.render(ui);
-  });
-}
-
-function chartSection() {
-  const section = host?.querySelector(
-    '[data-testid="dashboard-today-activity-chart"]',
-  ) as HTMLElement | null;
-  if (!section) throw new Error("missing chart section");
-  return section;
-}
-
-function interactionLayer() {
-  const layer = host?.querySelector(
-    '[data-testid="dashboard-today-activity-chart-interaction-layer"]',
-  ) as HTMLElement | null;
-  if (!layer) throw new Error("missing chart interaction layer");
-  layer.getBoundingClientRect = () =>
-    ({
-      x: 0,
-      y: 0,
-      top: 0,
-      right: 1000,
-      bottom: 320,
-      left: 0,
-      width: 1000,
-      height: 320,
-      toJSON: () => ({}),
-    }) as DOMRect;
-  layer.setPointerCapture = vi.fn();
-  layer.releasePointerCapture = vi.fn();
-  layer.hasPointerCapture = vi.fn(() => true);
-  return layer;
-}
-
-function dragLayer() {
-  const layer = host?.querySelector(
-    '[data-testid="dashboard-today-activity-chart-drag-layer"]',
-  ) as HTMLElement | null;
-  if (!layer) throw new Error("missing chart drag layer");
-  return layer;
-}
-
-function setCompactViewport(matches: boolean) {
-  const originalMatchMedia = window.matchMedia;
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: vi.fn(() => ({
-      matches,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-    })),
-  });
-  return () => {
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true,
-      value: originalMatchMedia,
-    });
-  };
-}
-
-function dispatchWheel(element: HTMLElement, init: WheelEventInit & { clientX?: number }) {
-  const event = new WheelEvent("wheel", {
-    bubbles: true,
-    cancelable: true,
-    ...init,
-  });
-  if (init.clientX != null) {
-    Object.defineProperty(event, "clientX", {
-      configurable: true,
-      value: init.clientX,
-    });
-  }
-  act(() => {
-    element.dispatchEvent(event);
-  });
-  return event;
-}
-
-function dispatchPointer(
-  element: HTMLElement,
-  type: string,
-  init: MouseEventInit & { pointerId?: number },
-) {
-  const event = new MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    ...init,
-  });
-  Object.defineProperty(event, "pointerId", {
-    configurable: true,
-    value: init.pointerId ?? 1,
-  });
-  act(() => {
-    element.dispatchEvent(event);
-  });
-}
-
-async function flushAnimationFrame() {
-  await act(async () => {
-    await new Promise<void>((resolve) => {
-      window.requestAnimationFrame(() => resolve());
-    });
-  });
-}
-
-describe("DashboardTodayActivityChart", () => {
-  it("builds a continuous minute series and preserves cumulative totals", () => {
-    const data = buildTodayMinuteChartData(response, {
-      now: new Date(2026, 3, 8, 0, 3, 22),
+it("keeps relay-only cost in the success-side remainder when non-success cost is absent", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 00:01:22",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-04-08 00:00:00",
+          bucketEnd: "2026-04-08 00:00:59",
+          totalCount: 4,
+          successCount: 4,
+          failureCount: 0,
+          totalTokens: 480,
+          totalCost: 1.2,
+          nonSuccessCost: 0,
+        },
+      ],
+    },
+    {
+      now: new Date(2026, 3, 8, 0, 1, 22),
       localeTag: "en-US",
-    });
+    },
+  );
 
-    expect(data).toHaveLength(24 * 60);
-    expect(data[0]).toMatchObject({
-      successCount: 2,
-      failureCount: 1,
-      inFlightCount: 0,
-      failureCountNegative: -1,
-      chartSuccessCount: 2,
-      chartInFlightCount: 0,
-      chartQueuedInFlightCount: 0,
-      chartRunningInFlightCount: 0,
-      chartFailureCountNegative: -1,
-      totalCount: 3,
-      successCost: 0.3,
-      nonSuccessCost: 0.2,
-      cumulativeCost: 0.5,
-      cumulativeSuccessCost: 0.3,
-      cumulativeNonSuccessCost: 0.2,
-      cumulativeTokens: 120,
-      chartCumulativeCost: 0.5,
-      chartCumulativeSuccessCost: 0.3,
-      chartCumulativeNonSuccessCost: 0.2,
-      chartCumulativeTokens: 120,
-    });
-    expect(data[1]).toMatchObject({
-      successCount: 0,
-      failureCount: 0,
-      inFlightCount: 0,
-      totalCount: 0,
-      successCost: 0,
-      nonSuccessCost: 0,
-      cumulativeCost: 0.5,
-      cumulativeSuccessCost: 0.3,
-      cumulativeNonSuccessCost: 0.2,
-      cumulativeTokens: 120,
-      chartSuccessCount: 0,
-      chartInFlightCount: 0,
-      chartQueuedInFlightCount: 0,
-      chartRunningInFlightCount: 0,
-      chartFailureCountNegative: 0,
-      chartCumulativeCost: 0.5,
-      chartCumulativeSuccessCost: 0.3,
-      chartCumulativeNonSuccessCost: 0.2,
-      chartCumulativeTokens: 120,
-    });
-    expect(data[2]).toMatchObject({
-      successCount: 4,
-      failureCount: 0,
-      inFlightCount: 0,
-      totalCount: 4,
-      successCost: 0.75,
-      nonSuccessCost: 0,
-      cumulativeCost: 1.25,
-      cumulativeSuccessCost: 1.05,
-      cumulativeNonSuccessCost: 0.2,
-      cumulativeTokens: 320,
-      chartSuccessCount: 4,
-      chartInFlightCount: 0,
-      chartQueuedInFlightCount: 0,
-      chartRunningInFlightCount: 0,
-      chartFailureCountNegative: 0,
-      chartCumulativeCost: 1.25,
-      chartCumulativeSuccessCost: 1.05,
-      chartCumulativeNonSuccessCost: 0.2,
-      chartCumulativeTokens: 320,
-    });
-    expect(data[3]).toMatchObject({
-      successCount: 0,
-      failureCount: 0,
-      inFlightCount: 0,
-      totalCount: 0,
-      successCost: 0,
-      nonSuccessCost: 0,
-      cumulativeCost: 1.25,
-      cumulativeSuccessCost: 1.05,
-      cumulativeNonSuccessCost: 0.2,
-      cumulativeTokens: 320,
-      chartSuccessCount: 0,
-      chartInFlightCount: 0,
-      chartQueuedInFlightCount: 0,
-      chartRunningInFlightCount: 0,
-      chartFailureCountNegative: 0,
-      chartCumulativeCost: 1.25,
-      chartCumulativeSuccessCost: 1.05,
-      chartCumulativeNonSuccessCost: 0.2,
-      chartCumulativeTokens: 320,
-    });
-    expect(data.at(-1)).toMatchObject({
-      label: "23:59",
-      chartSuccessCount: null,
-      chartInFlightCount: null,
-      chartQueuedInFlightCount: null,
-      chartRunningInFlightCount: null,
-      chartFailureCountNegative: null,
-      cumulativeCost: null,
-      cumulativeSuccessCost: null,
-      cumulativeNonSuccessCost: null,
-      cumulativeTokens: null,
-      chartCumulativeCost: null,
-      chartCumulativeSuccessCost: null,
-      chartCumulativeNonSuccessCost: null,
-      chartCumulativeTokens: null,
-    });
+  expect(data[0]).toMatchObject({
+    totalCost: 1.2,
+    successCost: 1.2,
+    nonSuccessCost: 0,
+    cumulativeCost: 1.2,
+    cumulativeSuccessCost: 1.2,
+    cumulativeNonSuccessCost: 0,
+    chartCumulativeCost: 1.2,
+    chartCumulativeSuccessCost: 1.2,
+    chartCumulativeNonSuccessCost: 0,
   });
+});
+it("clamps a 24-hour response to the local today window and keeps the rest of today empty", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-07T00:03:00.000Z",
+      rangeEnd: "2026-04-08T00:03:00.000Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-04-07T00:03:00.000Z",
+          bucketEnd: "2026-04-07T00:03:59.000Z",
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalTokens: 80,
+          totalCost: 0.25,
+        },
+      ],
+    },
+    {
+      now: new Date("2026-04-08T00:03:00.000Z"),
+      localeTag: "en-US",
+    },
+  );
 
-  it("keeps relay-only cost in the success-side remainder when non-success cost is absent", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:01:22",
-        bucketSeconds: 60,
+  const localRangeStart = new Date(2026, 3, 8, 0, 0, 0);
+  const localRangeEnd = new Date(2026, 3, 8, 23, 59, 0);
+  const labelFormatter = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  });
+  const expectedHeadLabel = labelFormatter
+    .format(localRangeStart)
+    .replace(/(^|\D)24:(\d{2})/g, "$100:$2");
+  const expectedTailLabel = labelFormatter
+    .format(localRangeEnd)
+    .replace(/(^|\D)24:(\d{2})/g, "$100:$2");
+
+  expect(data[0]?.label).toBe(expectedHeadLabel);
+  expect(data[0]?.epochMs).toBe(localRangeStart.getTime());
+  expect(data.at(-1)?.label).toBe(expectedTailLabel);
+  expect(data).toHaveLength(24 * 60);
+  expect(data.at(-1)?.chartCumulativeCost).toBeNull();
+});
+it("anchors a completed yesterday range to the previous local day instead of the next midnight", () => {
+  const localYesterdayStart = new Date(2026, 3, 7, 0, 0, 0);
+  const localYesterdayEnd = new Date(2026, 3, 8, 0, 1, 0);
+  const localYesterdayTail = new Date(2026, 3, 7, 23, 59, 0);
+  const localNow = new Date(2026, 3, 8, 12, 3, 0);
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: localYesterdayStart.toISOString(),
+      rangeEnd: localYesterdayEnd.toISOString(),
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: localYesterdayTail.toISOString(),
+          bucketEnd: new Date(2026, 3, 8, 0, 0, 0).toISOString(),
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalTokens: 80,
+          totalCost: 0.25,
+        },
+      ],
+    },
+    {
+      now: localNow,
+      localeTag: "en-US",
+      closedNaturalDay: true,
+    },
+  );
+
+  expect(data[0]?.label).toBe("00:00");
+  expect(data[0]?.epochMs).toBe(localYesterdayStart.getTime());
+  expect(data.at(-1)?.label).toBe("23:59");
+  expect(data.at(-1)).toMatchObject({
+    totalCount: 2,
+    successCount: 2,
+    failureCount: 0,
+    chartSuccessCount: 2,
+    chartFailureCountNegative: 0,
+    chartCumulativeCost: 0.25,
+    chartCumulativeTokens: 80,
+  });
+});
+it("does not treat a rolling 24-hour window as a closed natural day at midnight", () => {
+  const localRangeStart = new Date(2026, 3, 7, 0, 0, 0);
+  const localRangeEnd = new Date(2026, 3, 8, 0, 0, 0);
+  const localTail = new Date(2026, 3, 7, 23, 59, 0);
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: localRangeStart.toISOString(),
+      rangeEnd: localRangeEnd.toISOString(),
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: localTail.toISOString(),
+          bucketEnd: localRangeEnd.toISOString(),
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalTokens: 80,
+          totalCost: 0.25,
+        },
+      ],
+    },
+    {
+      now: localRangeEnd,
+      localeTag: "en-US",
+    },
+  );
+
+  expect(data[0]?.epochMs).toBe(localRangeEnd.getTime());
+  expect(data.at(-1)?.epochMs).toBe(new Date(2026, 3, 8, 23, 59, 0).getTime());
+});
+it("uses explicit in-flight counts and leaves neutral residual totals unrendered", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 00:01:10",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-04-08 00:01:00",
+          bucketEnd: "2026-04-08 00:01:59",
+          totalCount: 4,
+          successCount: 1,
+          failureCount: 1,
+          inFlightCount: 1,
+          totalTokens: 90,
+          totalCost: 0.2,
+        },
+      ],
+    },
+    {
+      now: new Date(2026, 3, 8, 0, 1, 10),
+      localeTag: "en-US",
+    },
+  );
+
+  expect(data[1]).toMatchObject({
+    totalCount: 4,
+    successCount: 1,
+    failureCount: 1,
+    inFlightCount: 1,
+    chartSuccessCount: 1,
+    chartInFlightCount: 1,
+    chartQueuedInFlightCount: 0,
+    chartRunningInFlightCount: 1,
+    chartFailureCountNegative: -1,
+  });
+});
+it("splits in-flight phase counts into queued and running chart bars", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 00:01:10",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-04-08 00:01:00",
+          bucketEnd: "2026-04-08 00:01:59",
+          totalCount: 5,
+          successCount: 1,
+          failureCount: 1,
+          inFlightCount: 3,
+          inFlightPhaseCounts: {
+            queued: 1,
+            requesting: 1,
+            responding: 1,
+          },
+          totalTokens: 90,
+          totalCost: 0.2,
+        },
+      ],
+    },
+    {
+      now: new Date(2026, 3, 8, 0, 1, 10),
+      localeTag: "en-US",
+    },
+  );
+
+  expect(data[1]).toMatchObject({
+    totalCount: 5,
+    successCount: 1,
+    failureCount: 1,
+    inFlightCount: 3,
+    queuedInFlightCount: 1,
+    runningInFlightCount: 2,
+    chartSuccessCount: 1,
+    chartQueuedInFlightCount: 1,
+    chartRunningInFlightCount: 2,
+    chartFailureCountNegative: -1,
+  });
+});
+it("adds 10-minute chart bucket averages for trend while keeping first-byte-total minute-aligned", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 00:12:30",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-04-08 00:01:00",
+          bucketEnd: "2026-04-08 00:01:59",
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalTokens: 1200,
+          totalCost: 0.24,
+          firstTokenSampleCount: 2,
+          firstTokenAvgMs: 450,
+        },
+        {
+          bucketStart: "2026-04-08 00:09:00",
+          bucketEnd: "2026-04-08 00:09:59",
+          totalCount: 3,
+          successCount: 3,
+          failureCount: 0,
+          totalTokens: 1800,
+          totalCost: 0.36,
+          firstTokenSampleCount: 6,
+          firstTokenAvgMs: 750,
+        },
+        {
+          bucketStart: "2026-04-08 00:10:00",
+          bucketEnd: "2026-04-08 00:10:59",
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 900,
+          totalCost: 0.18,
+          firstTokenSampleCount: 1,
+          firstTokenAvgMs: 300,
+        },
+      ],
+    },
+    {
+      now: new Date(2026, 3, 8, 0, 12, 30),
+      localeTag: "en-US",
+    },
+  );
+
+  expect(data[1]).toMatchObject({
+    tokensPerMinute: 1200,
+    spendRate: 0.24,
+    firstTokenAvgMs: 450,
+    chartTokensPerMinute: null,
+    chartSpendRate: null,
+    chartFirstTokenAvgMs: 450,
+  });
+  expect(data[0]).toMatchObject({
+    chartTokensPerMinute: 300,
+    chartSpendRate: 0.06,
+    chartFirstTokenAvgMs: null,
+  });
+  expect(data[9]).toMatchObject({
+    chartTokensPerMinute: null,
+    chartSpendRate: null,
+    chartFirstTokenAvgMs: 750,
+  });
+  expect(data[10]).toMatchObject({
+    chartTokensPerMinute: 300,
+    chartSpendRate: 0.06,
+    chartFirstTokenAvgMs: 300,
+  });
+  expect(data[11]).toMatchObject({
+    chartTokensPerMinute: null,
+    chartSpendRate: null,
+    chartFirstTokenAvgMs: null,
+  });
+  expect(data.at(-1)).toMatchObject({
+    tokensPerMinute: null,
+    spendRate: null,
+    firstTokenAvgMs: null,
+    chartTokensPerMinute: null,
+    chartSpendRate: null,
+    chartFirstTokenAvgMs: null,
+  });
+});
+it("does not attach first-byte-total latency to an empty 10-minute anchor minute", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 00:12:30",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-04-08 00:01:00",
+          bucketEnd: "2026-04-08 00:01:59",
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalTokens: 1200,
+          totalCost: 0.24,
+          firstTokenSampleCount: 2,
+          firstTokenAvgMs: 450,
+        },
+      ],
+    },
+    {
+      now: new Date(2026, 3, 8, 0, 12, 30),
+      localeTag: "en-US",
+    },
+  );
+
+  expect(data[0]).toMatchObject({
+    totalCount: 0,
+    chartFirstTokenAvgMs: null,
+  });
+  expect(data[1]).toMatchObject({
+    totalCount: 2,
+    chartFirstTokenAvgMs: 450,
+  });
+});
+it("does not display a ten-minute cost total as a per-minute spend rate", () => {
+  const points = Array.from({ length: 10 }, (_, minute) => ({
+    bucketStart: `2026-04-08 03:${String(10 + minute).padStart(2, "0")}:00`,
+    bucketEnd: `2026-04-08 03:${String(10 + minute).padStart(2, "0")}:59`,
+    totalCount: 1,
+    successCount: 1,
+    failureCount: 0,
+    totalTokens: 1_600_000,
+    totalCost: 3.567,
+  }));
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 03:20:00",
+      bucketSeconds: 60,
+      points,
+    },
+    {
+      now: new Date(2026, 3, 8, 3, 20, 0),
+      localeTag: "en-US",
+    },
+  );
+
+  expect(data[190]).toMatchObject({
+    chartTokensPerMinute: 1_600_000,
+    chartSpendRate: 3.567,
+  });
+});
+it("shows in-flight calls in the count tooltip without inferring neutral residuals as running", () => {
+  const html = renderToStaticMarkup(
+    <DashboardTodayActivityChart
+      response={{
+        ...response,
         points: [
           {
             bucketStart: "2026-04-08 00:00:00",
             bucketEnd: "2026-04-08 00:00:59",
-            totalCount: 4,
-            successCount: 4,
-            failureCount: 0,
-            totalTokens: 480,
-            totalCost: 1.2,
-            nonSuccessCost: 0,
-          },
-        ],
-      },
-      {
-        now: new Date(2026, 3, 8, 0, 1, 22),
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[0]).toMatchObject({
-      totalCost: 1.2,
-      successCost: 1.2,
-      nonSuccessCost: 0,
-      cumulativeCost: 1.2,
-      cumulativeSuccessCost: 1.2,
-      cumulativeNonSuccessCost: 0,
-      chartCumulativeCost: 1.2,
-      chartCumulativeSuccessCost: 1.2,
-      chartCumulativeNonSuccessCost: 0,
-    });
-  });
-
-  it("clamps a 24-hour response to the local today window and keeps the rest of today empty", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-07T00:03:00.000Z",
-        rangeEnd: "2026-04-08T00:03:00.000Z",
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: "2026-04-07T00:03:00.000Z",
-            bucketEnd: "2026-04-07T00:03:59.000Z",
-            totalCount: 2,
+            totalCount: 5,
             successCount: 2,
-            failureCount: 0,
-            totalTokens: 80,
-            totalCost: 0.25,
-          },
-        ],
-      },
-      {
-        now: new Date("2026-04-08T00:03:00.000Z"),
-        localeTag: "en-US",
-      },
-    );
-
-    const localRangeStart = new Date(2026, 3, 8, 0, 0, 0);
-    const localRangeEnd = new Date(2026, 3, 8, 23, 59, 0);
-    const labelFormatter = new Intl.DateTimeFormat("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-      hourCycle: "h23",
-    });
-    const expectedHeadLabel = labelFormatter
-      .format(localRangeStart)
-      .replace(/(^|\D)24:(\d{2})/g, "$100:$2");
-    const expectedTailLabel = labelFormatter
-      .format(localRangeEnd)
-      .replace(/(^|\D)24:(\d{2})/g, "$100:$2");
-
-    expect(data[0]?.label).toBe(expectedHeadLabel);
-    expect(data[0]?.epochMs).toBe(localRangeStart.getTime());
-    expect(data.at(-1)?.label).toBe(expectedTailLabel);
-    expect(data).toHaveLength(24 * 60);
-    expect(data.at(-1)?.chartCumulativeCost).toBeNull();
-  });
-
-  it("anchors a completed yesterday range to the previous local day instead of the next midnight", () => {
-    const localYesterdayStart = new Date(2026, 3, 7, 0, 0, 0);
-    const localYesterdayEnd = new Date(2026, 3, 8, 0, 1, 0);
-    const localYesterdayTail = new Date(2026, 3, 7, 23, 59, 0);
-    const localNow = new Date(2026, 3, 8, 12, 3, 0);
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: localYesterdayStart.toISOString(),
-        rangeEnd: localYesterdayEnd.toISOString(),
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: localYesterdayTail.toISOString(),
-            bucketEnd: new Date(2026, 3, 8, 0, 0, 0).toISOString(),
-            totalCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalTokens: 80,
-            totalCost: 0.25,
-          },
-        ],
-      },
-      {
-        now: localNow,
-        localeTag: "en-US",
-        closedNaturalDay: true,
-      },
-    );
-
-    expect(data[0]?.label).toBe("00:00");
-    expect(data[0]?.epochMs).toBe(localYesterdayStart.getTime());
-    expect(data.at(-1)?.label).toBe("23:59");
-    expect(data.at(-1)).toMatchObject({
-      totalCount: 2,
-      successCount: 2,
-      failureCount: 0,
-      chartSuccessCount: 2,
-      chartFailureCountNegative: 0,
-      chartCumulativeCost: 0.25,
-      chartCumulativeTokens: 80,
-    });
-  });
-
-  it("does not treat a rolling 24-hour window as a closed natural day at midnight", () => {
-    const localRangeStart = new Date(2026, 3, 7, 0, 0, 0);
-    const localRangeEnd = new Date(2026, 3, 8, 0, 0, 0);
-    const localTail = new Date(2026, 3, 7, 23, 59, 0);
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: localRangeStart.toISOString(),
-        rangeEnd: localRangeEnd.toISOString(),
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: localTail.toISOString(),
-            bucketEnd: localRangeEnd.toISOString(),
-            totalCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalTokens: 80,
-            totalCost: 0.25,
-          },
-        ],
-      },
-      {
-        now: localRangeEnd,
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[0]?.epochMs).toBe(localRangeEnd.getTime());
-    expect(data.at(-1)?.epochMs).toBe(new Date(2026, 3, 8, 23, 59, 0).getTime());
-  });
-
-  it("uses explicit in-flight counts and leaves neutral residual totals unrendered", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:01:10",
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: "2026-04-08 00:01:00",
-            bucketEnd: "2026-04-08 00:01:59",
-            totalCount: 4,
-            successCount: 1,
             failureCount: 1,
             inFlightCount: 1,
-            totalTokens: 90,
-            totalCost: 0.2,
+            totalTokens: 120,
+            totalCost: 0.5,
           },
         ],
-      },
-      {
-        now: new Date(2026, 3, 8, 0, 1, 10),
-        localeTag: "en-US",
-      },
-    );
+      }}
+      loading={false}
+      error={null}
+      metric="totalCount"
+    />,
+  );
 
-    expect(data[1]).toMatchObject({
-      totalCount: 4,
-      successCount: 1,
-      failureCount: 1,
-      inFlightCount: 1,
-      chartSuccessCount: 1,
-      chartInFlightCount: 1,
-      chartQueuedInFlightCount: 0,
-      chartRunningInFlightCount: 1,
-      chartFailureCountNegative: -1,
-    });
-  });
-
-  it("splits in-flight phase counts into queued and running chart bars", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:01:10",
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: "2026-04-08 00:01:00",
-            bucketEnd: "2026-04-08 00:01:59",
-            totalCount: 5,
-            successCount: 1,
-            failureCount: 1,
-            inFlightCount: 3,
-            inFlightPhaseCounts: {
-              queued: 1,
-              requesting: 1,
-              responding: 1,
-            },
-            totalTokens: 90,
-            totalCost: 0.2,
-          },
-        ],
-      },
-      {
-        now: new Date(2026, 3, 8, 0, 1, 10),
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[1]).toMatchObject({
-      totalCount: 5,
-      successCount: 1,
-      failureCount: 1,
-      inFlightCount: 3,
-      queuedInFlightCount: 1,
-      runningInFlightCount: 2,
-      chartSuccessCount: 1,
-      chartQueuedInFlightCount: 1,
-      chartRunningInFlightCount: 2,
-      chartFailureCountNegative: -1,
-    });
-  });
-
-  it("adds 10-minute chart bucket averages for trend while keeping first-byte-total minute-aligned", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:12:30",
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: "2026-04-08 00:01:00",
-            bucketEnd: "2026-04-08 00:01:59",
-            totalCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalTokens: 1200,
-            totalCost: 0.24,
-            firstTokenSampleCount: 2,
-            firstTokenAvgMs: 450,
-          },
-          {
-            bucketStart: "2026-04-08 00:09:00",
-            bucketEnd: "2026-04-08 00:09:59",
-            totalCount: 3,
-            successCount: 3,
-            failureCount: 0,
-            totalTokens: 1800,
-            totalCost: 0.36,
-            firstTokenSampleCount: 6,
-            firstTokenAvgMs: 750,
-          },
-          {
-            bucketStart: "2026-04-08 00:10:00",
-            bucketEnd: "2026-04-08 00:10:59",
-            totalCount: 1,
-            successCount: 1,
-            failureCount: 0,
-            totalTokens: 900,
-            totalCost: 0.18,
-            firstTokenSampleCount: 1,
-            firstTokenAvgMs: 300,
-          },
-        ],
-      },
-      {
-        now: new Date(2026, 3, 8, 0, 12, 30),
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[1]).toMatchObject({
-      tokensPerMinute: 1200,
-      spendRate: 0.24,
-      firstTokenAvgMs: 450,
-      chartTokensPerMinute: null,
-      chartSpendRate: null,
-      chartFirstTokenAvgMs: 450,
-    });
-    expect(data[0]).toMatchObject({
-      chartTokensPerMinute: 300,
-      chartSpendRate: 0.06,
-      chartFirstTokenAvgMs: null,
-    });
-    expect(data[9]).toMatchObject({
-      chartTokensPerMinute: null,
-      chartSpendRate: null,
-      chartFirstTokenAvgMs: 750,
-    });
-    expect(data[10]).toMatchObject({
-      chartTokensPerMinute: 300,
-      chartSpendRate: 0.06,
-      chartFirstTokenAvgMs: 300,
-    });
-    expect(data[11]).toMatchObject({
-      chartTokensPerMinute: null,
-      chartSpendRate: null,
-      chartFirstTokenAvgMs: null,
-    });
-    expect(data.at(-1)).toMatchObject({
-      tokensPerMinute: null,
-      spendRate: null,
-      firstTokenAvgMs: null,
-      chartTokensPerMinute: null,
-      chartSpendRate: null,
-      chartFirstTokenAvgMs: null,
-    });
-  });
-
-  it("does not attach first-byte-total latency to an empty 10-minute anchor minute", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:12:30",
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: "2026-04-08 00:01:00",
-            bucketEnd: "2026-04-08 00:01:59",
-            totalCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalTokens: 1200,
-            totalCost: 0.24,
-            firstTokenSampleCount: 2,
-            firstTokenAvgMs: 450,
-          },
-        ],
-      },
-      {
-        now: new Date(2026, 3, 8, 0, 12, 30),
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[0]).toMatchObject({
-      totalCount: 0,
-      chartFirstTokenAvgMs: null,
-    });
-    expect(data[1]).toMatchObject({
-      totalCount: 2,
-      chartFirstTokenAvgMs: 450,
-    });
-  });
-
-  it("does not display a ten-minute cost total as a per-minute spend rate", () => {
-    const points = Array.from({ length: 10 }, (_, minute) => ({
-      bucketStart: `2026-04-08 03:${String(10 + minute).padStart(2, "0")}:00`,
-      bucketEnd: `2026-04-08 03:${String(10 + minute).padStart(2, "0")}:59`,
-      totalCount: 1,
-      successCount: 1,
-      failureCount: 0,
-      totalTokens: 1_600_000,
-      totalCost: 3.567,
-    }));
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 03:20:00",
-        bucketSeconds: 60,
-        points,
-      },
-      {
-        now: new Date(2026, 3, 8, 3, 20, 0),
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[190]).toMatchObject({
-      chartTokensPerMinute: 1_600_000,
-      chartSpendRate: 3.567,
-    });
-  });
-
-  it("shows in-flight calls in the count tooltip without inferring neutral residuals as running", () => {
-    const html = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={{
-          ...response,
-          points: [
-            {
-              bucketStart: "2026-04-08 00:00:00",
-              bucketEnd: "2026-04-08 00:00:59",
-              totalCount: 5,
-              successCount: 2,
-              failureCount: 1,
-              inFlightCount: 1,
-              totalTokens: 120,
-              totalCost: 0.5,
-            },
-          ],
-        }}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    expect(html).toContain("chart.running");
-    expect(html).toContain("chart.queued");
-    expect(html).toContain("1 unit.calls");
-    expect(html).not.toContain("5 unit.calls");
-  });
-
-  it("omits first-byte-total from a zero-call minute tooltip even when a neighboring minute has latency", () => {
-    const html = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={{
-          rangeStart: "2026-04-08 00:00:00",
-          rangeEnd: "2026-04-08 00:03:22",
-          bucketSeconds: 60,
-          points: [
-            {
-              bucketStart: "2026-04-08 00:01:00",
-              bucketEnd: "2026-04-08 00:01:59",
-              totalCount: 1,
-              successCount: 1,
-              failureCount: 0,
-              totalTokens: 120,
-              totalCost: 0.5,
-              firstTokenSampleCount: 1,
-              firstTokenAvgMs: 450,
-            },
-          ],
-        }}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    expect(html).toContain("0 unit.calls");
-    expect(html).toContain("chart.running");
-    expect(html).toContain("chart.queued");
-    expect(html).toContain("chart.firstToken");
-    expect(html).not.toContain("450 ms");
-  });
-
-  it("drops inconsistent latency samples from zero-call minute data", () => {
-    const data = buildTodayMinuteChartData(
-      {
+  expect(html).toContain("chart.running");
+  expect(html).toContain("chart.queued");
+  expect(html).toContain("1 unit.calls");
+  expect(html).not.toContain("5 unit.calls");
+});
+it("omits first-byte-total from a zero-call minute tooltip even when a neighboring minute has latency", () => {
+  const html = renderToStaticMarkup(
+    <DashboardTodayActivityChart
+      response={{
         rangeStart: "2026-04-08 00:00:00",
         rangeEnd: "2026-04-08 00:03:22",
         bucketSeconds: 60,
@@ -969,647 +561,118 @@ describe("DashboardTodayActivityChart", () => {
           {
             bucketStart: "2026-04-08 00:01:00",
             bucketEnd: "2026-04-08 00:01:59",
-            totalCount: 0,
-            successCount: 0,
+            totalCount: 1,
+            successCount: 1,
             failureCount: 0,
-            inFlightCount: 0,
-            totalTokens: 0,
-            totalCost: 0,
+            totalTokens: 120,
+            totalCost: 0.5,
             firstTokenSampleCount: 1,
-            firstTokenAvgMs: 18225.02,
+            firstTokenAvgMs: 450,
           },
         ],
-      },
-      { now: new Date("2026-04-08T00:03:22") },
-    );
+      }}
+      loading={false}
+      error={null}
+      metric="totalCount"
+    />,
+  );
 
-    expect(data[1]).toMatchObject({
-      totalCount: 0,
-      firstTokenSampleCount: 0,
-      firstTokenAvgMs: null,
-      chartFirstTokenAvgMs: null,
-    });
-  });
-
-  it("overlays first-byte-total latency on the count chart", () => {
-    const html = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={{
-          ...response,
-          points: [
-            {
-              ...response.points[0],
-              firstTokenSampleCount: 1,
-              firstTokenAvgMs: 43890,
-            },
-          ],
-        }}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    expect(html).toContain('data-data-key="chartFirstTokenAvgMs"');
-    expect(html).toContain('data-name="chart.firstToken"');
-    expect(html).toContain('data-stroke-width="1.25"');
-    expect(html).toContain('data-stroke-opacity="0.72"');
-    expect(html).toContain('data-dot="visible"');
-    expect(html).toContain('data-data-length=""');
-  });
-
-  it("renders count mode with success, running, queued, and failure bars sharing one stack", () => {
-    const html = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    expect(html).toContain('data-testid="dashboard-today-activity-chart"');
-    expect(html).toContain('data-chart-mode="count-bars"');
-    expect(html).toContain('data-testid="composed-chart"');
-    expect(html).toContain('data-bar-gap="-100%"');
-    expect(html).toContain('data-stack-offset="sign"');
-    expect(html).toContain('data-data-length="1440"');
-    expect(html).not.toContain('data-testid="area-chart"');
-    expect(html).toContain('data-data-key="chartSuccessCount"');
-    expect(html).toContain('data-data-key="chartRunningInFlightCount"');
-    expect(html).toContain('data-data-key="chartQueuedInFlightCount"');
-    expect(html).toContain('data-data-key="chartFailureCountNegative"');
-    expect(html).toContain('data-bar-size="1"');
-    expect(html).toContain('data-stack-id="positive"');
-    expect(html).toContain('data-domain="0:1439"');
-    expect(html).toContain(
-      'data-stack-id="positive" data-data-key="chartFailureCountNegative" data-bar-size="1" data-radius="" data-has-shape="true"',
-    );
-    expect(html.match(/data-stack-id="positive"/g)).toHaveLength(4);
-    expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
-  });
-
-  it("aggregates dense count data for compact viewports and frees chart width from the latency axis", () => {
-    const restoreViewport = setCompactViewport(true);
-    try {
-      render(
-        <DashboardTodayActivityChart
-          response={response}
-          loading={false}
-          error={null}
-          metric="totalCount"
-        />,
-      );
-
-      expect(
-        host?.querySelector('[data-testid="composed-chart"]')?.getAttribute("data-data-length"),
-      ).toBe("72");
-      expect(host?.querySelectorAll('[data-testid="bar-series"][data-bar-size="4"]')).toHaveLength(
-        4,
-      );
-      expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="latency"]')).toBeNull();
-      expect(host?.querySelector('[data-testid="line-series"]')).toBeNull();
-      expect(
-        host
-          ?.querySelector('[data-testid="y-axis"][data-y-axis-id="count"]')
-          ?.getAttribute("data-negative-tick"),
-      ).toBe("-42");
-    } finally {
-      restoreViewport();
-    }
-  });
-
-  it("zooms horizontally around the wheel pointer and keeps the view clamped", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { ctrlKey: true, deltaY: -600, clientX: 500 });
-    await flushAnimationFrame();
-    const section = chartSection();
-
-    expect(section.dataset.zoomed).toBe("true");
-    expect(Number(section.dataset.visibleSpan)).toBeLessThan(1440);
-    expect(Number(section.dataset.visibleStartIndex)).toBeGreaterThan(0);
-    expect(Number(section.dataset.visibleEndIndex)).toBeLessThan(1439);
-    expect(
-      Number(section.querySelector('[data-testid="bar-series"]')?.getAttribute("data-bar-size")),
-    ).toBeGreaterThan(1);
-    expect(latestChartData).toHaveLength(Number(section.dataset.visibleSpan));
-
-    dispatchWheel(layer, { ctrlKey: true, deltaY: -5000, clientX: 500 });
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleSpan)).toBe(30);
-
-    dispatchWheel(layer, { ctrlKey: true, deltaY: 5000, clientX: 500 });
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleSpan)).toBe(1440);
-    expect(chartSection().dataset.zoomed).toBe("false");
-  });
-
-  it("zooms with ordinary vertical wheel scrolling inside the chart", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    const layer = interactionLayer();
-    const event = dispatchWheel(layer, { deltaY: -600, clientX: 500 });
-
-    expect(event.defaultPrevented).toBe(true);
-    await flushAnimationFrame();
-    expect(chartSection().dataset.zoomed).toBe("true");
-    expect(Number(chartSection().dataset.visibleSpan)).toBeLessThan(1440);
-  });
-
-  it("pans horizontally with trackpad wheel deltas and pointer dragging", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCost"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { ctrlKey: true, deltaY: -700, clientX: 500 });
-    await flushAnimationFrame();
-    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
-
-    const horizontalWheel = dispatchWheel(layer, {
-      deltaX: 260,
-      deltaY: 8,
-      clientX: 500,
-    });
-    expect(horizontalWheel.defaultPrevented).toBe(true);
-    await flushAnimationFrame();
-    const wheelPannedStart = Number(chartSection().dataset.visibleStartIndex);
-    expect(wheelPannedStart).toBeGreaterThan(zoomedStart);
-
-    dispatchPointer(layer, "pointerdown", {
-      button: 0,
-      clientX: 500,
-      pointerId: 8,
-    });
-    dispatchPointer(layer, "pointermove", {
-      clientX: 220,
-      pointerId: 8,
-    });
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(wheelPannedStart);
-    expect(dragLayer().style.transform).toContain("translate3d");
-
-    dispatchPointer(layer, "pointerup", {
-      clientX: 220,
-      pointerId: 8,
-    });
-    await flushAnimationFrame();
-    const draggedStart = Number(chartSection().dataset.visibleStartIndex);
-    expect(draggedStart).toBeGreaterThan(wheelPannedStart);
-
-    dispatchWheel(layer, { deltaX: -100_000, deltaY: 0, clientX: 500 });
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(0);
-  });
-
-  it("axis-locks pointer drags so vertical gestures do not pan the chart", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCost"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { deltaY: -700, clientX: 500 });
-    await flushAnimationFrame();
-    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
-
-    dispatchPointer(layer, "pointerdown", {
-      button: 0,
-      clientX: 500,
-      clientY: 100,
-      pointerId: 12,
-    });
-    dispatchPointer(layer, "pointermove", {
-      clientX: 505,
-      clientY: 180,
-      pointerId: 12,
-    });
-    await flushAnimationFrame();
-
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(zoomedStart);
-    expect(layer.releasePointerCapture).toHaveBeenCalledWith(12);
-  });
-
-  it("keeps horizontal pointer drags locked even with small vertical drift", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCost"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { deltaY: -700, clientX: 500 });
-    await flushAnimationFrame();
-    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
-
-    dispatchPointer(layer, "pointerdown", {
-      button: 0,
-      clientX: 500,
-      clientY: 100,
-      pointerId: 13,
-    });
-    dispatchPointer(layer, "pointermove", {
-      clientX: 220,
-      clientY: 125,
-      pointerId: 13,
-    });
-    await flushAnimationFrame();
-
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(zoomedStart);
-    expect(dragLayer().style.transform).toContain("translate3d");
-
-    dispatchPointer(layer, "pointerup", {
-      clientX: 220,
-      clientY: 125,
-      pointerId: 13,
-    });
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(zoomedStart);
-  });
-
-  it("allows large diagonal pointer drags to pan with the horizontal component", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCost"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { deltaY: -700, clientX: 500 });
-    await flushAnimationFrame();
-    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
-
-    dispatchPointer(layer, "pointerdown", {
-      button: 0,
-      clientX: 500,
-      clientY: 100,
-      pointerId: 14,
-    });
-    dispatchPointer(layer, "pointermove", {
-      clientX: 240,
-      clientY: 340,
-      pointerId: 14,
-    });
-    await flushAnimationFrame();
-
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(zoomedStart);
-    expect(dragLayer().style.transform).toContain("translate3d");
-
-    dispatchPointer(layer, "pointerup", {
-      clientX: 240,
-      clientY: 340,
-      pointerId: 14,
-    });
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(zoomedStart);
-  });
-
-  it("pans when horizontal wheel intent dominates vertical drift", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { ctrlKey: true, deltaY: -700, clientX: 500 });
-    await flushAnimationFrame();
-    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
-
-    const event = dispatchWheel(layer, {
-      deltaX: 120,
-      deltaY: 18,
-      clientX: 500,
-    });
-
-    expect(event.defaultPrevented).toBe(true);
-    await flushAnimationFrame();
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(zoomedStart);
-  });
-
-  it("widens count bars as the viewport zooms in", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { deltaY: -600, clientX: 500 });
-    await flushAnimationFrame();
-
-    const bars = host?.querySelectorAll('[data-testid="bar-series"]');
-    expect(bars?.length).toBe(4);
-    expect(Number(bars?.[0]?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
-  });
-
-  it("applies the same horizontal viewport to trend mode data", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={{
-          rangeStart: "2026-04-08 00:00:00",
-          rangeEnd: "2026-04-08 00:22:00",
-          bucketSeconds: 60,
-          points: Array.from({ length: 22 }, (_, index) => ({
-            bucketStart: `2026-04-08 00:${String(index).padStart(2, "0")}:00`,
-            bucketEnd: `2026-04-08 00:${String(index).padStart(2, "0")}:59`,
-            totalCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalTokens: 1000 + index * 10,
-            totalCost: 0.2 + index * 0.01,
-          })),
-        }}
-        loading={false}
-        error={null}
-        metric="trend"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { ctrlKey: true, deltaY: -800, clientX: 0 });
-    await flushAnimationFrame();
-    const section = chartSection();
-    const visibleStart = Number(section.dataset.visibleStartIndex);
-    const visibleEnd = Number(section.dataset.visibleEndIndex);
-
-    expect(section.dataset.chartMode).toBe("trend-area");
-    expect(latestChartData.length).toBeGreaterThan(0);
-    expect(
-      latestChartData.every(
-        (item) =>
-          typeof item.index === "number" && item.index >= visibleStart && item.index <= visibleEnd,
-      ),
-    ).toBe(true);
-  });
-
-  it("resets the horizontal viewport when the displayed day changes", async () => {
-    render(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    const layer = interactionLayer();
-    dispatchWheel(layer, { ctrlKey: true, deltaY: -700, clientX: 500 });
-    await flushAnimationFrame();
-    expect(chartSection().dataset.zoomed).toBe("true");
-
-    rerender(
-      <DashboardTodayActivityChart
-        response={{
-          ...response,
-          rangeStart: "2026-04-09 00:00:00",
-          rangeEnd: "2026-04-09 00:03:22",
-          points: response.points.map((point) => ({
-            ...point,
-            bucketStart: String(point.bucketStart).replace("2026-04-08", "2026-04-09"),
-            bucketEnd: String(point.bucketEnd).replace("2026-04-08", "2026-04-09"),
-          })),
-        }}
-        loading={false}
-        error={null}
-        metric="totalCount"
-      />,
-    );
-
-    expect(chartSection().dataset.zoomed).toBe("false");
-    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(0);
-    expect(Number(chartSection().dataset.visibleEndIndex)).toBe(1439);
-  });
-
-  it("renders cost and token modes as cumulative area charts", () => {
-    const costHtml = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalCost"
-      />,
-    );
-    const tokenHtml = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalTokens"
-      />,
-    );
-
-    expect(costHtml).toContain('data-chart-mode="cumulative-area"');
-    expect(costHtml).toContain('data-testid="area-chart"');
-    expect(costHtml).not.toContain('data-testid="composed-chart"');
-    expect(costHtml).toContain('data-data-key="chartCumulativeSuccessCost"');
-    expect(costHtml).toContain('data-data-key="chartCumulativeNonSuccessCost"');
-    expect(costHtml).toContain('data-stack-id="cost"');
-    expect(costHtml).toContain('data-name="stats.cards.success"');
-    expect(costHtml).toContain('data-name="chart.nonSuccess"');
-    expect(tokenHtml).toContain('data-chart-mode="cumulative-area"');
-    expect(tokenHtml).toContain('data-testid="area-chart"');
-    expect(tokenHtml).toContain('data-data-key="chartCumulativeTokens"');
-  });
-
-  it("builds mutually exclusive cumulative token layers and weighted rolling cache rates", () => {
-    const data = buildTodayMinuteChartData(tokenBreakdownResponse, {
-      now: new Date("2026-04-08T00:03:22"),
-      localeTag: "en-US",
-    });
-    const point = data[2];
-
-    expect(point.cumulativeCacheReadTokens).toBe(150);
-    expect(point.cumulativeCacheWriteTokens).toBe(70);
-    expect(point.cumulativeOutputTokens).toBe(70);
-    expect(point.cumulativeReasoningTokens).toBe(30);
-    expect(
-      (point.cumulativeCacheReadTokens ?? 0) +
-        (point.cumulativeCacheWriteTokens ?? 0) +
-        (point.cumulativeOutputTokens ?? 0) +
-        (point.cumulativeReasoningTokens ?? 0),
-    ).toBe(point.cumulativeTokens);
-    expect(point.cacheHitRate).toBeCloseTo(150 / 320, 8);
-    expect(point.hourlyCacheHitRate).toBeCloseTo(150 / 320, 8);
-  });
-
-  it("uses the current minute and previous 59 minutes for the hourly cache reference", () => {
-    const hourlyResponse = {
-      ...tokenBreakdownResponse,
-      rangeEnd: "2026-04-08 01:00:22",
+  expect(html).toContain("0 unit.calls");
+  expect(html).toContain("chart.running");
+  expect(html).toContain("chart.queued");
+  expect(html).toContain("chart.firstToken");
+  expect(html).not.toContain("450 ms");
+});
+it("drops inconsistent latency samples from zero-call minute data", () => {
+  const data = buildTodayMinuteChartData(
+    {
+      rangeStart: "2026-04-08 00:00:00",
+      rangeEnd: "2026-04-08 00:03:22",
+      bucketSeconds: 60,
       points: [
         {
-          ...tokenBreakdownResponse.points[0],
-          bucketStart: "2026-04-08 00:05:00",
-          bucketEnd: "2026-04-08 00:05:59",
-          totalTokens: 100,
-          inputTokens: 80,
-          outputTokens: 20,
-          cacheInputTokens: 0,
-          reasoningTokens: 0,
-        },
-        {
-          ...tokenBreakdownResponse.points[1],
-          bucketStart: "2026-04-08 01:00:00",
-          bucketEnd: "2026-04-08 01:00:59",
-          totalTokens: 100,
-          inputTokens: 80,
-          outputTokens: 20,
-          cacheInputTokens: 80,
-          reasoningTokens: 0,
+          bucketStart: "2026-04-08 00:01:00",
+          bucketEnd: "2026-04-08 00:01:59",
+          totalCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          inFlightCount: 0,
+          totalTokens: 0,
+          totalCost: 0,
+          firstTokenSampleCount: 1,
+          firstTokenAvgMs: 18225.02,
         },
       ],
-    };
-    const data = buildTodayMinuteChartData(hourlyResponse, {
-      now: new Date("2026-04-08T01:00:22"),
-      localeTag: "en-US",
-    });
-    const point = data[60];
+    },
+    { now: new Date("2026-04-08T00:03:22") },
+  );
 
-    expect(point.cacheHitRate).toBeCloseTo(0.8, 8);
-    expect(point.hourlyCacheHitRate).toBeCloseTo(0.4, 8);
-    expect(data[61]?.hourlyCacheHitRate).toBeNull();
+  expect(data[1]).toMatchObject({
+    totalCount: 0,
+    firstTokenSampleCount: 0,
+    firstTokenAvgMs: null,
+    chartFirstTokenAvgMs: null,
   });
+});
+it("overlays first-byte-total latency on the count chart", () => {
+  const html = renderToStaticMarkup(
+    <DashboardTodayActivityChart
+      response={{
+        ...response,
+        points: [
+          {
+            ...response.points[0],
+            firstTokenSampleCount: 1,
+            firstTokenAvgMs: 43890,
+          },
+        ],
+      }}
+      loading={false}
+      error={null}
+      metric="totalCount"
+    />,
+  );
 
-  it("clamps negative reasoning without discarding an otherwise reconciled breakdown", () => {
-    const data = buildTodayMinuteChartData(invalidReasoningBreakdownResponse, {
-      now: new Date("2026-04-08T00:03:22"),
-      localeTag: "en-US",
-    });
+  expect(html).toContain('data-data-key="chartFirstTokenAvgMs"');
+  expect(html).toContain('data-name="chart.firstToken"');
+  expect(html).toContain('data-stroke-width="1.25"');
+  expect(html).toContain('data-stroke-opacity="0.72"');
+  expect(html).toContain('data-dot="visible"');
+  expect(html).toContain('data-data-length=""');
+});
+it("renders count mode with success, running, queued, and failure bars sharing one stack", () => {
+  const html = renderToStaticMarkup(
+    <DashboardTodayActivityChart
+      response={response}
+      loading={false}
+      error={null}
+      metric="totalCount"
+    />,
+  );
 
-    expect(data[0]).toMatchObject({
-      cumulativeOutputTokens: 40,
-      cumulativeReasoningTokens: 0,
-    });
-    expect(data[0]?.chartCumulativeCacheReadTokens).not.toBeNull();
-  });
-
-  it("renders four token areas and both disconnected cache-rate lines only for today", () => {
-    const todayHtml = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={tokenBreakdownResponse}
-        loading={false}
-        error={null}
-        metric="totalTokens"
-      />,
-    );
-    const yesterdayHtml = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={tokenBreakdownResponse}
-        loading={false}
-        error={null}
-        metric="totalTokens"
-        closedNaturalDay
-      />,
-    );
-
-    expect(todayHtml).toContain('data-testid="composed-chart"');
-    expect(todayHtml.match(/data-stack-id="tokens"/g)).toHaveLength(4);
-    expect(todayHtml).toContain('data-data-key="chartCumulativeCacheReadTokens"');
-    expect(todayHtml).toContain('data-data-key="chartCumulativeCacheWriteTokens"');
-    expect(todayHtml).toContain('data-data-key="chartCumulativeOutputTokens"');
-    expect(todayHtml).toContain('data-data-key="chartCumulativeReasoningTokens"');
-    expect(todayHtml).toContain('data-data-key="chartCacheHitRate"');
-    expect(todayHtml).toContain('data-data-key="chartHourlyCacheHitRate"');
-    expect(todayHtml).toContain('data-y-axis-id="cacheHitRate"');
-    expect(todayHtml).toContain('data-connect-nulls="false"');
-    expect(yesterdayHtml).not.toContain('data-data-key="chartCacheHitRate"');
-    expect(yesterdayHtml).not.toContain('data-data-key="chartHourlyCacheHitRate"');
-    expect(yesterdayHtml).not.toContain('data-y-axis-id="cacheHitRate"');
-  });
-
-  it("falls back to the original total-token area for legacy or unreconciled points", () => {
-    const legacyHtml = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="totalTokens"
-      />,
-    );
-    const unreconciled = {
-      ...tokenBreakdownResponse,
-      points: tokenBreakdownResponse.points.map((point, index) =>
-        index === 0 ? { ...point, outputTokens: point.outputTokens + 1 } : point,
-      ),
-    };
-    const unreconciledHtml = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={unreconciled}
-        loading={false}
-        error={null}
-        metric="totalTokens"
-      />,
-    );
-    for (const html of [legacyHtml, unreconciledHtml]) {
-      expect(html).toContain('data-testid="area-chart"');
-      expect(html).toContain('data-data-key="chartCumulativeTokens"');
-      expect(html).not.toContain('data-stack-id="tokens"');
-      expect(html).not.toContain('data-data-key="chartCacheHitRate"');
-      expect(html).not.toContain('data-data-key="chartHourlyCacheHitRate"');
-    }
-  });
-
-  it("renders trend mode as 10-minute TPM and spend-rate area charts", () => {
-    const html = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="trend"
-      />,
-    );
-
-    expect(html).toContain('data-chart-mode="trend-area"');
-    expect(html).toContain('data-testid="composed-chart"');
-    expect(html).toContain('data-testid="area-series"');
-    expect(html).toContain('data-data-key="chartTokensPerMinute"');
-    expect(html).toContain('data-data-key="chartSpendRate"');
-    expect(html).toContain('data-y-axis-id="tokens"');
-    expect(html).toContain('data-y-axis-id="spend"');
-    expect(html).toContain('data-name="chart.tokensPerMinute"');
-    expect(html).toContain('data-name="chart.spendRate"');
-    expect(html).not.toContain('data-testid="line-series" data-data-key="chartTokensPerMinute"');
-  });
-
-  it("starts chart diagnostics immediately after toggling debug on in an open tab", () => {
+  expect(html).toContain('data-testid="dashboard-today-activity-chart"');
+  expect(html).toContain('data-chart-mode="count-bars"');
+  expect(html).toContain('data-testid="composed-chart"');
+  expect(html).toContain('data-bar-gap="-100%"');
+  expect(html).toContain('data-stack-offset="sign"');
+  expect(html).toContain('data-data-length="1440"');
+  expect(html).not.toContain('data-testid="area-chart"');
+  expect(html).toContain('data-data-key="chartSuccessCount"');
+  expect(html).toContain('data-data-key="chartRunningInFlightCount"');
+  expect(html).toContain('data-data-key="chartQueuedInFlightCount"');
+  expect(html).toContain('data-data-key="chartFailureCountNegative"');
+  expect(html).toContain('data-bar-size="1"');
+  expect(html).toContain('data-stack-id="positive"');
+  expect(html).toContain('data-domain="0:1439"');
+  expect(html).toContain(
+    'data-stack-id="positive" data-data-key="chartFailureCountNegative" data-bar-size="1" data-radius="" data-has-shape="true"',
+  );
+  expect(html.match(/data-stack-id="positive"/g)).toHaveLength(4);
+  expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
+});
+it("aggregates dense count data for compact viewports and frees chart width from the latency axis", () => {
+  const restoreViewport = setCompactViewport(true);
+  try {
     render(
       <DashboardTodayActivityChart
         response={response}
@@ -1619,12 +682,19 @@ describe("DashboardTodayActivityChart", () => {
       />,
     );
 
-    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(0);
-
-    act(() => {
-      window.localStorage.setItem(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY, "1");
-    });
-
-    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(1);
-  });
+    expect(
+      host?.querySelector('[data-testid="composed-chart"]')?.getAttribute("data-data-length"),
+    ).toBe("72");
+    expect(host?.querySelectorAll('[data-testid="bar-series"][data-bar-size="4"]')).toHaveLength(4);
+    expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="latency"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="line-series"]')).toBeNull();
+    expect(
+      host
+        ?.querySelector('[data-testid="y-axis"][data-y-axis-id="count"]')
+        ?.getAttribute("data-negative-tick"),
+    ).toBe("-42");
+  } finally {
+    restoreViewport();
+  }
 });
+/** @vitest-environment jsdom */

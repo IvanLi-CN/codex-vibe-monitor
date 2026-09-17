@@ -17,16 +17,13 @@ import RecordsPage from "./Records";
 const hookMocks = vi.hoisted(() => ({
   useInvocationRecords: vi.fn(),
 }));
-
 const apiMocks = vi.hoisted(() => ({
   fetchInvocationRecordLocation: vi.fn<() => Promise<InvocationRecordLocationResponse>>(),
   fetchInvocationSuggestions: vi.fn<() => Promise<InvocationSuggestionsResponse>>(),
 }));
-
 vi.mock("../hooks/useInvocationRecords", () => ({
   useInvocationRecords: hookMocks.useInvocationRecords,
 }));
-
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
@@ -35,7 +32,6 @@ vi.mock("../lib/api", async () => {
     fetchInvocationSuggestions: apiMocks.fetchInvocationSuggestions,
   };
 });
-
 vi.mock("../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
@@ -58,10 +54,8 @@ vi.mock("../i18n", () => ({
     },
   }),
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -109,7 +103,6 @@ beforeAll(() => {
     });
   }
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -120,7 +113,6 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
 });
-
 function render(ui: React.ReactNode, initialEntries?: string[]) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -129,14 +121,12 @@ function render(ui: React.ReactNode, initialEntries?: string[]) {
     root?.render(<MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>);
   });
 }
-
 function rerender(ui: React.ReactNode) {
   act(() => {
     root?.render(<MemoryRouter>{ui}</MemoryRouter>);
   });
 }
-
-function getSelectTrigger(label: string) {
+function _getSelectTrigger(label: string) {
   const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement && candidate.getAttribute("aria-label") === label,
@@ -146,14 +136,12 @@ function getSelectTrigger(label: string) {
   }
   return trigger;
 }
-
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
-
 function createSummary(): InvocationRecordsSummaryResponse {
   return {
     snapshotId: 42,
@@ -185,7 +173,6 @@ function createSummary(): InvocationRecordsSummaryResponse {
     },
   };
 }
-
 function createSuggestions(
   overrides: Partial<InvocationSuggestionsResponse> = {},
 ): InvocationSuggestionsResponse {
@@ -206,7 +193,6 @@ function createSuggestions(
     ...overrides,
   };
 }
-
 function mockInvocationRecords(
   overrides: Partial<ReturnType<typeof hookMocks.useInvocationRecords>> = {},
 ) {
@@ -241,7 +227,6 @@ function mockInvocationRecords(
     ...overrides,
   });
 }
-
 function openFilters() {
   const button = host?.querySelector('[data-testid="records-open-filters"]');
   if (!(button instanceof HTMLButtonElement)) {
@@ -256,7 +241,6 @@ function openFilters() {
   }
   return drawer;
 }
-
 function getNewDataButton() {
   const button = host?.querySelector('[data-testid="records-new-data-button"]');
   if (!(button instanceof HTMLButtonElement)) {
@@ -264,7 +248,6 @@ function getNewDataButton() {
   }
   return button;
 }
-
 function getNewDataLabel(testId: "records-new-data-label-idle" | "records-new-data-label-action") {
   const label = host?.querySelector(`[data-testid="${testId}"]`);
   if (!(label instanceof HTMLSpanElement)) {
@@ -272,267 +255,6 @@ function getNewDataLabel(testId: "records-new-data-label-idle" | "records-new-da
   }
   return label;
 }
-
-describe("RecordsPage suggestions", () => {
-  function openModelSelector() {
-    const fieldTrigger = document.body.querySelector(
-      '[data-testid="records-filter-model-selection-trigger"]',
-    );
-    if (!(fieldTrigger instanceof HTMLButtonElement)) {
-      throw new Error("missing model filter field trigger");
-    }
-    act(() => {
-      fieldTrigger.click();
-    });
-
-    const trigger = document.body.querySelector(
-      'button[role="combobox"][aria-label="records.filters.model"]',
-    );
-    if (!(trigger instanceof HTMLButtonElement)) {
-      throw new Error("missing model selector trigger");
-    }
-    act(() => {
-      trigger.click();
-    });
-    return trigger;
-  }
-
-  it("does not render the removed proxy filter control", () => {
-    mockInvocationRecords();
-
-    render(<RecordsPage />);
-    openFilters();
-
-    expect(document.body.querySelector("#records-filter-proxy")).toBeNull();
-    expect(document.body.querySelector('input[name="proxy"]')).toBeNull();
-  });
-
-  it("disables browser native autocomplete for filter controls", () => {
-    mockInvocationRecords();
-
-    render(<RecordsPage />);
-    openFilters();
-
-    const rangePresetSelect = document.body.querySelector('select[name="rangePreset"]');
-    const timeRangeField = document.body.querySelector('[data-testid="records-filter-time-range"]');
-    const keywordInput = document.body.querySelector('input[name="keyword"]');
-    const totalTokensRange = document.body.querySelector(
-      '[data-testid="records-filter-total-tokens-range-slider"]',
-    );
-
-    if (!(timeRangeField instanceof HTMLElement)) {
-      throw new Error("missing time range field");
-    }
-    if (!(keywordInput instanceof HTMLInputElement)) {
-      throw new Error("missing keyword input");
-    }
-    if (!(totalTokensRange instanceof HTMLElement)) {
-      throw new Error("missing total tokens range slider");
-    }
-
-    openModelSelector();
-    const modelInput = document.body.querySelector(
-      '[cmdk-input][aria-label="records.filters.model"]',
-    );
-    if (!(modelInput instanceof HTMLInputElement)) {
-      throw new Error("missing model input");
-    }
-
-    expect(modelInput.autocomplete).toBe("off");
-    expect(modelInput.getAttribute("autocorrect")).toBe("off");
-    expect(modelInput.getAttribute("autocapitalize")).toBe("none");
-    expect(modelInput.getAttribute("spellcheck")).toBe("false");
-    expect(rangePresetSelect).toBeNull();
-    expect(timeRangeField.textContent ?? "").toContain("records.filters.rangePreset.today");
-    const timeRangeTrigger = timeRangeField.querySelector("button");
-    if (!(timeRangeTrigger instanceof HTMLButtonElement)) {
-      throw new Error("missing time range trigger");
-    }
-    act(() => {
-      timeRangeTrigger.click();
-    });
-    const customFromInput = document.body.querySelector('input[name="customFrom"]');
-    if (!(customFromInput instanceof HTMLInputElement)) {
-      throw new Error("missing custom from input");
-    }
-    expect(customFromInput.autocomplete).toBe("off");
-    expect(keywordInput.autocomplete).toBe("off");
-    expect(keywordInput.getAttribute("autocorrect")).toBe("off");
-    expect(keywordInput.getAttribute("autocapitalize")).toBe("none");
-    expect(keywordInput.getAttribute("spellcheck")).toBe("false");
-    expect(document.body.querySelector('input[name="minTotalTokens"]')).toBeNull();
-  });
-
-  it("loads suggestions lazily after a combobox opens", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchInvocationSuggestions.mockResolvedValue(createSuggestions());
-    mockInvocationRecords();
-
-    render(<RecordsPage />);
-    openFilters();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    await flushAsync();
-    expect(apiMocks.fetchInvocationSuggestions).not.toHaveBeenCalled();
-
-    openModelSelector();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(
-      expect.objectContaining({ snapshotId: 84, suggestField: "requestModel" }),
-    );
-  });
-
-  it("ignores stale suggestions after the combobox closes", async () => {
-    vi.useFakeTimers();
-
-    let resolveFirst: ((value: InvocationSuggestionsResponse) => void) | null = null;
-    apiMocks.fetchInvocationSuggestions
-      .mockImplementationOnce(
-        () =>
-          new Promise<InvocationSuggestionsResponse>((resolve) => {
-            resolveFirst = resolve;
-          }),
-      )
-      .mockResolvedValueOnce(
-        createSuggestions({
-          requestModel: {
-            items: [{ value: "alp-fresh", count: 3 }],
-            hasMore: false,
-          },
-        }),
-      );
-
-    mockInvocationRecords();
-
-    render(<RecordsPage />);
-    openFilters();
-    const drawer = document.body.querySelector('[data-testid="records-filters-drawer"]');
-    if (!(drawer instanceof HTMLDivElement)) {
-      throw new Error("missing filters drawer");
-    }
-
-    openModelSelector();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    await flushAsync();
-    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1);
-
-    const keywordInput = document.body.querySelector('input[name="keyword"]');
-    if (!(keywordInput instanceof HTMLInputElement)) {
-      throw new Error("missing keyword input");
-    }
-    act(() => {
-      keywordInput.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      keywordInput.focus();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    await flushAsync();
-    expect(drawer.dataset.suggestionsOpen).toBe("false");
-
-    act(() => {
-      resolveFirst?.(
-        createSuggestions({
-          requestModel: {
-            items: [{ value: "alp-stale", count: 1 }],
-            hasMore: false,
-          },
-        }),
-      );
-    });
-    await flushAsync();
-
-    openModelSelector();
-    expect(drawer.dataset.suggestionsOpen).toBe("true");
-    await act(async () => {
-      await Promise.resolve();
-    });
-    await flushAsync();
-
-    expect(document.body.textContent).not.toContain("alp-stale");
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(2);
-    expect(document.body.textContent).toContain("alp-fresh");
-    expect(document.body.textContent).not.toContain("alp-stale");
-  });
-
-  it("keeps filter suggestions inside the drawer without changing page surface layering", async () => {
-    vi.useFakeTimers();
-    apiMocks.fetchInvocationSuggestions.mockResolvedValue(
-      createSuggestions({
-        promptCacheKey: {
-          items: [{ value: "pck-open-1", count: 2 }],
-          hasMore: false,
-        },
-      }),
-    );
-    mockInvocationRecords({
-      draft: {
-        ...createDefaultInvocationRecordsDraft(),
-        ...createDefaultCustomRange(),
-        promptCacheKey: "pck",
-      },
-    });
-
-    render(<RecordsPage />);
-
-    const summaryPanel = host?.querySelector('[data-testid="records-summary-panel"]');
-    if (!(summaryPanel instanceof HTMLElement)) {
-      throw new Error("missing panel anchors");
-    }
-
-    expect(document.body.querySelector('[data-testid="records-filters-drawer"]')).toBeNull();
-    const filtersDrawer = openFilters();
-    expect(filtersDrawer.dataset.suggestionsOpen).toBe("false");
-    expect(filtersDrawer.closest('[role="dialog"]')).not.toBeNull();
-
-    const input = document.body.querySelector("#records-filter-prompt-cache-key");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("missing prompt cache key input");
-    }
-
-    act(() => {
-      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      input.focus();
-    });
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    await flushAsync();
-
-    expect(summaryPanel.className).toBe("surface-panel");
-
-    act(() => {
-      input.blur();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    await flushAsync();
-
-    expect(host?.querySelector('[data-testid="records-filters-panel"]')?.className).toBe(
-      "surface-panel",
-    );
-  });
-});
-
 describe("RecordsPage filter drawer", () => {
   it("keeps draft controls out of the page flow and summarizes only applied filters", () => {
     const baseDraft = {
@@ -618,421 +340,657 @@ describe("RecordsPage filter drawer", () => {
     );
   });
 });
-
-describe("RecordsPage new data action", () => {
-  it("renders the new data button and switches to the refresh call-to-action on focus", async () => {
-    mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
-    });
-
-    render(<RecordsPage />);
-
-    const button = getNewDataButton();
-    const idleLabel = getNewDataLabel("records-new-data-label-idle");
-    const actionLabel = getNewDataLabel("records-new-data-label-action");
-
-    expect(button.dataset.state).toBe("idle");
-    expect(button.dataset.icon).toBe("help");
-    expect(idleLabel.textContent).toBe("有 9 条新数据");
-    expect(idleLabel.className).toContain("opacity-100");
-    expect(actionLabel.className).toContain("opacity-0");
-    expect(button.className).toContain("border-warning/35");
-    expect(button.getAttribute("aria-label")).toBe("有 9 条新数据，点击后会并入当前快照。");
-
-    act(() => {
-      button.focus();
-    });
-    await flushAsync();
-
-    expect(button.dataset.state).toBe("interactive");
-    expect(button.dataset.icon).toBe("help");
-    expect(idleLabel.className).toContain("opacity-0");
-    expect(actionLabel.textContent).toBe("加载新数据");
-    expect(actionLabel.className).toContain("opacity-100");
-    expect(button.className).toContain("border-primary/35");
-    expect(button.getAttribute("aria-label")).toBe("加载这 9 条新数据并刷新当前快照。");
-
-    act(() => {
-      button.blur();
-    });
-    await flushAsync();
-
-    expect(button.dataset.state).toBe("idle");
-    expect(idleLabel.className).toContain("opacity-100");
-    expect(actionLabel.className).toContain("opacity-0");
+function openModelSelector() {
+  const fieldTrigger = document.body.querySelector(
+    '[data-testid="records-filter-model-selection-trigger"]',
+  );
+  if (!(fieldTrigger instanceof HTMLButtonElement)) {
+    throw new Error("missing model filter field trigger");
+  }
+  act(() => {
+    fieldTrigger.click();
   });
 
-  it("triggers search once and shows a spinning refresh state while the refresh is pending", async () => {
-    vi.useFakeTimers();
-    let resolveSearch: (() => void) | null = null;
-    const search = vi.fn(
+  const trigger = document.body.querySelector(
+    'button[role="combobox"][aria-label="records.filters.model"]',
+  );
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error("missing model selector trigger");
+  }
+  act(() => {
+    trigger.click();
+  });
+  return trigger;
+}
+it("does not render the removed proxy filter control", () => {
+  mockInvocationRecords();
+
+  render(<RecordsPage />);
+  openFilters();
+
+  expect(document.body.querySelector("#records-filter-proxy")).toBeNull();
+  expect(document.body.querySelector('input[name="proxy"]')).toBeNull();
+});
+it("disables browser native autocomplete for filter controls", () => {
+  mockInvocationRecords();
+
+  render(<RecordsPage />);
+  openFilters();
+
+  const rangePresetSelect = document.body.querySelector('select[name="rangePreset"]');
+  const timeRangeField = document.body.querySelector('[data-testid="records-filter-time-range"]');
+  const keywordInput = document.body.querySelector('input[name="keyword"]');
+  const totalTokensRange = document.body.querySelector(
+    '[data-testid="records-filter-total-tokens-range-slider"]',
+  );
+
+  if (!(timeRangeField instanceof HTMLElement)) {
+    throw new Error("missing time range field");
+  }
+  if (!(keywordInput instanceof HTMLInputElement)) {
+    throw new Error("missing keyword input");
+  }
+  if (!(totalTokensRange instanceof HTMLElement)) {
+    throw new Error("missing total tokens range slider");
+  }
+
+  openModelSelector();
+  const modelInput = document.body.querySelector(
+    '[cmdk-input][aria-label="records.filters.model"]',
+  );
+  if (!(modelInput instanceof HTMLInputElement)) {
+    throw new Error("missing model input");
+  }
+
+  expect(modelInput.autocomplete).toBe("off");
+  expect(modelInput.getAttribute("autocorrect")).toBe("off");
+  expect(modelInput.getAttribute("autocapitalize")).toBe("none");
+  expect(modelInput.getAttribute("spellcheck")).toBe("false");
+  expect(rangePresetSelect).toBeNull();
+  expect(timeRangeField.textContent ?? "").toContain("records.filters.rangePreset.today");
+  const timeRangeTrigger = timeRangeField.querySelector("button");
+  if (!(timeRangeTrigger instanceof HTMLButtonElement)) {
+    throw new Error("missing time range trigger");
+  }
+  act(() => {
+    timeRangeTrigger.click();
+  });
+  const customFromInput = document.body.querySelector('input[name="customFrom"]');
+  if (!(customFromInput instanceof HTMLInputElement)) {
+    throw new Error("missing custom from input");
+  }
+  expect(customFromInput.autocomplete).toBe("off");
+  expect(keywordInput.autocomplete).toBe("off");
+  expect(keywordInput.getAttribute("autocorrect")).toBe("off");
+  expect(keywordInput.getAttribute("autocapitalize")).toBe("none");
+  expect(keywordInput.getAttribute("spellcheck")).toBe("false");
+  expect(document.body.querySelector('input[name="minTotalTokens"]')).toBeNull();
+});
+it("loads suggestions lazily after a combobox opens", async () => {
+  vi.useFakeTimers();
+  apiMocks.fetchInvocationSuggestions.mockResolvedValue(createSuggestions());
+  mockInvocationRecords();
+
+  render(<RecordsPage />);
+  openFilters();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  await flushAsync();
+  expect(apiMocks.fetchInvocationSuggestions).not.toHaveBeenCalled();
+
+  openModelSelector();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  await flushAsync();
+
+  expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1);
+  expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledWith(
+    expect.objectContaining({ snapshotId: 84, suggestField: "requestModel" }),
+  );
+});
+it("ignores stale suggestions after the combobox closes", async () => {
+  vi.useFakeTimers();
+
+  let resolveFirst: ((value: InvocationSuggestionsResponse) => void) | null = null;
+  apiMocks.fetchInvocationSuggestions
+    .mockImplementationOnce(
       () =>
-        new Promise<void>((resolve) => {
-          resolveSearch = resolve;
+        new Promise<InvocationSuggestionsResponse>((resolve) => {
+          resolveFirst = resolve;
         }),
+    )
+    .mockResolvedValueOnce(
+      createSuggestions({
+        requestModel: {
+          items: [{ value: "alp-fresh", count: 3 }],
+          hasMore: false,
+        },
+      }),
     );
 
-    mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
-      search,
-    });
+  mockInvocationRecords();
 
-    render(<RecordsPage />);
+  render(<RecordsPage />);
+  openFilters();
+  const drawer = document.body.querySelector('[data-testid="records-filters-drawer"]');
+  if (!(drawer instanceof HTMLDivElement)) {
+    throw new Error("missing filters drawer");
+  }
 
-    const button = getNewDataButton();
-    const idleLabel = getNewDataLabel("records-new-data-label-idle");
-    const actionLabel = getNewDataLabel("records-new-data-label-action");
+  openModelSelector();
 
-    act(() => {
-      button.click();
-    });
-    await flushAsync();
-
-    expect(search).toHaveBeenCalledTimes(1);
-    expect(search).toHaveBeenCalledWith({
-      source: "applied",
-      preserveSummary: true,
-    });
-    expect(button.disabled).toBe(true);
-    expect(button.dataset.state).toBe("loading");
-    expect(button.dataset.icon).toBe("refresh");
-    expect(button.className).toContain("border-primary/35");
-    expect(idleLabel.className).toContain("opacity-0");
-    expect(actionLabel.className).toContain("opacity-100");
-    expect(actionLabel.textContent).toBe("加载新数据");
-    expect(button.getAttribute("aria-label")).toBe("正在加载这 9 条新数据并刷新当前快照。");
-
-    act(() => {
-      button.click();
-    });
-    await flushAsync();
-
-    expect(search).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      resolveSearch?.();
-    });
-    await flushAsync();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(600);
-    });
-    await flushAsync();
-
-    expect(button.disabled).toBe(false);
-    expect(button.dataset.state).toBe("idle");
-    expect(button.dataset.icon).toBe("help");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
   });
+  await flushAsync();
+  expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(1);
 
-  it("keeps the loading state visible briefly even when refresh resolves immediately", async () => {
-    vi.useFakeTimers();
-    const search = vi.fn(() => Promise.resolve());
-
-    mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
-      search,
-    });
-
-    render(<RecordsPage />);
-
-    const button = getNewDataButton();
-
-    act(() => {
-      button.click();
-    });
-    await flushAsync();
-
-    expect(search).toHaveBeenCalledTimes(1);
-    expect(button.dataset.state).toBe("loading");
-    expect(button.disabled).toBe(true);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(599);
-    });
-    await flushAsync();
-
-    expect(button.dataset.state).toBe("loading");
-    expect(button.disabled).toBe(true);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    await flushAsync();
-
-    expect(button.dataset.state).toBe("idle");
-    expect(button.disabled).toBe(false);
+  const keywordInput = document.body.querySelector('input[name="keyword"]');
+  if (!(keywordInput instanceof HTMLInputElement)) {
+    throw new Error("missing keyword input");
+  }
+  act(() => {
+    keywordInput.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    keywordInput.focus();
   });
-
-  it("keeps the new-data button mounted during the minimum loading delay even after the count resets", async () => {
-    vi.useFakeTimers();
-
-    const search = vi.fn(() => Promise.resolve());
-    let state = {
-      draft: {
-        ...createDefaultInvocationRecordsDraft(),
-        ...createDefaultCustomRange(),
-        models: ["alp"],
-      },
-      focus: "token",
-      page: 1,
-      pageSize: 20,
-      sortBy: "occurredAt",
-      sortOrder: "desc",
-      records: { snapshotId: 42, total: 0, page: 1, pageSize: 20, records: [] },
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
-      recordsError: null,
-      summaryError: null,
-      isSearching: false,
-      isRecordsLoading: false,
-      isSummaryLoading: false,
-      updateDraft: vi.fn(),
-      resetDraft: vi.fn(),
-      setFocus: vi.fn(),
-      search,
-      setPage: vi.fn(),
-      setPageSize: vi.fn(),
-      setSort: vi.fn(),
-    };
-
-    hookMocks.useInvocationRecords.mockImplementation(() => state);
-
-    render(<RecordsPage />);
-
-    act(() => {
-      getNewDataButton().click();
-    });
-    await flushAsync();
-
-    state = {
-      ...state,
-      records: { ...state.records, snapshotId: 84 },
-      summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 0 },
-    };
-    rerender(<RecordsPage />);
-    await flushAsync();
-
-    expect(getNewDataButton().dataset.state).toBe("loading");
-    expect(getNewDataButton().textContent).toContain("加载新数据");
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(600);
-    });
-    await flushAsync();
-
-    rerender(<RecordsPage />);
-    await flushAsync();
-
-    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
   });
+  await flushAsync();
+  expect(drawer.dataset.suggestionsOpen).toBe("false");
 
-  it("hides stale summary metrics while a refreshed snapshot summary is still loading", () => {
-    mockInvocationRecords({
-      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
-      summary: {
-        ...createSummary(),
-        snapshotId: 42,
-        token: {
-          ...createSummary().token,
-          requestCount: 999,
+  act(() => {
+    resolveFirst?.(
+      createSuggestions({
+        requestModel: {
+          items: [{ value: "alp-stale", count: 1 }],
+          hasMore: false,
         },
-      },
-      isSummaryLoading: true,
-    });
-
-    render(<RecordsPage />);
-
-    expect(host?.textContent).toContain("…");
-    expect(host?.textContent).not.toContain("999");
-  });
-
-  it("hides the new-data CTA after a refreshed list lands if the preserved summary is stale", () => {
-    mockInvocationRecords({
-      records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
-      summaryError: "summary failed",
-      isSummaryLoading: false,
-    });
-
-    render(<RecordsPage />);
-
-    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
-  });
-
-  it("hides the new-data CTA during a normal search even if the old summary still reports pending records", () => {
-    mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
-      isSearching: true,
-    });
-
-    render(<RecordsPage />);
-
-    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
-  });
-
-  it("hides the new data button when there is no pending new data", () => {
-    mockInvocationRecords({
-      summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 0 },
-    });
-
-    render(<RecordsPage />);
-
-    expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
-  });
-
-  it("shows short invoke and attempt ID filters without legacy request or sticky key fields", () => {
-    mockInvocationRecords();
-
-    render(<RecordsPage />);
-    openFilters();
-
-    expect(document.body.textContent ?? "").toContain("records.filters.invokeId");
-    expect(document.body.textContent ?? "").toContain("records.filters.attemptId");
-    expect(document.body.textContent ?? "").not.toContain("records.filters.requestId");
-    expect(document.body.textContent ?? "").not.toContain("records.filters.stickyKey");
-    expect(document.body.querySelector('input[name="invokeId"]')).toBeTruthy();
-    expect(document.body.querySelector('input[name="attemptId"]')).toBeTruthy();
-    expect(document.body.querySelector('input[name="requestId"]')).toBeNull();
-    expect(document.body.querySelector('[name="stickyKey"]')).toBeNull();
-  });
-
-  it("removes the redundant drawer description and shows slider range summaries", () => {
-    mockInvocationRecords({
-      draft: {
-        ...createDefaultInvocationRecordsDraft(),
-        ...createDefaultCustomRange(),
-        minTotalTokens: "2400",
-        maxTotalTokens: "6400",
-        minTotalMs: "125.5",
-        maxTotalMs: "800.5",
-      },
-      summary: {
-        ...createSummary(),
-        snapshotId: 42,
-        token: {
-          ...createSummary().token,
-          maxTokensPerRequest: 12000,
-        },
-        network: {
-          ...createSummary().network,
-          maxTotalMs: 2400,
-        },
-      },
-    });
-
-    render(<RecordsPage />);
-    openFilters();
-
-    expect(document.body.textContent ?? "").not.toContain("records.filters.description");
-    expect(document.body.textContent ?? "").toContain("2,400 - 6,400 TOKENS");
-    expect(document.body.textContent ?? "").toContain("125.5 - 800.5 MS");
-  });
-
-  it("updates the invocation ID draft filter from the new input", () => {
-    const updateDraft = vi.fn();
-    mockInvocationRecords({
-      draft: {
-        ...createDefaultInvocationRecordsDraft(),
-        ...createDefaultCustomRange(),
-        invokeId: "",
-      },
-      updateDraft,
-    });
-
-    render(<RecordsPage />);
-    openFilters();
-
-    const input = document.body.querySelector('input[name="invokeId"]');
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("missing invocation ID input");
-    }
-
-    act(() => {
-      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      valueSetter?.call(input, "invoke-xyz");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-xyz");
-  });
-
-  it("resets stale filters before searching an invocation ID deep link", async () => {
-    const resetDraft = vi.fn();
-    const updateDraft = vi.fn();
-    const search = vi.fn();
-    mockInvocationRecords({ resetDraft, updateDraft, search });
-
-    vi.useFakeTimers();
-    render(<RecordsPage />, ["/records?invokeId=invoke-target&rangePreset=7d"]);
-    await act(async () => {
-      await vi.runAllTimersAsync();
-    });
-
-    expect(resetDraft).toHaveBeenCalledTimes(1);
-    expect(updateDraft).toHaveBeenNthCalledWith(1, "invokeId", "invoke-target");
-    expect(updateDraft).toHaveBeenNthCalledWith(2, "rangePreset", "7d");
-    expect(search).toHaveBeenCalledTimes(1);
-  });
-
-  it("uses an invocation-plus-attempt deep link to target one expanded call", async () => {
-    const resetDraft = vi.fn();
-    const updateDraft = vi.fn();
-    const search = vi.fn(() => Promise.resolve());
-    mockInvocationRecords({ resetDraft, updateDraft, search });
-
-    vi.useFakeTimers();
-    render(<RecordsPage />, ["/records?attemptId=attempt-target&invokeId=invoke-target"]);
-    await act(async () => {
-      await vi.runAllTimersAsync();
-    });
-
-    expect(search).toHaveBeenCalledTimes(1);
-    const searchDraft = search.mock.calls[0]?.[0]?.draft;
-    expect(searchDraft).toMatchObject({
-      invokeId: "invoke-target",
-      attemptId: "attempt-target",
-    });
-    expect(searchDraft?.rangePreset).toBe("today");
-    expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-target");
-    expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-target");
-  });
-
-  it("locates an attempt-only deep link and focuses that attempt in its invocation", async () => {
-    const resetDraft = vi.fn();
-    const updateDraft = vi.fn();
-    const search = vi.fn(() => Promise.resolve());
-    apiMocks.fetchInvocationRecordLocation.mockResolvedValue({
-      anchorId: "anchor-cause",
-      snapshotId: 7,
-      invokeId: "invoke-cause",
-      attemptId: "attempt-cause",
-      total: 1,
-      page: 1,
-      pageSize: 20,
-      records: [],
-      targetIndex: 0,
-      targetAbsoluteIndex: 0,
-    });
-    mockInvocationRecords({ resetDraft, updateDraft, search, pageSize: 20 });
-
-    vi.useFakeTimers();
-    render(<RecordsPage />, ["/records?attemptId=attempt-cause"]);
-    await act(async () => {
-      await vi.runAllTimersAsync();
-    });
-    await flushAsync();
-
-    expect(apiMocks.fetchInvocationRecordLocation).toHaveBeenCalledWith(
-      expect.objectContaining({ attemptId: "attempt-cause", pageSize: 20 }),
+      }),
     );
-    expect(search).toHaveBeenCalledTimes(1);
-    const searchDraft = search.mock.calls[0]?.[0]?.draft;
-    expect(searchDraft).toMatchObject({
-      invokeId: "invoke-cause",
-      attemptId: "attempt-cause",
-    });
-    expect(resetDraft).toHaveBeenCalledTimes(1);
-    expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-cause");
-    expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-cause");
   });
+  await flushAsync();
+
+  openModelSelector();
+  expect(drawer.dataset.suggestionsOpen).toBe("true");
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await flushAsync();
+
+  expect(document.body.textContent).not.toContain("alp-stale");
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  await flushAsync();
+
+  expect(apiMocks.fetchInvocationSuggestions).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).toContain("alp-fresh");
+  expect(document.body.textContent).not.toContain("alp-stale");
+});
+it("keeps filter suggestions inside the drawer without changing page surface layering", async () => {
+  vi.useFakeTimers();
+  apiMocks.fetchInvocationSuggestions.mockResolvedValue(
+    createSuggestions({
+      promptCacheKey: {
+        items: [{ value: "pck-open-1", count: 2 }],
+        hasMore: false,
+      },
+    }),
+  );
+  mockInvocationRecords({
+    draft: {
+      ...createDefaultInvocationRecordsDraft(),
+      ...createDefaultCustomRange(),
+      promptCacheKey: "pck",
+    },
+  });
+
+  render(<RecordsPage />);
+
+  const summaryPanel = host?.querySelector('[data-testid="records-summary-panel"]');
+  if (!(summaryPanel instanceof HTMLElement)) {
+    throw new Error("missing panel anchors");
+  }
+
+  expect(document.body.querySelector('[data-testid="records-filters-drawer"]')).toBeNull();
+  const filtersDrawer = openFilters();
+  expect(filtersDrawer.dataset.suggestionsOpen).toBe("false");
+  expect(filtersDrawer.closest('[role="dialog"]')).not.toBeNull();
+
+  const input = document.body.querySelector("#records-filter-prompt-cache-key");
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error("missing prompt cache key input");
+  }
+
+  act(() => {
+    input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    input.focus();
+  });
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  await flushAsync();
+
+  expect(summaryPanel.className).toBe("surface-panel");
+
+  act(() => {
+    input.blur();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await flushAsync();
+
+  expect(host?.querySelector('[data-testid="records-filters-panel"]')?.className).toBe(
+    "surface-panel",
+  );
+});
+it("renders the new data button and switches to the refresh call-to-action on focus", async () => {
+  mockInvocationRecords({
+    summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
+  });
+
+  render(<RecordsPage />);
+
+  const button = getNewDataButton();
+  const idleLabel = getNewDataLabel("records-new-data-label-idle");
+  const actionLabel = getNewDataLabel("records-new-data-label-action");
+
+  expect(button.dataset.state).toBe("idle");
+  expect(button.dataset.icon).toBe("help");
+  expect(idleLabel.textContent).toBe("有 9 条新数据");
+  expect(idleLabel.className).toContain("opacity-100");
+  expect(actionLabel.className).toContain("opacity-0");
+  expect(button.className).toContain("border-warning/35");
+  expect(button.getAttribute("aria-label")).toBe("有 9 条新数据，点击后会并入当前快照。");
+
+  act(() => {
+    button.focus();
+  });
+  await flushAsync();
+
+  expect(button.dataset.state).toBe("interactive");
+  expect(button.dataset.icon).toBe("help");
+  expect(idleLabel.className).toContain("opacity-0");
+  expect(actionLabel.textContent).toBe("加载新数据");
+  expect(actionLabel.className).toContain("opacity-100");
+  expect(button.className).toContain("border-primary/35");
+  expect(button.getAttribute("aria-label")).toBe("加载这 9 条新数据并刷新当前快照。");
+
+  act(() => {
+    button.blur();
+  });
+  await flushAsync();
+
+  expect(button.dataset.state).toBe("idle");
+  expect(idleLabel.className).toContain("opacity-100");
+  expect(actionLabel.className).toContain("opacity-0");
+});
+it("triggers search once and shows a spinning refresh state while the refresh is pending", async () => {
+  vi.useFakeTimers();
+  let resolveSearch: (() => void) | null = null;
+  const search = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSearch = resolve;
+      }),
+  );
+
+  mockInvocationRecords({
+    summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
+    search,
+  });
+
+  render(<RecordsPage />);
+
+  const button = getNewDataButton();
+  const idleLabel = getNewDataLabel("records-new-data-label-idle");
+  const actionLabel = getNewDataLabel("records-new-data-label-action");
+
+  act(() => {
+    button.click();
+  });
+  await flushAsync();
+
+  expect(search).toHaveBeenCalledTimes(1);
+  expect(search).toHaveBeenCalledWith({
+    source: "applied",
+    preserveSummary: true,
+  });
+  expect(button.disabled).toBe(true);
+  expect(button.dataset.state).toBe("loading");
+  expect(button.dataset.icon).toBe("refresh");
+  expect(button.className).toContain("border-primary/35");
+  expect(idleLabel.className).toContain("opacity-0");
+  expect(actionLabel.className).toContain("opacity-100");
+  expect(actionLabel.textContent).toBe("加载新数据");
+  expect(button.getAttribute("aria-label")).toBe("正在加载这 9 条新数据并刷新当前快照。");
+
+  act(() => {
+    button.click();
+  });
+  await flushAsync();
+
+  expect(search).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    resolveSearch?.();
+  });
+  await flushAsync();
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600);
+  });
+  await flushAsync();
+
+  expect(button.disabled).toBe(false);
+  expect(button.dataset.state).toBe("idle");
+  expect(button.dataset.icon).toBe("help");
+});
+it("keeps the loading state visible briefly even when refresh resolves immediately", async () => {
+  vi.useFakeTimers();
+  const search = vi.fn(() => Promise.resolve());
+
+  mockInvocationRecords({
+    summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 9 },
+    search,
+  });
+
+  render(<RecordsPage />);
+
+  const button = getNewDataButton();
+
+  act(() => {
+    button.click();
+  });
+  await flushAsync();
+
+  expect(search).toHaveBeenCalledTimes(1);
+  expect(button.dataset.state).toBe("loading");
+  expect(button.disabled).toBe(true);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(599);
+  });
+  await flushAsync();
+
+  expect(button.dataset.state).toBe("loading");
+  expect(button.disabled).toBe(true);
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  await flushAsync();
+
+  expect(button.dataset.state).toBe("idle");
+  expect(button.disabled).toBe(false);
+});
+it("keeps the new-data button mounted during the minimum loading delay even after the count resets", async () => {
+  vi.useFakeTimers();
+
+  const search = vi.fn(() => Promise.resolve());
+  let state = {
+    draft: {
+      ...createDefaultInvocationRecordsDraft(),
+      ...createDefaultCustomRange(),
+      models: ["alp"],
+    },
+    focus: "token",
+    page: 1,
+    pageSize: 20,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    records: { snapshotId: 42, total: 0, page: 1, pageSize: 20, records: [] },
+    summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+    recordsError: null,
+    summaryError: null,
+    isSearching: false,
+    isRecordsLoading: false,
+    isSummaryLoading: false,
+    updateDraft: vi.fn(),
+    resetDraft: vi.fn(),
+    setFocus: vi.fn(),
+    search,
+    setPage: vi.fn(),
+    setPageSize: vi.fn(),
+    setSort: vi.fn(),
+  };
+
+  hookMocks.useInvocationRecords.mockImplementation(() => state);
+
+  render(<RecordsPage />);
+
+  act(() => {
+    getNewDataButton().click();
+  });
+  await flushAsync();
+
+  state = {
+    ...state,
+    records: { ...state.records, snapshotId: 84 },
+    summary: { ...createSummary(), snapshotId: 84, newRecordsCount: 0 },
+  };
+  rerender(<RecordsPage />);
+  await flushAsync();
+
+  expect(getNewDataButton().dataset.state).toBe("loading");
+  expect(getNewDataButton().textContent).toContain("加载新数据");
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600);
+  });
+  await flushAsync();
+
+  rerender(<RecordsPage />);
+  await flushAsync();
+
+  expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
+});
+it("hides stale summary metrics while a refreshed snapshot summary is still loading", () => {
+  mockInvocationRecords({
+    records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+    summary: {
+      ...createSummary(),
+      snapshotId: 42,
+      token: {
+        ...createSummary().token,
+        requestCount: 999,
+      },
+    },
+    isSummaryLoading: true,
+  });
+
+  render(<RecordsPage />);
+
+  expect(host?.textContent).toContain("…");
+  expect(host?.textContent).not.toContain("999");
+});
+it("hides the new-data CTA after a refreshed list lands if the preserved summary is stale", () => {
+  mockInvocationRecords({
+    records: { snapshotId: 84, total: 0, page: 1, pageSize: 20, records: [] },
+    summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+    summaryError: "summary failed",
+    isSummaryLoading: false,
+  });
+
+  render(<RecordsPage />);
+
+  expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
+});
+it("hides the new-data CTA during a normal search even if the old summary still reports pending records", () => {
+  mockInvocationRecords({
+    summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 9 },
+    isSearching: true,
+  });
+
+  render(<RecordsPage />);
+
+  expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
+});
+it("hides the new data button when there is no pending new data", () => {
+  mockInvocationRecords({
+    summary: { ...createSummary(), snapshotId: 42, newRecordsCount: 0 },
+  });
+
+  render(<RecordsPage />);
+
+  expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull();
+});
+it("shows short invoke and attempt ID filters without legacy request or sticky key fields", () => {
+  mockInvocationRecords();
+
+  render(<RecordsPage />);
+  openFilters();
+
+  expect(document.body.textContent ?? "").toContain("records.filters.invokeId");
+  expect(document.body.textContent ?? "").toContain("records.filters.attemptId");
+  expect(document.body.textContent ?? "").not.toContain("records.filters.requestId");
+  expect(document.body.textContent ?? "").not.toContain("records.filters.stickyKey");
+  expect(document.body.querySelector('input[name="invokeId"]')).toBeTruthy();
+  expect(document.body.querySelector('input[name="attemptId"]')).toBeTruthy();
+  expect(document.body.querySelector('input[name="requestId"]')).toBeNull();
+  expect(document.body.querySelector('[name="stickyKey"]')).toBeNull();
+});
+it("removes the redundant drawer description and shows slider range summaries", () => {
+  mockInvocationRecords({
+    draft: {
+      ...createDefaultInvocationRecordsDraft(),
+      ...createDefaultCustomRange(),
+      minTotalTokens: "2400",
+      maxTotalTokens: "6400",
+      minTotalMs: "125.5",
+      maxTotalMs: "800.5",
+    },
+    summary: {
+      ...createSummary(),
+      snapshotId: 42,
+      token: {
+        ...createSummary().token,
+        maxTokensPerRequest: 12000,
+      },
+      network: {
+        ...createSummary().network,
+        maxTotalMs: 2400,
+      },
+    },
+  });
+
+  render(<RecordsPage />);
+  openFilters();
+
+  expect(document.body.textContent ?? "").not.toContain("records.filters.description");
+  expect(document.body.textContent ?? "").toContain("2,400 - 6,400 TOKENS");
+  expect(document.body.textContent ?? "").toContain("125.5 - 800.5 MS");
+});
+it("updates the invocation ID draft filter from the new input", () => {
+  const updateDraft = vi.fn();
+  mockInvocationRecords({
+    draft: {
+      ...createDefaultInvocationRecordsDraft(),
+      ...createDefaultCustomRange(),
+      invokeId: "",
+    },
+    updateDraft,
+  });
+
+  render(<RecordsPage />);
+  openFilters();
+
+  const input = document.body.querySelector('input[name="invokeId"]');
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error("missing invocation ID input");
+  }
+
+  act(() => {
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    valueSetter?.call(input, "invoke-xyz");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-xyz");
+});
+it("resets stale filters before searching an invocation ID deep link", async () => {
+  const resetDraft = vi.fn();
+  const updateDraft = vi.fn();
+  const search = vi.fn();
+  mockInvocationRecords({ resetDraft, updateDraft, search });
+
+  vi.useFakeTimers();
+  render(<RecordsPage />, ["/records?invokeId=invoke-target&rangePreset=7d"]);
+  await act(async () => {
+    await vi.runAllTimersAsync();
+  });
+
+  expect(resetDraft).toHaveBeenCalledTimes(1);
+  expect(updateDraft).toHaveBeenNthCalledWith(1, "invokeId", "invoke-target");
+  expect(updateDraft).toHaveBeenNthCalledWith(2, "rangePreset", "7d");
+  expect(search).toHaveBeenCalledTimes(1);
+});
+it("uses an invocation-plus-attempt deep link to target one expanded call", async () => {
+  const resetDraft = vi.fn();
+  const updateDraft = vi.fn();
+  const search = vi.fn(() => Promise.resolve());
+  mockInvocationRecords({ resetDraft, updateDraft, search });
+
+  vi.useFakeTimers();
+  render(<RecordsPage />, ["/records?attemptId=attempt-target&invokeId=invoke-target"]);
+  await act(async () => {
+    await vi.runAllTimersAsync();
+  });
+
+  expect(search).toHaveBeenCalledTimes(1);
+  const searchDraft = search.mock.calls[0]?.[0]?.draft;
+  expect(searchDraft).toMatchObject({
+    invokeId: "invoke-target",
+    attemptId: "attempt-target",
+  });
+  expect(searchDraft?.rangePreset).toBe("today");
+  expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-target");
+  expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-target");
+});
+it("locates an attempt-only deep link and focuses that attempt in its invocation", async () => {
+  const resetDraft = vi.fn();
+  const updateDraft = vi.fn();
+  const search = vi.fn(() => Promise.resolve());
+  apiMocks.fetchInvocationRecordLocation.mockResolvedValue({
+    anchorId: "anchor-cause",
+    snapshotId: 7,
+    invokeId: "invoke-cause",
+    attemptId: "attempt-cause",
+    total: 1,
+    page: 1,
+    pageSize: 20,
+    records: [],
+    targetIndex: 0,
+    targetAbsoluteIndex: 0,
+  });
+  mockInvocationRecords({ resetDraft, updateDraft, search, pageSize: 20 });
+
+  vi.useFakeTimers();
+  render(<RecordsPage />, ["/records?attemptId=attempt-cause"]);
+  await act(async () => {
+    await vi.runAllTimersAsync();
+  });
+  await flushAsync();
+
+  expect(apiMocks.fetchInvocationRecordLocation).toHaveBeenCalledWith(
+    expect.objectContaining({ attemptId: "attempt-cause", pageSize: 20 }),
+  );
+  expect(search).toHaveBeenCalledTimes(1);
+  const searchDraft = search.mock.calls[0]?.[0]?.draft;
+  expect(searchDraft).toMatchObject({
+    invokeId: "invoke-cause",
+    attemptId: "attempt-cause",
+  });
+  expect(resetDraft).toHaveBeenCalledTimes(1);
+  expect(updateDraft).toHaveBeenCalledWith("invokeId", "invoke-cause");
+  expect(updateDraft).toHaveBeenCalledWith("attemptId", "attempt-cause");
 });

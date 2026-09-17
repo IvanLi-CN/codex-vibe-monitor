@@ -9,7 +9,7 @@ export function useModelRoutingLive(query: FetchModelRoutingLiveQuery, enabled =
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const [snapshotReady, setSnapshotReady] = useState(false);
-  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [_refreshVersion, setRefreshVersion] = useState(0);
 
   const normalizedQuery = useMemo(
     () => ({
@@ -47,7 +47,7 @@ export function useModelRoutingLive(query: FetchModelRoutingLiveQuery, enabled =
         if (!controller.signal.aborted) setIsLoadingSnapshot(false);
       });
     return () => controller.abort();
-  }, [enabled, normalizedQuery, refreshVersion]);
+  }, [enabled, normalizedQuery]);
 
   const topic = useMemo(
     () =>

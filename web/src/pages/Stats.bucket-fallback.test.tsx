@@ -2,7 +2,7 @@
 import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import type { FailureSummaryResponse, TimeseriesResponse } from "../lib/api";
 import { ThemeProvider } from "../theme";
 import StatsPage from "./Stats";
@@ -13,28 +13,22 @@ const hookMocks = vi.hoisted(() => ({
   useErrorDistribution: vi.fn(),
   useFailureSummary: vi.fn(),
 }));
-
 const SelectContext = React.createContext<{
   value?: string;
   onValueChange?: (value: string) => void;
 } | null>(null);
-
 vi.mock("../hooks/useStats", () => ({
   useSummary: hookMocks.useSummary,
 }));
-
 vi.mock("../hooks/useTimeseries", () => ({
   useTimeseries: hookMocks.useTimeseries,
 }));
-
 vi.mock("../hooks/useErrorDistribution", () => ({
   useErrorDistribution: hookMocks.useErrorDistribution,
 }));
-
 vi.mock("../hooks/useFailureSummary", () => ({
   useFailureSummary: hookMocks.useFailureSummary,
 }));
-
 vi.mock("../components/ui/select", () => ({
   Select: ({
     value,
@@ -84,37 +78,29 @@ vi.mock("../components/ui/select", () => ({
     );
   },
 }));
-
 vi.mock("../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
     t: (key: string) => key,
   }),
 }));
-
 vi.mock("../features/stats/StatsCards", () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
 }));
-
 vi.mock("../features/stats/TimeseriesChart", () => ({
   TimeseriesChart: () => <div data-testid="timeseries-chart" />,
 }));
-
 vi.mock("../features/stats/SuccessFailureChart", () => ({
   SuccessFailureChart: () => <div data-testid="success-failure-chart" />,
 }));
-
 vi.mock("../features/stats/ErrorReasonPieChart", () => ({
   ErrorReasonPieChart: () => <div data-testid="error-reason-pie-chart" />,
 }));
-
 vi.mock("../components/ui/alert", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -122,7 +108,6 @@ beforeAll(() => {
     value: true,
   });
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -132,7 +117,6 @@ afterEach(() => {
   root = null;
   vi.clearAllMocks();
 });
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -141,14 +125,12 @@ function render(ui: React.ReactNode) {
     root?.render(<ThemeProvider>{ui}</ThemeProvider>);
   });
 }
-
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
-
 function createTimeseriesResponse(overrides: Partial<TimeseriesResponse> = {}): TimeseriesResponse {
   return {
     rangeStart: "2026-03-18T00:00:00Z",
@@ -161,7 +143,6 @@ function createTimeseriesResponse(overrides: Partial<TimeseriesResponse> = {}): 
     ...overrides,
   };
 }
-
 function createFailureSummary(): FailureSummaryResponse {
   return {
     rangeStart: "2026-03-18T00:00:00Z",
@@ -174,137 +155,133 @@ function createFailureSummary(): FailureSummaryResponse {
     actionableFailureRate: 0,
   };
 }
-
-describe("StatsPage archived bucket fallback", () => {
-  it("keeps the newly requested bucket selected while an older response is still rendered", async () => {
-    hookMocks.useSummary.mockReturnValue({
-      summary: null,
-      isLoading: false,
-      error: null,
-    });
-    hookMocks.useErrorDistribution.mockReturnValue({
-      data: { items: [] },
-      isLoading: false,
-      error: null,
-    });
-    hookMocks.useFailureSummary.mockReturnValue({
-      data: createFailureSummary(),
-      isLoading: false,
-      error: null,
-    });
-    hookMocks.useTimeseries.mockImplementation((range: string, options?: { bucket?: string }) => {
-      if (range === "7d") {
-        return {
-          data: createTimeseriesResponse({
-            bucketSeconds: 3600,
-            effectiveBucket: options?.bucket === "1d" ? "1h" : (options?.bucket ?? "1h"),
-            availableBuckets: ["1h", "6h", "12h", "1d"],
-          }),
-          isLoading: false,
-          error: null,
-        };
-      }
-
+it("keeps the newly requested bucket selected while an older response is still rendered", async () => {
+  hookMocks.useSummary.mockReturnValue({
+    summary: null,
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useErrorDistribution.mockReturnValue({
+    data: { items: [] },
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useFailureSummary.mockReturnValue({
+    data: createFailureSummary(),
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useTimeseries.mockImplementation((range: string, options?: { bucket?: string }) => {
+    if (range === "7d") {
       return {
         data: createTimeseriesResponse({
-          bucketSeconds: options?.bucket === "1m" ? 60 : 900,
-          effectiveBucket: options?.bucket ?? "15m",
+          bucketSeconds: 3600,
+          effectiveBucket: options?.bucket === "1d" ? "1h" : (options?.bucket ?? "1h"),
+          availableBuckets: ["1h", "6h", "12h", "1d"],
         }),
         isLoading: false,
         error: null,
       };
-    });
-
-    render(<StatsPage />);
-
-    const rangeItem = host?.querySelector('[data-testid="select-item-7d"]');
-    if (!(rangeItem instanceof HTMLButtonElement)) {
-      throw new Error("missing 7d range item");
-    }
-    act(() => {
-      rangeItem.click();
-    });
-    await flushAsync();
-
-    const bucketItems = host?.querySelectorAll('[data-testid="select-item-1d"]');
-    const bucketItem = bucketItems?.[1];
-    if (!(bucketItem instanceof HTMLButtonElement)) {
-      throw new Error("missing 1d bucket item for the bucket select");
-    }
-    act(() => {
-      bucketItem.click();
-    });
-    await flushAsync();
-
-    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]');
-    if (!(bucketTrigger instanceof HTMLButtonElement)) {
-      throw new Error("missing bucket trigger");
     }
 
-    expect(bucketTrigger.getAttribute("data-value")).toBe("1d");
+    return {
+      data: createTimeseriesResponse({
+        bucketSeconds: options?.bucket === "1m" ? 60 : 900,
+        effectiveBucket: options?.bucket ?? "15m",
+      }),
+      isLoading: false,
+      error: null,
+    };
   });
 
-  it("re-requests daily buckets after the backend limits an archived range to daily granularity", async () => {
-    const calls: Array<{ range: string; bucket?: string }> = [];
+  render(<StatsPage />);
 
-    hookMocks.useSummary.mockReturnValue({
-      summary: null,
-      isLoading: false,
-      error: null,
-    });
-    hookMocks.useErrorDistribution.mockReturnValue({
-      data: { items: [] },
-      isLoading: false,
-      error: null,
-    });
-    hookMocks.useFailureSummary.mockReturnValue({
-      data: createFailureSummary(),
-      isLoading: false,
-      error: null,
-    });
-    hookMocks.useTimeseries.mockImplementation((range: string, options?: { bucket?: string }) => {
-      calls.push({ range, bucket: options?.bucket });
-      if (range === "1mo") {
-        return {
-          data: createTimeseriesResponse({
-            bucketSeconds: 86_400,
-            effectiveBucket: "1d",
-            availableBuckets: ["1d"],
-            bucketLimitedToDaily: true,
-          }),
-          isLoading: false,
-          error: null,
-        };
-      }
+  const rangeItem = host?.querySelector('[data-testid="select-item-7d"]');
+  if (!(rangeItem instanceof HTMLButtonElement)) {
+    throw new Error("missing 7d range item");
+  }
+  act(() => {
+    rangeItem.click();
+  });
+  await flushAsync();
 
+  const bucketItems = host?.querySelectorAll('[data-testid="select-item-1d"]');
+  const bucketItem = bucketItems?.[1];
+  if (!(bucketItem instanceof HTMLButtonElement)) {
+    throw new Error("missing 1d bucket item for the bucket select");
+  }
+  act(() => {
+    bucketItem.click();
+  });
+  await flushAsync();
+
+  const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]');
+  if (!(bucketTrigger instanceof HTMLButtonElement)) {
+    throw new Error("missing bucket trigger");
+  }
+
+  expect(bucketTrigger.getAttribute("data-value")).toBe("1d");
+});
+it("re-requests daily buckets after the backend limits an archived range to daily granularity", async () => {
+  const calls: Array<{ range: string; bucket?: string }> = [];
+
+  hookMocks.useSummary.mockReturnValue({
+    summary: null,
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useErrorDistribution.mockReturnValue({
+    data: { items: [] },
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useFailureSummary.mockReturnValue({
+    data: createFailureSummary(),
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useTimeseries.mockImplementation((range: string, options?: { bucket?: string }) => {
+    calls.push({ range, bucket: options?.bucket });
+    if (range === "1mo") {
       return {
         data: createTimeseriesResponse({
-          bucketSeconds: options?.bucket === "1m" ? 60 : 900,
-          effectiveBucket: options?.bucket ?? "15m",
+          bucketSeconds: 86_400,
+          effectiveBucket: "1d",
+          availableBuckets: ["1d"],
+          bucketLimitedToDaily: true,
         }),
         isLoading: false,
         error: null,
       };
-    });
-
-    render(<StatsPage />);
-
-    const rangeItem = host?.querySelector('[data-testid="select-item-1mo"]');
-    if (!(rangeItem instanceof HTMLButtonElement)) {
-      throw new Error("missing 1mo range item");
-    }
-    act(() => {
-      rangeItem.click();
-    });
-    await flushAsync();
-
-    const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]');
-    if (!(bucketTrigger instanceof HTMLButtonElement)) {
-      throw new Error("missing bucket trigger");
     }
 
-    expect(bucketTrigger.getAttribute("data-value")).toBe("1d");
-    expect(calls).toContainEqual({ range: "1mo", bucket: "6h" });
-    expect(calls).toContainEqual({ range: "1mo", bucket: "1d" });
+    return {
+      data: createTimeseriesResponse({
+        bucketSeconds: options?.bucket === "1m" ? 60 : 900,
+        effectiveBucket: options?.bucket ?? "15m",
+      }),
+      isLoading: false,
+      error: null,
+    };
   });
+
+  render(<StatsPage />);
+
+  const rangeItem = host?.querySelector('[data-testid="select-item-1mo"]');
+  if (!(rangeItem instanceof HTMLButtonElement)) {
+    throw new Error("missing 1mo range item");
+  }
+  act(() => {
+    rangeItem.click();
+  });
+  await flushAsync();
+
+  const bucketTrigger = host?.querySelector('[data-testid="stats-bucket-select-trigger"]');
+  if (!(bucketTrigger instanceof HTMLButtonElement)) {
+    throw new Error("missing bucket trigger");
+  }
+
+  expect(bucketTrigger.getAttribute("data-value")).toBe("1d");
+  expect(calls).toContainEqual({ range: "1mo", bucket: "6h" });
+  expect(calls).toContainEqual({ range: "1mo", bucket: "1d" });
 });

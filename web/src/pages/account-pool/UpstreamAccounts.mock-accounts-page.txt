@@ -1,0 +1,321 @@
+function mockAccountsPage(options?: {
+  saveRouting?: ReturnType<typeof vi.fn>;
+  saveGroupNote?: ReturnType<typeof vi.fn>;
+  deleteGroupNote?: ReturnType<typeof vi.fn>;
+  loadDetail?: ReturnType<typeof vi.fn>;
+  groups?: Array<Record<string, unknown>>;
+  routing?: {
+    writesEnabled: boolean;
+    apiKeyConfigured: boolean;
+    maskedApiKey: string | null;
+    timeouts: {
+      responsesFirstByteTimeoutSecs: number;
+      compactFirstByteTimeoutSecs: number;
+      imageFirstByteTimeoutSecs: number;
+      responsesStreamTimeoutSecs: number;
+      compactStreamTimeoutSecs: number;
+    };
+  } | null;
+  item?: Record<string, unknown>;
+  selectedSummary?: Record<string, unknown>;
+  detail?: Record<string, unknown>;
+}) {
+  const saveRouting = options?.saveRouting ?? vi.fn();
+  const loadDetail = options?.loadDetail ?? vi.fn();
+  const groups = (
+    options?.groups ?? [
+      {
+        groupName: "prod",
+        accountCount: 2,
+        note: "prod note",
+        boundProxyKeys: ["jp-edge-01"],
+        nodeShuntEnabled: false,
+        singleAccountRotationEnabled: false,
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      },
+    ]
+  ).map((group) => ({
+    ...group,
+    accountCount: typeof group.accountCount === "number" ? group.accountCount : 0,
+    boundProxyKeys: Array.isArray(group.boundProxyKeys)
+      ? group.boundProxyKeys.map((value) => String(value))
+      : [],
+    nodeShuntEnabled: group.nodeShuntEnabled === true,
+    singleAccountRotationEnabled: group.singleAccountRotationEnabled === true,
+    upstream429RetryEnabled: group.upstream429RetryEnabled === true,
+    upstream429MaxRetries:
+      typeof group.upstream429MaxRetries === "number" ? group.upstream429MaxRetries : 0,
+    concurrencyLimit: typeof group.concurrencyLimit === "number" ? group.concurrencyLimit : 0,
+  }));
+  const saveGroupNote: ReturnType<typeof vi.fn> =
+    options?.saveGroupNote ??
+    vi.fn().mockImplementation(async (groupName: string, payload: Record<string, unknown>) => {
+      const normalizedGroupName = groupName.trim();
+      const nextSummary = {
+        groupName: normalizedGroupName,
+        accountCount:
+          groups.find((group) => group.groupName === normalizedGroupName)?.accountCount ?? 0,
+        note:
+          typeof payload.note === "string" && payload.note.trim().length > 0 ? payload.note : null,
+        boundProxyKeys: Array.isArray(payload.boundProxyKeys)
+          ? payload.boundProxyKeys.map((value) => String(value))
+          : [],
+        nodeShuntEnabled: payload.nodeShuntEnabled === true,
+        singleAccountRotationEnabled: payload.singleAccountRotationEnabled === true,
+        upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+        upstream429MaxRetries:
+          typeof payload.upstream429MaxRetries === "number" ? payload.upstream429MaxRetries : 0,
+        concurrencyLimit:
+          typeof payload.concurrencyLimit === "number" ? payload.concurrencyLimit : 0,
+      };
+      const existingIndex = groups.findIndex((group) => group.groupName === normalizedGroupName);
+      if (existingIndex >= 0) {
+        groups.splice(existingIndex, 1, nextSummary);
+      } else {
+        groups.push(nextSummary);
+      }
+      return nextSummary;
+    });
+  const deleteGroupNote: ReturnType<typeof vi.fn> =
+    options?.deleteGroupNote ??
+    vi.fn().mockImplementation(async (groupName: string) => {
+      const normalizedGroupName = groupName.trim();
+      const existingIndex = groups.findIndex((group) => group.groupName === normalizedGroupName);
+      if (existingIndex >= 0) {
+        groups.splice(existingIndex, 1);
+      }
+    });
+  const compactSupport = {
+    status: "unsupported" as const,
+    observedAt: "2026-03-16T02:08:00.000Z",
+    reason: "No available channel for compact model gpt-5.4-openai-compact",
+  };
+  const routingTimeouts = {
+    responsesFirstByteTimeoutSecs: 120,
+    compactFirstByteTimeoutSecs: 300,
+    imageFirstByteTimeoutSecs: 300,
+    responsesStreamTimeoutSecs: 300,
+    compactStreamTimeoutSecs: 300,
+  };
+  const primaryItem = {
+    id: 5,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Existing OAuth",
+    groupName: "prod",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+    isMother: true,
+    planType: "team",
+    lastActionSource: "call",
+    lastActionReasonCode: "upstream_http_429_quota_exhausted",
+    lastActionHttpStatus: 429,
+    lastActionAt: "2026-03-16T02:06:00.000Z",
+    primaryWindow: {
+      usedPercent: 42,
+      usedText: "42 requests",
+      limitText: "120 requests",
+      resetsAt: "2026-03-16T06:55:00.000Z",
+      windowDurationMins: 300,
+    },
+    secondaryWindow: {
+      usedPercent: 12,
+      usedText: "12 requests",
+      limitText: "500 requests",
+      resetsAt: "2026-03-18T00:00:00.000Z",
+      windowDurationMins: 10080,
+    },
+    credits: null,
+    localLimits: null,
+    compactSupport,
+    duplicateInfo: {
+      peerAccountIds: [9],
+      reasons: ["sharedChatgptAccountId"],
+    },
+    tags: [
+      { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+      { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
+      { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
+      { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
+    ],
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
+    ...(options?.item ?? {}),
+  };
+  const selectedSummary = {
+    ...primaryItem,
+    lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
+    lastActivityAt: "2026-03-16T02:05:00.000Z",
+    lastAction: "route_hard_unavailable",
+    lastActionSource: "call",
+    lastActionReasonCode: "upstream_http_429_quota_exhausted",
+    lastActionReasonMessage: "Weekly cap exhausted for this account",
+    lastActionHttpStatus: 429,
+    lastActionInvokeId: "invk_action_001",
+    lastActionAt: "2026-03-16T02:06:00.000Z",
+    ...(options?.selectedSummary ?? {}),
+  };
+  const detail = {
+    ...selectedSummary,
+    email: "dup@example.com",
+    chatgptAccountId: "org_1",
+    chatgptUserId: "user_1",
+    history: [],
+    recentActions: [
+      {
+        id: 71,
+        occurredAt: "2026-03-16T02:06:00.000Z",
+        action: "route_hard_unavailable",
+        source: "call",
+        reasonCode: "upstream_http_429_quota_exhausted",
+        reasonMessage: "Weekly cap exhausted for this account",
+        httpStatus: 429,
+        failureKind: "upstream_http_429_quota_exhausted",
+        invokeId: "invk_action_001",
+        attemptId: "4V7MYPJG",
+        stickyKey: "sticky-dup-001",
+        createdAt: "2026-03-16T02:06:00.000Z",
+      },
+    ],
+    ...(options?.detail ?? {}),
+  };
+  hookMocks.useUpstreamAccounts.mockReturnValue({
+    items: [
+      selectedSummary,
+      {
+        id: 9,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Another OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: false,
+        planType: "pro",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ],
+    hasUngroupedAccounts: true,
+    writesEnabled: true,
+    total: 2,
+    page: 1,
+    pageSize: 20,
+    metrics: {
+      total: 2,
+      oauth: 2,
+      apiKey: 0,
+      attention: 0,
+    },
+    selectedId: 5,
+    selectedSummary,
+    detail,
+    isLoading: false,
+    isDetailLoading: false,
+    isDetailRecentActionsHydrated: false,
+    listError: null,
+    detailError: null,
+    error: null,
+    selectAccount: vi.fn(),
+    refresh: vi.fn(),
+    loadDetail,
+    beginOauthLogin: vi.fn(),
+    beginRelogin: vi.fn(),
+    beginOauthMailboxSession: vi.fn(),
+    beginOauthMailboxSessionForAddress: vi.fn(),
+    getOauthMailboxStatuses: vi.fn(),
+    removeOauthMailboxSession: vi.fn(),
+    getLoginSession: vi.fn(),
+    completeOauthLogin: vi.fn(),
+    createApiKeyAccount: vi.fn(),
+    saveAccount: vi.fn(),
+    saveRouting,
+    saveGroupNote,
+    deleteGroupNote,
+    runBulkAction: vi.fn(),
+    startBulkSyncJob: vi.fn(),
+    getBulkSyncJob: vi.fn(),
+    stopBulkSyncJob: vi.fn(),
+    runSync: vi.fn(),
+    removeAccount: vi.fn(),
+    forwardProxyNodes: [],
+    forwardProxyCatalogState: {
+      kind: "loaded",
+      freshness: "fresh",
+    },
+    groups,
+    routing:
+      options && "routing" in options
+        ? options.routing
+        : {
+            writesEnabled: true,
+            apiKeyConfigured: false,
+            maskedApiKey: null,
+            timeouts: routingTimeouts,
+          },
+  });
+  return {
+    saveRouting,
+    compactSupport,
+    routingTimeouts,
+    saveGroupNote,
+    deleteGroupNote,
+    loadDetail,
+  };
+}
+const rosterFreshnessItems = [
+  {
+    id: 5,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Existing OAuth",
+    groupName: "prod",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+    enableStatus: "enabled",
+    workStatus: "working",
+    healthStatus: "normal",
+    syncState: "idle",
+    activeConversationCount: 2,
+    isMother: false,
+    tags: [],
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
+  },
+  {
+    id: 9,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Another OAuth",
+    groupName: "prod",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+    enableStatus: "enabled",
+    workStatus: "idle",
+    healthStatus: "normal",
+    syncState: "idle",
+    activeConversationCount: 0,
+    isMother: false,
+    tags: [],
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
+  },
+] as const;
+const defaultRosterFreshnessGroups = [
+  {
+    groupName: "prod",
+    accountCount: 2,
+    note: "prod note",
+    boundProxyKeys: ["jp-edge-01"],
+    nodeShuntEnabled: false,
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
+  },
+];
+scope.mockAccountsPage = mockAccountsPage;

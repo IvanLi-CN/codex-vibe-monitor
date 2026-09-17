@@ -38,7 +38,6 @@ export function requestCompressionAlgorithmLabel(
       return labels.requestCompressionDeflate;
     case "zstd":
       return labels.requestCompressionZstd;
-    case "identity":
     default:
       return labels.requestCompressionIdentity;
   }
@@ -53,7 +52,6 @@ export function requestCompressionLevelPresetLabel(
       return labels.requestCompressionLevelFast;
     case "best":
       return labels.requestCompressionLevelBest;
-    case "balanced":
     default:
       return labels.requestCompressionLevelBalanced;
   }
@@ -68,7 +66,6 @@ export function requestCompressionModeLabel(
       return labels.requestCompressionModePassthrough;
     case "recompressed":
       return labels.requestCompressionModeRecompressed;
-    case "identity":
     default:
       return labels.requestCompressionModeIdentity;
   }

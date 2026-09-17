@@ -1,0 +1,670 @@
+/** @vitest-environment jsdom */
+
+it("preserves the page-scroll anchor even when virtualization has pruned rows above the viewport", () => {
+  virtualizerMocks.rowIndexes = [2, 3, 4, 5];
+  virtualizerMocks.totalSize = 12 * 360;
+
+  const baseCards = mapPromptCacheConversationsToDashboardCards(
+    createResponse(
+      Array.from({ length: 8 }, (_, index) =>
+        createConversation(`pruned-row-${index + 1}`, [
+          createPreview({
+            id: index + 1,
+            invokeId: `invoke-pruned-row-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+            status: "running",
+          }),
+        ]),
+      ),
+    ),
+  );
+
+  const initialCards = baseCards.map((card, index) => ({
+    ...card,
+    promptCacheKey: `pruned-row-${index + 1}`,
+    normalizedPromptCacheKey: `pruned-row-${index + 1}`,
+    conversationSequenceId: `WC-PRUNED-${index + 1}`,
+  })) satisfies DashboardWorkingConversationCardModel[];
+
+  const insertedHead = {
+    ...requireTestValue(baseCards[0], "base card 0"),
+    promptCacheKey: "pruned-new-head",
+    normalizedPromptCacheKey: "pruned-new-head",
+    conversationSequenceId: "WC-PRUNED-NEW",
+  } satisfies DashboardWorkingConversationCardModel;
+
+  const nextCards = [
+    insertedHead,
+    ...initialCards.map((card, index) => ({
+      ...card,
+      conversationSequenceId: `WC-PRUNED-NEXT-${index + 1}`,
+    })),
+  ] satisfies DashboardWorkingConversationCardModel[];
+
+  const rectFor = (top: number, height = 160) =>
+    ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height,
+      toJSON: () => ({}),
+    }) satisfies DOMRect;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+      return rectFor(0, 600);
+    }
+    if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+      switch (this.getAttribute("data-conversation-sequence-id")) {
+        case "PRUNED-3":
+          return rectFor(40);
+        case "PRUNED-4":
+          return rectFor(220);
+        case "PRUNED-5":
+          return rectFor(400);
+        case "PRUNED-6":
+          return rectFor(580);
+        case "PRUNED-NEXT-3":
+          return rectFor(220);
+        case "PRUNED-NEXT-4":
+          return rectFor(400);
+        case "PRUNED-NEXT-5":
+          return rectFor(580);
+        case "PRUNED-NEXT-6":
+          return rectFor(760);
+        default:
+          return rectFor(920);
+      }
+    }
+    return rectFor(0, 0);
+  });
+
+  renderSectionWithCards(initialCards);
+
+  const scrollBy = vi.spyOn(window, "scrollBy");
+
+  rerenderSectionWithCards(nextCards);
+
+  expect(scrollBy).toHaveBeenCalledWith(0, 180);
+});
+it("preserves the page-scroll anchor when the first visible card is partially clipped", () => {
+  const baseCards = mapPromptCacheConversationsToDashboardCards(
+    createResponse(
+      Array.from({ length: 3 }, (_, index) =>
+        createConversation(`partial-anchor-${index + 1}`, [
+          createPreview({
+            id: index + 1,
+            invokeId: `invoke-partial-anchor-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+            status: "running",
+          }),
+        ]),
+      ),
+    ),
+  );
+
+  const initialCards = baseCards.map((card, index) => ({
+    ...card,
+    promptCacheKey: `partial-anchor-${index + 1}`,
+    normalizedPromptCacheKey: `partial-anchor-${index + 1}`,
+    conversationSequenceId: `WC-PARTIAL-${index + 1}`,
+  })) satisfies DashboardWorkingConversationCardModel[];
+
+  const insertedHead = {
+    ...requireTestValue(baseCards[0], "base card 0"),
+    promptCacheKey: "partial-anchor-new-head",
+    normalizedPromptCacheKey: "partial-anchor-new-head",
+    conversationSequenceId: "WC-PARTIAL-NEW",
+  } satisfies DashboardWorkingConversationCardModel;
+
+  const nextCards = [
+    insertedHead,
+    ...initialCards.map((card, index) => ({
+      ...card,
+      conversationSequenceId: `WC-PARTIAL-NEXT-${index + 1}`,
+    })),
+  ] satisfies DashboardWorkingConversationCardModel[];
+
+  const rectFor = (top: number, height = 160) =>
+    ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height,
+      toJSON: () => ({}),
+    }) satisfies DOMRect;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+      return rectFor(0, 600);
+    }
+    if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+      switch (this.getAttribute("data-conversation-sequence-id")) {
+        case "PARTIAL-1":
+          return rectFor(-24);
+        case "PARTIAL-2":
+          return rectFor(180);
+        case "PARTIAL-3":
+          return rectFor(360);
+        case "PARTIAL-NEXT-1":
+          return rectFor(156);
+        case "PARTIAL-NEXT-2":
+          return rectFor(360);
+        case "PARTIAL-NEXT-3":
+          return rectFor(540);
+        default:
+          return rectFor(720);
+      }
+    }
+    return rectFor(0, 0);
+  });
+
+  renderSectionWithCards(initialCards);
+
+  const scrollBy = vi.spyOn(window, "scrollBy");
+
+  rerenderSectionWithCards(nextCards);
+
+  expect(scrollBy).toHaveBeenCalledWith(0, 180);
+});
+it("preserves the page-scroll anchor when cycling conversation sort reorders the visible cards", () => {
+  const conversations = createResponse([
+    {
+      ...createConversation("sort-anchor-a", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-sort-anchor-a",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "completed",
+        }),
+      ]),
+      createdAt: "2026-04-04T10:03:00Z",
+      lastActivityAt: "2026-04-04T10:04:00Z",
+    },
+    {
+      ...createConversation("sort-anchor-b", [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-sort-anchor-b",
+          occurredAt: "2026-04-04T10:03:00Z",
+          status: "completed",
+        }),
+      ]),
+      createdAt: "2026-04-04T10:02:00Z",
+      lastActivityAt: "2026-04-04T10:03:00Z",
+    },
+    {
+      ...createConversation("sort-anchor-c", [
+        createPreview({
+          id: 3,
+          invokeId: "invoke-sort-anchor-c",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "completed",
+        }),
+      ]),
+      createdAt: "2026-04-04T10:01:00Z",
+      lastActivityAt: "2026-04-04T10:05:00Z",
+    },
+  ]);
+
+  const rectFor = (top: number, height = 160) =>
+    ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height,
+      toJSON: () => ({}),
+    }) satisfies DOMRect;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+      return rectFor(0, 600);
+    }
+    if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+      const cards = Array.from(
+        this.ownerDocument.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ),
+      );
+      const cardIndex = cards.indexOf(this);
+      return rectFor(-220 + cardIndex * 180);
+    }
+    return rectFor(0, 0);
+  });
+
+  renderSection(conversations);
+
+  const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+  if (!(sortButton instanceof HTMLButtonElement)) {
+    throw new Error("missing workspace sort button");
+  }
+
+  const scrollBy = vi.spyOn(window, "scrollBy");
+
+  act(() => {
+    fireEvent.click(sortButton);
+  });
+
+  expect(scrollBy).toHaveBeenCalledWith(0, 180);
+});
+it("preserves the page-scroll anchor when cycling account sort reorders the visible cards", () => {
+  const baseAccount = requireTestValue(
+    createUpstreamAccountActivityResponse().accounts[0],
+    "base upstream account",
+  );
+  upstreamAccountActivityMock.data = {
+    ...createUpstreamAccountActivityResponse(),
+    accounts: [
+      {
+        ...baseAccount,
+        upstreamAccountId: 101,
+        displayName: "Pool Alpha",
+        latestConversationCreatedAt: "2026-04-04T10:03:00Z",
+        lastInvocationAt: "2026-04-04T10:04:00Z",
+      },
+      {
+        ...baseAccount,
+        upstreamAccountId: 102,
+        displayName: "Pool Beta",
+        latestConversationCreatedAt: "2026-04-04T10:02:00Z",
+        lastInvocationAt: "2026-04-04T10:03:00Z",
+      },
+      {
+        ...baseAccount,
+        upstreamAccountId: 103,
+        displayName: "Pool Gamma",
+        latestConversationCreatedAt: "2026-04-04T10:01:00Z",
+        lastInvocationAt: "2026-04-04T10:05:00Z",
+      },
+    ],
+  };
+
+  const rectFor = (top: number, height = 160) =>
+    ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height,
+      toJSON: () => ({}),
+    }) satisfies DOMRect;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-upstream-account-grid") {
+      return rectFor(0, 600);
+    }
+    if (this.getAttribute("data-testid") === "dashboard-upstream-account-card") {
+      const cards = Array.from(
+        this.ownerDocument.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-upstream-account-card"]',
+        ),
+      );
+      const cardIndex = cards.indexOf(this);
+      return rectFor(-220 + cardIndex * 180);
+    }
+    return rectFor(0, 0);
+  });
+
+  renderSection(
+    createResponse([
+      createConversation("account-sort-anchor-a", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-account-sort-anchor-a",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]),
+  );
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+  if (!(sortButton instanceof HTMLButtonElement)) {
+    throw new Error("missing workspace sort button");
+  }
+
+  const scrollBy = vi.spyOn(window, "scrollBy");
+
+  act(() => {
+    fireEvent.click(sortButton);
+  });
+
+  expect(scrollBy).toHaveBeenCalledWith(0, 180);
+});
+it("sorts upstream account cards by descending modes and keeps unassigned rows last", () => {
+  const baseAccount = requireTestValue(
+    createUpstreamAccountActivityResponse().accounts[0],
+    "base upstream account",
+  );
+  upstreamAccountActivityMock.data = {
+    ...createUpstreamAccountActivityResponse(),
+    accounts: [
+      {
+        ...baseAccount,
+        accountKey: "assigned-mid",
+        upstreamAccountId: 101,
+        isUnassigned: false,
+        displayName: "Pool Mid",
+        latestConversationCreatedAt: "2026-04-04T10:03:00Z",
+        lastInvocationAt: "2026-04-04T10:03:30Z",
+        totalCost: 6,
+        totalTokens: 600,
+      },
+      {
+        ...baseAccount,
+        accountKey: "unassigned",
+        upstreamAccountId: null,
+        isUnassigned: true,
+        displayName: "未分配上游账号",
+        latestConversationCreatedAt: "2026-04-04T10:05:00Z",
+        lastInvocationAt: "2026-04-04T10:05:00Z",
+        totalCost: 999,
+        totalTokens: 99_999,
+      },
+      {
+        ...baseAccount,
+        accountKey: "assigned-high",
+        upstreamAccountId: 102,
+        isUnassigned: false,
+        displayName: "Pool High",
+        latestConversationCreatedAt: "2026-04-04T10:04:00Z",
+        lastInvocationAt: "2026-04-04T10:04:30Z",
+        totalCost: 9,
+        totalTokens: 900,
+      },
+    ],
+  };
+
+  renderSection(
+    createResponse([
+      createConversation("account-sort-ordering", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-account-sort-ordering",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]),
+  );
+
+  const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+    node.textContent?.includes("上游账号"),
+  );
+  if (!(accountTab instanceof HTMLButtonElement)) {
+    throw new Error("missing upstream account tab");
+  }
+
+  act(() => {
+    fireEvent.click(accountTab);
+  });
+
+  const readOrder = () =>
+    Array.from(
+      host?.querySelectorAll<HTMLElement>('[data-testid="dashboard-upstream-account-card"]') ?? [],
+    ).map((card) => card.getAttribute("data-account-key"));
+
+  expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+
+  const sortButton = host?.querySelector('[data-testid="dashboard-workspace-sort-button"]');
+  if (!(sortButton instanceof HTMLButtonElement)) {
+    throw new Error("missing workspace sort button");
+  }
+
+  act(() => {
+    fireEvent.click(sortButton);
+  });
+  expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+
+  act(() => {
+    fireEvent.click(sortButton);
+  });
+  expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+
+  act(() => {
+    fireEvent.click(sortButton);
+  });
+  expect(readOrder()).toEqual(["assigned-high", "assigned-mid", "unassigned"]);
+});
+it("does not preserve an anchor when new cards arrive while the list top is still visible", () => {
+  const baseCards = mapPromptCacheConversationsToDashboardCards(
+    createResponse([
+      createConversation("visible-top", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-visible-top",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+      ]),
+      createConversation("visible-second", [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-visible-second",
+          occurredAt: "2026-04-04T10:03:00Z",
+          status: "running",
+        }),
+      ]),
+      createConversation("visible-new-head", [
+        createPreview({
+          id: 3,
+          invokeId: "invoke-visible-new-head",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+  );
+
+  const initialCards = [
+    {
+      ...requireTestValue(baseCards[0], "base card 0"),
+      promptCacheKey: "visible-top",
+      normalizedPromptCacheKey: "visible-top",
+      conversationSequenceId: "WC-VISIBLE-A",
+    },
+    {
+      ...requireTestValue(baseCards[1], "base card 1"),
+      promptCacheKey: "visible-second",
+      normalizedPromptCacheKey: "visible-second",
+      conversationSequenceId: "WC-VISIBLE-B",
+    },
+  ] satisfies DashboardWorkingConversationCardModel[];
+
+  const nextCards = [
+    {
+      ...requireTestValue(baseCards[2], "base card 2"),
+      promptCacheKey: "visible-new-head",
+      normalizedPromptCacheKey: "visible-new-head",
+      conversationSequenceId: "WC-VISIBLE-C",
+    },
+    {
+      ...requireTestValue(baseCards[0], "base card 0"),
+      promptCacheKey: "visible-top",
+      normalizedPromptCacheKey: "visible-top",
+      conversationSequenceId: "WC-VISIBLE-A-1",
+    },
+    {
+      ...requireTestValue(baseCards[1], "base card 1"),
+      promptCacheKey: "visible-second",
+      normalizedPromptCacheKey: "visible-second",
+      conversationSequenceId: "WC-VISIBLE-B-1",
+    },
+  ] satisfies DashboardWorkingConversationCardModel[];
+
+  const rectFor = (top: number, height = 160) =>
+    ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height,
+      toJSON: () => ({}),
+    }) satisfies DOMRect;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+      return rectFor(0, 600);
+    }
+    if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+      switch (this.getAttribute("data-conversation-sequence-id")) {
+        case "VISIBLE-A":
+          return rectFor(40);
+        case "VISIBLE-B":
+          return rectFor(220);
+        case "VISIBLE-C":
+          return rectFor(40);
+        case "VISIBLE-A-1":
+          return rectFor(220);
+        case "VISIBLE-B-1":
+          return rectFor(400);
+        default:
+          return rectFor(720);
+      }
+    }
+    return rectFor(0, 0);
+  });
+
+  renderSectionWithCards(initialCards);
+
+  const scrollBy = vi.spyOn(window, "scrollBy");
+
+  rerenderSectionWithCards(nextCards);
+
+  expect(scrollBy).not.toHaveBeenCalled();
+});
+it("keeps a single failed status icon in the slot header and attaches the collapsed error summary to it", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-failed-status-dedup", [
+        createPreview({
+          id: 81,
+          invokeId: "invoke-failed-status-dedup",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "http_502",
+          failureClass: "service_failure",
+          errorMessage: LONG_ERROR_SUMMARY,
+          failureKind: "upstream_timeout",
+        }),
+      ]),
+    ]),
+  );
+
+  const currentSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  if (!(currentSlot instanceof HTMLElement)) {
+    throw new Error("missing failed current slot");
+  }
+  const slotHeader = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-slot-header"]',
+  );
+  if (!(slotHeader instanceof HTMLElement)) {
+    throw new Error("missing failed slot header");
+  }
+
+  const statusIcon = slotHeader.querySelector('[data-testid="dashboard-inline-invocation-status"]');
+  if (!(statusIcon instanceof HTMLElement)) {
+    throw new Error("missing compact failed status icon");
+  }
+
+  expect(statusIcon.getAttribute("aria-label")).toContain("失败");
+  expect(statusIcon.getAttribute("aria-label")).toContain(LONG_ERROR_SUMMARY);
+  expect(statusIcon.getAttribute("title")).toBeNull();
+  expect(
+    slotHeader.querySelectorAll('[data-testid="dashboard-inline-invocation-status"]'),
+  ).toHaveLength(1);
+});
+it("renders the slot error summary as a truncated trigger and exposes the full message on hover", async () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-slot-error-tooltip", [
+        createPreview({
+          id: 82,
+          invokeId: "invoke-slot-error-tooltip",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "http_502",
+          failureClass: "service_failure",
+          failureKind: "upstream_http_5xx",
+          errorMessage: LONG_ERROR_SUMMARY,
+        }),
+      ]),
+    ]),
+  );
+
+  const currentSlot = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  if (!(currentSlot instanceof HTMLElement)) {
+    throw new Error("missing slot for tooltip test");
+  }
+
+  const errorSummary = currentSlot.querySelector('[data-testid="invocation-error-summary"]');
+  const errorText = currentSlot.querySelector('[data-testid="invocation-error-summary-text"]');
+  const errorTrigger = errorSummary?.parentElement;
+  if (
+    !(errorSummary instanceof HTMLElement) ||
+    !(errorTrigger instanceof HTMLElement) ||
+    !(errorText instanceof HTMLElement)
+  ) {
+    throw new Error("missing shared error summary");
+  }
+
+  expect(errorTrigger.getAttribute("title")).toBeNull();
+  expect(errorText.getAttribute("title")).toBeNull();
+  expect(errorText.className).toContain("truncate");
+  expect(errorText.className).toContain("whitespace-nowrap");
+
+  expect(errorTrigger.getAttribute("tabindex")).toBe("0");
+  expect(errorTrigger.getAttribute("aria-label")).toBe(LONG_ERROR_SUMMARY);
+
+  await act(async () => {
+    fireEvent.mouseOver(errorTrigger);
+  });
+
+  await waitFor(() => {
+    const tooltip = Array.from(document.body.querySelectorAll('[role="tooltip"]')).find((node) =>
+      node.textContent?.includes(LONG_ERROR_SUMMARY),
+    );
+    expect(tooltip).toBeInstanceOf(HTMLElement);
+  });
+});

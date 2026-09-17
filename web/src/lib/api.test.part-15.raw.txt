@@ -1,0 +1,327 @@
+it("normalizes forward proxy settings when fetching settings", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          proxy: {
+            hijackEnabled: true,
+            mergeUpstreamEnabled: true,
+            fastModeRewriteMode: "disabled",
+            upstream429MaxRetries: 5,
+            websocketEnabled: true,
+            upstreamWebsocketDefaultEnabled: false,
+            requestBodyLoggingEnabled: true,
+            responseBodyLoggingEnabled: true,
+            encryptedSessionOwnerRoutingEnabled: true,
+            defaultHijackEnabled: false,
+            models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"],
+            enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "missing-model"],
+          },
+          forwardProxy: {
+            proxyUrls: ["socks5://127.0.0.1:1080"],
+            subscriptionUrls: ["https://example.com/subscription.txt"],
+            subscriptionUpdateIntervalSecs: 900,
+            nodes: [
+              {
+                key: "fpb_jp_edge_01",
+                source: "manual",
+                displayName: "JP Edge 01",
+                endpointUrl: "socks5://127.0.0.1:1080",
+                weight: 0.9,
+                penalized: false,
+                stats: {
+                  oneMinute: { attempts: 2 },
+                  fifteenMinutes: { attempts: 10 },
+                  oneHour: { attempts: 20 },
+                  oneDay: { attempts: 30 },
+                  sevenDays: { attempts: 40 },
+                },
+              },
+            ],
+          },
+          pricing: {
+            catalogVersion: "v1",
+            entries: [
+              {
+                model: "gpt-5.6-sol",
+                inputPer1m: 5,
+                outputPer1m: 30,
+                cacheReadPer1m: 0.5,
+                cacheWritePer1m: 6.25,
+                source: "official",
+              },
+              {
+                model: "gpt-5.4-mini",
+                inputPer1m: 0.6,
+                outputPer1m: 2.4,
+                cacheInputPer1m: 0.075,
+                source: "official",
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const settings = await fetchSettings();
+  expect(settings.proxy.hijackEnabled).toBe(true);
+  expect(settings.proxy.upstream429MaxRetries).toBe(5);
+  expect(settings.proxy.websocketEnabled).toBe(true);
+  expect(settings.proxy.upstreamWebsocketDefaultEnabled).toBe(false);
+  expect(settings.proxy.encryptedSessionOwnerRoutingEnabled).toBe(true);
+  expect(settings.proxy.enabledModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
+  expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
+  expect(settings.forwardProxy.nodes).toHaveLength(1);
+  expect(settings.forwardProxy.nodes[0].displayName).toBe("JP Edge 01");
+  expect(settings.pricing.entries).toEqual([
+    {
+      model: "gpt-5.4-mini",
+      inputPer1m: 0.6,
+      outputPer1m: 2.4,
+      cacheInputPer1m: 0.075,
+      cacheReadPer1m: 0.075,
+      cacheWritePer1m: null,
+      reasoningPer1m: null,
+      source: "official",
+    },
+    {
+      model: "gpt-5.6-sol",
+      inputPer1m: 5,
+      outputPer1m: 30,
+      cacheInputPer1m: 0.5,
+      cacheReadPer1m: 0.5,
+      cacheWritePer1m: 6.25,
+      reasoningPer1m: null,
+      source: "official",
+    },
+  ]);
+});
+it("defaults encrypted owner routing to disabled when the field is missing", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          proxy: {
+            hijackEnabled: false,
+            mergeUpstreamEnabled: false,
+            fastModeRewriteMode: "disabled",
+            upstream429MaxRetries: 3,
+            websocketEnabled: false,
+            upstreamWebsocketDefaultEnabled: false,
+            requestBodyLoggingEnabled: true,
+            responseBodyLoggingEnabled: true,
+            defaultHijackEnabled: false,
+            models: ["gpt-5.6-sol"],
+            enabledModels: ["gpt-5.6-sol"],
+          },
+          forwardProxy: {
+            proxyUrls: [],
+            subscriptionUrls: [],
+            subscriptionUpdateIntervalSecs: 3600,
+            nodes: [],
+          },
+          pricing: {
+            catalogVersion: "v1",
+            entries: [],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const settings = await fetchSettings();
+  expect(settings.proxy.encryptedSessionOwnerRoutingEnabled).toBe(false);
+});
+it("normalizes proxy settings updates", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          hijackEnabled: true,
+          mergeUpstreamEnabled: false,
+          fastModeRewriteMode: "disabled",
+          upstream429MaxRetries: 9,
+          websocketEnabled: true,
+          upstreamWebsocketDefaultEnabled: true,
+          requestBodyLoggingEnabled: false,
+          responseBodyLoggingEnabled: false,
+          defaultHijackEnabled: false,
+          models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"],
+          enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra", "missing-model"],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const response = await updateProxySettings({
+    hijackEnabled: true,
+    mergeUpstreamEnabled: false,
+    fastModeRewriteMode: "disabled",
+    upstream429MaxRetries: 5,
+    websocketEnabled: true,
+    upstreamWebsocketDefaultEnabled: true,
+    requestBodyLoggingEnabled: false,
+    responseBodyLoggingEnabled: false,
+    encryptedSessionOwnerRoutingEnabled: false,
+    enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
+  });
+
+  expect(response.hijackEnabled).toBe(true);
+  expect(response.mergeUpstreamEnabled).toBe(false);
+  expect(response.upstream429MaxRetries).toBe(5);
+  expect(response.websocketEnabled).toBe(true);
+  expect(response.upstreamWebsocketDefaultEnabled).toBe(true);
+  expect(response.requestBodyLoggingEnabled).toBe(false);
+  expect(response.responseBodyLoggingEnabled).toBe(false);
+  expect(response.enabledModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
+});
+it("normalizes bound proxy keys and binding nodes in upstream account list", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          writesEnabled: true,
+          items: [],
+          groups: [
+            {
+              groupName: "production",
+              note: "Premium traffic",
+              boundProxyKeys: ["fpb_jp_edge_01", "fpb_sg_edge_02", "fpb_jp_edge_01"],
+              upstream429RetryEnabled: true,
+              upstream429MaxRetries: 3,
+              singleAccountRotationEnabled: true,
+              routingRule: {
+                priorityTier: "primary",
+                fastModeRewriteMode: "force_add",
+                concurrencyLimit: 4,
+                upstream429RetryEnabled: true,
+                upstream429MaxRetries: 2,
+              },
+            },
+          ],
+          forwardProxyNodes: [
+            {
+              key: "fpb_jp_edge_01",
+              aliasKeys: ["fpn_jp_edge_runtime"],
+              source: "manual",
+              displayName: "JP Edge 01",
+              protocolLabel: "HTTP",
+              penalized: false,
+              selectable: true,
+              last24h: [
+                {
+                  bucketStart: "2026-03-01T00:00:00Z",
+                  bucketEnd: "2026-03-01T01:00:00Z",
+                  successCount: 5,
+                  failureCount: 1,
+                },
+              ],
+            },
+            {
+              key: "fpn_deadbeefcafebabe",
+              source: "missing",
+              displayName: "历史东京中继",
+              protocolLabel: "unknown",
+              penalized: false,
+              selectable: false,
+              last24h: [],
+            },
+          ],
+          hasUngroupedAccounts: false,
+          total: 0,
+          page: 1,
+          pageSize: 20,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch,
+  );
+
+  const response = await fetchUpstreamAccounts();
+  expect(response.groups[0].boundProxyKeys).toEqual([
+    "fpb_jp_edge_01",
+    "fpb_sg_edge_02",
+    "fpb_jp_edge_01",
+  ]);
+  expect(response.groups[0].upstream429RetryEnabled).toBe(true);
+  expect(response.groups[0].upstream429MaxRetries).toBe(3);
+  expect(response.groups[0].singleAccountRotationEnabled).toBe(true);
+  expect(response.groups[0].routingRule?.priorityTier).toBe("primary");
+  expect(response.groups[0].routingRule?.fastModeRewriteMode).toBe("force_add");
+  expect(response.groups[0].routingRule?.concurrencyLimit).toBe(4);
+  expect(response.groups[0].routingRule?.upstream429RetryEnabled).toBe(true);
+  expect(response.groups[0].routingRule?.upstream429MaxRetries).toBe(2);
+  expect(response.forwardProxyNodes ?? []).toHaveLength(2);
+  expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
+  expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual(["fpn_jp_edge_runtime"]);
+  expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
+  expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("UNKNOWN");
+  expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");
+  expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
+  expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
+});
+it("fetches forward proxy binding nodes through the dedicated endpoint", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    expect(String(input)).toContain(
+      "/api/pool/forward-proxy-binding-nodes?includeCurrent=true&key=fpb_jp_edge_01&key=fpb_sg_edge_02",
+    );
+    return new Response(
+      JSON.stringify([
+        {
+          key: "fpb_jp_edge_01",
+          aliasKeys: ["fpn_jp_edge_runtime"],
+          source: "manual",
+          displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ]),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  const response = await fetchForwardProxyBindingNodes(
+    ["fpb_jp_edge_01", " ", "fpb_sg_edge_02", "fpb_jp_edge_01"],
+    {
+      includeCurrent: true,
+    },
+  );
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(response).toHaveLength(1);
+  expect(response[0]).toMatchObject({
+    key: "fpb_jp_edge_01",
+    protocolLabel: "HTTP",
+    aliasKeys: ["fpn_jp_edge_runtime"],
+  });
+});
+it("includes groupName when requesting group-scoped binding node stats", async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    expect(String(input)).toContain(
+      "/api/pool/forward-proxy-binding-nodes?includeCurrent=true&groupName=prod&key=fpb_jp_edge_01",
+    );
+    return new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+  await fetchForwardProxyBindingNodes(["fpb_jp_edge_01"], {
+    includeCurrent: true,
+    groupName: "  prod  ",
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

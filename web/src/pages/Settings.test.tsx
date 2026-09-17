@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import type { PoolRoutingSettings, SettingsPayload } from "../lib/api";
 import SettingsPage from "./Settings";
@@ -9,18 +9,14 @@ import SettingsPage from "./Settings";
 const hookMocks = vi.hoisted(() => ({
   useSettings: vi.fn(),
 }));
-
 vi.mock("../hooks/useSettings", () => ({
   useSettings: hookMocks.useSettings,
 }));
-
 vi.mock("../features/settings/ExternalApiKeysSettingsCard", () => ({
   ExternalApiKeysSettingsCard: () => <section data-testid="external-api-keys-settings-card" />,
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 function createSettingsPayload(): SettingsPayload {
   return {
     proxy: {
@@ -65,7 +61,6 @@ function createSettingsPayload(): SettingsPayload {
     },
   };
 }
-
 function createRoutingPayload(): PoolRoutingSettings {
   return {
     writesEnabled: true,
@@ -93,7 +88,6 @@ function createRoutingPayload(): PoolRoutingSettings {
     },
   };
 }
-
 function renderSettingsPage() {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -107,7 +101,6 @@ function renderSettingsPage() {
     );
   });
 }
-
 function expectTextInOrder(content: string, values: string[]) {
   let previousIndex = -1;
   for (const value of values) {
@@ -118,212 +111,202 @@ function expectTextInOrder(content: string, values: string[]) {
     previousIndex = nextIndex;
   }
 }
+beforeEach(() => {
+  hookMocks.useSettings.mockReturnValue({
+    settings: createSettingsPayload(),
+    routing: createRoutingPayload(),
+    isLoading: false,
+    isProxySaving: false,
+    isForwardProxySaving: false,
+    isPricingSaving: false,
+    isRoutingSaving: false,
+    pricingRollbackVersion: 0,
+    error: null,
+    refresh: vi.fn(),
+    saveProxy: vi.fn(),
+    saveForwardProxy: vi.fn(),
+    savePricing: vi.fn(),
+    saveRouting: vi.fn(),
+  });
+});
+afterEach(() => {
+  act(() => {
+    root?.unmount();
+  });
+  host?.remove();
+  host = null;
+  root = null;
+  hookMocks.useSettings.mockReset();
+});
+it("renders forward proxy desktop and mobile windows from longest to shortest window", () => {
+  renderSettingsPage();
 
-describe("Settings forward proxy table", () => {
-  beforeEach(() => {
-    hookMocks.useSettings.mockReturnValue({
-      settings: createSettingsPayload(),
-      routing: createRoutingPayload(),
-      isLoading: false,
-      isProxySaving: false,
-      isForwardProxySaving: false,
-      isPricingSaving: false,
-      isRoutingSaving: false,
-      pricingRollbackVersion: 0,
-      error: null,
-      refresh: vi.fn(),
-      saveProxy: vi.fn(),
-      saveForwardProxy: vi.fn(),
-      savePricing: vi.fn(),
-      saveRouting: vi.fn(),
-    });
+  const desktopTable = host?.querySelector('[data-testid="settings-forward-proxy-desktop-table"]');
+  if (!(desktopTable instanceof HTMLTableElement)) {
+    throw new Error("Missing forward proxy desktop table");
+  }
+  const desktopHeaders = Array.from(desktopTable.querySelectorAll("thead th")).map(
+    (cell) => cell.textContent ?? "",
+  );
+  expect(desktopHeaders.slice(2, 7)).toEqual(["7 天", "1 天", "1 小时", "15 分钟", "1 分钟"]);
+
+  const desktopCells = Array.from(desktopTable.querySelectorAll("tbody tr:first-child td")).map(
+    (cell) => cell.textContent ?? "",
+  );
+  expect(desktopCells.slice(2, 7)).toEqual([
+    "55.0%505 ms",
+    "44.0%404 ms",
+    "33.0%303 ms",
+    "22.0%202 ms",
+    "11.0%101 ms",
+  ]);
+
+  const mobileWindows = host?.querySelector(
+    '[data-testid="settings-forward-proxy-mobile-windows"]',
+  );
+  if (!(mobileWindows instanceof HTMLElement)) {
+    throw new Error("Missing forward proxy mobile windows");
+  }
+  expectTextInOrder(mobileWindows.textContent ?? "", [
+    "7 天",
+    "55.0%",
+    "505 ms",
+    "1 天",
+    "44.0%",
+    "404 ms",
+    "1 小时",
+    "33.0%",
+    "303 ms",
+    "15 分钟",
+    "22.0%",
+    "202 ms",
+    "1 分钟",
+    "11.0%",
+    "101 ms",
+  ]);
+});
+it("renders independent request/response body logging switches", () => {
+  renderSettingsPage();
+
+  expect(host?.textContent).toContain("记录请求 body");
+  expect(host?.textContent).toContain("记录响应 body");
+});
+it("persists the encrypted owner routing toggle through proxy settings", () => {
+  const saveProxy = vi.fn();
+  hookMocks.useSettings.mockReturnValue({
+    settings: createSettingsPayload(),
+    routing: createRoutingPayload(),
+    isLoading: false,
+    isProxySaving: false,
+    isForwardProxySaving: false,
+    isPricingSaving: false,
+    isRoutingSaving: false,
+    pricingRollbackVersion: 0,
+    error: null,
+    refresh: vi.fn(),
+    saveProxy,
+    saveForwardProxy: vi.fn(),
+    savePricing: vi.fn(),
+    saveRouting: vi.fn(),
   });
 
-  afterEach(() => {
-    act(() => {
-      root?.unmount();
-    });
-    host?.remove();
-    host = null;
-    root = null;
-    hookMocks.useSettings.mockReset();
+  renderSettingsPage();
+
+  expect(host?.textContent).toContain("OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED");
+
+  const toggle = host?.querySelector('button[aria-label="加密对话路由绑定"]');
+  if (!(toggle instanceof HTMLButtonElement)) {
+    throw new Error("Missing encrypted owner routing toggle");
+  }
+  act(() => {
+    toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("renders forward proxy desktop and mobile windows from longest to shortest window", () => {
-    renderSettingsPage();
-
-    const desktopTable = host?.querySelector(
-      '[data-testid="settings-forward-proxy-desktop-table"]',
-    );
-    if (!(desktopTable instanceof HTMLTableElement)) {
-      throw new Error("Missing forward proxy desktop table");
-    }
-    const desktopHeaders = Array.from(desktopTable.querySelectorAll("thead th")).map(
-      (cell) => cell.textContent ?? "",
-    );
-    expect(desktopHeaders.slice(2, 7)).toEqual(["7 天", "1 天", "1 小时", "15 分钟", "1 分钟"]);
-
-    const desktopCells = Array.from(desktopTable.querySelectorAll("tbody tr:first-child td")).map(
-      (cell) => cell.textContent ?? "",
-    );
-    expect(desktopCells.slice(2, 7)).toEqual([
-      "55.0%505 ms",
-      "44.0%404 ms",
-      "33.0%303 ms",
-      "22.0%202 ms",
-      "11.0%101 ms",
-    ]);
-
-    const mobileWindows = host?.querySelector(
-      '[data-testid="settings-forward-proxy-mobile-windows"]',
-    );
-    if (!(mobileWindows instanceof HTMLElement)) {
-      throw new Error("Missing forward proxy mobile windows");
-    }
-    expectTextInOrder(mobileWindows.textContent ?? "", [
-      "7 天",
-      "55.0%",
-      "505 ms",
-      "1 天",
-      "44.0%",
-      "404 ms",
-      "1 小时",
-      "33.0%",
-      "303 ms",
-      "15 分钟",
-      "22.0%",
-      "202 ms",
-      "1 分钟",
-      "11.0%",
-      "101 ms",
-    ]);
+  expect(saveProxy).toHaveBeenCalledTimes(1);
+  expect(saveProxy.mock.calls[0]?.[0]).toMatchObject({
+    encryptedSessionOwnerRoutingEnabled: true,
+  });
+});
+it("persists routing defaults through system settings", () => {
+  const saveRouting = vi.fn();
+  hookMocks.useSettings.mockReturnValue({
+    settings: createSettingsPayload(),
+    routing: createRoutingPayload(),
+    isLoading: false,
+    isProxySaving: false,
+    isForwardProxySaving: false,
+    isPricingSaving: false,
+    isRoutingSaving: false,
+    pricingRollbackVersion: 0,
+    error: null,
+    refresh: vi.fn(),
+    saveProxy: vi.fn(),
+    saveForwardProxy: vi.fn(),
+    savePricing: vi.fn(),
+    saveRouting,
   });
 
-  it("renders independent request/response body logging switches", () => {
-    renderSettingsPage();
+  renderSettingsPage();
 
-    expect(host?.textContent).toContain("记录请求 body");
-    expect(host?.textContent).toContain("记录响应 body");
+  expect(host?.textContent).toContain("上游请求默认值");
+  expect(host?.textContent).toContain("缓存命中保护");
+
+  const priorityHandoffToggle = host?.querySelector('button[aria-label="优先级迁移准入控制"]');
+  if (!(priorityHandoffToggle instanceof HTMLButtonElement)) {
+    throw new Error("Missing priority handoff admission toggle");
+  }
+  act(() => {
+    priorityHandoffToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("persists the encrypted owner routing toggle through proxy settings", () => {
-    const saveProxy = vi.fn();
-    hookMocks.useSettings.mockReturnValue({
-      settings: createSettingsPayload(),
-      routing: createRoutingPayload(),
-      isLoading: false,
-      isProxySaving: false,
-      isForwardProxySaving: false,
-      isPricingSaving: false,
-      isRoutingSaving: false,
-      pricingRollbackVersion: 0,
-      error: null,
-      refresh: vi.fn(),
-      saveProxy,
-      saveForwardProxy: vi.fn(),
-      savePricing: vi.fn(),
-      saveRouting: vi.fn(),
-    });
-
-    renderSettingsPage();
-
-    expect(host?.textContent).toContain("OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED");
-
-    const toggle = host?.querySelector('button[aria-label="加密对话路由绑定"]');
-    if (!(toggle instanceof HTMLButtonElement)) {
-      throw new Error("Missing encrypted owner routing toggle");
-    }
-    act(() => {
-      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(saveProxy).toHaveBeenCalledTimes(1);
-    expect(saveProxy.mock.calls[0]?.[0]).toMatchObject({
-      encryptedSessionOwnerRoutingEnabled: true,
-    });
+  const cacheHitToggle = host?.querySelector('button[aria-label="缓存命中保护"]');
+  if (!(cacheHitToggle instanceof HTMLButtonElement)) {
+    throw new Error("Missing cache-hit protection toggle");
+  }
+  act(() => {
+    cacheHitToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  it("persists routing defaults through system settings", () => {
-    const saveRouting = vi.fn();
-    hookMocks.useSettings.mockReturnValue({
-      settings: createSettingsPayload(),
-      routing: createRoutingPayload(),
-      isLoading: false,
-      isProxySaving: false,
-      isForwardProxySaving: false,
-      isPricingSaving: false,
-      isRoutingSaving: false,
-      pricingRollbackVersion: 0,
-      error: null,
-      refresh: vi.fn(),
-      saveProxy: vi.fn(),
-      saveForwardProxy: vi.fn(),
-      savePricing: vi.fn(),
-      saveRouting,
-    });
+  const timeoutInput = host?.querySelector('input[name="responsesFirstByteTimeoutSecs"]');
+  if (!(timeoutInput instanceof HTMLInputElement)) {
+    throw new Error("Missing routing timeout input");
+  }
+  act(() => {
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    valueSetter?.call(timeoutInput, "180");
+    timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 
-    renderSettingsPage();
+  const saveButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
+    button.textContent?.includes("保存默认值"),
+  );
+  if (!(saveButton instanceof HTMLButtonElement)) {
+    throw new Error("Missing routing save button");
+  }
+  expect(saveButton.disabled).toBe(false);
+  act(() => {
+    saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
 
-    expect(host?.textContent).toContain("上游请求默认值");
-    expect(host?.textContent).toContain("缓存命中保护");
-
-    const priorityHandoffToggle = host?.querySelector('button[aria-label="优先级迁移准入控制"]');
-    if (!(priorityHandoffToggle instanceof HTMLButtonElement)) {
-      throw new Error("Missing priority handoff admission toggle");
-    }
-    act(() => {
-      priorityHandoffToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const cacheHitToggle = host?.querySelector('button[aria-label="缓存命中保护"]');
-    if (!(cacheHitToggle instanceof HTMLButtonElement)) {
-      throw new Error("Missing cache-hit protection toggle");
-    }
-    act(() => {
-      cacheHitToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const timeoutInput = host?.querySelector('input[name="responsesFirstByteTimeoutSecs"]');
-    if (!(timeoutInput instanceof HTMLInputElement)) {
-      throw new Error("Missing routing timeout input");
-    }
-    act(() => {
-      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      valueSetter?.call(timeoutInput, "180");
-      timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-
-    const saveButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) =>
-      button.textContent?.includes("保存默认值"),
-    );
-    if (!(saveButton instanceof HTMLButtonElement)) {
-      throw new Error("Missing routing save button");
-    }
-    expect(saveButton.disabled).toBe(false);
-    act(() => {
-      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(saveRouting).toHaveBeenCalledTimes(1);
-    expect(saveRouting).toHaveBeenCalledWith({
-      availableModels: [],
-      availableModelsMode: "denylist",
-      requestCompressionAlgorithm: "identity",
-      requestCompressionLevelPreset: "balanced",
-      codexImagegenRewriteMode: "keep_original",
-      priorityHandoffAdmissionEnabled: false,
-      cacheHitProtection: {
-        enabled: true,
-        lowHitRateThresholdPercent: 10,
-        overflowMode: "queue",
-      },
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 180,
-        compactFirstByteTimeoutSecs: 300,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 300,
-      },
-    });
+  expect(saveRouting).toHaveBeenCalledTimes(1);
+  expect(saveRouting).toHaveBeenCalledWith({
+    availableModels: [],
+    availableModelsMode: "denylist",
+    requestCompressionAlgorithm: "identity",
+    requestCompressionLevelPreset: "balanced",
+    codexImagegenRewriteMode: "keep_original",
+    priorityHandoffAdmissionEnabled: false,
+    cacheHitProtection: {
+      enabled: true,
+      lowHitRateThresholdPercent: 10,
+      overflowMode: "queue",
+    },
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 180,
+      compactFirstByteTimeoutSecs: 300,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 300,
+    },
   });
 });

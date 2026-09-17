@@ -1,13 +1,12 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { ForwardProxyCatalogState } from "../../hooks/useUpstreamAccounts";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 function render(ui: React.ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -16,13 +15,11 @@ function render(ui: React.ReactNode) {
     root?.render(ui);
   });
 }
-
 function rerender(ui: React.ReactNode) {
   act(() => {
     root?.render(ui);
   });
 }
-
 function createCatalogState(
   overrides: Partial<ForwardProxyCatalogState>,
 ): ForwardProxyCatalogState {
@@ -34,7 +31,6 @@ function createCatalogState(
     ...overrides,
   };
 }
-
 function Probe(props: {
   open: boolean;
   refresh: (options?: { silent?: boolean }) => Promise<unknown>;
@@ -47,7 +43,6 @@ function Probe(props: {
   });
   return null;
 }
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -56,134 +51,129 @@ afterEach(() => {
   host = null;
   root = null;
 });
+it("does not launch a second refresh while an empty catalog refresh is already loading", () => {
+  const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
+    Promise.resolve(),
+  );
 
-describe("useGroupNoteCatalogAutoRefresh", () => {
-  it("does not launch a second refresh while an empty catalog refresh is already loading", () => {
-    const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
-      Promise.resolve(),
-    );
+  render(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "loading",
+        freshness: "stale",
+        isPending: true,
+      })}
+    />,
+  );
 
-    render(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "loading",
-          freshness: "stale",
-          isPending: true,
-        })}
-      />,
-    );
+  expect(refresh).not.toHaveBeenCalled();
+});
+it("avoids retry loops when the catalog falls back to missing after a failed refresh", () => {
+  const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
+    Promise.resolve(),
+  );
 
-    expect(refresh).not.toHaveBeenCalled();
-  });
+  render(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "missing",
+        freshness: "missing",
+      })}
+    />,
+  );
 
-  it("avoids retry loops when the catalog falls back to missing after a failed refresh", () => {
-    const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
-      Promise.resolve(),
-    );
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(refresh).toHaveBeenLastCalledWith({ silent: true });
 
-    render(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "missing",
-          freshness: "missing",
-        })}
-      />,
-    );
+  rerender(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "loading",
+        freshness: "missing",
+        isPending: true,
+      })}
+    />,
+  );
+  rerender(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "missing",
+        freshness: "missing",
+      })}
+    />,
+  );
 
-    expect(refresh).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenLastCalledWith({ silent: true });
+  expect(refresh).toHaveBeenCalledTimes(1);
+});
+it("retries again after the dialog recovers or reopens", () => {
+  const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
+    Promise.resolve(),
+  );
 
-    rerender(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "loading",
-          freshness: "missing",
-          isPending: true,
-        })}
-      />,
-    );
-    rerender(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "missing",
-          freshness: "missing",
-        })}
-      />,
-    );
+  render(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "missing",
+        freshness: "missing",
+      })}
+    />,
+  );
+  expect(refresh).toHaveBeenCalledTimes(1);
 
-    expect(refresh).toHaveBeenCalledTimes(1);
-  });
+  rerender(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "ready-with-data",
+        freshness: "fresh",
+        hasNodes: true,
+      })}
+    />,
+  );
+  rerender(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "ready-with-data",
+        freshness: "stale",
+        hasNodes: true,
+      })}
+    />,
+  );
+  expect(refresh).toHaveBeenCalledTimes(2);
 
-  it("retries again after the dialog recovers or reopens", () => {
-    const refresh = vi.fn<(options?: { silent?: boolean }) => Promise<unknown>>(() =>
-      Promise.resolve(),
-    );
-
-    render(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "missing",
-          freshness: "missing",
-        })}
-      />,
-    );
-    expect(refresh).toHaveBeenCalledTimes(1);
-
-    rerender(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "ready-with-data",
-          freshness: "fresh",
-          hasNodes: true,
-        })}
-      />,
-    );
-    rerender(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "ready-with-data",
-          freshness: "stale",
-          hasNodes: true,
-        })}
-      />,
-    );
-    expect(refresh).toHaveBeenCalledTimes(2);
-
-    rerender(
-      <Probe
-        open={false}
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "ready-with-data",
-          freshness: "fresh",
-          hasNodes: true,
-        })}
-      />,
-    );
-    rerender(
-      <Probe
-        open
-        refresh={refresh}
-        catalogState={createCatalogState({
-          kind: "missing",
-          freshness: "missing",
-        })}
-      />,
-    );
-    expect(refresh).toHaveBeenCalledTimes(3);
-  });
+  rerender(
+    <Probe
+      open={false}
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "ready-with-data",
+        freshness: "fresh",
+        hasNodes: true,
+      })}
+    />,
+  );
+  rerender(
+    <Probe
+      open
+      refresh={refresh}
+      catalogState={createCatalogState({
+        kind: "missing",
+        freshness: "missing",
+      })}
+    />,
+  );
+  expect(refresh).toHaveBeenCalledTimes(3);
 });

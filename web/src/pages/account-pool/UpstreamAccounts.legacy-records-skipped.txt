@@ -1,0 +1,554 @@
+it.skip("subscribes the records tab fetch lifecycle to the selected upstream account and reconciles on SSE open", async () => {
+  mockAccountsPage();
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce({
+      snapshotId: 42,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 1,
+          invokeId: "invoke-live",
+          occurredAt: "2026-03-16T02:05:00.000Z",
+          createdAt: "2026-03-16T02:05:00.000Z",
+          status: "running",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({
+      snapshotId: 84,
+      total: 51,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 2,
+          invokeId: "invoke-new",
+          occurredAt: "2026-03-16T02:06:00.000Z",
+          createdAt: "2026-03-16T02:06:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+        {
+          id: 1,
+          invokeId: "invoke-live",
+          occurredAt: "2026-03-16T02:05:00.000Z",
+          createdAt: "2026-03-16T02:05:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          totalTokens: 777,
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    });
+  const nextHost = document.createElement("div");
+  setHost(nextHost);
+  document.body.appendChild(nextHost);
+  setRoot(createRoot(nextHost));
+  act(() => {
+    root?.render(
+      <ThemeProvider>
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="records"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+  });
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  });
+  expect(apiMocks.fetchInvocationRecords.mock.calls[0]?.[0]).toMatchObject({
+    upstreamAccountId: 5,
+    page: 1,
+    pageSize: 50,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+  });
+  act(() => {
+    sseMocks.onMessage?.({
+      type: "records",
+      records: [
+        {
+          id: 99,
+          invokeId: "invoke-other-account",
+          occurredAt: "2026-03-16T02:07:00.000Z",
+          createdAt: "2026-03-16T02:07:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 9,
+          upstreamAccountName: "Another OAuth",
+          routeMode: "pool",
+        },
+        {
+          id: 1,
+          invokeId: "invoke-live",
+          occurredAt: "2026-03-16T02:05:00.000Z",
+          createdAt: "2026-03-16T02:05:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          totalTokens: 777,
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+        {
+          id: 2,
+          invokeId: "invoke-new",
+          occurredAt: "2026-03-16T02:06:00.000Z",
+          createdAt: "2026-03-16T02:06:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    });
+  });
+  await flushAsync();
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  act(() => {
+    sseMocks.onOpen?.();
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+});
+it.skip("locates a health event invocation in the legacy records tab", async () => {
+  mockAccountsPage();
+  apiMocks.fetchInvocationRecordLocation.mockResolvedValue({
+    anchorId: "anchor-test-001",
+    snapshotId: 91,
+    total: 121,
+    page: 2,
+    pageSize: 50,
+    targetIndex: 0,
+    targetAbsoluteIndex: 50,
+    records: [
+      {
+        id: 51,
+        invokeId: "invk_action_001",
+        occurredAt: "2026-03-16T02:06:00.000Z",
+        createdAt: "2026-03-16T02:06:00.000Z",
+        status: "failed",
+        model: "gpt-5.4",
+        upstreamAccountId: 5,
+        upstreamAccountName: "Existing OAuth",
+        routeMode: "pool",
+      },
+    ],
+  });
+  const nextHost = document.createElement("div");
+  setHost(nextHost);
+  document.body.appendChild(nextHost);
+  setRoot(createRoot(nextHost));
+  act(() => {
+    root?.render(
+      <ThemeProvider>
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="healthEvents"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+  });
+  const invokeButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("invk_action_001"),
+  );
+  expect(invokeButton).toBeTruthy();
+  act(() => {
+    invokeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushAsync();
+  expect(apiMocks.fetchInvocationRecordLocation).toHaveBeenCalledWith({
+    invokeId: "invk_action_001",
+    upstreamAccountId: 5,
+    pageSize: 50,
+  });
+  const recordsTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
+    (button) => /请求|requests/i.test(button.textContent ?? ""),
+  );
+  expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
+  await waitForAssertion(() => {
+    expect(document.body.querySelector('[data-testid="invocation-id"]')?.textContent).toBe(
+      "invk_action_001",
+    );
+  });
+  expect(virtualizerMocks.scrollToIndex).toHaveBeenCalledWith(0, {
+    align: "center",
+  });
+  expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+  expect(document.body.textContent).toMatch(/Return to latest requests|返回最新请求/);
+});
+it.skip("keeps the legacy records tab open and focuses a not-found locator alert", async () => {
+  mockAccountsPage();
+  apiMocks.fetchInvocationRecordLocation.mockRejectedValue(
+    new ApiRequestError(404, "invocation_not_found"),
+  );
+  const nextHost = document.createElement("div");
+  setHost(nextHost);
+  document.body.appendChild(nextHost);
+  setRoot(createRoot(nextHost));
+  act(() => {
+    root?.render(
+      <ThemeProvider>
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="healthEvents"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+  });
+  const invokeButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("invk_action_001"),
+  );
+  act(() => {
+    invokeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("invk_action_001");
+  });
+  const alert = document.body.querySelector('[role="alert"]');
+  expect(alert?.textContent).toContain("invk_action_001");
+  await waitForAssertion(() => {
+    expect(alert).toBe(document.activeElement);
+  });
+  const recordsTab = Array.from(document.body.querySelectorAll('button[role="tab"]')).find(
+    (button) => /请求|requests/i.test(button.textContent ?? ""),
+  );
+  expect(recordsTab?.getAttribute("aria-selected")).toBe("true");
+});
+it.skip("clears a stale legacy records error after an SSE-open retry succeeds", async () => {
+  mockAccountsPage();
+  apiMocks.fetchInvocationRecords
+    .mockRejectedValueOnce(new Error("initial records fetch failed"))
+    .mockResolvedValueOnce({
+      snapshotId: 84,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 2,
+          invokeId: "invoke-recovered",
+          occurredAt: "2026-03-16T02:06:00.000Z",
+          createdAt: "2026-03-16T02:06:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    });
+  const nextHost = document.createElement("div");
+  setHost(nextHost);
+  document.body.appendChild(nextHost);
+  setRoot(createRoot(nextHost));
+  act(() => {
+    root?.render(
+      <ThemeProvider>
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="overview"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+  });
+  clickTab(/请求|requests/i);
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  });
+  await waitForAssertion(() => {
+    expect(document.body.textContent).toContain("initial records fetch failed");
+  });
+  act(() => {
+    sseMocks.onOpen?.();
+  });
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+  });
+  expect(document.body.textContent).not.toContain("initial records fetch failed");
+  await waitForAssertion(() => {
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+  });
+  expect(document.body.textContent).not.toContain("initial records fetch failed");
+});
+it.skip("shows account activity and the legacy final-invocation infinite table", async () => {
+  const secondFetch = deferred<{
+    snapshotId: number;
+    total: number;
+    page: number;
+    pageSize: number;
+    records: Array<Record<string, unknown>>;
+  }>();
+  mockAccountsPage();
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce({
+      snapshotId: 42,
+      total: 51,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 1,
+          invokeId: "invoke-stable",
+          occurredAt: "2026-03-16T02:05:00.000Z",
+          createdAt: "2026-03-16T02:05:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    })
+    .mockImplementationOnce(async () => secondFetch.promise as never);
+  const nextHost = document.createElement("div");
+  setHost(nextHost);
+  document.body.appendChild(nextHost);
+  setRoot(createRoot(nextHost));
+  act(() => {
+    root?.render(
+      <ThemeProvider>
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="overview"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+  });
+  await waitForAssertion(() => {
+    expect(
+      document.body.querySelector('[data-testid="upstream-account-records-activity-overview"]'),
+    ).toBeTruthy();
+  });
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
+  clickTab(/请求|requests/i);
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  });
+  expect(
+    document.body.querySelector('[data-testid="upstream-account-records-activity-overview"]'),
+  ).toBeNull();
+  expect(document.body.textContent).not.toMatch(/记录数量|Rows/);
+  expect(document.body.textContent).toMatch(
+    /最近 7 天主库中的尝试请求|request attempts from the primary database/i,
+  );
+  expect(document.body.textContent).toMatch(/请求 ID|request id/i);
+  expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+  const drawerBody = document.body.querySelector(".drawer-body");
+  if (!(drawerBody instanceof HTMLElement)) {
+    throw new Error("missing drawer body");
+  }
+  Object.defineProperty(drawerBody, "scrollHeight", {
+    configurable: true,
+    value: 1200,
+  });
+  Object.defineProperty(drawerBody, "clientHeight", {
+    configurable: true,
+    value: 800,
+  });
+  Object.defineProperty(drawerBody, "scrollTop", {
+    configurable: true,
+    value: 390,
+  });
+  act(() => {
+    drawerBody.dispatchEvent(new Event("scroll"));
+  });
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+  });
+  expect(apiMocks.fetchInvocationRecords.mock.calls[1]?.[0]).toMatchObject({
+    upstreamAccountId: 5,
+    page: 2,
+    pageSize: 50,
+    snapshotId: 42,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+  });
+  expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+  expect(document.body.textContent).toMatch(/Loading more request attempts|正在加载更多尝试请求/);
+  act(() => {
+    secondFetch.resolve({
+      snapshotId: 84,
+      total: 2,
+      page: 2,
+      pageSize: 50,
+      records: [
+        {
+          id: 2,
+          invokeId: "invoke-next",
+          occurredAt: "2026-03-16T02:04:00.000Z",
+          createdAt: "2026-03-16T02:04:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    } as never);
+  });
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+  });
+  expect(renderedInvocationAccountNames()).toHaveLength(2);
+  expect(document.body.textContent).toMatch(
+    /All 2 request attempts loaded|已加载全部 2 条尝试请求/,
+  );
+}, 30000);
+it.skip("clears stale legacy final-invocation rows when entering the records tab", async () => {
+  const secondFetch = deferred<{
+    snapshotId: number;
+    total: number;
+    page: number;
+    pageSize: number;
+    records: Array<Record<string, unknown>>;
+  }>();
+  mockAccountsPage();
+  apiMocks.fetchInvocationRecords
+    .mockResolvedValueOnce({
+      snapshotId: 42,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 1,
+          invokeId: "invoke-old-tab",
+          occurredAt: "2026-03-16T02:05:00.000Z",
+          createdAt: "2026-03-16T02:05:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    })
+    .mockImplementationOnce(async () => secondFetch.promise as never);
+  const nextHost = document.createElement("div");
+  setHost(nextHost);
+  document.body.appendChild(nextHost);
+  setRoot(createRoot(nextHost));
+  act(() => {
+    root?.render(
+      <ThemeProvider>
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="overview"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </ThemeProvider>,
+    );
+  });
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
+  });
+  clickTab(/请求|requests/i);
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+  });
+  expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+  clickTab(/概览|overview/i);
+  await flushAsync();
+  clickTab(/请求|requests/i);
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+  });
+  expect(renderedInvocationAccountNames()).toHaveLength(0);
+  expect(
+    document.body.querySelector('[aria-label="正在加载记录"], [aria-label="Loading records"]'),
+  ).toBeTruthy();
+  act(() => {
+    secondFetch.resolve({
+      snapshotId: 84,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 2,
+          invokeId: "invoke-new-tab",
+          occurredAt: "2026-03-16T02:06:00.000Z",
+          createdAt: "2026-03-16T02:06:00.000Z",
+          status: "success",
+          model: "gpt-5.4",
+          upstreamAccountId: 5,
+          upstreamAccountName: "Existing OAuth",
+          routeMode: "pool",
+        },
+      ],
+    } as never);
+  });
+  await flushAsync();
+  await waitForAssertion(() => {
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+  });
+});

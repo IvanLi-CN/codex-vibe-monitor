@@ -1,0 +1,656 @@
+/** @vitest-environment jsdom */
+
+it("keeps latency summary fields out of request details while preserving stage timings", async () => {
+  const record: ApiInvocation = {
+    id: 34,
+    invokeId: "invocation-detail-deduped-latency",
+    occurredAt: "2026-03-24T06:48:52Z",
+    createdAt: "2026-03-24T06:48:52Z",
+    source: "proxy",
+    routeMode: "pool",
+    upstreamAccountId: 7,
+    upstreamAccountName: "pool-account-a",
+    proxyDisplayName: "storybook-proxy",
+    requestCompressionAlgorithm: "zstd",
+    responseContentEncoding: "gzip",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
+    totalTokens: 2236,
+    cost: 0.0046,
+    tUpstreamConnectMs: 26,
+    tUpstreamTtfbMs: 148.2,
+    tUpstreamStreamMs: 0,
+    tTotalMs: 805,
+  };
+
+  const html = renderToStaticMarkup(
+    <I18nProvider>
+      <InvocationDetailProbe record={record} />
+    </I18nProvider>,
+  );
+
+  expect(html).toContain("请求详情");
+  expect(html).toContain("HTTP 请求压缩");
+  expect(html).toContain("zstd");
+  expect(html).toContain("HTTP 响应压缩");
+  expect(html).not.toContain(">用时<");
+  expect(html).not.toContain(">首字耗时<");
+  expect(html).toContain("阶段耗时");
+  expect(html).toContain("上游首字节");
+  expect(html).toContain('data-timing-label="上游流传输"');
+  expect(html).toMatch(
+    /data-timing-label="上游流传输"[\s\S]*?<div class="mt-1 font-mono text-sm leading-5 text-base-content\/88">—<\/div>/,
+  );
+  expect(html).toContain("总耗时");
+});
+it("shows requested, response, and billing service tiers in request details", () => {
+  const record: ApiInvocation = {
+    id: 35,
+    invokeId: "invocation-detail-billing-service-tier",
+    occurredAt: "2026-03-24T06:49:52Z",
+    createdAt: "2026-03-24T06:49:52Z",
+    source: "proxy",
+    routeMode: "pool",
+    upstreamAccountId: 17,
+    upstreamAccountName: "API Keys Pool",
+    proxyDisplayName: "api-keys-gateway",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
+    requestedServiceTier: "priority",
+    serviceTier: "default",
+    billingServiceTier: "priority",
+    totalTokens: 4096,
+    cost: 0.1024,
+  };
+
+  const html = renderToStaticMarkup(
+    <I18nProvider>
+      <InvocationDetailProbe record={record} />
+    </I18nProvider>,
+  );
+
+  expect(html).toContain("Requested service tier");
+  expect(html).toContain("Service tier");
+  expect(html).toContain("Billing service tier");
+});
+it("loads request and response bodies on demand from the workflow panel", async () => {
+  const record: ApiInvocation = {
+    id: 40,
+    invokeId: "invocation-workflow-payload-tabs",
+    occurredAt: "2026-03-07T03:13:51Z",
+    createdAt: "2026-03-07T03:13:51Z",
+    source: "proxy",
+    routeMode: "pool",
+    upstreamAccountId: 7,
+    upstreamAccountName: "pool-account-a",
+    proxyDisplayName: "codex-relay-01",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
+    totalTokens: 2048,
+    cost: 0.0042,
+  };
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(createWorkflowDetailFixture(record));
+  apiMocks.fetchInvocationRequestBody.mockResolvedValueOnce(
+    createRequestBodyFixture({
+      bodyText: JSON.stringify({ marker: "request-body-visible" }),
+    }),
+  );
+  apiMocks.fetchInvocationAttemptResponseBody.mockResolvedValueOnce(
+    createResponseBodyFixture({
+      bodyText: JSON.stringify({ marker: "response-body-visible" }),
+    }),
+  );
+
+  await renderInteractiveTable([record]);
+
+  const toggle = document.querySelector(
+    '[data-testid="invocation-table-scroll"] button[aria-expanded="false"]',
+  ) as HTMLButtonElement | null;
+  expect(toggle).toBeTruthy();
+
+  await act(async () => {
+    toggle?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
+
+  const requestBodyButton = Array.from(document.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("请求体"),
+  ) as HTMLButtonElement | undefined;
+  expect(requestBodyButton).toBeTruthy();
+
+  await act(async () => {
+    requestBodyButton?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => apiMocks.fetchInvocationRequestBody.mock.calls.length === 1);
+  await waitForCondition(
+    () => document.body.textContent?.includes("request-body-visible") === true,
+  );
+  expect(apiMocks.fetchInvocationRequestBody).toHaveBeenCalledWith(40);
+
+  const responseBodyButton = Array.from(document.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes("响应体"),
+  ) as HTMLButtonElement | undefined;
+  expect(responseBodyButton).toBeTruthy();
+
+  await act(async () => {
+    responseBodyButton?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => apiMocks.fetchInvocationAttemptResponseBody.mock.calls.length === 1);
+  await waitForCondition(
+    () => document.body.textContent?.includes("response-body-visible") === true,
+  );
+  expect(apiMocks.fetchInvocationAttemptResponseBody).toHaveBeenCalledWith(40, "attempt-40");
+});
+it("shows forward-proxy workflow routing in expanded details without the legacy pool-empty copy", async () => {
+  const record: ApiInvocation = {
+    id: 41,
+    invokeId: "invocation-forward-proxy-detail",
+    occurredAt: "2026-03-07T03:13:51Z",
+    createdAt: "2026-03-07T03:13:51Z",
+    source: "proxy",
+    routeMode: "forward_proxy",
+    proxyDisplayName: "codex-relay-02",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
+  };
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(createWorkflowDetailFixture(record));
+
+  await renderInteractiveTable([record]);
+
+  const toggle = document.querySelector(
+    '[data-testid="invocation-table-scroll"] button[aria-expanded="false"]',
+  ) as HTMLButtonElement | null;
+  expect(toggle).toBeTruthy();
+
+  await act(async () => {
+    toggle?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
+  expect(document.body.textContent).toContain("代理直连");
+  expect(document.body.textContent).not.toContain("这条请求没有使用号池路由");
+});
+it("renders recognized endpoints as badges and keeps unknown endpoints on the raw-path fallback", () => {
+  const html = renderTable([
+    {
+      id: 21,
+      invokeId: "invocation-responses-badge",
+      occurredAt: "2026-03-07T03:13:53Z",
+      createdAt: "2026-03-07T03:13:53Z",
+      source: "proxy",
+      proxyDisplayName: "codex-responses-edge",
+      endpoint: "/v1/responses",
+      model: "gpt-5.3-codex",
+      status: "success",
+      totalTokens: 2048,
+      cost: 0.0042,
+    },
+    {
+      id: 22,
+      invokeId: "invocation-chat-badge",
+      occurredAt: "2026-03-07T03:13:52Z",
+      createdAt: "2026-03-07T03:13:52Z",
+      source: "proxy",
+      proxyDisplayName: LONG_PROXY_NAME,
+      endpoint: "/v1/chat/completions",
+      model: "gpt-5.3-codex",
+      status: "success",
+      totalTokens: 1024,
+      cost: 0.0021,
+    },
+    {
+      id: 23,
+      invokeId: "invocation-compact-badge",
+      occurredAt: "2026-03-07T03:13:51Z",
+      createdAt: "2026-03-07T03:13:51Z",
+      source: "proxy",
+      proxyDisplayName: "codex-compact-edge",
+      endpoint: "/v1/responses/compact",
+      model: "gpt-5.3-codex",
+      status: "success",
+      totalTokens: 512,
+      cost: 0.0011,
+    },
+    {
+      id: 24,
+      invokeId: "invocation-raw-endpoint",
+      occurredAt: "2026-03-07T03:13:50Z",
+      createdAt: "2026-03-07T03:13:50Z",
+      source: "proxy",
+      proxyDisplayName: "codex-raw-edge",
+      endpoint: `/v1/responses/${"very-long-segment-".repeat(4)}`,
+      model: "gpt-5.3-codex",
+      status: "success",
+      totalTokens: 256,
+      cost: 0.0006,
+    },
+    {
+      id: 25,
+      invokeId: "invocation-image-badge",
+      occurredAt: "2026-03-07T03:13:49Z",
+      createdAt: "2026-03-07T03:13:49Z",
+      source: "proxy",
+      proxyDisplayName: "codex-image-edge",
+      endpoint: "/v1/responses",
+      imageIntent: "yes",
+      model: "gpt-5.3-codex",
+      status: "success",
+      totalTokens: 384,
+      cost: 0.0014,
+    },
+    {
+      id: 26,
+      invokeId: "invocation-mixed-signal",
+      occurredAt: "2026-03-07T03:13:48Z",
+      createdAt: "2026-03-07T03:13:48Z",
+      source: "proxy",
+      proxyDisplayName: "codex-mixed-edge",
+      endpoint: "/v1/responses",
+      compactionRequestKind: "remote_v2",
+      compactionResponseKind: "remote_v2",
+      imageIntent: "direct_image",
+      model: "gpt-image-1",
+      status: "success",
+      totalTokens: 640,
+      cost: 0.0023,
+    },
+    {
+      id: 27,
+      invokeId: "invocation-missing-image-intent",
+      occurredAt: "2026-03-07T03:13:47Z",
+      createdAt: "2026-03-07T03:13:47Z",
+      source: "proxy",
+      proxyDisplayName: "codex-legacy-edge",
+      endpoint: "/v1/responses",
+      model: "gpt-5.3-codex",
+      status: "success",
+      totalTokens: 320,
+      cost: 0.0009,
+    },
+    {
+      id: 28,
+      invokeId: "invocation-image-generation-endpoint",
+      occurredAt: "2026-03-07T03:13:46Z",
+      createdAt: "2026-03-07T03:13:46Z",
+      source: "proxy",
+      proxyDisplayName: "codex-image-gen-edge",
+      endpoint: "/v1/images/generations",
+      imageIntent: "yes",
+      model: "gpt-image-1",
+      status: "success",
+      totalTokens: 512,
+      cost: 0.0026,
+    },
+    {
+      id: 29,
+      invokeId: "invocation-image-edit-endpoint",
+      occurredAt: "2026-03-07T03:13:45Z",
+      createdAt: "2026-03-07T03:13:45Z",
+      source: "proxy",
+      proxyDisplayName: "codex-image-edit-edge",
+      endpoint: "/v1/images/edits",
+      imageIntent: "direct_image",
+      model: "gpt-image-1",
+      status: "success",
+      totalTokens: 448,
+      cost: 0.0021,
+    },
+    {
+      id: 30,
+      invokeId: "invocation-image-generic-endpoint",
+      occurredAt: "2026-03-07T03:13:44Z",
+      createdAt: "2026-03-07T03:13:44Z",
+      source: "proxy",
+      proxyDisplayName: "codex-image-generic-edge",
+      endpoint: "/v1/images/variations",
+      model: "gpt-image-1",
+      status: "success",
+      totalTokens: 288,
+      cost: 0.0013,
+    },
+  ]);
+
+  expect(html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0).toBe(9);
+  expect(html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-testid="invocation-image-tool-badge"/g)?.length ?? 0).toBe(4);
+  expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(3);
+  expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-endpoint-kind="remote_v2"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-endpoint-kind="image_gen"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-endpoint-kind="image_edit"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-endpoint-kind="image"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-image-intent-kind="yes"/g)?.length ?? 0).toBe(2);
+  expect(html.match(/data-image-intent-kind="direct_image"/g)?.length ?? 0).toBe(2);
+  expect(html).toMatch(/一般|Normal/);
+  expect(html).toContain("Chat");
+  expect(html).toContain("image/gen");
+  expect(html).toContain("image/edit");
+  expect(html).toContain("image");
+  expect(html).toMatch(/图片工具|Image tool/);
+  expect(html).toMatch(/远程压缩V2|Remote compaction V2/);
+  expect(html).toContain("/v1/responses/compact");
+  expect(html).toContain("/v1/responses/very-long-segment-");
+  expect(html).toContain('title="/v1/images/generations"');
+  expect(html).toContain('title="/v1/images/edits"');
+  expect(html).toContain('title="/v1/images/variations"');
+});
+it("renders stable proxy selectors for long proxy-name truncation coverage", () => {
+  const html = renderTable([
+    {
+      id: 23,
+      invokeId: "invocation-long-proxy-name",
+      occurredAt: "2026-03-07T03:13:51Z",
+      createdAt: "2026-03-07T03:13:51Z",
+      source: "proxy",
+      proxyDisplayName: LONG_PROXY_NAME,
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "success",
+      totalTokens: 4096,
+      cost: 0.0084,
+    },
+  ]);
+
+  expect(html.match(/data-testid="invocation-proxy-name"/g)?.length ?? 0).toBe(1);
+  expect(html.match(/data-testid="invocation-proxy-badge"/g)?.length ?? 0).toBe(1);
+  expect(html).toContain(`title="${LONG_PROXY_NAME}"`);
+});
+it("renders unknown reasoning effort values as dashed neutral badges", () => {
+  const html = renderTable([
+    {
+      id: 3,
+      invokeId: "invocation-reasoning-unknown",
+      occurredAt: "2026-03-07T03:13:54Z",
+      createdAt: "2026-03-07T03:13:54Z",
+      source: "proxy",
+      proxyDisplayName: "sfo-edge-3",
+      endpoint: "/v1/responses",
+      model: "custom-reasoning-model",
+      status: "success",
+      inputTokens: 512,
+      cacheInputTokens: 128,
+      outputTokens: 64,
+      reasoningTokens: 12,
+      reasoningEffort: "custom-tier",
+      totalTokens: 576,
+      cost: 0.0012,
+      tUpstreamTtfbMs: 98.4,
+      tTotalMs: 404.4,
+    },
+  ]);
+
+  expect(html).toContain("custom-tier");
+  expect(html).toContain('data-reasoning-effort-tone="unknown"');
+  expect(html).toContain("chip-tone-neutral");
+});
+it("renders max and ultra with their highest-intensity shared tones", () => {
+  const html = renderTable([
+    {
+      ...createInvocationRecord(0),
+      id: 4,
+      invokeId: "invocation-reasoning-max",
+      model: "gpt-5.6",
+      reasoningEffort: " MAX ",
+    },
+    {
+      ...createInvocationRecord(1),
+      id: 5,
+      invokeId: "invocation-reasoning-ultra",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "ULTRA",
+    },
+  ]);
+
+  expect(html).toContain('data-reasoning-effort-tone="max"');
+  expect(html).toContain('data-reasoning-effort-tone="ultra"');
+  expect(html).toContain("chip-tone-error");
+  expect(html).toContain('title="max"');
+  expect(html).toContain('title="ultra"');
+  expect(html).toContain('data-model-identity="gpt-5.6"');
+  expect(html).toContain('data-model-identity="gpt-5.6-luna"');
+});
+it("renders effective and requested-only fast indicators with distinct states", () => {
+  const html = renderTable([
+    {
+      id: 11,
+      invokeId: "priority-priority",
+      occurredAt: "2026-03-07T03:13:59Z",
+      createdAt: "2026-03-07T03:13:59Z",
+      source: "proxy",
+      proxyDisplayName: "tokyo-edge-1",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "success",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      billingServiceTier: "priority",
+      totalTokens: 42,
+    },
+    {
+      id: 12,
+      invokeId: "priority-auto",
+      occurredAt: "2026-03-07T03:14:00Z",
+      createdAt: "2026-03-07T03:14:00Z",
+      source: "proxy",
+      proxyDisplayName: "seoul-edge-2",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "success",
+      requestedServiceTier: "priority",
+      serviceTier: "default",
+      billingServiceTier: "priority",
+      totalTokens: 43,
+    },
+    {
+      id: 13,
+      invokeId: "priority-missing",
+      occurredAt: "2026-03-07T03:14:01Z",
+      createdAt: "2026-03-07T03:14:01Z",
+      source: "proxy",
+      proxyDisplayName: "sfo-edge-3",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "success",
+      requestedServiceTier: "priority",
+      totalTokens: 44,
+    },
+    {
+      id: 14,
+      invokeId: "auto-priority",
+      occurredAt: "2026-03-07T03:14:02Z",
+      createdAt: "2026-03-07T03:14:02Z",
+      source: "proxy",
+      proxyDisplayName: "singapore-edge-4",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "success",
+      requestedServiceTier: "auto",
+      serviceTier: "priority",
+      billingServiceTier: "priority",
+      totalTokens: 45,
+    },
+    {
+      id: 15,
+      invokeId: "flex-none",
+      occurredAt: "2026-03-07T03:14:03Z",
+      createdAt: "2026-03-07T03:14:03Z",
+      source: "proxy",
+      proxyDisplayName: "nyc-edge-5",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "success",
+      requestedServiceTier: "flex",
+      totalTokens: 46,
+    },
+  ]);
+
+  expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(3);
+  expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(1);
+  expect(html).toContain("Fast 模式（Priority processing）");
+  expect(html).toContain("请求想要 Fast，但实际未命中 Priority processing");
+});
+it("renders expanded timing details with seconds for non-TTFT durations", async () => {
+  const record: ApiInvocation = {
+    id: 91,
+    invokeId: "invocation-expanded-timings",
+    occurredAt: "2026-03-16T09:10:30Z",
+    createdAt: "2026-03-16T09:10:30Z",
+    source: "proxy",
+    proxyDisplayName: "relay-expanded",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
+    totalTokens: 512,
+    tReqReadMs: 3450,
+    tReqParseMs: 20,
+    tUpstreamConnectMs: 456.7,
+    tUpstreamTtfbMs: 88.8,
+    firstTokenMs: 4020,
+    tUpstreamStreamMs: 12000,
+    tRespParseMs: 90,
+    tPersistMs: 8,
+    tTotalMs: 12345,
+  };
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(createWorkflowDetailFixture(record));
+
+  await renderInteractiveTable([record]);
+
+  const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
+    const label = button.getAttribute("aria-label");
+    return label === "展开详情" || label === "Show details";
+  });
+  expect(trigger).toBeTruthy();
+
+  await act(async () => {
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
+  expect(document.body.textContent).toContain("4 s");
+
+  const timingButton = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFT"),
+  ) as HTMLButtonElement | undefined;
+  expect(timingButton).toBeTruthy();
+
+  await act(async () => {
+    timingButton?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => document.body.textContent?.includes("时间细分") === true);
+  const text = document.body.textContent ?? "";
+  expect(text).toContain("3,450 ms");
+  expect(text).toContain("20 ms");
+  expect(text).toContain("456.7 ms");
+  expect(text).toContain("TTFT");
+  expect(text).toContain("4 s");
+  expect(text).not.toContain("TTFB");
+  expect(text).toContain("12,000 ms");
+  expect(text).toContain("90 ms");
+  expect(text).toContain("8 ms");
+  expect(text).toContain("12,345 ms");
+});
+it("shows recorded TTFT independently when upstream TTFB is 0 ms", async () => {
+  const record: ApiInvocation = {
+    id: 92,
+    invokeId: "invocation-zero-upstream-first-byte",
+    occurredAt: "2026-03-23T12:53:05Z",
+    createdAt: "2026-03-23T12:53:05Z",
+    source: "proxy",
+    proxyDisplayName: "relay-zero-ttfb",
+    endpoint: "/v1/responses",
+    model: "gpt-5.4",
+    status: "success",
+    tReqReadMs: 31,
+    tReqParseMs: 1,
+    tUpstreamConnectMs: 9330,
+    tUpstreamTtfbMs: 0,
+    firstTokenMs: 9360,
+    tUpstreamStreamMs: 10080,
+    tRespParseMs: 1,
+    tPersistMs: 1,
+    tTotalMs: 19460,
+  };
+  apiMocks.fetchInvocationWorkflowDetail.mockResolvedValueOnce(createWorkflowDetailFixture(record));
+
+  await renderInteractiveTable([record]);
+
+  expect(document.body.textContent).toContain("9.4 s");
+  expect(document.body.textContent).toContain("响应 10.1 s");
+  expect(document.body.textContent).not.toContain("19.46 s");
+
+  const trigger = Array.from(document.querySelectorAll("button")).find((button) => {
+    const label = button.getAttribute("aria-label");
+    return label === "展开详情" || label === "Show details";
+  });
+  expect(trigger).toBeTruthy();
+
+  await act(async () => {
+    trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
+  const timingButton = Array.from(document.querySelectorAll("button")).find(
+    (button) => button.textContent?.includes("时间") && button.textContent?.includes("TTFT"),
+  ) as HTMLButtonElement | undefined;
+  expect(timingButton).toBeTruthy();
+
+  await act(async () => {
+    timingButton?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  await waitForCondition(() => document.body.textContent?.includes("时间细分") === true);
+  const text = document.body.textContent ?? "";
+  expect(text).toContain("9.4 s");
+  expect(text).toContain("TTFT 9.4 s");
+  expect(text).not.toContain("TTFB");
+});
+it("keeps missing in-flight TTFT and response duration unavailable", async () => {
+  await renderInteractiveTable([
+    {
+      id: -91,
+      invokeId: "invocation-running-elapsed",
+      occurredAt: "2026-03-16T09:10:30Z",
+      createdAt: "2026-03-16T09:10:30Z",
+      source: "proxy",
+      proxyDisplayName: "relay-running",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "running",
+    },
+  ]);
+
+  expect(document.body.textContent).toContain("TTFT");
+  expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
+    "--",
+  );
+  expect(document.querySelector('[data-testid="invocation-card-response"]')?.textContent).toContain(
+    "--",
+  );
+  expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.className).not.toContain(
+    "text-success",
+  );
+});

@@ -1,0 +1,691 @@
+it("opens conversation detail from the sequence id and invocation detail from the slot", () => {
+  const onOpenInvocation = vi.fn();
+  const onOpenConversation = vi.fn();
+  const response = createResponse([
+    createConversation("pck-sequence-open", [
+      createPreview({
+        id: 2,
+        invokeId: "invoke-sequence-current",
+        occurredAt: "2026-04-04T10:04:00Z",
+        status: "running",
+        firstTokenMs: 720,
+      }),
+      createPreview({
+        id: 1,
+        invokeId: "invoke-sequence-previous",
+        occurredAt: "2026-04-04T10:02:00Z",
+        status: "completed",
+      }),
+    ]),
+  ]);
+  const cards = renderSection(response, {
+    onOpenConversation,
+    onOpenInvocation,
+  });
+
+  const sequenceButton = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-sequence-button"]',
+  );
+  if (!(sequenceButton instanceof HTMLButtonElement)) {
+    throw new Error("missing sequence button");
+  }
+
+  expect(sequenceButton.textContent).toContain(
+    cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+  );
+  expect(sequenceButton.getAttribute("aria-label")).toContain(
+    cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+  );
+  expect(sequenceButton.getAttribute("aria-label")).not.toContain("invoke-sequence-current");
+  expect(sequenceButton.getAttribute("aria-label")).not.toContain("invoke-sequence-previous");
+  expect(sequenceButton.getAttribute("aria-label")).toContain("pck-sequence-open");
+  expect(sequenceButton.type).toBe("button");
+
+  act(() => {
+    sequenceButton.click();
+  });
+
+  expect(onOpenConversation).toHaveBeenCalledWith(
+    expect.objectContaining({
+      conversationSequenceId: cards[0]?.conversationSequenceId,
+      promptCacheKey: "pck-sequence-open",
+    }),
+  );
+  expect(onOpenConversation).toHaveBeenCalledTimes(1);
+  expect(onOpenInvocation).not.toHaveBeenCalled();
+
+  onOpenConversation.mockClear();
+  onOpenInvocation.mockClear();
+
+  const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+  if (!(card instanceof HTMLElement)) {
+    throw new Error("missing dashboard card");
+  }
+
+  const currentSlot = card.querySelector(
+    '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+  );
+  if (!(currentSlot instanceof HTMLElement)) {
+    throw new Error("missing current slot");
+  }
+  const slotHeader = currentSlot.querySelector(
+    '[data-testid="dashboard-working-conversation-slot-header"]',
+  );
+  if (!(slotHeader instanceof HTMLElement)) {
+    throw new Error("missing slot header");
+  }
+  expect(slotHeader.className).toContain("grid");
+  expect(slotHeader.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+  const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
+  if (!(statusLabel instanceof HTMLElement)) {
+    throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);
+  }
+  expect(
+    slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-label"]'),
+  ).toBeNull();
+  const slotTime = slotHeader.querySelector(
+    '[data-testid="dashboard-working-conversation-slot-time"]',
+  );
+  const headerModel = slotHeader.querySelector(
+    '[data-testid="dashboard-working-conversation-slot-model"]',
+  );
+  expect(slotTime).toBeInstanceOf(HTMLElement);
+  expect(headerModel).toBeInstanceOf(HTMLElement);
+  if (!(slotTime instanceof HTMLElement) || !(headerModel instanceof HTMLElement)) {
+    throw new Error("missing slot time or model");
+  }
+  expect(slotTime.compareDocumentPosition(headerModel) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+    0,
+  );
+  expect(slotHeader.querySelector('[data-testid="invocation-phase-badge"]')).toBe(statusLabel);
+  expect(statusLabel.getAttribute("data-phase-label-visible")).toBe("false");
+  expect(statusLabel.getAttribute("data-phase-motion")).toBe("dynamic");
+  expect(slotHeader.querySelector('[data-testid="dashboard-compact-latency-ttft"]')).toBeInstanceOf(
+    HTMLElement,
+  );
+  expect(
+    slotHeader.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+  ).toBeInstanceOf(HTMLElement);
+
+  const phaseLabels = Array.from(
+    card.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-slot"] [data-testid="invocation-phase-badge"]',
+    ),
+  );
+  expect(phaseLabels.length).toBeGreaterThanOrEqual(1);
+  for (const phaseLabel of phaseLabels) {
+    expect(phaseLabel.className).toContain("inline-flex");
+    expect(phaseLabel.className).toMatch(/\brounded-full\b/);
+    expect(phaseLabel.className).toContain("bg-base-100/12");
+    expect(phaseLabel.className).not.toMatch(/\bborder/);
+    expect(phaseLabel.getAttribute("data-phase-motion")).toBe("dynamic");
+    expect(phaseLabel.getAttribute("data-phase-label-visible")).toBe("false");
+  }
+  const phaseIcons = Array.from(card.querySelectorAll('[data-testid="invocation-phase-icon"]'));
+  expect(phaseIcons.some((icon) => icon.className.includes("animate-spin"))).toBe(true);
+
+  const requestMetric = Array.from(card.querySelectorAll("span")).find(
+    (node) => node.textContent === "请求",
+  );
+  if (!(requestMetric instanceof HTMLElement)) {
+    throw new Error("missing request metric");
+  }
+
+  act(() => {
+    statusLabel.click();
+  });
+
+  expect(onOpenInvocation).toHaveBeenCalledWith(
+    expect.objectContaining({
+      conversationSequenceId: cards[0]?.conversationSequenceId,
+      promptCacheKey: "pck-sequence-open",
+      slotKind: "current",
+    }),
+  );
+  expect(onOpenInvocation).toHaveBeenCalledTimes(1);
+  expect(onOpenConversation).not.toHaveBeenCalled();
+
+  onOpenInvocation.mockClear();
+
+  act(() => {
+    requestMetric.click();
+    currentSlot.click();
+  });
+
+  expect(onOpenInvocation).toHaveBeenCalledTimes(1);
+  expect(onOpenConversation).not.toHaveBeenCalled();
+});
+it("renders a manual binding badge beside the sequence id and opens settings directly", () => {
+  const onOpenInvocation = vi.fn();
+  const onOpenConversation = vi.fn();
+  const response = createResponse([
+    createConversation(
+      "pck-manual-binding-open",
+      [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-manual-binding-current",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+        createPreview({
+          id: 1,
+          invokeId: "invoke-manual-binding-previous",
+          occurredAt: "2026-04-04T10:02:00Z",
+          status: "completed",
+        }),
+      ],
+      {
+        manualBinding: {
+          bindingKind: "group",
+          groupName: "CIII",
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+        },
+      },
+    ),
+  ]);
+
+  const cards = renderSection(response, {
+    onOpenConversation,
+    onOpenInvocation,
+  });
+
+  const badgeButton = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
+  );
+  if (!(badgeButton instanceof HTMLButtonElement)) {
+    throw new Error("missing manual binding badge");
+  }
+
+  expect(badgeButton.textContent).toContain("CIII");
+  expect(badgeButton.getAttribute("aria-label")).toContain("打开对话设置");
+  expect(badgeButton.getAttribute("aria-label")).toContain("当前：分组 CIII");
+  expect(badgeButton.className).toContain("max-w-[20rem]");
+
+  act(() => {
+    badgeButton.click();
+  });
+
+  expect(onOpenConversation).toHaveBeenCalledWith({
+    conversationSequenceId: cards[0]?.conversationSequenceId,
+    promptCacheKey: "pck-manual-binding-open",
+    tab: "settings",
+  });
+  expect(onOpenConversation).toHaveBeenCalledTimes(1);
+  expect(onOpenInvocation).not.toHaveBeenCalled();
+});
+it("uses distinct manual binding badge tones and keeps account badges capped at 20rem", () => {
+  renderSection(
+    createResponse([
+      createConversation(
+        "pck-manual-binding-group-tone",
+        [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-manual-binding-group-tone",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          manualBinding: {
+            bindingKind: "group",
+            groupName: "CIII",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+          },
+        },
+      ),
+      createConversation(
+        "pck-manual-binding-account-tone",
+        [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-manual-binding-account-tone",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          manualBinding: {
+            bindingKind: "upstreamAccount",
+            groupName: null,
+            upstreamAccountId: 108,
+            upstreamAccountName:
+              "paisleeeinar5710 Team sandbox workflow monitor with an intentionally long account label",
+          },
+        },
+      ),
+    ]),
+  );
+
+  const badges = host?.querySelectorAll(
+    '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
+  );
+  const badgeArray = Array.from(badges ?? []);
+  const groupBadge = badgeArray.find((badge) => badge.textContent?.includes("CIII"));
+  const accountBadge = badgeArray.find((badge) => badge.textContent?.includes("paisleeeinar5710"));
+
+  expect(groupBadge).toBeInstanceOf(HTMLSpanElement);
+  expect(accountBadge).toBeInstanceOf(HTMLSpanElement);
+  expect(groupBadge?.className).toContain("chip-tone-info");
+  expect(accountBadge?.className).toContain("chip-tone-secondary");
+  expect(groupBadge?.className).toContain("text-[10.5px]");
+  expect(accountBadge?.className).toContain("text-[10.5px]");
+
+  const groupBadgeText = groupBadge?.firstElementChild;
+  const accountBadgeText = accountBadge?.firstElementChild;
+
+  expect(groupBadgeText?.className).toContain("max-w-[20rem]");
+  expect(accountBadgeText?.className).toContain("max-w-[20rem]");
+  expect(accountBadgeText?.textContent).toContain("paisleeeinar5710");
+});
+it("keeps the full sequence id visible and only truncates the binding target", () => {
+  const cards = mapPromptCacheConversationsToDashboardCards(
+    createResponse([
+      createConversation(
+        "pck-manual-binding-long-sequence",
+        [
+          createPreview({
+            id: 5,
+            invokeId: "invoke-manual-binding-long-sequence",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          manualBinding: {
+            bindingKind: "upstreamAccount",
+            groupName: null,
+            upstreamAccountId: 219,
+            upstreamAccountName:
+              "paisleeeinar5710 Team sandbox workflow monitor with an intentionally long account label",
+          },
+        },
+      ),
+    ]),
+  ).map((card) => ({
+    ...card,
+    conversationSequenceId: "WC-COLLIDE-ABC123",
+  }));
+
+  renderSectionWithCards(cards, { onOpenConversation: vi.fn() });
+
+  const sequenceButton = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-sequence-button"]',
+  );
+  const badge = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
+  );
+  const badgeText = badge?.firstElementChild;
+
+  expect(sequenceButton).toBeInstanceOf(HTMLButtonElement);
+  expect(sequenceButton?.textContent).toBe("COLLIDE-ABC123");
+  expect(sequenceButton?.className).toContain("shrink-0");
+  expect(sequenceButton?.className).toContain("whitespace-nowrap");
+  expect(sequenceButton?.className).not.toContain("min-w-0");
+  expect(sequenceButton?.querySelector("span")?.className).not.toContain("truncate");
+
+  expect(badge).toBeInstanceOf(HTMLButtonElement);
+  expect(badge?.className).toContain("max-w-[20rem]");
+  expect(badgeText?.className).toContain("truncate");
+  expect(badgeText?.className).toContain("max-w-[20rem]");
+});
+it("renders the card header status as the same icon-only affordance used by invocation records", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-card-header-status-icon", [
+        createPreview({
+          id: 91,
+          invokeId: "invoke-card-header-status-icon",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "success",
+        }),
+      ]),
+    ]),
+  );
+
+  const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+  if (!(card instanceof HTMLElement)) {
+    throw new Error("missing working conversation card");
+  }
+
+  const headerStatusIcon = card.querySelector('[data-testid="dashboard-inline-invocation-status"]');
+  if (!(headerStatusIcon instanceof HTMLElement)) {
+    throw new Error("missing card header status icon");
+  }
+
+  expect(headerStatusIcon.getAttribute("aria-label")).toContain("成功");
+  expect(card.textContent).not.toContain("成功");
+});
+it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-theme-aware", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-theme-aware",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]),
+  );
+
+  const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+  const placeholder = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-placeholder"]',
+  );
+  const placeholderLabel = host?.querySelector(
+    '[data-testid="dashboard-working-conversation-placeholder-label"]',
+  );
+
+  expect(card?.className).toContain("working-conversation-card-surface");
+  expect(card?.className).not.toContain("bg-[linear-gradient");
+  expect(placeholder?.className).toContain("working-conversation-slot-surface");
+  expect(placeholderLabel).not.toBeNull();
+});
+it("keeps the wide-screen grid contract on the conversations section", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-grid-one", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-grid-one",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]),
+  );
+
+  const grid = host?.querySelector('[data-testid="dashboard-working-conversations-grid"]');
+
+  expect(grid).not.toBeNull();
+  expect(grid?.className).toContain("xl:grid-cols-2");
+  expect(grid?.className).toContain("2xl:grid-cols-3");
+  expect(grid?.className).toContain("desktop1660:grid-cols-4");
+});
+it("does not turn the conversations grid into an inner scrolling container", () => {
+  renderSection(
+    createResponse([
+      createConversation("pck-page-scroll", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-page-scroll",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]),
+  );
+
+  const grid = host?.querySelector('[data-testid="dashboard-working-conversations-grid"]');
+  if (!(grid instanceof HTMLDivElement)) {
+    throw new Error("missing working conversations grid");
+  }
+
+  expect(grid.className).not.toContain("overflow-auto");
+  expect(grid.className).not.toContain("max-h-[72vh]");
+});
+it("renders only the virtualized rows instead of keeping every card mounted in the DOM", () => {
+  virtualizerMocks.rowIndexes = [0, 1, 2, 3];
+  virtualizerMocks.totalSize = 30 * 360;
+
+  renderSection(
+    createResponse(
+      Array.from({ length: 30 }, (_, index) =>
+        createConversation(`pck-virtual-${index + 1}`, [
+          createPreview({
+            id: index + 1,
+            invokeId: `invoke-virtual-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+            status: index % 3 === 0 ? "running" : "completed",
+          }),
+        ]),
+      ),
+    ),
+  );
+
+  const renderedCards = host?.querySelectorAll(
+    '[data-testid="dashboard-working-conversation-card"]',
+  );
+  const renderedRows = host?.querySelectorAll(
+    '[data-testid="dashboard-working-conversations-row"]',
+  );
+
+  expect(renderedRows?.length).toBe(4);
+  expect(renderedCards?.length).toBe(4);
+  expect(renderedCards?.length).toBeLessThan(30);
+});
+it("subtracts scrollMargin when virtual rows expose document-based translateStart", () => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+  virtualizerMocks.customVirtualItems = [
+    {
+      key: 1,
+      index: 1,
+      start: 600,
+      size: 360,
+      end: 960,
+      translateStart: 600,
+    },
+  ];
+  virtualizerMocks.totalSize = 960;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+      return {
+        x: 0,
+        y: 240,
+        top: 240,
+        bottom: 840,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height: 600,
+        toJSON: () => ({}),
+      } satisfies DOMRect;
+    }
+    return {
+      x: 0,
+      y: 0,
+      top: 0,
+      bottom: 0,
+      left: 0,
+      right: 0,
+      width: 0,
+      height: 0,
+      toJSON: () => ({}),
+    } satisfies DOMRect;
+  });
+
+  renderSection(
+    createResponse(
+      Array.from({ length: 8 }, (_, index) =>
+        createConversation(`pck-scroll-margin-${index + 1}`, [
+          createPreview({
+            id: index + 1,
+            invokeId: `invoke-scroll-margin-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+            status: "completed",
+          }),
+        ]),
+      ),
+    ),
+  );
+
+  const row = host?.querySelector(
+    '[data-testid="dashboard-working-conversations-row"][data-row-index="1"]',
+  );
+  if (!(row instanceof HTMLElement)) {
+    throw new Error("missing virtualized row");
+  }
+
+  expect(row.style.transform).toBe("translateY(360px)");
+});
+it("keeps the pre-measure fallback bounded before virtual rows are available", () => {
+  virtualizerMocks.rowIndexes = [];
+  virtualizerMocks.totalSize = 30 * 360;
+
+  renderSection(
+    createResponse(
+      Array.from({ length: 30 }, (_, index) =>
+        createConversation(`pck-fallback-${index + 1}`, [
+          createPreview({
+            id: index + 1,
+            invokeId: `invoke-fallback-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+            status: index % 2 === 0 ? "running" : "completed",
+          }),
+        ]),
+      ),
+    ),
+  );
+
+  const renderedCards = host?.querySelectorAll(
+    '[data-testid="dashboard-working-conversation-card"]',
+  );
+  const renderedRows = host?.querySelectorAll(
+    '[data-testid="dashboard-working-conversations-row"]',
+  );
+
+  expect(renderedRows?.length).toBeLessThan(30);
+  expect(renderedCards?.length).toBeLessThan(30);
+});
+it("reports the current virtualized depth instead of pinning refreshes to historical rows", () => {
+  const setRefreshTargetCount = vi.fn();
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+  virtualizerMocks.rowIndexes = [0, 1, 2, 3, 4, 5];
+
+  const response = createResponse(
+    Array.from({ length: 32 }, (_, index) =>
+      createConversation(`pck-depth-${index + 1}`, [
+        createPreview({
+          id: index + 1,
+          invokeId: `invoke-depth-${index + 1}`,
+          occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+          status: "completed",
+        }),
+      ]),
+    ),
+  );
+
+  renderSection(response, { setRefreshTargetCount });
+  expect(setRefreshTargetCount).toHaveBeenLastCalledWith(24);
+
+  virtualizerMocks.rowIndexes = [0, 1, 2];
+  rerenderSection(response, { setRefreshTargetCount });
+  expect(setRefreshTargetCount).toHaveBeenLastCalledWith(20);
+});
+it("keeps page-scroll anchor compensation stable when display ids are renumbered by a new collision", () => {
+  const baseCards = mapPromptCacheConversationsToDashboardCards(
+    createResponse([
+      createConversation("hidden-before", [
+        createPreview({
+          id: 1,
+          invokeId: "invoke-hidden-before",
+          occurredAt: "2026-04-04T10:05:00Z",
+          status: "completed",
+        }),
+      ]),
+      createConversation("stable-anchor", [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-stable-anchor",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "completed",
+        }),
+      ]),
+      createConversation("new-head", [
+        createPreview({
+          id: 3,
+          invokeId: "invoke-new-head",
+          occurredAt: "2026-04-04T10:06:00Z",
+          status: "running",
+        }),
+      ]),
+    ]),
+  );
+
+  const initialCards = [
+    {
+      ...requireTestValue(baseCards[0], "base card 0"),
+      promptCacheKey: "hidden-before",
+      normalizedPromptCacheKey: "hidden-before",
+      conversationSequenceId: "WC-COLLIDE-A",
+    },
+    {
+      ...requireTestValue(baseCards[1], "base card 1"),
+      promptCacheKey: "stable-anchor",
+      normalizedPromptCacheKey: "stable-anchor",
+      conversationSequenceId: "WC-COLLIDE-B",
+    },
+  ] satisfies DashboardWorkingConversationCardModel[];
+
+  const nextCards = [
+    {
+      ...requireTestValue(baseCards[2], "base card 2"),
+      promptCacheKey: "new-head",
+      normalizedPromptCacheKey: "new-head",
+      conversationSequenceId: "WC-COLLIDE-A",
+    },
+    {
+      ...requireTestValue(baseCards[0], "base card 0"),
+      promptCacheKey: "hidden-before",
+      normalizedPromptCacheKey: "hidden-before",
+      conversationSequenceId: "WC-COLLIDE-A-1",
+    },
+    {
+      ...requireTestValue(baseCards[1], "base card 1"),
+      promptCacheKey: "stable-anchor",
+      normalizedPromptCacheKey: "stable-anchor",
+      conversationSequenceId: "WC-COLLIDE-B-1",
+    },
+  ] satisfies DashboardWorkingConversationCardModel[];
+
+  const rectFor = (top: number, height = 160) =>
+    ({
+      x: 0,
+      y: top,
+      top,
+      bottom: top + height,
+      left: 0,
+      right: 1200,
+      width: 1200,
+      height,
+      toJSON: () => ({}),
+    }) satisfies DOMRect;
+
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+      return rectFor(0, 600);
+    }
+    if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+      switch (this.getAttribute("data-conversation-sequence-id")) {
+        case "COLLIDE-A":
+          return rectFor(-220);
+        case "COLLIDE-B":
+          return rectFor(40);
+        case "COLLIDE-A-1":
+          return rectFor(-20);
+        case "COLLIDE-B-1":
+          return rectFor(220);
+        default:
+          return rectFor(720);
+      }
+    }
+    return rectFor(0, 0);
+  });
+
+  renderSectionWithCards(initialCards);
+
+  const scrollBy = vi.spyOn(window, "scrollBy");
+
+  rerenderSectionWithCards(nextCards);
+
+  expect(scrollBy).toHaveBeenCalledWith(0, 180);
+});

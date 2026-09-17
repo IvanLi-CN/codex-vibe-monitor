@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 const sseMocks = vi.hoisted(() => ({
@@ -10,17 +10,14 @@ const sseMocks = vi.hoisted(() => ({
   requestTopicRefresh: vi.fn(),
   subscribeToTopic: vi.fn(),
 }));
-
 vi.mock("../lib/sse", () => ({
   getCachedTopicState: sseMocks.getCachedTopicState,
   getTopicDescriptorKey: sseMocks.getTopicDescriptorKey,
   requestTopicRefresh: sseMocks.requestTopicRefresh,
   subscribeToTopic: sseMocks.subscribeToTopic,
 }));
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-
 function HookHarness(props: {
   descriptor: { topic: string; params?: Record<string, string> } | null;
   enabled?: boolean;
@@ -53,7 +50,6 @@ function HookHarness(props: {
 
   return null;
 }
-
 function renderHookHarness(props: {
   descriptor: { topic: string; params?: Record<string, string> } | null;
   enabled?: boolean;
@@ -72,7 +68,6 @@ function renderHookHarness(props: {
     root?.render(<HookHarness {...props} />);
   });
 }
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -86,171 +81,163 @@ afterEach(() => {
   sseMocks.requestTopicRefresh.mockReset();
   sseMocks.subscribeToTopic.mockReset();
 });
+it("hydrates from live events and toggles loading around refresh", () => {
+  const renders: Array<{
+    data: { total: number } | null;
+    lastKind: "snapshot" | "replay" | "live" | null;
+    deliverySource: "cache" | "network" | null;
+    isLoading: boolean;
+    refresh: () => void;
+  }> = [];
+  let listener:
+    | ((event: { type: "snapshot" | "replay" | "live"; payload: { total: number } }) => void)
+    | null = null;
+  sseMocks.getCachedTopicState.mockReturnValue(null);
+  sseMocks.getTopicDescriptorKey.mockImplementation(
+    (descriptor: { topic: string; params?: Record<string, string> }) => JSON.stringify(descriptor),
+  );
+  sseMocks.subscribeToTopic.mockImplementation(
+    (
+      _descriptor: unknown,
+      nextListener: (event: {
+        type: "snapshot" | "replay" | "live";
+        payload: { total: number };
+      }) => void,
+    ) => {
+      listener = nextListener;
+      return () => {};
+    },
+  );
 
-describe("useSubscriptionTopic", () => {
-  it("hydrates from live events and toggles loading around refresh", () => {
-    const renders: Array<{
-      data: { total: number } | null;
-      lastKind: "snapshot" | "replay" | "live" | null;
-      deliverySource: "cache" | "network" | null;
-      isLoading: boolean;
-      refresh: () => void;
-    }> = [];
-    let listener:
-      | ((event: { type: "snapshot" | "replay" | "live"; payload: { total: number } }) => void)
-      | null = null;
-    sseMocks.getCachedTopicState.mockReturnValue(null);
-    sseMocks.getTopicDescriptorKey.mockImplementation(
-      (descriptor: { topic: string; params?: Record<string, string> }) =>
-        JSON.stringify(descriptor),
-    );
-    sseMocks.subscribeToTopic.mockImplementation(
-      (
-        _descriptor: unknown,
-        nextListener: (event: {
-          type: "snapshot" | "replay" | "live";
-          payload: { total: number };
-        }) => void,
-      ) => {
-        listener = nextListener;
-        return () => {};
-      },
-    );
-
-    renderHookHarness({
-      descriptor: { topic: "stats.summary.current", params: { window: "current" } },
-      onRender: (snapshot) => {
-        renders.push(snapshot);
-      },
-    });
-
-    expect(renders[0]?.data).toBeNull();
-    expect(renders[0]?.isLoading).toBe(true);
-
-    act(() => {
-      listener?.({ type: "live", payload: { total: 11 } });
-    });
-
-    expect(renders.at(-1)?.data).toEqual({ total: 11 });
-    expect(renders.at(-1)?.lastKind).toBe("live");
-    expect(renders.at(-1)?.deliverySource).toBe("network");
-    expect(renders.at(-1)?.isLoading).toBe(false);
-
-    act(() => {
-      renders.at(-1)?.refresh();
-    });
-
-    expect(sseMocks.requestTopicRefresh).toHaveBeenCalledWith({
-      topic: "stats.summary.current",
-      params: { window: "current" },
-    });
-    expect(renders.at(-1)?.isLoading).toBe(true);
+  renderHookHarness({
+    descriptor: { topic: "stats.summary.current", params: { window: "current" } },
+    onRender: (snapshot) => {
+      renders.push(snapshot);
+    },
   });
 
-  it("stays disabled when descriptor is absent or the hook is disabled", () => {
-    const renders: Array<{ data: { total: number } | null; isLoading: boolean }> = [];
-    sseMocks.getTopicDescriptorKey.mockImplementation(
-      (descriptor: { topic: string; params?: Record<string, string> }) =>
-        JSON.stringify(descriptor),
-    );
+  expect(renders[0]?.data).toBeNull();
+  expect(renders[0]?.isLoading).toBe(true);
 
-    renderHookHarness({
-      descriptor: null,
-      onRender: (snapshot) => {
-        renders.push(snapshot);
-      },
-    });
-
-    expect(sseMocks.subscribeToTopic).not.toHaveBeenCalled();
-    expect(renders.at(-1)).toMatchObject({ data: null, isLoading: false });
-
-    renders.length = 0;
-    sseMocks.getCachedTopicState.mockReturnValue({ payload: { total: 99 } });
-
-    act(() => {
-      root?.render(
-        <HookHarness
-          descriptor={{ topic: "stats.summary.current" }}
-          enabled={false}
-          onRender={(snapshot) => {
-            renders.push(snapshot);
-          }}
-        />,
-      );
-    });
-
-    expect(sseMocks.subscribeToTopic).not.toHaveBeenCalled();
-    expect(renders.at(-1)).toMatchObject({ data: null, isLoading: false });
+  act(() => {
+    listener?.({ type: "live", payload: { total: 11 } });
   });
 
-  it("does not resubscribe when the descriptor object identity changes but the topic key stays the same", () => {
-    const unsubscribe = vi.fn();
-    sseMocks.getCachedTopicState.mockReturnValue(null);
-    sseMocks.getTopicDescriptorKey.mockImplementation(
-      (descriptor: { topic: string; params?: Record<string, string> }) =>
-        JSON.stringify({
-          topic: descriptor.topic,
-          params: descriptor.params ?? {},
-        }),
-    );
-    sseMocks.subscribeToTopic.mockImplementation(() => unsubscribe);
+  expect(renders.at(-1)?.data).toEqual({ total: 11 });
+  expect(renders.at(-1)?.lastKind).toBe("live");
+  expect(renders.at(-1)?.deliverySource).toBe("network");
+  expect(renders.at(-1)?.isLoading).toBe(false);
 
-    renderHookHarness({
-      descriptor: { topic: "stats.summary.current", params: { window: "current" } },
-      onRender: () => {},
-    });
-
-    expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      root?.render(
-        <HookHarness
-          descriptor={{ topic: "stats.summary.current", params: { window: "current" } }}
-          onRender={() => {}}
-        />,
-      );
-    });
-
-    expect(unsubscribe).not.toHaveBeenCalled();
-    expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
+  act(() => {
+    renders.at(-1)?.refresh();
   });
 
-  it("does not expose a cached payload from the previous descriptor while switching topics", () => {
-    const renders: Array<{ data: { total: number } | null }> = [];
-    sseMocks.getTopicDescriptorKey.mockImplementation(
-      (descriptor: { topic: string; params?: Record<string, string> }) =>
-        JSON.stringify({ topic: descriptor.topic, params: descriptor.params ?? {} }),
-    );
-    sseMocks.getCachedTopicState.mockImplementation(
-      (descriptor: { topic: string; params?: Record<string, string> }) =>
-        descriptor.params?.filter === "routing"
-          ? { payload: { total: 2 } }
-          : { payload: { total: 1 } },
-    );
-    sseMocks.subscribeToTopic.mockReturnValue(() => {});
+  expect(sseMocks.requestTopicRefresh).toHaveBeenCalledWith({
+    topic: "stats.summary.current",
+    params: { window: "current" },
+  });
+  expect(renders.at(-1)?.isLoading).toBe(true);
+});
+it("stays disabled when descriptor is absent or the hook is disabled", () => {
+  const renders: Array<{ data: { total: number } | null; isLoading: boolean }> = [];
+  sseMocks.getTopicDescriptorKey.mockImplementation(
+    (descriptor: { topic: string; params?: Record<string, string> }) => JSON.stringify(descriptor),
+  );
 
-    renderHookHarness({
-      descriptor: { topic: "conversation.operations", params: { filter: "all" } },
-      onRender: (snapshot) => {
-        renders.push({ data: snapshot.data });
-      },
-    });
-    const renderCountBeforeSwitch = renders.length;
+  renderHookHarness({
+    descriptor: null,
+    onRender: (snapshot) => {
+      renders.push(snapshot);
+    },
+  });
 
-    act(() => {
-      root?.render(
-        <HookHarness
-          descriptor={{ topic: "conversation.operations", params: { filter: "routing" } }}
-          onRender={(snapshot) => {
-            renders.push({ data: snapshot.data });
-          }}
-        />,
-      );
-    });
+  expect(sseMocks.subscribeToTopic).not.toHaveBeenCalled();
+  expect(renders.at(-1)).toMatchObject({ data: null, isLoading: false });
 
-    expect(renders.at(-1)?.data).toEqual({ total: 2 });
-    expect(renders.slice(renderCountBeforeSwitch).some((render) => render.data?.total === 1)).toBe(
-      false,
+  renders.length = 0;
+  sseMocks.getCachedTopicState.mockReturnValue({ payload: { total: 99 } });
+
+  act(() => {
+    root?.render(
+      <HookHarness
+        descriptor={{ topic: "stats.summary.current" }}
+        enabled={false}
+        onRender={(snapshot) => {
+          renders.push(snapshot);
+        }}
+      />,
     );
   });
+
+  expect(sseMocks.subscribeToTopic).not.toHaveBeenCalled();
+  expect(renders.at(-1)).toMatchObject({ data: null, isLoading: false });
+});
+it("does not resubscribe when the descriptor object identity changes but the topic key stays the same", () => {
+  const unsubscribe = vi.fn();
+  sseMocks.getCachedTopicState.mockReturnValue(null);
+  sseMocks.getTopicDescriptorKey.mockImplementation(
+    (descriptor: { topic: string; params?: Record<string, string> }) =>
+      JSON.stringify({
+        topic: descriptor.topic,
+        params: descriptor.params ?? {},
+      }),
+  );
+  sseMocks.subscribeToTopic.mockImplementation(() => unsubscribe);
+
+  renderHookHarness({
+    descriptor: { topic: "stats.summary.current", params: { window: "current" } },
+    onRender: () => {},
+  });
+
+  expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    root?.render(
+      <HookHarness
+        descriptor={{ topic: "stats.summary.current", params: { window: "current" } }}
+        onRender={() => {}}
+      />,
+    );
+  });
+
+  expect(unsubscribe).not.toHaveBeenCalled();
+  expect(sseMocks.subscribeToTopic).toHaveBeenCalledTimes(1);
+});
+it("does not expose a cached payload from the previous descriptor while switching topics", () => {
+  const renders: Array<{ data: { total: number } | null }> = [];
+  sseMocks.getTopicDescriptorKey.mockImplementation(
+    (descriptor: { topic: string; params?: Record<string, string> }) =>
+      JSON.stringify({ topic: descriptor.topic, params: descriptor.params ?? {} }),
+  );
+  sseMocks.getCachedTopicState.mockImplementation(
+    (descriptor: { topic: string; params?: Record<string, string> }) =>
+      descriptor.params?.filter === "routing"
+        ? { payload: { total: 2 } }
+        : { payload: { total: 1 } },
+  );
+  sseMocks.subscribeToTopic.mockReturnValue(() => {});
+
+  renderHookHarness({
+    descriptor: { topic: "conversation.operations", params: { filter: "all" } },
+    onRender: (snapshot) => {
+      renders.push({ data: snapshot.data });
+    },
+  });
+  const renderCountBeforeSwitch = renders.length;
+
+  act(() => {
+    root?.render(
+      <HookHarness
+        descriptor={{ topic: "conversation.operations", params: { filter: "routing" } }}
+        onRender={(snapshot) => {
+          renders.push({ data: snapshot.data });
+        }}
+      />,
+    );
+  });
+
+  expect(renders.at(-1)?.data).toEqual({ total: 2 });
+  expect(renders.slice(renderCountBeforeSwitch).some((render) => render.data?.total === 1)).toBe(
+    false,
+  );
 });

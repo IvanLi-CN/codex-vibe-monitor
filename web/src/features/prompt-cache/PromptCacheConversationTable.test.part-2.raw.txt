@@ -1,0 +1,657 @@
+it("opens the history drawer and preserves loaded records when later pages fail", async () => {
+  apiMocks.fetchInvocationRecordsSummary.mockResolvedValue({
+    snapshotId: 900,
+    newRecordsCount: 0,
+    totalCount: 9,
+    successCount: 7,
+    failureCount: 2,
+    totalCost: 1.25,
+    totalTokens: 12000,
+    token: {
+      requestCount: 9,
+      totalTokens: 12000,
+      avgTokensPerRequest: 1333.33,
+      cacheInputTokens: 4000,
+      totalCost: 1.25,
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs: 12345,
+      p95TotalMs: 22000,
+    },
+    exception: {
+      failureCount: 2,
+      serviceFailureCount: 2,
+      clientFailureCount: 0,
+      clientAbortCount: 0,
+      actionableFailureCount: 2,
+    },
+  });
+  apiMocks.fetchInvocationRecords.mockImplementation(
+    async (query: {
+      page?: number;
+      snapshotId?: number;
+      sortOrder?: string;
+      pageSize?: number;
+      signal?: AbortSignal;
+    }) => {
+      if (query.pageSize === 200) {
+        return {
+          snapshotId: 900,
+          total: 0,
+          page: 1,
+          pageSize: 200,
+          records: [],
+        };
+      }
+      if (query.page === 1) {
+        return {
+          snapshotId: 901,
+          total: 3,
+          page: 1,
+          pageSize: 2,
+          records: [
+            {
+              id: 71,
+              invokeId: "history-71",
+              occurredAt: "2026-03-02T12:30:00Z",
+              status: "completed",
+              failureClass: "none",
+              totalTokens: 1500,
+              cost: 0.31,
+              endpoint: "/v1/responses",
+              promptCacheKey: "pck-history",
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              proxyDisplayName: "Proxy West",
+              createdAt: "2026-03-02T12:30:00Z",
+            },
+            {
+              id: 70,
+              invokeId: "history-70",
+              occurredAt: "2026-03-02T12:10:00Z",
+              status: "http_502",
+              failureClass: "service_failure",
+              totalTokens: 900,
+              cost: 0.2,
+              endpoint: "/v1/chat/completions",
+              promptCacheKey: "pck-history",
+              upstreamAccountId: null,
+              upstreamAccountName: null,
+              proxyDisplayName: "Proxy East",
+              createdAt: "2026-03-02T12:10:00Z",
+            },
+          ],
+        };
+      }
+      throw new Error("page 2 failed");
+    },
+  );
+  const initialTopicResponse = await apiMocks.fetchInvocationRecords({ page: 1, pageSize: 50 });
+  apiMocks.fetchInvocationRecords.mockClear();
+  detailTopicMocks.current.calls.data = {
+    ...initialTopicResponse,
+    pageSize: 50,
+  };
+
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-history",
+        requestCount: 3,
+        totalTokens: 2400,
+        totalCost: 0.51,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+
+  const historyButton = findButtonByAriaLabel("打开全部调用记录");
+  expect(historyButton).toBeTruthy();
+
+  await act(async () => {
+    historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("对话详情");
+  expect(document.body.textContent).toContain("对话调用总览");
+  await clickDrawerTab("调用");
+
+  expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+
+  detailTopicMocks.current.calls.data = {
+    ...initialTopicResponse,
+    snapshotId: 902,
+    pageSize: 50,
+  };
+  renderInteractive({
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-history",
+        requestCount: 3,
+        totalTokens: 2400,
+        totalCost: 0.51,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  });
+  await flushInteractive();
+
+  const drawerBody = document.querySelector(".drawer-body");
+  expect(drawerBody).toBeTruthy();
+  Object.defineProperties(drawerBody as HTMLElement, {
+    scrollHeight: { configurable: true, value: 1_000 },
+    clientHeight: { configurable: true, value: 500 },
+    scrollTop: { configurable: true, value: 500 },
+  });
+  await act(async () => {
+    drawerBody?.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+    promptCacheKey: "pck-history",
+    page: 2,
+    pageSize: 50,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    snapshotId: 901,
+    signal: expect.any(AbortSignal),
+  });
+  expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
+  expect(document.body.textContent).toContain("TTFT");
+  expect(document.body.textContent).toContain("响应");
+  expect(document.body.textContent).not.toContain("输入 / 缓存");
+  expect(document.body.textContent).toContain("Proxy West");
+  expect(document.body.textContent).toContain("HTTP 502");
+  expect(document.body.textContent).toContain("page 2 failed");
+  expect(document.body.textContent).toContain("已加载 2 / 3 条保留调用记录");
+
+  const closeButton = findButtonByAriaLabel("关闭调用记录抽屉");
+  expect(closeButton).toBeTruthy();
+
+  await act(async () => {
+    closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+  });
+
+  expect(document.body.textContent).not.toContain("全部保留调用记录");
+});
+it("queues new call records while the reader is away from the top", async () => {
+  const initialRecord = {
+    id: 71,
+    invokeId: "history-71",
+    occurredAt: "2026-03-02T12:30:00Z",
+    status: "completed",
+    failureClass: "none",
+    model: "retained-model",
+    totalTokens: 1500,
+    cost: 0.31,
+    endpoint: "/v1/responses",
+    promptCacheKey: "pck-history",
+    upstreamAccountId: 101,
+    upstreamAccountName: "Pool Alpha",
+    proxyDisplayName: "Proxy West",
+    createdAt: "2026-03-02T12:30:00Z",
+  };
+  const newRecord = {
+    ...initialRecord,
+    id: 72,
+    invokeId: "history-72",
+    occurredAt: "2026-03-02T12:31:00Z",
+    model: "live-model",
+    createdAt: "2026-03-02T12:31:00Z",
+  };
+  const stats: PromptCacheConversationsResponse = {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-history",
+        requestCount: 1,
+        totalTokens: 1500,
+        totalCost: 0.31,
+        createdAt: "2026-03-02T12:30:00Z",
+        lastActivityAt: "2026-03-02T12:30:00Z",
+      }),
+    ],
+  };
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 901,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [initialRecord],
+  });
+
+  renderInteractive(stats);
+  await act(async () => {
+    findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+  await clickDrawerTab("调用");
+
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 901,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [initialRecord],
+  };
+  renderInteractive(stats);
+  await flushInteractive();
+
+  const drawerBody = document.querySelector(".drawer-body") as HTMLElement;
+  Object.defineProperties(drawerBody, {
+    scrollTop: { configurable: true, value: 240 },
+    scrollHeight: { configurable: true, value: 2_000 },
+    clientHeight: { configurable: true, value: 500 },
+    scrollTo: { configurable: true, value: vi.fn() },
+  });
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 902,
+    total: 2,
+    page: 1,
+    pageSize: 50,
+    records: [newRecord],
+  };
+  renderInteractive(stats);
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("查看 1 条新记录");
+  expect(document.body.textContent).not.toContain("live-model");
+  expect(document.body.textContent).toContain("retained-model");
+
+  await act(async () => {
+    findButtonByAriaLabel("查看 1 条新记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("live-model");
+  expect(document.body.textContent).not.toContain("查看 1 条新记录");
+});
+it("keeps a cached Calls snapshot when the drawer opens directly on that tab", async () => {
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 906,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [
+      {
+        id: 906,
+        invokeId: "cached-open-calls",
+        occurredAt: "2026-03-02T12:35:00Z",
+        status: "completed",
+        failureClass: "none",
+        model: "cached-calls-model",
+        totalTokens: 100,
+        cost: 0.01,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-cached-calls",
+        createdAt: "2026-03-02T12:35:00Z",
+      },
+    ],
+  };
+
+  renderInteractiveElement(
+    <PromptCacheConversationHistoryDrawer
+      open
+      conversationKey="pck-cached-calls"
+      initialTab="calls"
+      onClose={() => undefined}
+      t={(key) => key}
+    />,
+  );
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("cached-calls-model");
+  expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+});
+it("anchors deep pagination to a frozen HTTP head when the topic includes a runtime row", async () => {
+  const persistedRecords = Array.from({ length: 51 }, (_, index) => {
+    const id = 151 - index;
+    const occurredAt = new Date(Date.parse("2026-03-02T12:30:00Z") - index * 60_000).toISOString();
+    return {
+      id,
+      invokeId: `persisted-${id}`,
+      occurredAt,
+      status: "completed",
+      failureClass: "none",
+      model: "history-model",
+      totalTokens: 100,
+      cost: 0.01,
+      endpoint: "/v1/responses",
+      promptCacheKey: "pck-runtime-head",
+      upstreamAccountId: 101,
+      upstreamAccountName: "Pool Alpha",
+      proxyDisplayName: "Proxy West",
+      createdAt: occurredAt,
+    };
+  });
+  const runtimeRecord = {
+    ...persistedRecords[0],
+    id: 152,
+    invokeId: "runtime-152",
+    occurredAt: "2026-03-02T12:31:00Z",
+    status: "running",
+    createdAt: "2026-03-02T12:31:00Z",
+  };
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 900,
+    total: 52,
+    page: 1,
+    pageSize: 50,
+    records: [runtimeRecord, ...persistedRecords.slice(0, 49)],
+  };
+  apiMocks.fetchInvocationRecords.mockImplementation(
+    async (query: {
+      page?: number;
+      pageSize?: number;
+      snapshotId?: number;
+      signal?: AbortSignal;
+    }) => {
+      if (query.page === 1 && query.snapshotId == null) {
+        return {
+          snapshotId: 900,
+          total: 52,
+          page: 1,
+          pageSize: 50,
+          records: [runtimeRecord, ...persistedRecords.slice(0, 49)],
+        };
+      }
+      if (query.page === 1 && query.snapshotId === 900) {
+        return {
+          snapshotId: 900,
+          total: 51,
+          page: 1,
+          pageSize: 50,
+          records: persistedRecords.slice(0, 50),
+        };
+      }
+      if (query.page === 2 && query.snapshotId === 900) {
+        return {
+          snapshotId: 900,
+          total: 51,
+          page: 2,
+          pageSize: 50,
+          records: persistedRecords.slice(50),
+        };
+      }
+      throw new Error(`unexpected history request: ${JSON.stringify(query)}`);
+    },
+  );
+
+  const stats: PromptCacheConversationsResponse = {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-runtime-head",
+        requestCount: 52,
+        totalTokens: 5200,
+        totalCost: 0.52,
+        createdAt: "2026-03-02T10:00:00Z",
+        lastActivityAt: "2026-03-02T12:31:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  };
+  renderInteractive(stats);
+  await act(async () => {
+    findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+  await clickDrawerTab("调用");
+
+  const drawerBody = document.querySelector(".drawer-body") as HTMLElement;
+  Object.defineProperties(drawerBody, {
+    scrollHeight: { configurable: true, value: 2_000 },
+    clientHeight: { configurable: true, value: 500 },
+    scrollTop: { configurable: true, value: 1_500 },
+  });
+  await act(async () => {
+    drawerBody.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await flushInteractive();
+
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(1, {
+    promptCacheKey: "pck-runtime-head",
+    page: 1,
+    pageSize: 50,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    signal: expect.any(AbortSignal),
+  });
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+    promptCacheKey: "pck-runtime-head",
+    page: 1,
+    pageSize: 50,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    snapshotId: 900,
+    signal: expect.any(AbortSignal),
+  });
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(3, {
+    promptCacheKey: "pck-runtime-head",
+    page: 2,
+    pageSize: 50,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    snapshotId: 900,
+    signal: expect.any(AbortSignal),
+  });
+  expect(document.body.textContent).toContain("共 52 条保留调用记录");
+
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 901,
+    total: 52,
+    page: 1,
+    pageSize: 50,
+    records: [runtimeRecord, ...persistedRecords.slice(0, 49)],
+  };
+  detailTopicMocks.current.calls.lastKind = "snapshot";
+  renderInteractive(stats);
+  await flushInteractive();
+
+  expect(document.body.textContent).toContain("共 52 条保留调用记录");
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3);
+});
+it("hydrates the calls head from its topic without an initial HTTP request", async () => {
+  const initialRecord = {
+    id: 71,
+    invokeId: "history-71",
+    occurredAt: "2026-03-02T12:30:00Z",
+    status: "completed",
+    failureClass: "none",
+    totalTokens: 1500,
+    cost: 0.31,
+    endpoint: "/v1/responses",
+    promptCacheKey: "pck-history",
+    upstreamAccountId: 101,
+    upstreamAccountName: "Pool Alpha",
+    proxyDisplayName: "Proxy West",
+    createdAt: "2026-03-02T12:30:00Z",
+  };
+  const liveRecord = {
+    ...initialRecord,
+    id: 72,
+    invokeId: "history-72",
+    occurredAt: "2026-03-02T12:31:00Z",
+    model: "live-before-http",
+    createdAt: "2026-03-02T12:31:00Z",
+  };
+  const stats: PromptCacheConversationsResponse = {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-history",
+        requestCount: 2,
+        totalTokens: 1500,
+        totalCost: 0.31,
+        createdAt: "2026-03-02T12:30:00Z",
+        lastActivityAt: "2026-03-02T12:31:00Z",
+      }),
+    ],
+  };
+  renderInteractive(stats);
+  await act(async () => {
+    findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+  await clickDrawerTab("调用");
+
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 902,
+    total: 2,
+    page: 1,
+    pageSize: 50,
+    records: [liveRecord, initialRecord],
+  };
+  detailTopicMocks.current.calls.lastKind = "snapshot";
+  renderInteractive(stats);
+  await flushInteractive();
+  expect(document.body.textContent).toContain("live-before-http");
+  expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
+  expect(document.body.textContent).toContain("共 2 条保留调用记录");
+
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 903,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [initialRecord],
+  };
+  detailTopicMocks.current.calls.lastKind = "snapshot";
+  renderInteractive(stats);
+  await flushInteractive();
+
+  expect(document.body.textContent).not.toContain("live-before-http");
+  expect(document.body.textContent).toContain("共 1 条保留调用记录");
+});
+it("falls back to the calls snapshot after SSE becomes unavailable", async () => {
+  detailTopicMocks.current.isSseUnavailable = true;
+  detailTopicMocks.current.calls.data = {
+    snapshotId: 902,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [
+      {
+        id: 72,
+        invokeId: "stale-topic-history-72",
+        occurredAt: "2026-03-02T12:31:00Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 800,
+        cost: 0.1,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-fallback-history",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Stale Proxy",
+        createdAt: "2026-03-02T12:31:00Z",
+      },
+    ],
+  };
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 903,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [
+      {
+        id: 73,
+        invokeId: "fallback-history-73",
+        occurredAt: "2026-03-02T12:32:00Z",
+        status: "completed",
+        failureClass: "none",
+        totalTokens: 900,
+        cost: 0.12,
+        endpoint: "/v1/responses",
+        promptCacheKey: "pck-fallback-history",
+        upstreamAccountId: 101,
+        upstreamAccountName: "Pool Alpha",
+        proxyDisplayName: "Fallback Proxy",
+        createdAt: "2026-03-02T12:32:00Z",
+      },
+    ],
+  });
+  const stats: PromptCacheConversationsResponse = {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: [
+      createConversation({
+        promptCacheKey: "pck-fallback-history",
+        requestCount: 1,
+        totalTokens: 900,
+        totalCost: 0.12,
+        createdAt: "2026-03-02T12:32:00Z",
+        lastActivityAt: "2026-03-02T12:32:00Z",
+        last24hRequests: [],
+      }),
+    ],
+  };
+
+  renderInteractive(stats);
+  await act(async () => {
+    findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+  });
+  await flushInteractive();
+  await clickDrawerTab("调用");
+
+  expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+    promptCacheKey: "pck-fallback-history",
+    page: 1,
+    pageSize: 50,
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    signal: expect.any(AbortSignal),
+  });
+  expect(document.body.textContent).toContain("Fallback Proxy");
+  expect(document.body.textContent).not.toContain("Stale Proxy");
+});

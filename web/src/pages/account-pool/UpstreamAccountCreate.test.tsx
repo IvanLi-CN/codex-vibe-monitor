@@ -41,7 +41,6 @@ const apiMocks = vi.hoisted(() => ({
   createImportedOauthValidationJobEventSource: vi.fn(),
   updateOauthLoginSessionKeepalive: vi.fn(),
 }));
-
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
@@ -49,24 +48,19 @@ vi.mock("react-router-dom", async () => {
     useNavigate: () => navigateMock,
   };
 });
-
 vi.mock("../../hooks/useUpstreamAccounts", () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
 }));
-
 vi.mock("../../hooks/useForwardProxyBindingNodes", () => ({
   useForwardProxyBindingNodes: hookMocks.useForwardProxyBindingNodes,
 }));
-
 vi.mock("../../hooks/usePoolTags", () => ({
   usePoolTags: hookMocks.usePoolTags,
 }));
-
 vi.mock("../../lib/upstreamAccountsEvents", () => ({
   UPSTREAM_ACCOUNTS_CHANGED_EVENT: "upstream-accounts:changed",
   emitUpstreamAccountsChanged: upstreamAccountsEventMocks.emitUpstreamAccountsChanged,
 }));
-
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
@@ -77,7 +71,6 @@ vi.mock("../../lib/api", async () => {
     updateOauthLoginSessionKeepalive: apiMocks.updateOauthLoginSessionKeepalive,
   };
 });
-
 class MockValidationEventSource implements EventTarget {
   private listeners = new Map<string, Set<EventListener>>();
   readyState = 1;
@@ -109,7 +102,9 @@ class MockValidationEventSource implements EventTarget {
 
   dispatchEvent(event: Event): boolean {
     const current = Array.from(this.listeners.get(event.type) ?? []);
-    current.forEach((listener) => listener(event));
+    current.forEach((listener) => {
+      listener(event);
+    });
     return true;
   }
 
@@ -127,7 +122,6 @@ class MockValidationEventSource implements EventTarget {
     );
   }
 }
-
 function buildImportedOauthValidationCounts(rows: Array<{ status: string }>) {
   const counts = {
     pending: 0,
@@ -164,7 +158,6 @@ function buildImportedOauthValidationCounts(rows: Array<{ status: string }>) {
     counts.duplicateInInput + counts.ok + counts.okExhausted + counts.invalid + counts.error;
   return counts;
 }
-
 type RenderEntry =
   | string
   | {
@@ -172,7 +165,6 @@ type RenderEntry =
       search?: string;
       state?: unknown;
     };
-
 const TEST_REQUIRED_GROUP_NAME = "prod";
 const TEST_REQUIRED_BOUND_PROXY_KEYS = ["__direct__"];
 const TEST_FORWARD_PROXY_NODES = [
@@ -204,7 +196,6 @@ const TEST_GROUP_SUMMARIES = [
   nodeShuntEnabled: false,
   singleAccountRotationEnabled: false,
 }));
-
 function expectedGroupSelection(
   groupName = TEST_REQUIRED_GROUP_NAME,
   options?: { includeConcurrencyLimit?: boolean },
@@ -223,12 +214,10 @@ function expectedGroupSelection(
     concurrencyLimit: 0,
   };
 }
-
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null;
 const FIXED_NOW_MS = Date.parse("2026-03-12T00:00:00.000Z");
-
 beforeAll(() => {
   class ResizeObserverMock {
     observe() {}
@@ -264,7 +253,6 @@ beforeAll(() => {
     },
   });
 });
-
 beforeEach(() => {
   dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(FIXED_NOW_MS);
   vi.mocked(window.localStorage.getItem).mockImplementation((key: string) =>
@@ -287,7 +275,6 @@ beforeEach(() => {
     },
   });
 });
-
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -304,14 +291,12 @@ afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
 });
-
 function render(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   rerender(initialEntry);
 }
-
 function rerender(initialEntry: RenderEntry = "/account-pool/upstream-accounts/new") {
   const normalizedEntry =
     typeof initialEntry === "string"
@@ -398,20 +383,17 @@ function rerender(initialEntry: RenderEntry = "/account-pool/upstream-accounts/n
     );
   });
 }
-
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
 }
-
 async function flushTimers() {
   await act(async () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
 }
-
 async function flushSessionSyncDebounce() {
   await act(async () => {
     vi.advanceTimersByTime(300);
@@ -419,7 +401,6 @@ async function flushSessionSyncDebounce() {
     await Promise.resolve();
   });
 }
-
 async function flushSessionSyncRetry() {
   await act(async () => {
     vi.advanceTimersByTime(1_100);
@@ -427,7 +408,6 @@ async function flushSessionSyncRetry() {
     await Promise.resolve();
   });
 }
-
 async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
   Object.defineProperty(input, "files", {
     configurable: true,
@@ -439,7 +419,6 @@ async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
     await Promise.resolve();
   });
 }
-
 async function pasteIntoField(input: HTMLTextAreaElement, text: string) {
   await act(async () => {
     const event = new Event("paste", {
@@ -461,7 +440,6 @@ async function pasteIntoField(input: HTMLTextAreaElement, text: string) {
     await Promise.resolve();
   });
 }
-
 function setInputValue(selector: string, value: string) {
   const input = host?.querySelector(selector);
   if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
@@ -482,7 +460,6 @@ function setInputValue(selector: string, value: string) {
   });
   return input;
 }
-
 function setFieldValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const prototype =
     input instanceof HTMLTextAreaElement
@@ -499,7 +476,6 @@ function setFieldValue(input: HTMLInputElement | HTMLTextAreaElement, value: str
   });
   return input;
 }
-
 function setBodyInputValue(selector: string, value: string) {
   const input = document.body.querySelector(selector);
   if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
@@ -507,7 +483,6 @@ function setBodyInputValue(selector: string, value: string) {
   }
   return setFieldValue(input, value);
 }
-
 function clickButton(matcher: RegExp) {
   const button = Array.from(host?.querySelectorAll("button") ?? []).find(
     (candidate) =>
@@ -526,7 +501,6 @@ function clickButton(matcher: RegExp) {
   });
   return button;
 }
-
 function clickBodyButton(matcher: RegExp) {
   const button = Array.from(document.body.querySelectorAll("button")).find(
     (candidate) =>
@@ -545,7 +519,6 @@ function clickBodyButton(matcher: RegExp) {
   });
   return button;
 }
-
 function findButton(matcher: RegExp) {
   return Array.from(host?.querySelectorAll("button") ?? []).find(
     (candidate) =>
@@ -557,7 +530,6 @@ function findButton(matcher: RegExp) {
       ),
   ) as HTMLButtonElement | undefined;
 }
-
 function findBodyButton(matcher: RegExp) {
   return Array.from(document.body.querySelectorAll("button")).find(
     (candidate) =>
@@ -569,15 +541,12 @@ function findBodyButton(matcher: RegExp) {
       ),
   ) as HTMLButtonElement | undefined;
 }
-
 function getBatchRows() {
   return host?.querySelectorAll('[data-testid^="batch-oauth-row-"]') ?? [];
 }
-
 function pageTextContent() {
   return document.body.textContent ?? "";
 }
-
 function setComboboxValue(nameSelector: string, value: string) {
   const hiddenInput = host?.querySelector(nameSelector);
   if (!(hiddenInput instanceof HTMLInputElement)) {
@@ -616,7 +585,6 @@ function setComboboxValue(nameSelector: string, value: string) {
     option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 }
-
 function mockUpstreamAccounts(
   overrides: Partial<ReturnType<typeof hookMocks.useUpstreamAccounts>> = {},
 ) {
@@ -861,7 +829,6 @@ function mockUpstreamAccounts(
   });
   return hookState;
 }
-
 function blurField(selector: string) {
   const input = host?.querySelector(selector);
   if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
@@ -873,7 +840,6 @@ function blurField(selector: string) {
   });
   return input;
 }
-
 function buildCompletedBatchOauthRow(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -912,7 +878,6 @@ function buildCompletedBatchOauthRow(
     ...overrides,
   };
 }
-
 const scope: Record<string, unknown> = {};
 Object.assign(scope, {
   act,
@@ -1005,7 +970,6 @@ evalChunk(suite5);
 evalChunk(suite6);
 evalChunk(suite7);
 evalChunk(suite8);
-
 function clickCreateTab(matcher: RegExp) {
   const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
     (candidate) =>
@@ -1020,7 +984,6 @@ function clickCreateTab(matcher: RegExp) {
   });
   return tab;
 }
-
 function readHiddenInputValue(selector: string) {
   const input = document.body.querySelector(selector);
   if (!(input instanceof HTMLInputElement)) {
@@ -1028,7 +991,6 @@ function readHiddenInputValue(selector: string) {
   }
   return input.value;
 }
-
 function clickGroupSettingsButtonForInput(selector: string) {
   const input = document.body.querySelector(selector);
   if (!(input instanceof HTMLInputElement)) {
@@ -1053,377 +1015,6 @@ function clickGroupSettingsButtonForInput(selector: string) {
   });
   return button;
 }
-
-describe("imported OAuth local validation", () => {
-  const t = (key: string, values?: Record<string, string | number>) => {
-    if (key === "accountPool.upstreamAccounts.import.local.requiredField") {
-      return `${values?.fieldName} is required.`;
-    }
-    if (key === "accountPool.upstreamAccounts.import.local.invalidJwt") {
-      return `${values?.tokenName} must be a valid JWT.`;
-    }
-    if (key === "accountPool.upstreamAccounts.import.local.invalidExpired") {
-      return "expired must be a valid RFC3339 timestamp.";
-    }
-    if (key === "accountPool.upstreamAccounts.import.local.missingExpiry") {
-      return "expired is required when token exp is unavailable.";
-    }
-    if (key === "accountPool.upstreamAccounts.import.local.unsupportedSub2apiAccount") {
-      return "Only sub2api accounts with platform=openai and type=oauth are supported.";
-    }
-    if (key === "accountPool.upstreamAccounts.import.local.noSupportedSub2apiAccounts") {
-      return "No supported OpenAI OAuth accounts were found in the sub2api export.";
-    }
-    return key;
-  };
-
-  it("accepts Codex JSON without a refresh_token", () => {
-    const result = validateImportedOauthCredentialLocally(
-      JSON.stringify({
-        type: "codex",
-        email: "no-rt@example.com",
-        account_id: "acct_no_rt",
-        access_token: "access-token",
-        id_token:
-          "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibm8tcnRAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9ub19ydCJ9fQ.sig",
-      }),
-      t,
-    );
-
-    expect(result.ok).toBe(true);
-  });
-
-  it("accepts OAuth JSON when type is non-codex, blank, or missing", () => {
-    for (const typeValue of ["auth0", "  ", undefined]) {
-      const payload: Record<string, unknown> = {
-        email: "any-type@example.com",
-        account_id: "acct_any_type",
-        access_token: "access-token",
-        id_token:
-          "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoiYW55LXR5cGVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9hbnlfdHlwZSJ9fQ.sig",
-      };
-      if (typeValue !== undefined) payload.type = typeValue;
-
-      const result = validateImportedOauthCredentialLocally(JSON.stringify(payload), t);
-
-      expect(result.ok).toBe(true);
-    }
-  });
-
-  it("reports multiple local validation errors at once", () => {
-    const result = validateImportedOauthCredentialLocally(
-      JSON.stringify({
-        type: "auth0",
-        access_token: "",
-        id_token: "not-a-jwt",
-        expired: 123,
-      }),
-      t,
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.errors).toEqual([
-        "email is required.",
-        "account_id is required.",
-        "access_token is required.",
-        "expired must be a valid RFC3339 timestamp.",
-        "id_token must be a valid JWT.",
-        "expired is required when token exp is unavailable.",
-      ]);
-      expect(result.error).toBe(result.errors.join("\n"));
-      expect(result.error).not.toContain("type must be codex");
-    }
-  });
-
-  it("uses chatgpt_user_id ahead of shared account_id for local imported OAuth match keys", () => {
-    const result = validateImportedOauthCredentialLocally(
-      JSON.stringify({
-        type: "auth0",
-        email: "member@example.com",
-        account_id: "acct_shared",
-        access_token: "access-token",
-        id_token:
-          "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibWVtYmVyQGV4YW1wbGUuY29tIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3Rfc2hhcmVkIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9tZW1iZXIifX0.sig",
-      }),
-      t,
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.chatgptUserId).toBe("user_member");
-      expect(result.matchKey).toBe("user:user_member");
-    }
-  });
-
-  it("expands sub2api-data exports into supported OAuth candidates", () => {
-    const result = parseImportedOauthCredentialDocumentLocally(
-      JSON.stringify({
-        type: "sub2api-data",
-        accounts: [
-          {
-            platform: "openai",
-            type: "oauth",
-            credentials: {
-              email: "student-one@example.com",
-              chatgpt_account_id: "acct_shared_k12",
-              chatgpt_user_id: "user_student_one",
-              access_token: "access-token",
-              refresh_token: "refresh-token",
-              id_token:
-                "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoic3R1ZGVudC1vbmVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9zaGFyZWRfazEyIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9zdHVkZW50X29uZSIsImNoYXRncHRfcGxhbl90eXBlIjoiazEyIn19.sig",
-              expires_at: "2026-08-06T14:29:36.155Z",
-              plan_type: "k12",
-            },
-          },
-          {
-            platform: "openai",
-            type: "api_key",
-            credentials: {
-              email: "skip@example.com",
-            },
-          },
-        ],
-      }),
-      t,
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.candidates).toHaveLength(1);
-      expect(result.rejected).toEqual([
-        {
-          sourceLabel: "skip@example.com",
-          reason: "Only sub2api accounts with platform=openai and type=oauth are supported.",
-        },
-      ]);
-      expect(result.candidates[0]?.chatgptUserId).toBe("user_student_one");
-      expect(result.candidates[0]?.matchKey).toBe("user:user_student_one");
-      expect(JSON.parse(result.candidates[0]?.normalizedContent ?? "{}")).toMatchObject({
-        type: "codex",
-        email: "student-one@example.com",
-        account_id: "acct_shared_k12",
-        chatgpt_user_id: "user_student_one",
-        plan_type: "k12",
-      });
-    }
-  });
-
-  it("converts ChatGPT Web session JSON into Codex import credentials", () => {
-    const result = convertImportedWebSessionDocumentLocally(
-      JSON.stringify({
-        user: { email: "session@example.com", id: "user_session" },
-        account: { id: "acct_session", planType: "plus" },
-        accessToken: "access-token",
-        sessionToken: "session-token",
-        expires: "2026-08-06T14:29:36.155Z",
-      }),
-      (key, values) => (values?.fieldName ? `${values.fieldName} cannot be empty` : key),
-    );
-
-    expect(result.ok).toBe(true);
-    expect(result.items).toHaveLength(1);
-    const converted = JSON.parse(result.items[0].content);
-    expect(converted).toMatchObject({
-      type: "codex",
-      email: "session@example.com",
-      account_id: "acct_session",
-      access_token: "access-token",
-      session_token: "session-token",
-      expired: "2026-08-06T14:29:36.155Z",
-    });
-    expect(converted.refresh_token).toBeUndefined();
-    expect(typeof converted.id_token).toBe("string");
-    expect(result.items[0].matchKey).toBe("user:user_session");
-  });
-
-  it("finds nested ChatGPT Web session arrays", () => {
-    const result = convertImportedWebSessionDocumentLocally(
-      JSON.stringify({
-        export: {
-          accounts: [
-            {
-              user: { email: "a@example.com" },
-              account: { id: "acct_a" },
-              accessToken: "access-a",
-              expires: "2026-08-06T14:29:36.155Z",
-            },
-            {
-              user: { email: "b@example.com" },
-              account: { id: "acct_b" },
-              accessToken: "access-b",
-              expires: "2026-08-07T14:29:36.155Z",
-            },
-          ],
-        },
-      }),
-      (key, values) => (values?.fieldName ? `${values.fieldName} cannot be empty` : key),
-    );
-
-    expect(result.ok).toBe(true);
-    expect(result.items.map((item) => item.matchKey)).toEqual(["account:acct_a", "account:acct_b"]);
-  });
-});
-
-describe("UpstreamAccountCreatePage API Key domain boundary", () => {
-  it("does not render API Key group controls even when old draft data exists", async () => {
-    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
-      if (key === "codex-vibe-monitor.locale") return "en";
-      if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
-        return JSON.stringify({ groupName: " beta " });
-      }
-      return null;
-    });
-    mockUpstreamAccounts();
-
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=apiKey",
-      state: { __skipDefaultDraft: true },
-    });
-    await flushAsync();
-
-    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
-  });
-
-  it("ignores legacy API Key group drafts", async () => {
-    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
-      if (key === "codex-vibe-monitor.locale") return "en";
-      if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
-        return JSON.stringify({ groupName: "beta" });
-      }
-      return null;
-    });
-    mockUpstreamAccounts();
-
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=apiKey",
-      state: {
-        draft: {
-          apiKey: {
-            groupName: "alpha",
-          },
-        },
-      },
-    });
-    await flushAsync();
-
-    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
-  });
-
-  it("does not expose API Key group selection for retired groups", async () => {
-    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
-      if (key === "codex-vibe-monitor.locale") return "en";
-      if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
-        return JSON.stringify({ groupName: "retired" });
-      }
-      return null;
-    });
-    mockUpstreamAccounts();
-
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=apiKey",
-      state: { __skipDefaultDraft: true },
-    });
-    await flushAsync();
-
-    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
-  });
-
-  it("uses the latest remembered group for batch OAuth when no draft overrides it", async () => {
-    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
-      if (key === "codex-vibe-monitor.locale") return "en";
-      if (key === UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY) {
-        return JSON.stringify({ alpha: 100, beta: 300 });
-      }
-      return null;
-    });
-    mockUpstreamAccounts();
-
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=batchOauth",
-      state: { __skipDefaultDraft: true },
-    });
-    await flushAsync();
-
-    expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("beta");
-    expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("beta");
-  });
-
-  it("keeps a restored draft group ahead of remembered local preference", async () => {
-    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
-      if (key === "codex-vibe-monitor.locale") return "en";
-      if (key === UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY) {
-        return JSON.stringify({ beta: 300 });
-      }
-      return null;
-    });
-    mockUpstreamAccounts();
-
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=batchOauth",
-      state: {
-        __skipDefaultDraft: true,
-        draft: {
-          batchOauth: {
-            defaultGroupName: "alpha",
-            rows: [
-              {
-                id: "row-1",
-                groupName: "alpha",
-                inheritsDefaultGroup: true,
-              },
-            ],
-          },
-        },
-      },
-    });
-    await flushAsync();
-
-    expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("alpha");
-    expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("alpha");
-  });
-
-  it("stores the selected batch default group as the latest local preference", async () => {
-    mockUpstreamAccounts();
-
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=batchOauth",
-      state: { __skipDefaultDraft: true },
-    });
-    await flushAsync();
-
-    const defaultGroupTrigger = Array.from(
-      document.body.querySelectorAll('button[role="combobox"]'),
-    )[0] as HTMLButtonElement;
-    act(() => {
-      defaultGroupTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    const betaOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
-      candidate.textContent?.includes("beta"),
-    );
-    if (!(betaOption instanceof HTMLElement)) {
-      throw new Error("missing beta group option");
-    }
-    act(() => {
-      betaOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(window.localStorage.setItem).toHaveBeenCalledWith(
-      UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
-      expect.stringContaining('"beta"'),
-    );
-  });
-});
-
 describe("UpstreamAccountCreatePage group deletion", () => {
   it("clears selected group fields after deleting the active saved group", async () => {
     const groups = TEST_GROUP_SUMMARIES.map((group) =>
@@ -1475,4 +1066,356 @@ describe("UpstreamAccountCreatePage group deletion", () => {
     expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("");
     expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("");
   });
+});
+const t = (key: string, values?: Record<string, string | number>) => {
+  if (key === "accountPool.upstreamAccounts.import.local.requiredField") {
+    return `${values?.fieldName} is required.`;
+  }
+  if (key === "accountPool.upstreamAccounts.import.local.invalidJwt") {
+    return `${values?.tokenName} must be a valid JWT.`;
+  }
+  if (key === "accountPool.upstreamAccounts.import.local.invalidExpired") {
+    return "expired must be a valid RFC3339 timestamp.";
+  }
+  if (key === "accountPool.upstreamAccounts.import.local.missingExpiry") {
+    return "expired is required when token exp is unavailable.";
+  }
+  if (key === "accountPool.upstreamAccounts.import.local.unsupportedSub2apiAccount") {
+    return "Only sub2api accounts with platform=openai and type=oauth are supported.";
+  }
+  if (key === "accountPool.upstreamAccounts.import.local.noSupportedSub2apiAccounts") {
+    return "No supported OpenAI OAuth accounts were found in the sub2api export.";
+  }
+  return key;
+};
+it("accepts Codex JSON without a refresh_token", () => {
+  const result = validateImportedOauthCredentialLocally(
+    JSON.stringify({
+      type: "codex",
+      email: "no-rt@example.com",
+      account_id: "acct_no_rt",
+      access_token: "access-token",
+      id_token:
+        "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibm8tcnRAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9ub19ydCJ9fQ.sig",
+    }),
+    t,
+  );
+
+  expect(result.ok).toBe(true);
+});
+it("accepts OAuth JSON when type is non-codex, blank, or missing", () => {
+  for (const typeValue of ["auth0", "  ", undefined]) {
+    const payload: Record<string, unknown> = {
+      email: "any-type@example.com",
+      account_id: "acct_any_type",
+      access_token: "access-token",
+      id_token:
+        "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoiYW55LXR5cGVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9hbnlfdHlwZSJ9fQ.sig",
+    };
+    if (typeValue !== undefined) payload.type = typeValue;
+
+    const result = validateImportedOauthCredentialLocally(JSON.stringify(payload), t);
+
+    expect(result.ok).toBe(true);
+  }
+});
+it("reports multiple local validation errors at once", () => {
+  const result = validateImportedOauthCredentialLocally(
+    JSON.stringify({
+      type: "auth0",
+      access_token: "",
+      id_token: "not-a-jwt",
+      expired: 123,
+    }),
+    t,
+  );
+
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.errors).toEqual([
+      "email is required.",
+      "account_id is required.",
+      "access_token is required.",
+      "expired must be a valid RFC3339 timestamp.",
+      "id_token must be a valid JWT.",
+      "expired is required when token exp is unavailable.",
+    ]);
+    expect(result.error).toBe(result.errors.join("\n"));
+    expect(result.error).not.toContain("type must be codex");
+  }
+});
+it("uses chatgpt_user_id ahead of shared account_id for local imported OAuth match keys", () => {
+  const result = validateImportedOauthCredentialLocally(
+    JSON.stringify({
+      type: "auth0",
+      email: "member@example.com",
+      account_id: "acct_shared",
+      access_token: "access-token",
+      id_token:
+        "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibWVtYmVyQGV4YW1wbGUuY29tIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImFjY3Rfc2hhcmVkIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9tZW1iZXIifX0.sig",
+    }),
+    t,
+  );
+
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.chatgptUserId).toBe("user_member");
+    expect(result.matchKey).toBe("user:user_member");
+  }
+});
+it("expands sub2api-data exports into supported OAuth candidates", () => {
+  const result = parseImportedOauthCredentialDocumentLocally(
+    JSON.stringify({
+      type: "sub2api-data",
+      accounts: [
+        {
+          platform: "openai",
+          type: "oauth",
+          credentials: {
+            email: "student-one@example.com",
+            chatgpt_account_id: "acct_shared_k12",
+            chatgpt_user_id: "user_student_one",
+            access_token: "access-token",
+            refresh_token: "refresh-token",
+            id_token:
+              "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoic3R1ZGVudC1vbmVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9zaGFyZWRfazEyIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlcl9zdHVkZW50X29uZSIsImNoYXRncHRfcGxhbl90eXBlIjoiazEyIn19.sig",
+            expires_at: "2026-08-06T14:29:36.155Z",
+            plan_type: "k12",
+          },
+        },
+        {
+          platform: "openai",
+          type: "api_key",
+          credentials: {
+            email: "skip@example.com",
+          },
+        },
+      ],
+    }),
+    t,
+  );
+
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.candidates).toHaveLength(1);
+    expect(result.rejected).toEqual([
+      {
+        sourceLabel: "skip@example.com",
+        reason: "Only sub2api accounts with platform=openai and type=oauth are supported.",
+      },
+    ]);
+    expect(result.candidates[0]?.chatgptUserId).toBe("user_student_one");
+    expect(result.candidates[0]?.matchKey).toBe("user:user_student_one");
+    expect(JSON.parse(result.candidates[0]?.normalizedContent ?? "{}")).toMatchObject({
+      type: "codex",
+      email: "student-one@example.com",
+      account_id: "acct_shared_k12",
+      chatgpt_user_id: "user_student_one",
+      plan_type: "k12",
+    });
+  }
+});
+it("converts ChatGPT Web session JSON into Codex import credentials", () => {
+  const result = convertImportedWebSessionDocumentLocally(
+    JSON.stringify({
+      user: { email: "session@example.com", id: "user_session" },
+      account: { id: "acct_session", planType: "plus" },
+      accessToken: "access-token",
+      sessionToken: "session-token",
+      expires: "2026-08-06T14:29:36.155Z",
+    }),
+    (key, values) => (values?.fieldName ? `${values.fieldName} cannot be empty` : key),
+  );
+
+  expect(result.ok).toBe(true);
+  expect(result.items).toHaveLength(1);
+  const converted = JSON.parse(result.items[0].content);
+  expect(converted).toMatchObject({
+    type: "codex",
+    email: "session@example.com",
+    account_id: "acct_session",
+    access_token: "access-token",
+    session_token: "session-token",
+    expired: "2026-08-06T14:29:36.155Z",
+  });
+  expect(converted.refresh_token).toBeUndefined();
+  expect(typeof converted.id_token).toBe("string");
+  expect(result.items[0].matchKey).toBe("user:user_session");
+});
+it("finds nested ChatGPT Web session arrays", () => {
+  const result = convertImportedWebSessionDocumentLocally(
+    JSON.stringify({
+      export: {
+        accounts: [
+          {
+            user: { email: "a@example.com" },
+            account: { id: "acct_a" },
+            accessToken: "access-a",
+            expires: "2026-08-06T14:29:36.155Z",
+          },
+          {
+            user: { email: "b@example.com" },
+            account: { id: "acct_b" },
+            accessToken: "access-b",
+            expires: "2026-08-07T14:29:36.155Z",
+          },
+        ],
+      },
+    }),
+    (key, values) => (values?.fieldName ? `${values.fieldName} cannot be empty` : key),
+  );
+
+  expect(result.ok).toBe(true);
+  expect(result.items.map((item) => item.matchKey)).toEqual(["account:acct_a", "account:acct_b"]);
+});
+it("does not render API Key group controls even when old draft data exists", async () => {
+  vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+    if (key === "codex-vibe-monitor.locale") return "en";
+    if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
+      return JSON.stringify({ groupName: " beta " });
+    }
+    return null;
+  });
+  mockUpstreamAccounts();
+
+  render({
+    pathname: "/account-pool/upstream-accounts/new",
+    search: "?mode=apiKey",
+    state: { __skipDefaultDraft: true },
+  });
+  await flushAsync();
+
+  expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
+});
+it("ignores legacy API Key group drafts", async () => {
+  vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+    if (key === "codex-vibe-monitor.locale") return "en";
+    if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
+      return JSON.stringify({ groupName: "beta" });
+    }
+    return null;
+  });
+  mockUpstreamAccounts();
+
+  render({
+    pathname: "/account-pool/upstream-accounts/new",
+    search: "?mode=apiKey",
+    state: {
+      draft: {
+        apiKey: {
+          groupName: "alpha",
+        },
+      },
+    },
+  });
+  await flushAsync();
+
+  expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
+});
+it("does not expose API Key group selection for retired groups", async () => {
+  vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+    if (key === "codex-vibe-monitor.locale") return "en";
+    if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
+      return JSON.stringify({ groupName: "retired" });
+    }
+    return null;
+  });
+  mockUpstreamAccounts();
+
+  render({
+    pathname: "/account-pool/upstream-accounts/new",
+    search: "?mode=apiKey",
+    state: { __skipDefaultDraft: true },
+  });
+  await flushAsync();
+
+  expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
+});
+it("uses the latest remembered group for batch OAuth when no draft overrides it", async () => {
+  vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+    if (key === "codex-vibe-monitor.locale") return "en";
+    if (key === UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY) {
+      return JSON.stringify({ alpha: 100, beta: 300 });
+    }
+    return null;
+  });
+  mockUpstreamAccounts();
+
+  render({
+    pathname: "/account-pool/upstream-accounts/new",
+    search: "?mode=batchOauth",
+    state: { __skipDefaultDraft: true },
+  });
+  await flushAsync();
+
+  expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("beta");
+  expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("beta");
+});
+it("keeps a restored draft group ahead of remembered local preference", async () => {
+  vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+    if (key === "codex-vibe-monitor.locale") return "en";
+    if (key === UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY) {
+      return JSON.stringify({ beta: 300 });
+    }
+    return null;
+  });
+  mockUpstreamAccounts();
+
+  render({
+    pathname: "/account-pool/upstream-accounts/new",
+    search: "?mode=batchOauth",
+    state: {
+      __skipDefaultDraft: true,
+      draft: {
+        batchOauth: {
+          defaultGroupName: "alpha",
+          rows: [
+            {
+              id: "row-1",
+              groupName: "alpha",
+              inheritsDefaultGroup: true,
+            },
+          ],
+        },
+      },
+    },
+  });
+  await flushAsync();
+
+  expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("alpha");
+  expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("alpha");
+});
+it("stores the selected batch default group as the latest local preference", async () => {
+  mockUpstreamAccounts();
+
+  render({
+    pathname: "/account-pool/upstream-accounts/new",
+    search: "?mode=batchOauth",
+    state: { __skipDefaultDraft: true },
+  });
+  await flushAsync();
+
+  const defaultGroupTrigger = Array.from(
+    document.body.querySelectorAll('button[role="combobox"]'),
+  )[0] as HTMLButtonElement;
+  act(() => {
+    defaultGroupTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushAsync();
+
+  const betaOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find((candidate) =>
+    candidate.textContent?.includes("beta"),
+  );
+  if (!(betaOption instanceof HTMLElement)) {
+    throw new Error("missing beta group option");
+  }
+  act(() => {
+    betaOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushAsync();
+
+  expect(window.localStorage.setItem).toHaveBeenCalledWith(
+    UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
+    expect.stringContaining('"beta"'),
+  );
 });
