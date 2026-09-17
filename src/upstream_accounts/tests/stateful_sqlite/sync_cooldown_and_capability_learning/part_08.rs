@@ -244,10 +244,6 @@ pub(crate) async fn resolver_prefers_primary_priority_before_normal_and_fallback
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
-)]
 pub(crate) async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_account() {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -360,10 +356,6 @@ async fn assert_sticky_reused_without_model(
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
-)]
 pub(crate) async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -460,10 +452,6 @@ pub(crate) async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
-)]
 pub(crate) async fn resolver_request_driven_priority_recovery_precedes_healthy_lower_priority_winner()
  {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
@@ -544,10 +532,6 @@ pub(crate) async fn resolver_request_driven_priority_recovery_precedes_healthy_l
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
-)]
 pub(crate) async fn resolver_admits_first_untracked_priority_fresh_assignment() {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;

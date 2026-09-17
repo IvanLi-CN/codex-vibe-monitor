@@ -860,10 +860,6 @@ pub(crate) async fn manual_model_route_reset_fences_in_flight_failure() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::await_holding_lock,
-    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
-)]
 pub(crate) async fn manual_model_route_reset_survives_diagnostic_persistence_failure() {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
