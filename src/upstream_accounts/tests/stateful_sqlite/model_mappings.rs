@@ -344,7 +344,7 @@ async fn model_mapping_save_wakes_a_waiting_no_candidate_request() {
     let mut wait_deadline = None;
     let resolution = crate::tests::resolve_pool_account_for_request_with_wait(
         state.as_ref(),
-        PoolAccountWaitOptions {
+        &mut PoolAccountWaitOptions {
             sticky_key: None,
             requested_model: Some("client-fast"),
             excluded_ids: &[],

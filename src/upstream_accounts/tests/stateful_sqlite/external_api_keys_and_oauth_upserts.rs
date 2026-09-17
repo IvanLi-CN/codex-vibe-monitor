@@ -275,7 +275,7 @@ async fn assert_idempotent_external_client_upsert(
             "user_shared_a",
             "access-a-1",
             "refresh-a-1",
-            test_external_upsert_metadata("Shared Client A", None, Some("note-a-1")),
+            external_upsert_metadata("Shared Client A", None, Some("note-a-1")),
         ),
     )
     .await;
@@ -298,7 +298,7 @@ async fn assert_idempotent_external_client_upsert(
             "user_shared_a",
             "access-a-2",
             "refresh-a-2",
-            test_external_upsert_metadata("Shared Client A Updated", None, Some("note-a-2")),
+            external_upsert_metadata("Shared Client A Updated", None, Some("note-a-2")),
         ),
     )
     .await;
@@ -455,7 +455,13 @@ async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i
             "alpha-access",
             "alpha-refresh",
             external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
-        )),
+        )
+    };
+    let missing_err = external_upsert_oauth_upstream_account_route(
+        State(state.clone()),
+        HeaderMap::new(),
+        AxumPath("partner-source-1".to_string()),
+        Json(request()),
     )
     .await
     .expect_err("missing bearer token should be rejected");
@@ -465,14 +471,7 @@ async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i
         State(state.clone()),
         external_api_auth_headers("cvm_ext_invalid"),
         AxumPath("partner-source-1".to_string()),
-        Json(test_external_upsert_request(
-            "alpha@example.com",
-            "org_partner_alpha",
-            "user_partner_alpha",
-            "alpha-access",
-            "alpha-refresh",
-            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
-        )),
+        Json(request()),
     )
     .await
     .expect_err("unknown bearer token should be rejected");
@@ -482,14 +481,7 @@ async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i
         State(state.clone()),
         external_api_auth_headers_with_scheme(secret, "bearer"),
         AxumPath("partner-source-1".to_string()),
-        Json(test_external_upsert_request(
-            "alpha@example.com",
-            "org_partner_alpha",
-            "user_partner_alpha",
-            "alpha-access",
-            "alpha-refresh",
-            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
-        )),
+        Json(request()),
     )
     .await
     .expect("active external key should authenticate");
@@ -754,7 +746,7 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
     .await
     .expect("load client B account")
     .expect("client B account should exist");
-    assert_ne!(client_b_account.id, client_a_first_id);
+    assert_ne!(client_b_account.id, client_a_first.id);
 
     let shared_source_count = sqlx::query_scalar::<_, i64>(
         r#"
@@ -1245,7 +1237,7 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "atomic-access-1",
             "atomic-refresh-1",
             external_upsert_metadata("Atomic Existing", None, Some("before atomic failure")),
-        )),
+        ),
     )
     .await;
 
@@ -1260,7 +1252,7 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "atomic-conflict-access",
             "atomic-conflict-refresh",
             external_upsert_metadata("Conflicting Display Name", None, Some("conflict holder")),
-        )),
+        ),
     )
     .await;
 

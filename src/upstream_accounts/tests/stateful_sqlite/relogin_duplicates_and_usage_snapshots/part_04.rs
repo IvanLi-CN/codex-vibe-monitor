@@ -805,7 +805,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_counts_live_window_
     let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
     let failed_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(10));
 
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &primary_row_at,
@@ -816,7 +816,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_counts_live_window_
         Some(0.042),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &secondary_row_at,
@@ -827,7 +827,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_counts_live_window_
         Some(0.0175),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &failed_row_at,
@@ -838,7 +838,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_counts_live_window_
         None,
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id + 999,
         &primary_row_at,
@@ -912,7 +912,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_uses_matching_stale
     let before_window_at = shanghai_local_iso(reset_at - ChronoDuration::hours(6));
     let after_window_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(30));
 
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &inside_window_at,
@@ -923,7 +923,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_uses_matching_stale
         Some(0.0315),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &before_window_at,
@@ -934,7 +934,7 @@ pub(crate) async fn enrich_window_actual_usage_for_summaries_uses_matching_stale
         Some(0.048),
     )
     .await;
-    insert_window_actual_usage_invocation(
+    insert_window_actual_usage_invocation!(
         &state.pool,
         account_id,
         &after_window_at,
