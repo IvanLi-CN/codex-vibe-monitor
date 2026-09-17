@@ -1,5 +1,12 @@
-include!("part_01.rs");
-include!("part_02.rs");
-include!("part_03.rs");
-include!("part_04.rs");
-include!("part_05.rs");
+use super::*;
+use serde_json::json;
+
+mod part_01;
+mod part_02;
+mod part_03;
+mod part_04;
+
+pub(crate) use part_01::*;
+pub(crate) use part_02::*;
+pub(crate) use part_03::*;
+pub(crate) use part_04::*;

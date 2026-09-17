@@ -1,5 +1,188 @@
+#[derive(Debug, sqlx::FromRow)]
+struct HttpFailureAttemptRow {
+    status: String,
+    http_status: Option<i64>,
+    error_message: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AttemptRouteRow {
+    upstream_account_id: Option<i64>,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    status: String,
+    failure_kind: Option<String>,
+}
+
+type NoContentAttemptRow = (
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<f64>,
+    Option<String>,
+    Option<i64>,
+);
+
+fn is_timeout_or_stream_failure(row: &AttemptRouteRow) -> bool {
+    row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+        && row.failure_kind.as_deref().is_some_and(|kind| {
+            kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+        })
+}
+
+fn assert_non_responses_timeout_routing(
+    payload: &Value,
+    rows: &[AttemptRouteRow],
+    attempts: &StdMutex<HashMap<String, usize>>,
+    primary_id: i64,
+    secondary_id: i64,
+    sticky_account_id: i64,
+) {
+    assert!(rows.len() == 3 || rows.len() == 4);
+    for (index, retry_index) in [(0, 1), (1, 2)] {
+        assert_eq!(rows[index].upstream_account_id, Some(primary_id));
+        assert_eq!(rows[index].distinct_account_index, 1);
+        assert_eq!(rows[index].same_account_retry_index, retry_index);
+        assert!(is_timeout_or_stream_failure(&rows[index]));
+    }
+    assert_eq!(rows[2].upstream_account_id, Some(primary_id));
+    assert_eq!(rows[2].distinct_account_index, 1);
+    assert_eq!(rows[2].same_account_retry_index, 3);
+    let attempts = attempts
+        .lock()
+        .expect("lock delayed headers retry attempts");
+    match payload["authorization"].as_str() {
+        Some("Bearer upstream-primary") => {
+            assert_eq!(payload["attempt"], 3);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[2].status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+            assert_eq!(sticky_account_id, primary_id);
+        }
+        Some("Bearer upstream-secondary") => {
+            assert_eq!(payload["attempt"], 1);
+            assert_eq!(rows.len(), 4);
+            assert!(is_timeout_or_stream_failure(&rows[2]));
+            assert_eq!(rows[3].upstream_account_id, Some(secondary_id));
+            assert_eq!(rows[3].distinct_account_index, 2);
+            assert_eq!(rows[3].same_account_retry_index, 1);
+            assert_eq!(rows[3].status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+            assert_eq!(sticky_account_id, secondary_id);
+        }
+        other => panic!("unexpected upstream authorization: {other:?}"),
+    }
+}
+
+async fn wait_for_no_content_attempt(pool: &SqlitePool) -> NoContentAttemptRow {
+    for _ in 0..20 {
+        let row = sqlx::query_as::<_, NoContentAttemptRow>(
+            r#"SELECT status, finished_at, http_status, stream_latency_ms,
+                      failure_kind, upstream_account_id
+               FROM pool_upstream_request_attempts ORDER BY id DESC LIMIT 1"#,
+        )
+        .fetch_optional(pool)
+        .await
+        .expect("query pool attempt row");
+        if row
+            .as_ref()
+            .is_some_and(|row| row.0 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        {
+            return row.expect("checked row presence");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("pool attempt row should be persisted");
+}
+
+#[test]
+pub(crate) fn pool_route_switches_accounts_immediately_after_upstream_402() {
+    run_routing_failover_future_with_large_stack(async move {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_pool_static_failure_responses_upstream(&[(
+                "Bearer upstream-primary",
+                StatusCode::PAYMENT_REQUIRED,
+            )])
+            .await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let primary_id =
+            insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+        let secondary_id =
+            insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::from(
+                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-402-switch"}"#
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read proxy response");
+        let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+        assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+
+        {
+            let attempts = attempts.lock().expect("lock attempts");
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+        }
+
+        let primary_status: String =
+            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+                .bind(primary_id)
+                .fetch_one(&state.pool)
+                .await
+                .expect("load primary status");
+        assert_eq!(primary_status, "error");
+        assert_eq!(
+            wait_for_test_sticky_route_account_id(&state.pool, "sticky-402-switch").await,
+            Some(secondary_id)
+        );
+
+        wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+        let attempt_rows = sqlx::query_as::<_, (i64, Option<String>)>(
+            r#"
+        SELECT distinct_account_index, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+        )
+        .fetch_all(&state.pool)
+        .await
+        .expect("load attempt rows");
+        assert_eq!(attempt_rows[0].0, 1);
+        assert_eq!(
+            attempt_rows[0].1.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+        );
+        assert_eq!(attempt_rows[1].0, 2);
+        assert_eq!(attempt_rows[1].1, None);
+
+        upstream_handle.abort();
+    });
+}
+
 #[tokio::test]
-async fn pool_route_http_4xx_does_not_create_sticky_route() {
+pub(crate) async fn pool_route_http_4xx_does_not_create_sticky_route() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
         &[("Bearer upstream-primary", StatusCode::BAD_REQUEST)],
     )
@@ -50,37 +233,35 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
         "HTTP 4xx must not be treated as pool route success for sticky upsert",
     );
 
-    assert_http_4xx_does_not_create_route(&state, &attempts, primary_id).await;
-
-    upstream_handle.abort();
-}
-
-async fn assert_http_4xx_does_not_create_route(
-    state: &Arc<AppState>,
-    attempts: &Arc<StdMutex<HashMap<String, usize>>>,
-    primary_id: i64,
-) {
-    let attempt_rows = sqlx::query_as::<_, (String, Option<i64>, Option<String>)>(
-        "SELECT status, http_status, error_message FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
+    let attempt_rows = sqlx::query_as::<_, HttpFailureAttemptRow>(
+        r#"
+        SELECT status, http_status, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
     )
     .fetch_all(&state.pool)
     .await
     .expect("load 4xx attempt rows");
     assert_eq!(attempt_rows.len(), 1);
     assert_eq!(
-        attempt_rows[0].0,
+        attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
     );
-    assert_eq!(attempt_rows[0].1, Some(400));
+    assert_eq!(attempt_rows[0].http_status, Some(400));
     assert!(
         attempt_rows[0]
-            .2
+            .error_message
             .as_deref()
             .is_some_and(|message| !message.is_empty()),
         "4xx attempt should preserve error information: {attempt_rows:?}",
     );
     let account_route_state = sqlx::query_as::<_, (String, Option<String>, Option<String>, i64)>(
-        "SELECT status, last_route_failure_at, cooldown_until, consecutive_route_failures FROM pool_upstream_accounts WHERE id = ?1",
+        r#"
+            SELECT status, last_route_failure_at, cooldown_until, consecutive_route_failures
+            FROM pool_upstream_accounts
+            WHERE id = ?1
+            "#,
     )
     .bind(primary_id)
     .fetch_one(&state.pool)
@@ -90,12 +271,15 @@ async fn assert_http_4xx_does_not_create_route(
     assert!(account_route_state.1.is_none());
     assert!(account_route_state.2.is_none());
     assert_eq!(account_route_state.3, 0);
+
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn pool_route_live_request_switches_accounts_immediately_after_upstream_429() {
+pub(crate) async fn pool_route_live_request_switches_accounts_immediately_after_upstream_429() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_echo_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -139,7 +323,7 @@ async fn pool_route_live_request_switches_accounts_immediately_after_upstream_42
 }
 
 #[tokio::test]
-async fn pool_route_retries_first_chunk_failure_before_switching() {
+pub(crate) async fn pool_route_retries_first_chunk_failure_before_switching() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_first_chunk_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
     let state =
@@ -189,7 +373,7 @@ async fn pool_route_retries_first_chunk_failure_before_switching() {
 }
 
 #[tokio::test]
-async fn pool_route_non_responses_timeouts_retry_same_account_before_switching() {
+pub(crate) async fn pool_route_non_responses_timeouts_retry_same_account_before_switching() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_delayed_headers_retry_upstream(
         Duration::from_millis(400),
         &[("Bearer upstream-primary", 2)],
@@ -248,100 +432,44 @@ async fn pool_route_non_responses_timeouts_retry_same_account_before_switching()
         .expect("read non-responses retry response");
     let payload: Value = serde_json::from_slice(&body).expect("decode non-responses retry body");
 
-    assert_non_responses_retry_result(&state, &attempts, payload, primary_id, secondary_id).await;
-
-    upstream_handle.abort();
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct AttemptRouteRow {
-    upstream_account_id: Option<i64>,
-    distinct_account_index: i64,
-    same_account_retry_index: i64,
-    status: String,
-    failure_kind: Option<String>,
-}
-
-async fn assert_non_responses_retry_result(
-    state: &Arc<AppState>,
-    attempts: &Arc<StdMutex<HashMap<String, usize>>>,
-    payload: Value,
-    primary_id: i64,
-    secondary_id: i64,
-) {
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_attempt_row_count(&state.pool, 3).await;
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
-        "SELECT upstream_account_id, distinct_account_index, same_account_retry_index, status, failure_kind FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
+        r#"
+        SELECT
+            upstream_account_id,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
     )
     .fetch_all(&state.pool)
     .await
     .expect("load non-responses timeout retry rows");
-    assert!(
-        attempt_rows.len() == 3 || attempt_rows.len() == 4,
-        "expected 3 or 4 attempts, got {}",
-        attempt_rows.len()
-    );
-    let is_timeout_or_stream_failure = |row: &AttemptRouteRow| {
-        row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-            && row.failure_kind.as_deref().is_some_and(|kind| {
-                kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
-                    || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
-            })
-    };
-    assert_eq!(attempt_rows[0].upstream_account_id, Some(primary_id));
-    assert_eq!(attempt_rows[0].distinct_account_index, 1);
-    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
-    assert!(is_timeout_or_stream_failure(&attempt_rows[0]));
-    assert_eq!(attempt_rows[1].upstream_account_id, Some(primary_id));
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 2);
-    assert!(is_timeout_or_stream_failure(&attempt_rows[1]));
-    assert_eq!(attempt_rows[2].upstream_account_id, Some(primary_id));
-    assert_eq!(attempt_rows[2].distinct_account_index, 1);
-    assert_eq!(attempt_rows[2].same_account_retry_index, 3);
     let sticky_account_id = wait_for_test_sticky_route_account_id(
         &state.pool,
         "sticky-non-responses-timeout-retry-001",
     )
     .await
     .expect("sticky route should be recorded after success");
-    let attempts = attempts
-        .lock()
-        .expect("lock delayed headers retry attempts");
-    match payload["authorization"].as_str() {
-        Some("Bearer upstream-primary") => {
-            assert_eq!(payload["attempt"], 3);
-            assert_eq!(attempt_rows.len(), 3);
-            assert_eq!(
-                attempt_rows[2].status,
-                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-            );
-            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
-            assert_eq!(sticky_account_id, primary_id);
-        }
-        Some("Bearer upstream-secondary") => {
-            assert_eq!(payload["attempt"], 1);
-            assert_eq!(attempt_rows.len(), 4);
-            assert!(is_timeout_or_stream_failure(&attempt_rows[2]));
-            assert_eq!(attempt_rows[3].upstream_account_id, Some(secondary_id));
-            assert_eq!(attempt_rows[3].distinct_account_index, 2);
-            assert_eq!(attempt_rows[3].same_account_retry_index, 1);
-            assert_eq!(
-                attempt_rows[3].status,
-                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-            );
-            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
-            assert_eq!(sticky_account_id, secondary_id);
-        }
-        other => panic!("unexpected upstream authorization: {other:?}"),
-    }
+
+    assert_non_responses_timeout_routing(
+        &payload,
+        &attempt_rows,
+        attempts.as_ref(),
+        primary_id,
+        secondary_id,
+        sticky_account_id,
+    );
+
+    upstream_handle.abort();
 }
 
 #[test]
-fn pool_route_switches_accounts_after_first_chunk_failures_are_exhausted() {
+pub(crate) fn pool_route_switches_accounts_after_first_chunk_failures_are_exhausted() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_first_chunk_retry_upstream(&[("Bearer upstream-primary", 8)]).await;
@@ -402,7 +530,8 @@ fn pool_route_switches_accounts_after_first_chunk_failures_are_exhausted() {
 }
 
 #[tokio::test]
-async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_single_invocation() {
+pub(crate) async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_single_invocation()
+ {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
         status: Option<String>,
@@ -495,7 +624,7 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
 }
 
 #[tokio::test]
-async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt() {
+pub(crate) async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -530,41 +659,11 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
         .expect("read no-content response body");
     assert!(body.is_empty(), "204 response body should stay empty");
 
-    assert_no_content_success_persisted(&state, primary_id).await;
-
-    upstream_handle.abort();
-}
-
-async fn assert_no_content_success_persisted(state: &Arc<AppState>, primary_id: i64) {
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    let mut attempt_row = None;
-    for _ in 0..20 {
-        attempt_row = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<String>,
-                Option<i64>,
-                Option<f64>,
-                Option<String>,
-                Option<i64>,
-            ),
-        >(
-            "SELECT status, finished_at, http_status, stream_latency_ms, failure_kind, upstream_account_id FROM pool_upstream_request_attempts ORDER BY id DESC LIMIT 1",
-        )
-        .fetch_optional(&state.pool)
-        .await
-        .expect("query pool attempt row");
-        if attempt_row
-            .as_ref()
-            .is_some_and(|row| row.0 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let attempt_row = attempt_row.expect("pool attempt row should be persisted");
+
+    let attempt_row = wait_for_no_content_attempt(&state.pool).await;
+
     assert_eq!(attempt_row.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
     assert!(
         attempt_row
@@ -576,19 +675,28 @@ async fn assert_no_content_success_persisted(state: &Arc<AppState>, primary_id: 
     assert_eq!(attempt_row.3, Some(0.0));
     assert_eq!(attempt_row.4, None);
     assert_eq!(attempt_row.5, Some(primary_id));
+
     tokio::time::sleep(Duration::from_millis(50)).await;
     let invocation_row = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT status, failure_kind FROM codex_invocations WHERE source = 'proxy' ORDER BY id DESC LIMIT 1",
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE source = 'proxy'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
     )
     .fetch_one(&state.pool)
     .await
     .expect("load no-content invocation row");
     assert_eq!(invocation_row.0, "success");
     assert_eq!(invocation_row.1, None);
+
+    upstream_handle.abort();
 }
 
 #[test]
-fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
+pub(crate) fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, _attempts, upstream_handle) =
             spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -630,7 +738,7 @@ fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
 }
 
 #[test]
-fn pool_route_returns_clear_429_when_only_account_is_rate_limited() {
+pub(crate) fn pool_route_returns_clear_429_when_only_account_is_rate_limited() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -675,7 +783,7 @@ fn pool_route_returns_clear_429_when_only_account_is_rate_limited() {
 }
 
 #[tokio::test]
-async fn pool_route_returns_clear_503_when_all_accounts_are_temporarily_degraded() {
+pub(crate) async fn pool_route_returns_clear_503_when_all_accounts_are_temporarily_degraded() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -727,7 +835,7 @@ async fn pool_route_returns_clear_503_when_all_accounts_are_temporarily_degraded
 }
 
 #[tokio::test]
-async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_cooldown() {
+pub(crate) async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_cooldown() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -767,7 +875,8 @@ async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_coold
 }
 
 #[tokio::test]
-async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_rate_limited() {
+pub(crate) async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_rate_limited()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -806,98 +915,4 @@ async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_r
     );
 }
 
-#[tokio::test]
-async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    let secondary_id =
-        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
-    let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "sticky-429-stale-binding",
-        primary_id,
-        &sticky_seen_at,
-    )
-    .await;
-
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/responses".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::from(
-            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-stale-binding"}"#
-                .as_bytes()
-                .to_vec(),
-        ),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
-    );
-}
-
-#[tokio::test]
-async fn pool_route_missing_credentials_sticky_binding_does_not_hide_pool_wide_429() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    let secondary_id =
-        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    clear_test_account_credentials(&state.pool, primary_id).await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
-    let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "sticky-429-missing-creds-binding",
-        primary_id,
-        &sticky_seen_at,
-    )
-    .await;
-
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/responses".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::from(
-            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-missing-creds-binding"}"#
-                .as_bytes()
-                .to_vec(),
-        ),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
-    );
-}
+use super::*;

@@ -20,6 +20,7 @@
         "integrations": {
           "Validate PR labels": 15368,
           "Lint & Format Check": 15368,
+          "Source Structure Check": 15368,
           "Repository Tooling Checks": 15368,
           "Front-end Tests": 15368,
           "Storybook Accessibility Tests": 15368,
@@ -56,6 +57,7 @@
   "required_checks": [
     "Validate PR labels",
     "Lint & Format Check",
+    "Source Structure Check",
     "Repository Tooling Checks",
     "Front-end Tests",
     "Storybook Accessibility Tests",
@@ -81,6 +83,7 @@
       "workflow": "CI PR",
       "jobs": [
         "Lint & Format Check",
+        "Source Structure Check",
         "Repository Tooling Checks",
         "Front-end Tests",
         "Storybook Accessibility Tests",
@@ -110,6 +113,7 @@
       "workflow": "CI Main",
       "jobs": [
         "Lint & Format Check",
+        "Source Structure Check",
         "Repository Tooling Checks",
         "Front-end Tests",
         "Storybook Accessibility Tests",

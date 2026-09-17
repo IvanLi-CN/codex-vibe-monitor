@@ -1,6 +1,4 @@
-use super::*;
-use serde_json::json;
-fn run_pricing_future_with_large_stack<T, Fut>(future: Fut) -> T
+pub(crate) fn run_pricing_future_with_large_stack<T, Fut>(future: Fut) -> T
 where
     T: Send + 'static,
     Fut: std::future::Future<Output = T> + Send + 'static,
@@ -19,8 +17,9 @@ where
         .join()
         .expect("join large-stack test worker")
 }
+
 #[tokio::test]
-async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
+pub(crate) async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -54,7 +53,7 @@ async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
 }
 
 #[tokio::test]
-async fn pricing_settings_api_rejects_invalid_payload() {
+pub(crate) async fn pricing_settings_api_rejects_invalid_payload() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -75,7 +74,7 @@ async fn pricing_settings_api_rejects_invalid_payload() {
 }
 
 #[tokio::test]
-async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_response() {
+pub(crate) async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_response() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -119,7 +118,7 @@ async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_respons
 }
 
 #[tokio::test]
-async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_alias() {
+pub(crate) async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_alias() {
     let pool = test_current_schema_pool().await;
 
     sqlx::query(
@@ -146,7 +145,7 @@ async fn pricing_settings_api_reload_prefers_explicit_cache_read_over_legacy_ali
 }
 
 #[tokio::test]
-async fn ensure_schema_backfills_cache_read_from_legacy_cache_input_column() {
+pub(crate) async fn ensure_schema_backfills_cache_read_from_legacy_cache_input_column() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -180,7 +179,7 @@ async fn ensure_schema_backfills_cache_read_from_legacy_cache_input_column() {
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_prefers_explicit_cache_read_from_legacy_file() {
+pub(crate) async fn seed_default_pricing_catalog_prefers_explicit_cache_read_from_legacy_file() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -233,7 +232,7 @@ async fn seed_default_pricing_catalog_prefers_explicit_cache_read_from_legacy_fi
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
+pub(crate) async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -291,7 +290,7 @@ async fn seed_default_pricing_catalog_migrates_legacy_file_when_present() {
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
+pub(crate) async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -335,7 +334,8 @@ async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_default_version() {
+pub(crate) async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_default_version()
+ {
     let pool = test_current_schema_pool().await;
 
     sqlx::query(
@@ -392,7 +392,7 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
 }
 
 #[tokio::test]
-async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_rates() {
+pub(crate) async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_rates() {
     let pool = test_current_schema_pool().await;
     let catalog = load_pricing_catalog(&pool)
         .await
@@ -422,7 +422,8 @@ async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_r
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra_and_luna_rows() {
+pub(crate) async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra_and_luna_rows()
+ {
     let pool = test_current_schema_pool().await;
 
     sqlx::query(
@@ -490,10 +491,7 @@ async fn seed_default_pricing_catalog_refreshes_unchanged_official_gpt_5_6_terra
     assert_eq!(luna.output_per_1m, 1.20);
 }
 
-#[tokio::test]
-async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows() {
-    let pool = test_current_schema_pool().await;
-
+async fn prepare_changed_or_custom_gpt_5_6_rows(pool: &SqlitePool) {
     sqlx::query(
         r#"
         UPDATE pricing_settings_meta
@@ -503,7 +501,7 @@ async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows()
     )
     .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
     .bind(PRICING_SETTINGS_SINGLETON_ID)
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("set previous pricing catalog version for test");
     sqlx::query(
@@ -518,7 +516,7 @@ async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows()
         WHERE model = 'gpt-5.6-terra'
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("customize terra pricing for test");
     sqlx::query(
@@ -533,13 +531,12 @@ async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows()
         WHERE model = 'gpt-5.6-luna'
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("mark luna pricing custom for test");
+}
 
-    let catalog = load_pricing_catalog(&pool)
-        .await
-        .expect("load pricing catalog should preserve custom rows");
+fn assert_changed_or_custom_gpt_5_6_rows(catalog: &PricingCatalog) {
     assert_eq!(catalog.version, DEFAULT_PRICING_CATALOG_VERSION);
     let terra = catalog
         .models
@@ -558,38 +555,69 @@ async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows()
     assert_eq!(luna.cache_write_per_1m, Some(1.25));
     assert_eq!(luna.output_per_1m, 6.0);
     assert_eq!(luna.source, "custom");
-
-    assert_custom_catalog_preserves_luna_pricing(&pool).await;
 }
 
-async fn assert_custom_catalog_preserves_luna_pricing(pool: &SqlitePool) {
-    sqlx::query("UPDATE pricing_settings_meta SET catalog_version = 'custom-ci' WHERE id = ?1")
-        .bind(PRICING_SETTINGS_SINGLETON_ID)
-        .execute(pool)
-        .await
-        .expect("set custom pricing catalog version for test");
+async fn prepare_custom_catalog_with_old_luna_pricing(pool: &SqlitePool) {
     sqlx::query(
-        "UPDATE pricing_settings_models SET input_per_1m = 1.0, output_per_1m = 6.0, cache_input_per_1m = 0.10, cache_read_per_1m = 0.10, cache_write_per_1m = 1.25, source = 'official' WHERE model = 'gpt-5.6-luna'",
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = 'custom-ci'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .expect("set custom pricing catalog version for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 1.0,
+            output_per_1m = 6.0,
+            cache_input_per_1m = 0.10,
+            cache_read_per_1m = 0.10,
+            cache_write_per_1m = 1.25,
+            source = 'official'
+        WHERE model = 'gpt-5.6-luna'
+        "#,
     )
     .execute(pool)
     .await
     .expect("restore old luna pricing in custom catalog for test");
-    let catalog = load_pricing_catalog(pool)
-        .await
-        .expect("load custom pricing catalog should not refresh rows");
-    assert_eq!(catalog.version, "custom-ci");
-    let luna = catalog
+}
+
+fn assert_custom_catalog_keeps_old_luna_pricing(custom_catalog: &PricingCatalog) {
+    assert_eq!(custom_catalog.version, "custom-ci");
+    let custom_luna = custom_catalog
         .models
         .get("gpt-5.6-luna")
-        .expect("luna pricing exists");
-    assert_eq!(luna.input_per_1m, 1.0);
-    assert_eq!(luna.cache_read_per_1m, Some(0.10));
-    assert_eq!(luna.cache_write_per_1m, Some(1.25));
-    assert_eq!(luna.output_per_1m, 6.0);
+        .expect("gpt-5.6-luna pricing should exist");
+    assert_eq!(custom_luna.input_per_1m, 1.0);
+    assert_eq!(custom_luna.cache_read_per_1m, Some(0.10));
+    assert_eq!(custom_luna.cache_write_per_1m, Some(1.25));
+    assert_eq!(custom_luna.output_per_1m, 6.0);
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy_default_version() {
+pub(crate) async fn seed_default_pricing_catalog_preserves_changed_or_custom_gpt_5_6_rows() {
+    let pool = test_current_schema_pool().await;
+
+    prepare_changed_or_custom_gpt_5_6_rows(&pool).await;
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load pricing catalog should preserve custom rows");
+    assert_changed_or_custom_gpt_5_6_rows(&catalog);
+
+    prepare_custom_catalog_with_old_luna_pricing(&pool).await;
+    let custom_catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load custom pricing catalog should not refresh rows");
+    assert_custom_catalog_keeps_old_luna_pricing(&custom_catalog);
+}
+
+#[tokio::test]
+pub(crate) async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy_default_version()
+ {
     let pool = test_current_schema_pool().await;
 
     save_pricing_catalog(&pool, &default_pricing_catalog())
@@ -631,7 +659,8 @@ async fn seed_default_pricing_catalog_normalizes_gpt_5_3_codex_source_for_legacy
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom_catalog_version() {
+pub(crate) async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom_catalog_version()
+ {
     let pool = test_current_schema_pool().await;
 
     sqlx::query(
@@ -678,10 +707,7 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
     assert!(!catalog.models.contains_key("gpt-5.6-luna"));
 }
 
-#[tokio::test]
-async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new_models() {
-    let pool = test_current_schema_pool().await;
-
+async fn prepare_existing_pricing_for_new_models(pool: &SqlitePool) {
     // Simulate a repo-managed default catalog version so startup seeding will call
     // ensure_pricing_models_present, which must not overwrite existing rows.
     sqlx::query(
@@ -693,7 +719,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     )
     .bind(LEGACY_DEFAULT_PRICING_CATALOG_VERSION)
     .bind(PRICING_SETTINGS_SINGLETON_ID)
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("set legacy pricing catalog version for test");
     sqlx::query(
@@ -705,7 +731,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     )
     .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
     .bind(PRICING_SETTINGS_SINGLETON_ID)
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("set previous default pricing catalog version for test");
 
@@ -723,7 +749,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     .bind(99.0)
     .bind(199.0)
     .bind(Some(9.9))
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("override gpt-5.4 pricing for test");
 
@@ -738,7 +764,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     )
     .bind(88.0)
     .bind(188.0)
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("override gpt-5.4-pro pricing for test");
     sqlx::query(
@@ -764,23 +790,19 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     .bind(Some(7.5))
     .bind(Some(1.5))
     .bind("custom")
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("override gpt-5.6-sol pricing for test");
-
-    assert_pricing_rows_are_not_overridden(&pool).await;
 }
 
-async fn assert_pricing_rows_are_not_overridden(pool: &SqlitePool) {
-    let catalog = load_pricing_catalog(pool)
-        .await
-        .expect("load pricing catalog should succeed");
+fn assert_existing_new_model_pricing(catalog: &PricingCatalog) {
     let gpt_5_4 = catalog.models.get("gpt-5.4").expect("gpt-5.4 should exist");
     assert_eq!(gpt_5_4.input_per_1m, 99.0);
     assert_eq!(gpt_5_4.output_per_1m, 199.0);
     assert_eq!(gpt_5_4.cache_input_per_1m, Some(9.9));
     assert_eq!(gpt_5_4.cache_read_per_1m, Some(9.9));
     assert_eq!(gpt_5_4.source, "custom");
+
     let gpt_5_4_pro = catalog
         .models
         .get("gpt-5.4-pro")
@@ -789,6 +811,7 @@ async fn assert_pricing_rows_are_not_overridden(pool: &SqlitePool) {
     assert_eq!(gpt_5_4_pro.output_per_1m, 188.0);
     assert_eq!(gpt_5_4_pro.cache_input_per_1m, None);
     assert_eq!(gpt_5_4_pro.source, "custom");
+
     let gpt_5_6_sol = catalog
         .models
         .get("gpt-5.6-sol")
@@ -802,7 +825,19 @@ async fn assert_pricing_rows_are_not_overridden(pool: &SqlitePool) {
     assert_eq!(gpt_5_6_sol.source, "custom");
 }
 
-async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
+#[tokio::test]
+pub(crate) async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new_models()
+{
+    let pool = test_current_schema_pool().await;
+    prepare_existing_pricing_for_new_models(&pool).await;
+
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load pricing catalog should succeed");
+    assert_existing_new_model_pricing(&catalog);
+}
+
+pub(crate) async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
     seed_pool_routing_api_key(state, "pool-live-key").await;
     insert_test_pool_api_key_account(state, "Primary", "upstream-primary").await;
     HeaderMap::from_iter([(
@@ -812,7 +847,7 @@ async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
 }
 
 #[test]
-fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
+pub(crate) fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
     run_pricing_future_with_large_stack(async move {
         let (upstream_base, upstream_handle) = spawn_test_upstream().await;
         let state = test_state_with_openai_base(
@@ -845,3 +880,52 @@ fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
         upstream_handle.abort();
     });
 }
+
+#[tokio::test]
+pub(crate) async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let headers = seed_pool_models_route(&state).await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        *settings = ProxyModelSettings {
+            hijack_enabled: true,
+            merge_upstream_enabled: false,
+            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
+            ..ProxyModelSettings::default()
+        };
+    }
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        headers,
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(PROXY_MODEL_MERGE_STATUS_HEADER)
+            .is_none()
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode hijacked payload");
+    let ids = extract_model_ids(&payload);
+    assert_eq!(
+        ids,
+        vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()]
+    );
+
+    upstream_handle.abort();
+}
+
+use super::*;

@@ -2104,31 +2104,8 @@ pub(crate) async fn run_startup_backfill_task(
             ))
         }
         StartupBackfillTask::ProxyCost => {
-            let catalog = state.pricing_catalog.read().await.clone();
-            let attempt_version = pricing_backfill_attempt_version(&catalog);
-            let requested_tier_price_version =
-                proxy_price_version(&catalog.version, ProxyPricingMode::RequestedTier);
-            let response_tier_price_version =
-                proxy_price_version(&catalog.version, ProxyPricingMode::ResponseTier);
-            let snapshot_max_id = current_proxy_cost_backfill_snapshot_max_id(
-                &state.pool,
-                &attempt_version,
-                &requested_tier_price_version,
-                &response_tier_price_version,
-            )
-            .await?;
-            let outcome = backfill_proxy_missing_costs_from_cursor(
-                &state.pool,
-                cursor_id,
-                snapshot_max_id,
-                &catalog,
-                &attempt_version,
-                &requested_tier_price_version,
-                &response_tier_price_version,
-                Some(scan_limit),
-                max_elapsed,
-            )
-            .await?;
+            let outcome =
+                run_proxy_cost_backfill(state, cursor_id, scan_limit, max_elapsed).await?;
             let detail = format!(
                 "skipped_unpriced_model={}",
                 outcome.summary.skipped_unpriced_model

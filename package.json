@@ -5,6 +5,8 @@
   "packageManager": "bun@1.3.14",
   "scripts": {
     "check:bun-first": "bash .github/scripts/check-bun-first.sh",
+    "check:source-quality": "bash scripts/check-source-quality.sh",
+    "check:source-quality:staged": "bash scripts/check-staged-source-quality.sh",
     "hooks:install": "bash scripts/install-lefthook-hooks.sh",
     "lint:docs": "biome check docs-site",
     "lint:web": "biome check web",

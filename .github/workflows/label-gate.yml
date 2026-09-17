@@ -52,6 +52,9 @@ jobs:
             paths=(
               ".github/quality-gates.json"
               ".github/scripts/check_quality_gates_contract.py"
+              ".github/quality_gates_contract_impl.py"
+              ".github/quality-gates-contract-validators.py"
+              ".github/quality-gates-contract-release-snapshot-validator.py"
               ".github/scripts/metadata_gate.py"
               ".github/workflows/ci-pr.yml"
               ".github/workflows/ci-main.yml"

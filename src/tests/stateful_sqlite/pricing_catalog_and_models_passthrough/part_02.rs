@@ -1,50 +1,5 @@
 #[tokio::test]
-async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge() {
-    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    let headers = seed_pool_models_route(&state).await;
-    {
-        let mut settings = state.proxy_model_settings.write().await;
-        *settings = ProxyModelSettings {
-            hijack_enabled: true,
-            merge_upstream_enabled: false,
-            upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
-            enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
-            ..ProxyModelSettings::default()
-        };
-    }
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/models".parse().expect("valid uri")),
-        Method::GET,
-        headers,
-        Body::empty(),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        response
-            .headers()
-            .get(PROXY_MODEL_MERGE_STATUS_HEADER)
-            .is_none()
-    );
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode hijacked payload");
-    let ids = extract_model_ids(&payload);
-    assert_eq!(
-        ids,
-        vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()]
-    );
-
-    upstream_handle.abort();
-}
-#[tokio::test]
-async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
+pub(crate) async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -82,7 +37,7 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
+pub(crate) async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -137,7 +92,7 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
+pub(crate) async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -181,7 +136,7 @@ async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
 }
 
 #[test]
-fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
+pub(crate) fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
     run_pricing_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_retrying_models_upstream(99, Some("0")).await;
@@ -222,7 +177,7 @@ fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
+pub(crate) async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) = spawn_retrying_models_upstream(1, None).await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -281,7 +236,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
+pub(crate) async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -323,7 +278,7 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
+pub(crate) async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(99, Some("0")).await;
     let state =
@@ -377,18 +332,15 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
-    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+async fn test_state_with_models_decode_timeout(upstream_base: &str) -> Arc<AppState> {
     let pool = test_current_schema_pool().await;
-
     let mut config = test_config();
-    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_upstream_base_url = Url::parse(upstream_base).expect("valid upstream base url");
     config.openai_proxy_handshake_timeout = Duration::from_millis(100);
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
-    let state = Arc::new(AppState {
+    Arc::new(AppState {
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
@@ -458,25 +410,29 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         fallback_proxy_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
-    });
-    let headers = seed_pool_models_route(&state).await;
-
-    assert_models_timeout_fallback(&state, headers).await;
-
-    upstream_handle.abort();
+    })
 }
 
-async fn assert_models_timeout_fallback(state: &Arc<AppState>, headers: HeaderMap) {
+#[tokio::test]
+pub(crate) async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state = test_state_with_models_decode_timeout(&upstream_base).await;
+    let headers = seed_pool_models_route(&state).await;
+
     let started = Instant::now();
     let response = proxy_openai_v1(
-        State(state.clone()),
+        State(state),
         OriginalUri("/v1/models?mode=slow-body".parse().expect("valid uri")),
         Method::GET,
         headers,
         Body::empty(),
     )
     .await;
-    assert!(started.elapsed() < Duration::from_secs(1));
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "merge fallback should return quickly when decode times out"
+    );
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
@@ -486,36 +442,15 @@ async fn assert_models_timeout_fallback(state: &Arc<AppState>, headers: HeaderMa
         .await
         .expect("read fallback response body");
     let payload: Value = serde_json::from_slice(&body).expect("decode fallback payload");
-    assert_eq!(
-        extract_model_ids(&payload),
-        vec!["gpt-5.1-codex-mini".to_string()]
-    );
-}
+    let ids = extract_model_ids(&payload);
+    assert_eq!(ids, vec!["gpt-5.1-codex-mini".to_string()]);
 
-#[derive(sqlx::FromRow)]
-struct PersistedResponseFailedRow {
-    status: Option<String>,
-    error_message: Option<String>,
-    payload: Option<String>,
-}
-
-#[derive(sqlx::FromRow)]
-struct PersistedCompactRow {
-    endpoint: Option<String>,
-    model: Option<String>,
-    requested_service_tier: Option<String>,
-    input_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    reasoning_tokens: Option<i64>,
-    total_tokens: Option<i64>,
-    cost: Option<f64>,
-    price_version: Option<String>,
+    upstream_handle.abort();
 }
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_openai_v1_preserves_streaming_response() {
+pub(crate) async fn proxy_openai_v1_preserves_streaming_response() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -546,7 +481,7 @@ async fn proxy_openai_v1_preserves_streaming_response() {
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
+pub(crate) async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -578,7 +513,7 @@ async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
+pub(crate) async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -607,7 +542,7 @@ async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_openai_v1_preserves_redirect_without_following() {
+pub(crate) async fn proxy_openai_v1_preserves_redirect_without_following() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -633,7 +568,7 @@ async fn proxy_openai_v1_preserves_redirect_without_following() {
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_openai_v1_blocks_cross_origin_redirect() {
+pub(crate) async fn proxy_openai_v1_blocks_cross_origin_redirect() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -665,7 +600,7 @@ async fn proxy_openai_v1_blocks_cross_origin_redirect() {
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
+pub(crate) async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
         source: String,
@@ -732,3 +667,259 @@ async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
 
     upstream_handle.abort();
 }
+
+#[tokio::test]
+pub(crate) async fn proxy_capture_persist_and_broadcast_emits_records_and_dashboard_live() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+    let _dashboard_lease = state
+        .subscription_hub
+        .register_test_topic_name("dashboard.activity.current")
+        .await;
+
+    let mut rx = state.broadcaster.subscribe();
+    let invoke_id = "proxy-sse-broadcast-success";
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &now_local),
+    )
+    .await
+    .expect("persist+broadcast should succeed");
+
+    let mut saw_record = false;
+    let mut captured_record: Option<ApiInvocation> = None;
+    let mut saw_dashboard_live = false;
+    for _ in 0..16 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for proxy broadcast event")
+            .expect("broadcast channel should stay open");
+        match payload {
+            BroadcastPayload::Records { records } => {
+                if let Some(record) = records
+                    .into_iter()
+                    .find(|record| record.invoke_id == invoke_id)
+                {
+                    saw_record = true;
+                    captured_record = Some(record);
+                }
+            }
+            BroadcastPayload::Quota { snapshot } => {
+                assert_eq!(snapshot.total_requests, 9);
+            }
+            BroadcastPayload::DashboardActivityLive { .. }
+            | BroadcastPayload::DashboardCurrentSlice { .. } => {
+                saw_dashboard_live = true;
+            }
+            BroadcastPayload::Version { .. }
+            | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PoolAttemptsSnapshotUnavailable { .. }
+            | BroadcastPayload::DashboardNetworkSlice { .. }
+            | BroadcastPayload::DashboardTerminalSlice { .. }
+            | BroadcastPayload::PromptCacheConversationChanged { .. }
+            | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => {}
+        }
+
+        if saw_record && saw_dashboard_live {
+            break;
+        }
+    }
+
+    assert!(saw_record, "records payload should be broadcast");
+    assert!(
+        saw_dashboard_live,
+        "live dashboard snapshot should be scheduled after the record mutation"
+    );
+    let record = captured_record.expect("target records payload should include invoke id");
+    assert_eq!(record.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(record.requester_ip.as_deref(), Some("198.51.100.77"));
+    assert_eq!(record.prompt_cache_key.as_deref(), Some("pck-broadcast-1"));
+    assert_eq!(record.route_mode.as_deref(), Some("pool"));
+    assert_eq!(record.upstream_account_id, Some(17));
+    assert_eq!(
+        record.upstream_account_name.as_deref(),
+        Some("pool-account-17")
+    );
+    assert_eq!(
+        record.response_content_encoding.as_deref(),
+        Some("gzip, br")
+    );
+    assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
+    assert_eq!(record.requested_service_tier.as_deref(), Some("priority"));
+    assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+    assert!(record.failure_kind.is_none());
+}
+
+#[tokio::test]
+pub(crate) async fn proxy_capture_persist_and_broadcast_skips_duplicate_records() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let invoke_id = "proxy-sse-broadcast-duplicate";
+    let mut rx = state.broadcaster.subscribe();
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &occurred_at),
+    )
+    .await
+    .expect("initial persist+broadcast should succeed");
+
+    drain_broadcast_messages(&mut rx).await;
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &occurred_at),
+    )
+    .await
+    .expect("duplicate persist should not fail");
+
+    let deadline = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+            Ok(Ok(BroadcastPayload::Records { records })) => {
+                assert!(
+                    records.iter().all(|record| record.invoke_id != invoke_id),
+                    "duplicate insert should not emit records payload for the same invoke_id"
+                );
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Closed)) => break,
+            Err(_) => continue,
+        }
+    }
+}
+
+#[tokio::test]
+pub(crate) async fn proxy_capture_persist_and_broadcast_skips_follow_up_without_subscribers() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+    let invoke_id = "proxy-sse-follow-up-no-subscribers";
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &now_local),
+    )
+    .await
+    .expect("persist without subscribers should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        state
+            .proxy_summary_quota_broadcast_seq
+            .load(Ordering::Acquire),
+        0,
+        "no-subscriber path should not enqueue summary/quota follow-up work"
+    );
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "no-subscriber path should keep the summary/quota worker idle"
+    );
+}
+
+#[tokio::test]
+pub(crate) async fn broadcast_quota_if_changed_skips_duplicate_payloads() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut rx = state.broadcaster.subscribe();
+    let first = QuotaSnapshotResponse {
+        captured_at: "2026-03-07 10:00:00".to_string(),
+        amount_limit: Some(100.0),
+        used_amount: Some(10.0),
+        remaining_amount: Some(90.0),
+        period: Some("monthly".to_string()),
+        period_reset_time: Some("2026-04-01 00:00:00".to_string()),
+        expire_time: None,
+        is_active: true,
+        total_cost: 10.0,
+        total_requests: 9,
+        total_tokens: 150,
+        last_request_time: Some("2026-03-07 10:00:00".to_string()),
+        billing_type: Some("prepaid".to_string()),
+        remaining_count: Some(91),
+        used_count: Some(9),
+        sub_type_name: Some("unit".to_string()),
+    };
+
+    assert!(
+        broadcast_quota_if_changed(
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            first.clone(),
+        )
+        .await
+        .expect("first quota broadcast should succeed")
+    );
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for first quota payload")
+        .expect("broadcast should stay open");
+    match payload {
+        BroadcastPayload::Quota { snapshot } => {
+            assert_eq!(*snapshot, first);
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+
+    assert!(
+        !broadcast_quota_if_changed(
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            first.clone(),
+        )
+        .await
+        .expect("duplicate quota broadcast should succeed")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rx.recv())
+            .await
+            .is_err()
+    );
+
+    let updated = QuotaSnapshotResponse {
+        total_requests: 10,
+        ..first
+    };
+    assert!(
+        broadcast_quota_if_changed(
+            &state.broadcaster,
+            state.broadcast_state_cache.as_ref(),
+            updated.clone(),
+        )
+        .await
+        .expect("changed quota broadcast should succeed")
+    );
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for updated quota payload")
+        .expect("broadcast should stay open");
+    match payload {
+        BroadcastPayload::Quota { snapshot } => {
+            assert_eq!(*snapshot, updated);
+        }
+        other => panic!("unexpected payload: {other:?}"),
+    }
+}
+
+use super::*;

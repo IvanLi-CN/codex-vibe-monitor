@@ -1,7 +1,4 @@
-use super::*;
-use serde_json::json;
-
-fn run_routing_failover_future_with_large_stack<T, Fut>(future: Fut) -> T
+pub(crate) fn run_routing_failover_future_with_large_stack<T, Fut>(future: Fut) -> T
 where
     T: Send + 'static,
     Fut: std::future::Future<Output = T> + Send + 'static,
@@ -22,7 +19,7 @@ where
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
+pub(crate) async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -34,26 +31,30 @@ async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
 
     insert_test_pool_limit_sample_with_windows(
         &state,
-        free_id,
-        Some("free"),
-        None,
-        None,
-        None,
-        Some(5.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(6))),
+        TestPoolLimitSample {
+            account_id: free_id,
+            plan_type: Some("free"),
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_resets_at: None,
+            secondary_used_percent: Some(5.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(6))),
+        },
     )
     .await;
     insert_test_pool_limit_sample_with_windows(
         &state,
-        team_id,
-        Some("team"),
-        Some(65.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(45))),
-        Some(55.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(4))),
+        TestPoolLimitSample {
+            account_id: team_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(65.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(45))),
+            secondary_used_percent: Some(55.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(4))),
+        },
     )
     .await;
     for sticky_key in ["sticky-free-001", "sticky-free-002"] {
@@ -73,7 +74,8 @@ async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_effective_load() {
+pub(crate) async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_effective_load()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -87,26 +89,30 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
 
     insert_test_pool_limit_sample_with_windows(
         &state,
-        preferred_id,
-        Some("team"),
-        Some(5.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
-        Some(5.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        TestPoolLimitSample {
+            account_id: preferred_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(5.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+            secondary_used_percent: Some(5.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        },
     )
     .await;
     insert_test_pool_limit_sample_with_windows(
         &state,
-        fallback_id,
-        Some("team"),
-        Some(25.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
-        Some(25.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        TestPoolLimitSample {
+            account_id: fallback_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(25.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+            secondary_used_percent: Some(25.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        },
     )
     .await;
     for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
@@ -127,7 +133,7 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
 }
 
 #[tokio::test]
-async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
+pub(crate) async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -182,7 +188,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_counted() {
+pub(crate) async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_counted() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -196,26 +202,30 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
 
     insert_test_pool_limit_sample_with_windows(
         &state,
-        preferred_id,
-        Some("team"),
-        Some(5.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
-        Some(5.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        TestPoolLimitSample {
+            account_id: preferred_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(5.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+            secondary_used_percent: Some(5.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        },
     )
     .await;
     insert_test_pool_limit_sample_with_windows(
         &state,
-        fallback_id,
-        Some("team"),
-        Some(25.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
-        Some(25.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        TestPoolLimitSample {
+            account_id: fallback_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(25.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+            secondary_used_percent: Some(25.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        },
     )
     .await;
     for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
@@ -248,7 +258,8 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window_metadata() {
+pub(crate) async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window_metadata()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -261,26 +272,30 @@ async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window
 
     insert_test_pool_limit_sample_with_windows(
         &state,
-        legacy_long_only_id,
-        Some("free"),
-        None,
-        None,
-        None,
-        Some(5.0),
-        None,
-        None,
+        TestPoolLimitSample {
+            account_id: legacy_long_only_id,
+            plan_type: Some("free"),
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_resets_at: None,
+            secondary_used_percent: Some(5.0),
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+        },
     )
     .await;
     insert_test_pool_limit_sample_with_windows(
         &state,
-        team_id,
-        Some("team"),
-        Some(25.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
-        Some(25.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        TestPoolLimitSample {
+            account_id: team_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(25.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+            secondary_used_percent: Some(25.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        },
     )
     .await;
     for sticky_key in ["sticky-legacy-001", "sticky-legacy-002"] {
@@ -306,7 +321,7 @@ async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_preserves_local_long_limit_without_samples() {
+pub(crate) async fn resolve_pool_account_for_request_preserves_local_long_limit_without_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -320,14 +335,16 @@ async fn resolve_pool_account_for_request_preserves_local_long_limit_without_sam
     set_test_account_local_limits(&state.pool, locally_limited_id, None, Some(100.0)).await;
     insert_test_pool_limit_sample_with_windows(
         &state,
-        team_id,
-        Some("team"),
-        Some(25.0),
-        Some(300),
-        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
-        Some(25.0),
-        Some(7 * 24 * 60),
-        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        TestPoolLimitSample {
+            account_id: team_id,
+            plan_type: Some("team"),
+            primary_used_percent: Some(25.0),
+            primary_window_minutes: Some(300),
+            primary_resets_at: Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+            secondary_used_percent: Some(25.0),
+            secondary_window_minutes: Some(7 * 24 * 60),
+            secondary_resets_at: Some(&format_utc_iso(now + ChronoDuration::days(3))),
+        },
     )
     .await;
     for sticky_key in ["sticky-local-001", "sticky-local-002"] {
@@ -348,7 +365,7 @@ async fn resolve_pool_account_for_request_preserves_local_long_limit_without_sam
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() {
+pub(crate) async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -392,7 +409,7 @@ async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() 
 }
 
 #[tokio::test]
-async fn pool_route_retries_same_account_before_switching() {
+pub(crate) async fn pool_route_retries_same_account_before_switching() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
     let state =
@@ -443,7 +460,7 @@ async fn pool_route_retries_same_account_before_switching() {
 }
 
 #[test]
-fn pool_route_switches_accounts_after_same_account_retries_are_exhausted() {
+pub(crate) fn pool_route_switches_accounts_after_same_account_retries_are_exhausted() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_retry_upstream(&[("Bearer upstream-primary", 8)]).await;
@@ -504,7 +521,7 @@ fn pool_route_switches_accounts_after_same_account_retries_are_exhausted() {
 }
 
 #[test]
-fn pool_route_switches_accounts_immediately_after_upstream_429() {
+pub(crate) fn pool_route_switches_accounts_immediately_after_upstream_429() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -584,7 +601,7 @@ fn pool_route_switches_accounts_immediately_after_upstream_429() {
 }
 
 #[test]
-fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
+pub(crate) fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -662,7 +679,7 @@ fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
 }
 
 #[test]
-fn pool_route_group_without_upstream_429_retry_switches_accounts_immediately() {
+pub(crate) fn pool_route_group_without_upstream_429_retry_switches_accounts_immediately() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -716,7 +733,7 @@ fn pool_route_group_without_upstream_429_retry_switches_accounts_immediately() {
 }
 
 #[test]
-fn pool_route_transit_upstream_429_switches_account_without_group_retry() {
+pub(crate) fn pool_route_transit_upstream_429_switches_account_without_group_retry() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 2)]).await;
@@ -801,8 +818,15 @@ fn pool_route_transit_upstream_429_switches_account_without_group_retry() {
     });
 }
 
+async fn assert_sticky_route_moved_from(pool: &SqlitePool, sticky_key: &str, old_account_id: i64) {
+    let route_account_id = wait_for_test_sticky_route_account_id(pool, sticky_key)
+        .await
+        .expect("sticky route should resolve to a successful account");
+    assert_ne!(route_account_id, old_account_id);
+}
+
 #[test]
-fn pool_route_transit_upstream_429_uses_account_failover_after_server_error() {
+pub(crate) fn pool_route_transit_upstream_429_uses_account_failover_after_server_error() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_sequential_failure_responses_upstream(vec![(
@@ -848,143 +872,56 @@ fn pool_route_transit_upstream_429_uses_account_failover_after_server_error() {
         )
         .await;
 
-        assert_transit_429_failover_result(&state, &attempts, response, primary_id).await;
-
-        upstream_handle.abort();
-    });
-}
-
-async fn assert_transit_429_failover_result(
-    state: &Arc<AppState>,
-    attempts: &Arc<StdMutex<HashMap<String, usize>>>,
-    response: axum::response::Response,
-    primary_id: i64,
-) {
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read proxy response");
-    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
-    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
-    assert_eq!(payload["attempt"], 1);
-    {
-        let attempts = attempts.lock().expect("lock attempts");
-        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(2));
-        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
-    }
-    wait_for_pool_upstream_request_attempts(&state.pool, 3).await;
-    let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
-        "SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind FROM pool_upstream_request_attempts ORDER BY attempt_index ASC",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .expect("load retry attempt rows");
-    assert_eq!(attempt_rows.len(), 3);
-    assert_eq!(
-        attempt_rows[0],
-        (
-            1,
-            1,
-            1,
-            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX.to_string())
-        )
-    );
-    assert_eq!(
-        attempt_rows[1],
-        (
-            2,
-            1,
-            2,
-            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
-        )
-    );
-    assert_eq!(attempt_rows[2], (3, 2, 1, None));
-    let route_account_id =
-        wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-mixed-budget")
-            .await
-            .expect("sticky route should stay on primary account");
-    assert_ne!(route_account_id, primary_id);
-}
-
-#[test]
-fn pool_route_switches_accounts_immediately_after_upstream_402() {
-    run_routing_failover_future_with_large_stack(async move {
-        let (upstream_base, attempts, upstream_handle) =
-            spawn_pool_static_failure_responses_upstream(&[(
-                "Bearer upstream-primary",
-                StatusCode::PAYMENT_REQUIRED,
-            )])
-            .await;
-        let state = test_state_with_openai_base(
-            Url::parse(&upstream_base).expect("valid upstream base url"),
-        )
-        .await;
-        seed_pool_routing_api_key(&state, "pool-live-key").await;
-        let primary_id =
-            insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-        let secondary_id =
-            insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-
-        let response = proxy_openai_v1(
-            State(state.clone()),
-            OriginalUri("/v1/responses".parse().expect("valid uri")),
-            Method::POST,
-            HeaderMap::from_iter([(
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            )]),
-            Body::from(
-                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-402-switch"}"#
-                    .as_bytes()
-                    .to_vec(),
-            ),
-        )
-        .await;
-
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("read proxy response");
         let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
         assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+        assert_eq!(payload["attempt"], 1);
 
         {
             let attempts = attempts.lock().expect("lock attempts");
-            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(2));
             assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
         }
 
-        let primary_status: String =
-            sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
-                .bind(primary_id)
-                .fetch_one(&state.pool)
-                .await
-                .expect("load primary status");
-        assert_eq!(primary_status, "error");
-        assert_eq!(
-            wait_for_test_sticky_route_account_id(&state.pool, "sticky-402-switch").await,
-            Some(secondary_id)
-        );
-
-        wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
-        let attempt_rows = sqlx::query_as::<_, (i64, Option<String>)>(
+        wait_for_pool_upstream_request_attempts(&state.pool, 3).await;
+        let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
             r#"
-        SELECT distinct_account_index, failure_kind
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
         )
         .fetch_all(&state.pool)
         .await
-        .expect("load attempt rows");
-        assert_eq!(attempt_rows[0].0, 1);
+        .expect("load retry attempt rows");
+        assert_eq!(attempt_rows.len(), 3);
         assert_eq!(
-            attempt_rows[0].1.as_deref(),
-            Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+            attempt_rows[0],
+            (
+                1,
+                1,
+                1,
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX.to_string())
+            )
         );
-        assert_eq!(attempt_rows[1].0, 2);
-        assert_eq!(attempt_rows[1].1, None);
+        assert_eq!(
+            attempt_rows[1],
+            (
+                2,
+                1,
+                2,
+                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
+            )
+        );
+        assert_eq!(attempt_rows[2], (3, 2, 1, None));
+
+        assert_sticky_route_moved_from(&state.pool, "sticky-429-mixed-budget", primary_id).await;
 
         upstream_handle.abort();
     });
 }
+
+use super::*;

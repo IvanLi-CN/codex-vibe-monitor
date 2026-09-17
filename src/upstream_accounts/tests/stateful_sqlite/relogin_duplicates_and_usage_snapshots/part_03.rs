@@ -1,1499 +1,914 @@
-use super::*;
-use serde_json::json;
-
-#[test]
-pub(crate) fn kaisoumail_attach_status_is_not_readable_only_for_permission_and_missing() {
-    assert!(kaisoumail_attach_status_is_not_readable(
-        reqwest::StatusCode::FORBIDDEN
-    ));
-    assert!(kaisoumail_attach_status_is_not_readable(
-        reqwest::StatusCode::NOT_FOUND
-    ));
-    assert!(!kaisoumail_attach_status_is_not_readable(
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
-    ));
-    assert!(!kaisoumail_attach_status_is_not_readable(
-        reqwest::StatusCode::GATEWAY_TIMEOUT
-    ));
-}
-
 #[tokio::test]
-pub(crate) async fn create_oauth_mailbox_session_accepts_supported_domain_variants_for_existing_mailbox()
- {
-    let harness = spawn_kaisoumail_test_harness(
-        "@707079.XYZ, 707979.xyz",
-        vec![(
-            "email_existing".to_string(),
-            "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
-            Some("2026-06-01T00:00:00.000Z".to_string()),
-        )],
-    )
-    .await;
-    let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
-        "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
-    }))
-    .expect("deserialize mailbox request");
+pub(crate) async fn refresh_without_plan_type_keeps_existing_plan_type_observed_at() {
+    let pool = test_pool().await;
+    let crypto_key = derive_secret_key("refresh-without-plan-type");
 
-    let Json(response) = create_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        Json(payload),
-    )
-    .await
-    .expect("create mailbox session");
-
-    assert!(response.supported);
-    assert_eq!(response.email_address, "finance.lab.d5r@mail-tw.707079.xyz");
-    assert_eq!(
-        response.source.as_deref(),
-        Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
-    );
-    let session_id = response.session_id.expect("session id");
-    let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
+    let mut tx = pool.begin().await.expect("begin tx");
+    ensure_display_name_available(&mut *tx, "Refresh OAuth", None)
         .await
-        .expect("load mailbox session")
-        .expect("stored mailbox session");
-    assert_eq!(
-        row.mailbox_source.as_deref(),
-        Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
-    );
-    assert!(
-        harness.stub.generated_requests.lock().await.is_empty(),
-        "existing readable mailbox should not be recreated"
-    );
-
-    harness.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn create_oauth_mailbox_session_lets_kaisoumail_generate_address_upstream() {
-    let harness = spawn_kaisoumail_test_harness("@707079.xyz", Vec::new()).await;
-    let payload: CreateOauthMailboxSessionRequest =
-        serde_json::from_value(json!({})).expect("deserialize mailbox request");
-
-    let Json(response) = create_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        Json(payload),
-    )
-    .await
-    .expect("create mailbox session");
-
-    assert!(response.supported);
-    assert_eq!(
-        response.email_address,
-        "upstream-generated-1@mailbox.kaisoumail.test"
-    );
-    assert_eq!(
-        response.source.as_deref(),
-        Some(OAUTH_MAILBOX_SOURCE_GENERATED)
-    );
-    let create_requests = harness.stub.create_requests.lock().await.clone();
-    assert_eq!(create_requests, vec![json!({ "expiresInMinutes": 60 })]);
-    let session_id = response.session_id.expect("session id");
-    let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
-        .await
-        .expect("load mailbox session")
-        .expect("stored mailbox session");
-    assert_eq!(row.remote_email_id, "generated_1");
-    assert_eq!(
-        row.email_address,
-        "upstream-generated-1@mailbox.kaisoumail.test"
-    );
-    assert_eq!(row.email_domain, "mailbox.kaisoumail.test");
-
-    harness.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn create_oauth_mailbox_session_restores_expired_existing_mailbox_before_attach() {
-    let harness = spawn_kaisoumail_test_harness(
-        "@707079.xyz",
-        vec![(
-            "email_expired".to_string(),
-            "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
-            Some("2026-03-20T12:50:00.000Z".to_string()),
-        )],
-    )
-    .await;
-    let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
-        "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
-    }))
-    .expect("deserialize mailbox request");
-
-    let Json(response) = create_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        Json(payload),
-    )
-    .await
-    .expect("create mailbox session");
-
-    assert!(response.supported);
-    assert_eq!(
-        response.source.as_deref(),
-        Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
-    );
-    assert_eq!(response.expires_at.as_deref(), Some("2026-06-01T00:00:00Z"));
-    let session_id = response.session_id.expect("session id");
-    let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
-        .await
-        .expect("load mailbox session")
-        .expect("stored mailbox session");
-    assert_eq!(row.remote_email_id, "email_expired");
-    assert_eq!(row.expires_at, "2026-06-01T00:00:00Z");
-    assert!(
-        harness.stub.generated_requests.lock().await.is_empty(),
-        "restoring an existing mailbox should not create a new one"
-    );
-
-    harness.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn create_oauth_mailbox_session_creates_missing_supported_mailbox() {
-    let harness = spawn_kaisoumail_test_harness("@707079.xyz", Vec::new()).await;
-    let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
-        "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
-    }))
-    .expect("deserialize mailbox request");
-
-    let Json(response) = create_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        Json(payload),
-    )
-    .await
-    .expect("create mailbox session");
-
-    assert!(response.supported);
-    assert_eq!(response.email_address, "finance.lab.d5r@mail-tw.707079.xyz");
-    assert_eq!(
-        response.source.as_deref(),
-        Some(OAUTH_MAILBOX_SOURCE_GENERATED)
-    );
-    let generated_requests = harness.stub.generated_requests.lock().await.clone();
-    assert_eq!(
-        generated_requests,
-        vec![(
-            "finance.lab.d5r".to_string(),
-            "mail-tw.707079.xyz".to_string()
-        )]
-    );
-    let session_id = response.session_id.expect("session id");
-    let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
-        .await
-        .expect("load mailbox session")
-        .expect("stored mailbox session");
-    assert_eq!(
-        row.mailbox_source.as_deref(),
-        Some(OAUTH_MAILBOX_SOURCE_GENERATED)
-    );
-    assert_eq!(row.email_address, "finance.lab.d5r@mail-tw.707079.xyz");
-
-    harness.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn create_oauth_mailbox_session_rejects_true_unsupported_domains() {
-    let harness = spawn_kaisoumail_test_harness("707979.xyz", Vec::new()).await;
-    let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
-        "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
-    }))
-    .expect("deserialize mailbox request");
-
-    let Json(response) = create_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        Json(payload),
-    )
-    .await
-    .expect("create mailbox session");
-
-    assert!(!response.supported);
-    assert_eq!(response.reason.as_deref(), Some("unsupported_domain"));
-    assert!(
-        harness.stub.generated_requests.lock().await.is_empty(),
-        "unsupported domains must not trigger remote mailbox creation"
-    );
-
-    harness.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn delete_oauth_mailbox_session_deletes_remote_for_generated_manual_mailbox() {
-    let harness = spawn_kaisoumail_test_harness("@707079.xyz", Vec::new()).await;
-    let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
-        "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
-    }))
-    .expect("deserialize mailbox request");
-    let Json(created) = create_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        Json(payload),
-    )
-    .await
-    .expect("create mailbox session");
-    let session_id = created.session_id.expect("session id");
-    let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
-        .await
-        .expect("load mailbox session")
-        .expect("stored mailbox session");
-
-    let status = delete_oauth_mailbox_session(
-        State(harness.state.clone()),
-        HeaderMap::new(),
-        AxumPath(session_id.clone()),
-    )
-    .await
-    .expect("delete mailbox session");
-
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(
-        harness.stub.deleted_ids.lock().await.clone(),
-        vec![row.remote_email_id]
-    );
-    assert!(
-        load_oauth_mailbox_session(&harness.state.pool, &session_id)
-            .await
-            .expect("load mailbox session after delete")
-            .is_none()
-    );
-
-    harness.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn cleanup_expired_oauth_mailbox_sessions_deletes_remote_for_generated_manual_mailbox()
- {
-    let harness = spawn_kaisoumail_test_harness(
-        "@707079.xyz",
-        vec![(
-            "generated_1".to_string(),
-            "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
-            None,
-        )],
-    )
-    .await;
-    sqlx::query(
-            r#"
-            INSERT INTO pool_oauth_mailbox_sessions (
-                session_id, remote_email_id, email_address, email_domain, mailbox_source,
-                latest_code_value, latest_code_source, latest_code_updated_at, invite_subject,
-                invite_copy_value, invite_copy_label, invite_updated_at, invited, last_message_id,
-                created_at, updated_at, expires_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?6, ?6, ?7)
-            "#,
-        )
-        .bind("expired_manual_generated")
-        .bind("generated_1")
-        .bind("finance.lab.d5r@mail-tw.707079.xyz")
-        .bind("mail-tw.707079.xyz")
-        .bind(OAUTH_MAILBOX_SOURCE_GENERATED)
-        .bind("2026-03-17T00:00:00Z")
-        .bind("2026-03-17T00:01:00Z")
-        .execute(&harness.state.pool)
-        .await
-        .expect("insert expired mailbox session");
-
-    cleanup_expired_oauth_mailbox_sessions(harness.state.as_ref())
-        .await
-        .expect("cleanup expired mailbox sessions");
-
-    assert_eq!(
-        harness.stub.deleted_ids.lock().await.clone(),
-        vec!["generated_1".to_string()]
-    );
-    assert!(
-        load_oauth_mailbox_session(&harness.state.pool, "expired_manual_generated")
-            .await
-            .expect("load cleaned mailbox session")
-            .is_none()
-    );
-
-    harness.abort();
-}
-
-#[test]
-pub(crate) fn collect_unseen_mailbox_messages_stops_at_last_seen_id() {
-    let messages = vec![
-        KaisouMailMessageSummary {
-            id: "msg_3".to_string(),
-            subject: Some("newest".to_string()),
-            received_at: Some("2026-03-16T03:00:00Z".to_string()),
-        },
-        KaisouMailMessageSummary {
-            id: "msg_2".to_string(),
-            subject: Some("baseline".to_string()),
-            received_at: Some("2026-03-16T02:00:00Z".to_string()),
-        },
-        KaisouMailMessageSummary {
-            id: "msg_1".to_string(),
-            subject: Some("older".to_string()),
-            received_at: Some("2026-03-16T01:00:00Z".to_string()),
-        },
-    ];
-
-    let unseen = collect_unseen_mailbox_messages(messages, Some("msg_2"));
-
-    assert_eq!(unseen.len(), 1);
-    assert_eq!(unseen[0].id, "msg_3");
-}
-
-#[test]
-pub(crate) fn collect_unseen_mailbox_messages_keeps_all_when_baseline_is_missing() {
-    let messages = vec![
-        KaisouMailMessageSummary {
-            id: "msg_2".to_string(),
-            subject: None,
-            received_at: Some("2026-03-16T02:00:00Z".to_string()),
-        },
-        KaisouMailMessageSummary {
-            id: "msg_1".to_string(),
-            subject: None,
-            received_at: Some("2026-03-16T01:00:00Z".to_string()),
-        },
-    ];
-
-    let unseen = collect_unseen_mailbox_messages(messages.clone(), Some("missing"));
-
-    assert_eq!(unseen.len(), messages.len());
-    assert_eq!(unseen[0].id, "msg_2");
-    assert_eq!(unseen[1].id, "msg_1");
-}
-
-#[test]
-pub(crate) fn next_mailbox_cursor_after_refresh_advances_to_latest_processed_message() {
-    let processed = vec![
-        KaisouMailMessageSummary {
-            id: "msg_5".to_string(),
-            subject: Some("latest".to_string()),
-            received_at: Some("2026-03-16T05:00:00Z".to_string()),
-        },
-        KaisouMailMessageSummary {
-            id: "msg_4".to_string(),
-            subject: Some("older".to_string()),
-            received_at: Some("2026-03-16T04:00:00Z".to_string()),
-        },
-    ];
-
-    let next = next_mailbox_cursor_after_refresh(Some("msg_3"), &processed);
-
-    assert_eq!(next.as_deref(), Some("msg_5"));
-}
-
-#[test]
-pub(crate) fn next_mailbox_cursor_after_refresh_keeps_existing_cursor_when_nothing_was_processed() {
-    let next = next_mailbox_cursor_after_refresh(Some("msg_3"), &[]);
-
-    assert_eq!(next.as_deref(), Some("msg_3"));
-}
-
-#[test]
-pub(crate) fn merge_mailbox_code_prefers_fresher_refresh_value() {
-    let stored = ParsedMailboxCode {
-        value: "111111".to_string(),
-        source: "subject".to_string(),
-        updated_at: "2026-03-16T00:00:00Z".to_string(),
-    };
-    let fresh = ParsedMailboxCode {
-        value: "222222".to_string(),
-        source: "subject".to_string(),
-        updated_at: "2026-03-16T00:01:00Z".to_string(),
-    };
-
-    let merged = merge_mailbox_code(Some(fresh), Some(stored)).expect("merged code");
-
-    assert_eq!(merged.value, "222222");
-    assert_eq!(merged.updated_at, "2026-03-16T00:01:00Z");
-}
-
-#[test]
-pub(crate) fn merge_mailbox_invite_keeps_newer_stored_value_when_refresh_is_older() {
-    let stored = ParsedMailboxInvite {
-        subject: "New invite".to_string(),
-        copy_value: "https://example.com/new".to_string(),
-        copy_label: "invite-link".to_string(),
-        updated_at: "2026-03-16T00:05:00Z".to_string(),
-    };
-    let fresh = ParsedMailboxInvite {
-        subject: "Old invite".to_string(),
-        copy_value: "https://example.com/old".to_string(),
-        copy_label: "invite-link".to_string(),
-        updated_at: "2026-03-16T00:01:00Z".to_string(),
-    };
-
-    let merged = merge_mailbox_invite(Some(fresh), Some(stored)).expect("merged invite");
-
-    assert_eq!(merged.subject, "New invite");
-    assert_eq!(merged.copy_value, "https://example.com/new");
-}
-
-#[test]
-pub(crate) fn random_base36_uses_letters_and_digits() {
-    let token = random_base36(24).expect("base36 token");
-    assert_eq!(token.len(), 24);
-    assert!(
-        token
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
-    );
-    assert!(token.chars().any(|ch| ch.is_ascii_lowercase()));
-    assert!(token.chars().any(|ch| ch.is_ascii_digit()));
-}
-
-#[test]
-pub(crate) fn build_window_usage_range_aligns_to_current_reset_window() {
-    let now = parse_rfc3339_utc("2026-03-30T12:30:00Z").expect("fixed now");
-    let range =
-        build_window_usage_range(now, 300, Some("2026-03-30T14:00:00Z")).expect("aligned range");
-
-    assert_eq!(
-        range.start_at,
-        parse_rfc3339_utc("2026-03-30T09:00:00Z").expect("expected start")
-    );
-    assert_eq!(range.end_at, now);
-}
-
-#[test]
-pub(crate) fn build_window_usage_range_reuses_stale_reset_window_bounds() {
-    let now = parse_rfc3339_utc("2026-03-30T12:30:00Z").expect("fixed now");
-    let range =
-        build_window_usage_range(now, 300, Some("2026-03-29T23:00:00Z")).expect("historical range");
-
-    assert_eq!(
-        range.start_at,
-        parse_rfc3339_utc("2026-03-29T18:00:00Z").expect("expected historical start")
-    );
-    assert_eq!(
-        range.end_at,
-        parse_rfc3339_utc("2026-03-29T23:00:00Z").expect("expected historical end")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn enrich_window_actual_usage_for_summaries_counts_live_window_rows() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = insert_oauth_account(&state.pool, "Live Usage OAuth").await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        account_id,
-        &format_utc_iso(Utc::now()),
-        Some(27.0),
-        Some(61.0),
-    )
-    .await;
-
-    let primary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(45));
-    let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
-    let failed_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(10));
-
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &primary_row_at,
-        Some(2400),
-        Some(1200),
-        Some(600),
-        Some(4200),
-        Some(0.042),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &secondary_row_at,
-        Some(1000),
-        Some(500),
-        Some(250),
-        Some(1750),
-        Some(0.0175),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &failed_row_at,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id + 999,
-        &primary_row_at,
-        Some(999),
-        Some(999),
-        Some(999),
-        Some(2997),
-        Some(0.2997),
-    )
-    .await;
-
-    let mut summaries = load_upstream_account_summaries(&state.pool, &state.config)
-        .await
-        .expect("load upstream account summaries");
-    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)
-        .await
-        .expect("enrich actual usage");
-
-    let summary = summaries
-        .into_iter()
-        .find(|item| item.id == account_id)
-        .expect("summary exists");
-    let primary_usage = summary
-        .primary_window
-        .and_then(|window| window.actual_usage)
-        .expect("primary actual usage");
-    let secondary_usage = summary
-        .secondary_window
-        .and_then(|window| window.actual_usage)
-        .expect("secondary actual usage");
-
-    assert_eq!(primary_usage.request_count, 2);
-    assert_eq!(primary_usage.total_tokens, 4200);
-    assert_eq!(primary_usage.input_tokens, 2400);
-    assert_eq!(primary_usage.output_tokens, 1200);
-    assert_eq!(primary_usage.cache_input_tokens, 600);
-    assert_cost_close(primary_usage.total_cost, 0.042);
-
-    assert_eq!(secondary_usage.request_count, 3);
-    assert_eq!(secondary_usage.total_tokens, 5950);
-    assert_eq!(secondary_usage.input_tokens, 3400);
-    assert_eq!(secondary_usage.output_tokens, 1700);
-    assert_eq!(secondary_usage.cache_input_tokens, 850);
-    assert_cost_close(secondary_usage.total_cost, 0.0595);
-}
-
-#[tokio::test]
-pub(crate) async fn enrich_window_actual_usage_for_summaries_uses_matching_stale_reset_window() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = 402_i64;
-    let reset_at = Utc::now() - ChronoDuration::hours(10);
-    let mut summary = test_summary_with_statuses(
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED,
-        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
-        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
-        UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
-    );
-    summary.id = account_id;
-    summary.primary_window = Some(RateWindowSnapshot {
-        used_percent: 100.0,
-        used_text: "100% used".to_string(),
-        limit_text: "5h window".to_string(),
-        resets_at: Some(format_utc_iso(reset_at)),
-        window_duration_mins: 300,
-        actual_usage: None,
-    });
-
-    let inside_window_at = shanghai_local_iso(reset_at - ChronoDuration::hours(1));
-    let before_window_at = shanghai_local_iso(reset_at - ChronoDuration::hours(6));
-    let after_window_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(30));
-
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &inside_window_at,
-        Some(1800),
-        Some(900),
-        Some(450),
-        Some(3150),
-        Some(0.0315),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &before_window_at,
-        Some(3000),
-        Some(1200),
-        Some(600),
-        Some(4800),
-        Some(0.048),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &after_window_at,
-        Some(500),
-        Some(250),
-        Some(100),
-        Some(850),
-        Some(0.0085),
-    )
-    .await;
-
-    let mut items = vec![summary];
-    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
-        .await
-        .expect("enrich stale window actual usage");
-
-    let usage = items[0]
-        .primary_window
-        .as_ref()
-        .and_then(|window| window.actual_usage)
-        .expect("stale primary actual usage");
-    assert_eq!(usage.request_count, 1);
-    assert_eq!(usage.total_tokens, 3150);
-    assert_eq!(usage.input_tokens, 1800);
-    assert_eq!(usage.output_tokens, 900);
-    assert_eq!(usage.cache_input_tokens, 450);
-    assert_cost_close(usage.total_cost, 0.0315);
-}
-
-#[tokio::test]
-pub(crate) async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usage_past_retention_cutoff()
- {
-    let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
-    config.invocation_max_days = 1;
-    config.archive_dir = crate::tests::test_runtime_path(&format!(
-        "archive-tests/window-actual-usage-{}",
-        random_base36(8).expect("archive suffix")
-    ));
-    let state = test_app_state_with_config_and_parallelism(
-        config,
-        DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
-    )
-    .await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = 401_i64;
-    let mut summary = test_summary_with_statuses(
-        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE,
-        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
-        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
-        UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
-    );
-    summary.id = account_id;
-    summary.primary_window = Some(RateWindowSnapshot {
-        used_percent: 12.0,
-        used_text: "12% used".to_string(),
-        limit_text: "3d rolling window".to_string(),
-        resets_at: None,
-        window_duration_mins: 60 * 24 * 3,
-        actual_usage: None,
-    });
-
-    let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(6));
-    let archived_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &live_row_at,
-        Some(1800),
-        Some(900),
-        Some(300),
-        Some(3000),
-        Some(0.03),
-    )
-    .await;
-    let archived_bucket_start_epoch =
-        invocation_bucket_start_epoch(&archived_row_at).expect("archived usage bucket epoch");
-    sqlx::query(
-        r#"
-            INSERT INTO upstream_account_usage_hourly (
-                bucket_start_epoch,
-                upstream_account_id,
-                request_count,
-                total_tokens,
-                total_cost,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                first_seen_at,
-                last_seen_at,
-                updated_at
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')
+        .expect("name available");
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: None,
+            display_name: "Refresh OAuth",
+            chosen_email: None,
+            verified_email: None,
+            group_name: None,
+            is_mother: false,
+            note: None,
+            tag_ids: vec![],
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+            claims: &test_claims_with_plan_type(
+                "refresh@example.com",
+                Some("refresh_org"),
+                Some("refresh_user"),
+                Some("team"),
+            ),
+            encrypted_credentials: encrypt_credentials(
+                &crypto_key,
+                &StoredCredentials::Oauth(StoredOauthCredentials {
+                    access_token: "access-1".to_string(),
+                    refresh_token: Some("refresh-1".to_string()),
+                    id_token: test_id_token(
+                        "refresh@example.com",
+                        Some("refresh_org"),
+                        Some("refresh_user"),
+                        Some("team"),
+                    ),
+                    token_type: Some("Bearer".to_string()),
+                }),
             )
-            "#,
+            .expect("encrypt oauth credentials"),
+            has_refresh_token: true,
+            token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
+        },
     )
-    .bind(archived_bucket_start_epoch)
-    .bind(account_id)
-    .bind(1_i64)
-    .bind(2000_i64)
-    .bind(0.02_f64)
-    .bind(1200_i64)
-    .bind(600_i64)
-    .bind(200_i64)
-    .bind(&archived_row_at)
-    .bind(&archived_row_at)
-    .execute(&state.pool)
     .await
-    .expect("insert materialized archived usage hourly row");
+    .expect("oauth insert");
+    tx.commit().await.expect("commit tx");
 
-    let mut items = vec![summary];
-    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
-        .await
-        .expect("enrich actual usage with materialized archive usage");
-
-    let usage = items[0]
-        .primary_window
-        .as_ref()
-        .and_then(|window| window.actual_usage)
-        .expect("primary actual usage");
-    assert_eq!(usage.request_count, 2);
-    assert_eq!(usage.total_tokens, 5000);
-    assert_eq!(usage.input_tokens, 3000);
-    assert_eq!(usage.output_tokens, 1500);
-    assert_eq!(usage.cache_input_tokens, 500);
-    assert_cost_close(usage.total_cost, 0.05);
-}
-
-#[tokio::test]
-pub(crate) async fn materialize_historical_rollups_populates_upstream_account_usage_hourly_from_archive()
- {
-    let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
-    config.invocation_max_days = 1;
-    config.archive_dir = crate::tests::test_runtime_path(&format!(
-        "archive-tests/upstream-account-usage-hourly-{}",
-        random_base36(8).expect("archive suffix")
-    ));
-    let state = test_app_state_with_config_and_parallelism(
-        config,
-        DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
-    )
-    .await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = 587_i64;
-    let archived_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
-    seed_window_actual_usage_archive_batch(
-        &state.pool,
-        &state.config.archive_dir,
-        "materialize-upstream-account-usage-hourly",
-        &[(
-            account_id,
-            archived_row_at.clone(),
-            Some(1200),
-            Some(600),
-            Some(200),
-            Some(2000),
-            Some(0.02),
-        )],
-    )
-    .await;
-
-    let summary = materialize_historical_rollups(&state.pool, &state.config, false)
-        .await
-        .expect("materialize historical rollups");
-    assert_eq!(summary.materialized_invocation_batches, 1);
-
-    let bucket_start_epoch =
-        invocation_bucket_start_epoch(&archived_row_at).expect("archive bucket start");
-    let row = sqlx::query_as::<_, (i64, i64, i64, i64, f64, i64, i64, i64)>(
+    sqlx::query(
         r#"
-            SELECT
-                bucket_start_epoch,
-                upstream_account_id,
-                request_count,
-                total_tokens,
-                total_cost,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens
-            FROM upstream_account_usage_hourly
-            WHERE bucket_start_epoch = ?1 AND upstream_account_id = ?2
+            UPDATE pool_upstream_accounts
+            SET plan_type_observed_at = '2026-03-15T00:00:01Z',
+                last_refreshed_at = '2026-03-15T00:00:01Z',
+                updated_at = '2026-03-15T00:00:01Z'
+            WHERE id = ?1
             "#,
     )
-    .bind(bucket_start_epoch)
     .bind(account_id)
-    .fetch_one(&state.pool)
+    .execute(&pool)
     .await
-    .expect("load upstream account usage hourly row");
-    assert_eq!(row.2, 1);
-    assert_eq!(row.3, 2000);
-    assert_eq!(row.5, 1200);
-    assert_eq!(row.6, 600);
-    assert_eq!(row.7, 200);
-    assert_cost_close(row.4, 0.02);
+    .expect("seed observed_at");
+
+    persist_oauth_credentials(
+        &pool,
+        account_id,
+        &crypto_key,
+        &StoredOauthCredentials {
+            access_token: "access-2".to_string(),
+            refresh_token: Some("refresh-2".to_string()),
+            id_token: test_id_token(
+                "refresh@example.com",
+                Some("refresh_org"),
+                Some("refresh_user"),
+                None,
+            ),
+            token_type: Some("Bearer".to_string()),
+        },
+        "2026-03-16T00:00:00Z",
+    )
+    .await
+    .expect("persist refreshed credentials");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row")
+        .expect("row exists");
+    assert_eq!(row.plan_type.as_deref(), Some("team"));
+    assert_eq!(
+        row.plan_type_observed_at.as_deref(),
+        Some("2026-03-15T00:00:01Z")
+    );
+    assert!(row.last_refreshed_at.is_some());
+    assert_ne!(
+        row.last_refreshed_at.as_deref(),
+        Some("2026-03-15T00:00:01Z")
+    );
 }
 
 #[tokio::test]
-pub(crate) async fn list_upstream_accounts_keeps_actual_usage_null_until_batch_hydrate() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
+pub(crate) async fn refresh_rejects_display_name_renames_that_conflict_with_other_accounts() {
+    let pool = test_pool().await;
+    let crypto_key = derive_secret_key("refresh-display-name-conflict");
+    let account_id = insert_syncable_oauth_account(
+        &pool,
+        &crypto_key,
+        "old@example.com",
+        "old@example.com",
+        "refresh_conflict_org",
+        "refresh_conflict_user",
+    )
+    .await;
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET verified_email = ?2
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind("old@example.com")
+    .execute(&pool)
+    .await
+    .expect("seed verified email");
+    let conflicting_id = insert_api_key_account(&pool, "renamed@example.com").await;
 
-    let account_id = insert_api_key_account(&state.pool, "Roster Usage").await;
+    let err = persist_oauth_credentials(
+        &pool,
+        account_id,
+        &crypto_key,
+        &StoredOauthCredentials {
+            access_token: "access-2".to_string(),
+            refresh_token: Some("refresh-2".to_string()),
+            id_token: test_id_token(
+                "renamed@example.com",
+                Some("refresh_conflict_org"),
+                Some("refresh_conflict_user"),
+                Some("team"),
+            ),
+            token_type: Some("Bearer".to_string()),
+        },
+        "2026-03-16T00:00:00Z",
+    )
+    .await
+    .expect_err("reject conflicting refresh rename");
+    assert!(
+        err.to_string().contains("displayName must be unique"),
+        "unexpected error: {err:#}"
+    );
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load oauth row")
+        .expect("oauth row exists");
+    assert_eq!(row.display_name, "old@example.com");
+    assert_eq!(row.email.as_deref(), Some("old@example.com"));
+    assert_eq!(row.verified_email.as_deref(), Some("old@example.com"));
+
+    let conflict = load_upstream_account_row(&pool, conflicting_id)
+        .await
+        .expect("load conflicting row")
+        .expect("conflicting row exists");
+    assert_eq!(conflict.display_name, "renamed@example.com");
+}
+
+#[tokio::test]
+pub(crate) async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
+    let pool = test_pool().await;
+
+    let mut tx = pool.begin().await.expect("begin tx");
+    ensure_display_name_available(&mut *tx, "Fallback OAuth", None)
+        .await
+        .expect("name available");
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: None,
+            display_name: "Fallback OAuth",
+            chosen_email: None,
+            verified_email: None,
+            group_name: None,
+            is_mother: false,
+            note: None,
+            tag_ids: vec![],
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+            claims: &test_claims_with_plan_type(
+                "fallback@example.com",
+                Some("fallback_org"),
+                Some("fallback_user"),
+                Some("team"),
+            ),
+            encrypted_credentials: "encrypted-fallback".to_string(),
+            has_refresh_token: true,
+            token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
+        },
+    )
+    .await
+    .expect("oauth insert");
+    tx.commit().await.expect("commit tx");
+
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'team',
+                plan_type_observed_at = '2026-03-15T00:00:01Z',
+                last_refreshed_at = '2026-03-15T00:00:01Z'
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("age account claims");
+    insert_limit_sample(&pool, account_id, "2026-03-15T00:00:02Z", Some("pro")).await;
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row")
+        .expect("row exists");
     let snapshot = NormalizedUsageSnapshot {
-        plan_type: Some("team".to_string()),
-        limit_id: "codex".to_string(),
-        limit_name: Some("Codex".to_string()),
-        primary: Some(NormalizedUsageWindow {
-            used_percent: 18.0,
-            window_duration_mins: 60 * 24,
-            resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
-        }),
+        plan_type: None,
+        limit_id: "gpt-4".to_string(),
+        limit_name: Some("GPT-4".to_string()),
+        primary: None,
         secondary: None,
         credits: None,
     };
-    persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
-        .await
-        .expect("persist roster usage snapshot");
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
-        Some(2100),
-        Some(900),
-        Some(300),
-        Some(3300),
-        Some(0.033),
-    )
-    .await;
 
-    let Json(response) =
-        list_upstream_accounts(State(state), Query(ListUpstreamAccountsQuery::default()))
-            .await
-            .expect("list upstream accounts");
-    let account = response
-        .items
-        .into_iter()
-        .find(|item| item.id == account_id)
-        .expect("account in roster response");
-    assert!(
-        account
-            .primary_window
-            .as_ref()
-            .and_then(|window| window.actual_usage)
-            .is_none(),
-        "roster response should leave actual usage null until batch hydrate",
-    );
+    let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
+        .await
+        .expect("resolve snapshot plan type");
+    assert_eq!(effective_plan_type.as_deref(), Some("pro"));
 }
 
 #[tokio::test]
-pub(crate) async fn get_upstream_account_window_usage_returns_batch_actual_usage() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage").await;
-    let snapshot = NormalizedUsageSnapshot {
-        plan_type: Some("team".to_string()),
-        limit_id: "codex".to_string(),
-        limit_name: Some("Codex".to_string()),
-        primary: Some(NormalizedUsageWindow {
-            used_percent: 18.0,
-            window_duration_mins: 60 * 24,
-            resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
-        }),
-        secondary: Some(NormalizedUsageWindow {
-            used_percent: 9.0,
-            window_duration_mins: 60 * 24 * 7,
-            resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
-        }),
-        credits: None,
-    };
-    persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
-        .await
-        .expect("persist hydrate usage snapshot");
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
-        Some(2100),
-        Some(900),
-        Some(300),
-        Some(3300),
-        Some(0.033),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::days(2)),
-        Some(700),
-        Some(200),
-        Some(100),
-        Some(1000),
-        Some(0.01),
-    )
-    .await;
-
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
-    assert_eq!(item["accountId"], account_id);
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 3300);
-    assert_eq!(item["secondaryActualUsage"]["requestCount"], 2);
-    assert_eq!(item["secondaryActualUsage"]["totalTokens"], 4300);
-}
-
-#[tokio::test]
-pub(crate) async fn get_upstream_account_window_usage_does_not_double_count_partial_live_rows_without_cursor()
+pub(crate) async fn snapshot_plan_type_fallback_prefers_refreshed_claims_over_stale_non_empty_sample()
  {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
+    let pool = test_pool().await;
 
-    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage Double Count").await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        account_id,
-        &format_utc_iso(Utc::now()),
-        Some(18.0),
-        Some(9.0),
-    )
-    .await;
-
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::minutes(20)),
-        Some(1200),
-        Some(600),
-        Some(200),
-        Some(2000),
-        Some(0.02),
-    )
-    .await;
-
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage without cursor");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
-
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
-    assert_eq!(item["secondaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["secondaryActualUsage"]["totalTokens"], 2000);
-}
-
-#[tokio::test]
-pub(crate) async fn get_upstream_account_window_usage_falls_back_to_live_raw_rows_for_missing_hourly_buckets()
- {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id =
-        insert_api_key_account(&state.pool, "Hydrate Usage Missing Hourly Bucket").await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        account_id,
-        &format_utc_iso(Utc::now()),
-        Some(18.0),
-        Some(9.0),
-    )
-    .await;
-
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &shanghai_local_iso(Utc::now() - ChronoDuration::hours(2)),
-        Some(1200),
-        Some(600),
-        Some(200),
-        Some(2000),
-        Some(0.02),
-    )
-    .await;
-    let cursor_id =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-            .fetch_one(&state.pool)
-            .await
-            .expect("load invocation cursor");
-    sqlx::query(
-        r#"
-            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
-            VALUES (?1, ?2, datetime('now'))
-            ON CONFLICT(dataset) DO UPDATE SET
-                cursor_id = excluded.cursor_id,
-                updated_at = datetime('now')
-            "#,
-    )
-    .bind("codex_invocations")
-    .bind(cursor_id)
-    .execute(&state.pool)
-    .await
-    .expect("mark live rollup cursor without backfill");
-
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch usage with missing hourly buckets");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
-
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
-    assert_eq!(item["secondaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["secondaryActualUsage"]["totalTokens"], 2000);
-}
-
-#[tokio::test]
-pub(crate) async fn get_upstream_account_window_usage_merges_hourly_rows_when_live_cursor_missing()
-{
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage Missing Cursor").await;
-    let snapshot = NormalizedUsageSnapshot {
-        plan_type: Some("team".to_string()),
-        limit_id: "codex".to_string(),
-        limit_name: Some("Codex".to_string()),
-        primary: Some(NormalizedUsageWindow {
-            used_percent: 18.0,
-            window_duration_mins: 300,
-            resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
-        }),
-        secondary: Some(NormalizedUsageWindow {
-            used_percent: 9.0,
-            window_duration_mins: 60 * 24 * 7,
-            resets_at: Some((Utc::now() + ChronoDuration::hours(6)).to_rfc3339()),
-        }),
-        credits: None,
-    };
-    persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
+    let mut tx = pool.begin().await.expect("begin tx");
+    ensure_display_name_available(&mut *tx, "Refreshed Fallback OAuth", None)
         .await
-        .expect("persist hydrate usage snapshot");
-
-    let archived_hourly_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
-    insert_upstream_account_usage_hourly_row(
-        &state.pool,
-        UpstreamAccountUsageHourlyRow {
-            account_id,
-            occurred_at: &archived_hourly_at,
-            request_count: 2,
-            input_tokens: 2800,
-            output_tokens: 1200,
-            cache_input_tokens: 400,
-            total_cost: 0.044,
+        .expect("name available");
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: None,
+            display_name: "Refreshed Fallback OAuth",
+            chosen_email: None,
+            verified_email: None,
+            group_name: None,
+            is_mother: false,
+            note: None,
+            tag_ids: vec![],
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+            claims: &test_claims_with_plan_type(
+                "refreshed-fallback@example.com",
+                Some("refreshed_fallback_org"),
+                Some("refreshed_fallback_user"),
+                Some("team"),
+            ),
+            encrypted_credentials: "encrypted-refreshed-fallback".to_string(),
+            has_refresh_token: true,
+            token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
         },
     )
-    .await;
-
-    insert_window_actual_usage_invocation(
-        &state.pool,
-        WindowActualUsageInvocation {
-            account_id,
-            occurred_at: &shanghai_local_iso(Utc::now() - ChronoDuration::hours(1)),
-            input_tokens: Some(2100),
-            output_tokens: Some(900),
-            cache_input_tokens: Some(300),
-            total_tokens: Some(3300),
-            cost: Some(0.033),
-        },
-    )
-    .await;
-
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
     .await
-    .expect("load batch actual usage without live cursor");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
+    .expect("oauth insert");
+    tx.commit().await.expect("commit tx");
 
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 3300);
-    assert_eq!(item["secondaryActualUsage"]["requestCount"], 3);
-    assert_eq!(item["secondaryActualUsage"]["totalTokens"], 7700);
-    assert_eq!(item["secondaryActualUsage"]["inputTokens"], 4900);
-    assert_eq!(item["secondaryActualUsage"]["outputTokens"], 2100);
-    assert_eq!(item["secondaryActualUsage"]["cacheInputTokens"], 700);
-}
-
-#[tokio::test]
-pub(crate) async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
-
-    let account_id = insert_oauth_account(&state.pool, "Hydrate Usage Partial Minute").await;
-    let now = (Utc::now() - ChronoDuration::minutes(1))
-        .with_second(30)
-        .and_then(|value| value.with_nanosecond(0))
-        .expect("align fixed now");
-    let snapshot = NormalizedUsageSnapshot {
-        plan_type: Some("team".to_string()),
-        limit_id: "codex".to_string(),
-        limit_name: Some("Codex".to_string()),
-        primary: Some(NormalizedUsageWindow {
-            used_percent: 18.0,
-            window_duration_mins: 300,
-            resets_at: Some(now.to_rfc3339()),
-        }),
-        secondary: Some(NormalizedUsageWindow {
-            used_percent: 9.0,
-            window_duration_mins: 60 * 24 * 7,
-            resets_at: Some(now.to_rfc3339()),
-        }),
-        credits: None,
-    };
-    persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
-        .await
-        .expect("persist hydrate usage snapshot");
-
-    let boundary_row_at =
-        shanghai_local_iso(now - ChronoDuration::hours(5) + ChronoDuration::seconds(15));
-    let full_minute_row_at = shanghai_local_iso(now - ChronoDuration::hours(4));
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &boundary_row_at,
-        Some(1000),
-        Some(500),
-        Some(100),
-        Some(1600),
-        Some(0.016),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &full_minute_row_at,
-        Some(1500),
-        Some(700),
-        Some(200),
-        Some(2400),
-        Some(0.024),
-    )
-    .await;
-
-    insert_full_minute_rollup(&state.pool, account_id, &full_minute_row_at).await;
-
-    let cursor_id =
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-            .fetch_one(&state.pool)
-            .await
-            .expect("load invocation cursor");
+    insert_limit_sample(&pool, account_id, "2026-03-15T00:00:01Z", Some("team")).await;
     sqlx::query(
         r#"
-            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
-            VALUES (?1, ?2, datetime('now'))
-            ON CONFLICT(dataset) DO UPDATE SET
-                cursor_id = excluded.cursor_id,
-                updated_at = datetime('now')
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'pro',
+                plan_type_observed_at = '2026-03-15T00:00:02Z',
+                last_refreshed_at = '2026-03-15T00:00:02Z'
+            WHERE id = ?1
             "#,
     )
-    .bind("codex_invocations")
-    .bind(cursor_id)
-    .execute(&state.pool)
-    .await
-    .expect("mark live rollup cursor");
-
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
-    )
-    .await
-    .expect("load batch actual usage with partial minute boundary");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
-
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 2);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 4000);
-    assert_eq!(item["primaryActualUsage"]["inputTokens"], 2500);
-    assert_eq!(item["primaryActualUsage"]["outputTokens"], 1200);
-    assert_eq!(item["primaryActualUsage"]["cacheInputTokens"], 300);
-}
-
-async fn insert_full_minute_rollup(pool: &SqlitePool, account_id: i64, occurred_at: &str) {
-    sqlx::query(
-        "INSERT INTO upstream_account_stats_minute (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, in_flight_count, total_tokens, input_tokens, output_tokens, cache_input_tokens, total_cost, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?7, ?8, ?9, ?10, datetime('now'))",
-    )
-    .bind(invocation_bucket_start_epoch_for_seconds(occurred_at, 60).expect("minute bucket"))
-    .bind(SOURCE_PROXY)
     .bind(account_id)
-    .bind(1_i64)
-    .bind(1_i64)
-    .bind(2400_i64)
-    .bind(1500_i64)
-    .bind(700_i64)
-    .bind(200_i64)
-    .bind(0.024_f64)
-    .execute(pool)
+    .execute(&pool)
     .await
-    .expect("insert minute rollup row");
+    .expect("refresh account claims");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row")
+        .expect("row exists");
+    let snapshot = NormalizedUsageSnapshot {
+        plan_type: None,
+        limit_id: "gpt-4".to_string(),
+        limit_name: Some("GPT-4".to_string()),
+        primary: None,
+        secondary: None,
+        credits: None,
+    };
+
+    let effective_plan_type = resolve_snapshot_plan_type(&pool, &row, &snapshot)
+        .await
+        .expect("resolve snapshot plan type");
+    assert_eq!(effective_plan_type.as_deref(), Some("pro"));
 }
 
 #[tokio::test]
-pub(crate) async fn get_upstream_account_window_usage_includes_archived_partial_bucket_before_retention_cutoff()
- {
-    let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
-    config.invocation_max_days = 1;
-    config.archive_dir = crate::tests::test_runtime_path(&format!(
-        "archive-tests/upstream-account-usage-boundary-{}",
-        random_base36(8).expect("archive suffix")
-    ));
-    let state = test_app_state_with_config_and_parallelism(
-        config,
-        DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
-    )
-    .await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
+pub(crate) async fn fresher_account_claims_override_stale_non_empty_samples() {
+    let pool = test_pool().await;
 
-    let account_id = insert_api_key_account(&state.pool, "Hydrate Usage Archived Boundary").await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        account_id,
-        &format_utc_iso(Utc::now()),
-        Some(18.0),
-        Some(9.0),
-    )
-    .await;
-
-    let now = Utc::now();
-    let archived_boundary_at =
-        shanghai_local_iso(now - ChronoDuration::days(7) + ChronoDuration::minutes(5));
-    let archived_full_hour_at = shanghai_local_iso(now - ChronoDuration::days(2));
-    seed_window_actual_usage_archive_batch(
-        &state.pool,
-        &state.config.archive_dir,
-        "window-usage-archived-boundary",
-        &[
-            (
-                account_id,
-                archived_boundary_at.clone(),
-                Some(900),
-                Some(500),
-                Some(100),
-                Some(1500),
-                Some(0.015),
-            ),
-            (
-                account_id,
-                archived_full_hour_at,
-                Some(2800),
-                Some(1200),
-                Some(400),
-                Some(4400),
-                Some(0.044),
-            ),
-        ],
-    )
-    .await;
-    materialize_historical_rollups(&state.pool, &state.config, false)
+    let mut inserted_ids = Vec::new();
+    for (display_name, email) in [
+        ("Refreshed Team One", "refreshed-team-1@example.com"),
+        ("Refreshed Team Two", "refreshed-team-2@example.com"),
+    ] {
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, display_name, None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name,
+                chosen_email: None,
+                verified_email: None,
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                claims: &test_claims_with_plan_type(
+                    email,
+                    Some("refreshed_shared_org"),
+                    None,
+                    Some("team"),
+                ),
+                encrypted_credentials: format!("encrypted-{display_name}"),
+                has_refresh_token: true,
+                token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
+            },
+        )
         .await
-        .expect("materialize historical rollups");
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+        inserted_ids.push(account_id);
+    }
 
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &shanghai_local_iso(now - ChronoDuration::minutes(20)),
-        Some(1200),
-        Some(600),
-        Some(200),
-        Some(2000),
-        Some(0.02),
-    )
-    .await;
+    for account_id in &inserted_ids {
+        insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+        insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", None).await;
+        sqlx::query(
+            r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:03Z',
+                    last_refreshed_at = '2026-03-15T00:00:03Z',
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+        )
+        .bind(*account_id)
+        .execute(&pool)
+        .await
+        .expect("refresh account claims");
+    }
 
-    let Json(response) = get_upstream_account_window_usage(
-        State(state),
-        Json(UpstreamAccountWindowUsageRequest {
-            account_ids: vec![account_id],
-        }),
+    let duplicate_info = load_duplicate_info_map(&pool)
+        .await
+        .expect("load duplicate info");
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+    );
+
+    let summaries = load_upstream_account_summaries(
+        &pool,
+        &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
     )
     .await
-    .expect("load batch actual usage across retention cutoff");
-    let payload = serde_json::to_value(&response).expect("serialize batch usage response");
-    let item = payload["items"]
-        .as_array()
-        .and_then(|items| items.first())
-        .cloned()
-        .expect("batch usage item");
+    .expect("load summaries");
+    assert!(
+        summaries
+            .iter()
+            .filter(|summary| inserted_ids.contains(&summary.id))
+            .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+    );
 
-    assert_eq!(item["primaryActualUsage"]["requestCount"], 1);
-    assert_eq!(item["primaryActualUsage"]["totalTokens"], 2000);
-    assert_eq!(item["secondaryActualUsage"]["requestCount"], 3);
-    assert_eq!(item["secondaryActualUsage"]["totalTokens"], 7900);
-    assert_eq!(item["secondaryActualUsage"]["inputTokens"], 4900);
-    assert_eq!(item["secondaryActualUsage"]["outputTokens"], 2300);
-    assert_eq!(item["secondaryActualUsage"]["cacheInputTokens"], 700);
+    for account_id in inserted_ids {
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load detail")
+            .expect("detail exists");
+        assert_eq!(detail.summary.plan_type.as_deref(), Some("pro"));
+    }
 }
 
 #[tokio::test]
-pub(crate) async fn load_upstream_account_detail_with_actual_usage_serializes_actual_usage_camel_case()
- {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    ensure_window_actual_usage_test_tables(&state.pool).await;
+pub(crate) async fn refreshed_claims_override_older_non_empty_samples_without_newer_plan_samples() {
+    let pool = test_pool().await;
 
-    let account_id = insert_oauth_account(&state.pool, "Detail Usage OAuth").await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        account_id,
-        &format_utc_iso(Utc::now()),
-        Some(33.0),
-        Some(55.0),
-    )
-    .await;
-
-    let primary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(25));
-    let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(1));
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &primary_row_at,
-        Some(2100),
-        Some(900),
-        Some(300),
-        Some(3300),
-        Some(0.033),
-    )
-    .await;
-    insert_window_actual_usage_invocation!(
-        &state.pool,
-        account_id,
-        &secondary_row_at,
-        Some(700),
-        Some(200),
-        Some(100),
-        Some(1000),
-        Some(0.01),
-    )
-    .await;
-
-    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+    let mut inserted_ids = Vec::new();
+    for (display_name, email) in [
+        ("Claims Fresh One", "claims-fresh-1@example.com"),
+        ("Claims Fresh Two", "claims-fresh-2@example.com"),
+    ] {
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, display_name, None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name,
+                chosen_email: None,
+                verified_email: None,
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                claims: &test_claims_with_plan_type(
+                    email,
+                    Some("claims_fresh_shared_org"),
+                    None,
+                    Some("team"),
+                ),
+                encrypted_credentials: format!("encrypted-{display_name}"),
+                has_refresh_token: true,
+                token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
+            },
+        )
         .await
-        .expect("load detail with actual usage")
-        .expect("detail exists");
-    let primary_usage = detail
-        .summary
-        .primary_window
-        .as_ref()
-        .and_then(|window| window.actual_usage)
-        .expect("primary actual usage");
-    let secondary_usage = detail
-        .summary
-        .secondary_window
-        .as_ref()
-        .and_then(|window| window.actual_usage)
-        .expect("secondary actual usage");
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+        inserted_ids.push(account_id);
+    }
 
-    assert_eq!(primary_usage.request_count, 1);
-    assert_eq!(primary_usage.total_tokens, 3300);
-    assert_cost_close(primary_usage.total_cost, 0.033);
+    for account_id in &inserted_ids {
+        insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:01Z", Some("team")).await;
+        sqlx::query(
+            r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:02Z',
+                    last_refreshed_at = '2026-03-15T00:00:02Z',
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+        )
+        .bind(*account_id)
+        .execute(&pool)
+        .await
+        .expect("refresh account claims");
+    }
 
-    assert_eq!(secondary_usage.request_count, 2);
-    assert_eq!(secondary_usage.total_tokens, 4300);
-    assert_cost_close(secondary_usage.total_cost, 0.043);
-
-    let payload = serde_json::to_value(&detail).expect("serialize detail payload");
-    assert_eq!(payload["primaryWindow"]["actualUsage"]["requestCount"], 1);
-    assert_eq!(payload["primaryWindow"]["actualUsage"]["totalTokens"], 3300);
-    assert_eq!(payload["primaryWindow"]["actualUsage"]["inputTokens"], 2100);
-    assert_eq!(payload["primaryWindow"]["actualUsage"]["outputTokens"], 900);
-    assert_eq!(
-        payload["primaryWindow"]["actualUsage"]["cacheInputTokens"],
-        300
+    let duplicate_info = load_duplicate_info_map(&pool)
+        .await
+        .expect("load duplicate info");
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
     );
-    assert_eq!(payload["secondaryWindow"]["actualUsage"]["requestCount"], 2);
-    assert_eq!(
-        payload["secondaryWindow"]["actualUsage"]["totalTokens"],
-        4300
-    );
-}
 
-pub(crate) struct UpstreamAccountUsageHourlyRow<'a> {
-    pub(crate) account_id: i64,
-    pub(crate) occurred_at: &'a str,
-    pub(crate) request_count: i64,
-    pub(crate) input_tokens: i64,
-    pub(crate) output_tokens: i64,
-    pub(crate) cache_input_tokens: i64,
-    pub(crate) total_cost: f64,
-}
-
-pub(crate) async fn insert_upstream_account_usage_hourly_row(
-    pool: &SqlitePool,
-    row: UpstreamAccountUsageHourlyRow<'_>,
-) {
-    let bucket_start_epoch =
-        invocation_bucket_start_epoch(row.occurred_at).expect("derive usage hourly bucket");
-    let total_tokens = row.input_tokens + row.output_tokens + row.cache_input_tokens;
-    sqlx::query(
-        r#"
-            INSERT INTO upstream_account_usage_hourly (
-                bucket_start_epoch,
-                upstream_account_id,
-                request_count,
-                total_tokens,
-                total_cost,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                first_seen_at,
-                last_seen_at,
-                updated_at
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9
-            )
-            "#,
+    let summaries = load_upstream_account_summaries(
+        &pool,
+        &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
     )
-    .bind(bucket_start_epoch)
-    .bind(row.account_id)
-    .bind(row.request_count)
-    .bind(total_tokens)
-    .bind(row.total_cost)
-    .bind(row.input_tokens)
-    .bind(row.output_tokens)
-    .bind(row.cache_input_tokens)
-    .bind(row.occurred_at)
-    .execute(pool)
     .await
-    .expect("insert upstream account usage hourly row");
+    .expect("load summaries");
+    assert!(
+        summaries
+            .iter()
+            .filter(|summary| inserted_ids.contains(&summary.id))
+            .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+    );
 }
 
-pub(crate) fn benchmark_percentile(samples_ms: &[f64], percentile: f64) -> f64 {
-    let mut sorted = samples_ms.to_vec();
-    sorted.sort_by(|left, right| left.partial_cmp(right).expect("finite samples"));
-    let rank = ((sorted.len().saturating_sub(1) as f64) * percentile).ceil() as usize;
-    sorted[rank]
+#[tokio::test]
+pub(crate) async fn same_second_refreshed_claims_win_against_latest_non_empty_sample() {
+    let pool = test_pool().await;
+
+    let mut inserted_ids = Vec::new();
+    for (display_name, email) in [
+        ("Same Second One", "same-second-1@example.com"),
+        ("Same Second Two", "same-second-2@example.com"),
+    ] {
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, display_name, None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name,
+                chosen_email: None,
+                verified_email: None,
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                claims: &test_claims_with_plan_type(
+                    email,
+                    Some("same_second_org"),
+                    None,
+                    Some("team"),
+                ),
+                encrypted_credentials: format!("encrypted-{display_name}"),
+                has_refresh_token: true,
+                token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+        inserted_ids.push(account_id);
+    }
+
+    for account_id in &inserted_ids {
+        insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", Some("team")).await;
+        sqlx::query(
+            r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'pro',
+                    plan_type_observed_at = '2026-03-15T00:00:02Z',
+                    last_refreshed_at = '2026-03-15T00:00:02Z',
+                    updated_at = '2026-03-15T00:00:02Z'
+                WHERE id = ?1
+                "#,
+        )
+        .bind(*account_id)
+        .execute(&pool)
+        .await
+        .expect("seed same-second claims");
+    }
+
+    let duplicate_info = load_duplicate_info_map(&pool)
+        .await
+        .expect("load duplicate info");
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+    );
+
+    let summaries = load_upstream_account_summaries(
+        &pool,
+        &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+    )
+    .await
+    .expect("load summaries");
+    assert!(
+        summaries
+            .iter()
+            .filter(|summary| inserted_ids.contains(&summary.id))
+            .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+    );
 }
 
-pub(crate) fn benchmark_average(samples_ms: &[f64]) -> f64 {
-    samples_ms.iter().sum::<f64>() / samples_ms.len() as f64
+#[tokio::test]
+pub(crate) async fn metadata_updates_do_not_override_newer_usage_sample_plan_type() {
+    let pool = test_pool().await;
+
+    let mut inserted_ids = Vec::new();
+    for (display_name, email) in [
+        ("Sample Fresh One", "sample-fresh-1@example.com"),
+        ("Sample Fresh Two", "sample-fresh-2@example.com"),
+    ] {
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, display_name, None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name,
+                chosen_email: None,
+                verified_email: None,
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                claims: &test_claims_with_plan_type(
+                    email,
+                    Some("sample_fresh_shared_org"),
+                    None,
+                    Some("team"),
+                ),
+                encrypted_credentials: format!("encrypted-{display_name}"),
+                has_refresh_token: true,
+                token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
+            },
+        )
+        .await
+        .expect("oauth insert");
+        tx.commit().await.expect("commit tx");
+        inserted_ids.push(account_id);
+    }
+
+    for account_id in &inserted_ids {
+        sqlx::query(
+            r#"
+                UPDATE pool_upstream_accounts
+                SET plan_type = 'team',
+                    plan_type_observed_at = '2026-03-15T00:00:01Z',
+                    last_refreshed_at = '2026-03-15T00:00:01Z',
+                    updated_at = '2026-03-15T00:00:01Z'
+                WHERE id = ?1
+                "#,
+        )
+        .bind(*account_id)
+        .execute(&pool)
+        .await
+        .expect("seed account claims");
+        insert_limit_sample(&pool, *account_id, "2026-03-15T00:00:02Z", Some("pro")).await;
+        sqlx::query(
+            r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    updated_at = '2026-03-15T00:00:03Z'
+                WHERE id = ?1
+                "#,
+        )
+        .bind(*account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .execute(&pool)
+        .await
+        .expect("simulate metadata update");
+    }
+
+    let duplicate_info = load_duplicate_info_map(&pool)
+        .await
+        .expect("load duplicate info");
+    assert!(
+        duplicate_info
+            .values()
+            .all(|value| value.reasons == vec![DuplicateReason::SharedChatgptAccountId])
+    );
+
+    let summaries = load_upstream_account_summaries(
+        &pool,
+        &usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test"),
+    )
+    .await
+    .expect("load summaries");
+    assert!(
+        summaries
+            .iter()
+            .filter(|summary| inserted_ids.contains(&summary.id))
+            .all(|summary| summary.plan_type.as_deref() == Some("pro"))
+    );
 }
 
-pub(crate) fn round_millis(value_ms: f64) -> f64 {
-    (value_ms * 100.0).round() / 100.0
+#[tokio::test]
+pub(crate) async fn relink_updates_existing_oauth_row_without_inserting() {
+    let pool = test_pool().await;
+
+    let mut tx = pool.begin().await.expect("begin tx");
+    let original_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: None,
+            display_name: "Original OAuth",
+            chosen_email: None,
+            verified_email: None,
+            group_name: Some("prod".to_string()),
+            is_mother: false,
+            note: Some("note".to_string()),
+            tag_ids: vec![],
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+            claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
+            encrypted_credentials: "encrypted-1".to_string(),
+            has_refresh_token: true,
+            token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
+        },
+    )
+    .await
+    .expect("insert original oauth");
+    tx.commit().await.expect("commit tx");
+
+    let mut tx = pool.begin().await.expect("begin relink tx");
+    ensure_display_name_available(&mut *tx, "Renamed OAuth", Some(original_id))
+        .await
+        .expect("name available");
+    let relinked_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: Some(original_id),
+            display_name: "Renamed OAuth",
+            chosen_email: None,
+            verified_email: None,
+            group_name: Some("prod".to_string()),
+            is_mother: false,
+            note: Some("fresh".to_string()),
+            tag_ids: vec![],
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+            claims: &test_claims("second@example.com", Some("org_shared"), Some("user_9")),
+            encrypted_credentials: "encrypted-2".to_string(),
+            has_refresh_token: true,
+            token_expires_at: "2026-03-15T00:00:00Z",
+            external_identity: None,
+        },
+    )
+    .await
+    .expect("relink oauth");
+    tx.commit().await.expect("commit relink tx");
+
+    assert_eq!(relinked_id, original_id);
+    let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_accounts")
+        .fetch_one(&pool)
+        .await
+        .expect("count accounts");
+    assert_eq!(count, 1);
+
+    let renamed = load_upstream_account_row(&pool, original_id)
+        .await
+        .expect("load updated row")
+        .expect("row exists");
+    assert_eq!(renamed.display_name, "Renamed OAuth");
+    assert_eq!(renamed.chatgpt_user_id.as_deref(), Some("user_9"));
 }
+
+#[tokio::test]
+pub(crate) async fn display_name_uniqueness_is_case_insensitive_and_self_excluding() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, " Alpha ").await;
+
+    let mut tx = pool.begin().await.expect("begin tx conflict");
+    let conflict = ensure_display_name_available(&mut *tx, "alpha", None).await;
+    assert_eq!(
+        conflict,
+        Err((
+            StatusCode::CONFLICT,
+            "displayName must be unique".to_string()
+        ))
+    );
+
+    let allowed = ensure_display_name_available(&mut *tx, " alpha ", Some(account_id)).await;
+    assert!(allowed.is_ok());
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_prefers_subject_match() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_1".to_string(),
+        subject: Some("Your ChatGPT code is 612345".to_string()),
+        content: Some("Ignore body 000000".to_string()),
+        html: None,
+        received_at: Some("2026-03-16T00:00:00Z".to_string()),
+    };
+
+    let parsed = parse_mailbox_code(&detail).expect("subject code");
+    assert_eq!(parsed.value, "612345");
+    assert_eq!(parsed.source, "subject");
+}
+
+#[test]
+pub(crate) fn decode_mailbox_detail_accepts_text_and_preview_text_together() {
+    let payload: KaisouMailMessageDetailPayload = serde_json::from_value(json!({
+        "message": {
+            "id": "msg_preview_and_text",
+            "subject": "Your temporary ChatGPT verification code",
+            "previewText": "Preview fallback 123456",
+            "text": null,
+            "html": "<p>OpenAI verification code: 654321</p>",
+            "receivedAt": "2026-05-06T20:09:49.322Z"
+        }
+    }))
+    .expect("decode message detail with both previewText and text");
+
+    assert_eq!(payload.message.id, "msg_preview_and_text");
+    assert_eq!(
+        payload.message.content.as_deref(),
+        Some("Preview fallback 123456")
+    );
+    assert_eq!(
+        parse_mailbox_code(&payload.message)
+            .expect("code from subject/html")
+            .value,
+        "654321"
+    );
+}
+
+#[test]
+pub(crate) fn kaisoumail_config_debug_redacts_api_key() {
+    let config = UpstreamAccountsKaisouMailConfig {
+        base_url: Url::parse("https://km.example.test").expect("url"),
+        api_key: "cfm_secret_value".to_string(),
+    };
+
+    let debug = format!("{config:?}");
+
+    assert!(debug.contains("api_key"));
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("cfm_secret_value"));
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_falls_back_to_body_match() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_2".to_string(),
+        subject: Some("Security notice".to_string()),
+        content: Some("Use this verification code: 481122 to continue.".to_string()),
+        html: None,
+        received_at: Some("2026-03-16T00:00:00Z".to_string()),
+    };
+
+    let parsed = parse_mailbox_code(&detail).expect("body code");
+    assert_eq!(parsed.value, "481122");
+    assert_eq!(parsed.source, "content");
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_supports_localized_subjects() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_zh_subject".to_string(),
+        subject: Some("你的 OpenAI 代码为 438211".to_string()),
+        content: Some("如果这不是你本人操作，请重置密码。".to_string()),
+        html: None,
+        received_at: Some("2026-03-23T23:48:33Z".to_string()),
+    };
+
+    let parsed = parse_mailbox_code(&detail).expect("localized subject code");
+    assert_eq!(parsed.value, "438211");
+    assert_eq!(parsed.source, "subject");
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_supports_localized_html_and_fullwidth_digits() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_zh_html".to_string(),
+        subject: Some("安全提醒".to_string()),
+        content: None,
+        html: Some(
+            "<div>OpenAI</div><p>输入此临时验证码以继续：</p><strong>４３８２１１</strong>"
+                .to_string(),
+        ),
+        received_at: Some("2026-03-24T00:00:00Z".to_string()),
+    };
+
+    let parsed = parse_mailbox_code(&detail).expect("localized html code");
+    assert_eq!(parsed.value, "438211");
+    assert_eq!(parsed.source, "html");
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_prefers_digits_after_marker() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_order_and_code".to_string(),
+        subject: Some("OpenAI order update".to_string()),
+        content: Some("Order 1234. Your verification code is 567890.".to_string()),
+        html: None,
+        received_at: Some("2026-03-24T00:05:30Z".to_string()),
+    };
+
+    let parsed = parse_mailbox_code(&detail).expect("verification code");
+    assert_eq!(parsed.value, "567890");
+    assert_eq!(parsed.source, "content");
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_rejects_weak_subject_match_without_local_brand() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_weak_subject_without_local_brand".to_string(),
+        subject: Some("Your code is 123456".to_string()),
+        content: Some("OpenAI account activity summary".to_string()),
+        html: None,
+        received_at: Some("2026-03-24T00:05:45Z".to_string()),
+    };
+
+    assert!(parse_mailbox_code(&detail).is_none());
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_rejects_strong_subject_match_without_brand() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_strong_subject_without_brand".to_string(),
+        subject: Some("验证码 123456".to_string()),
+        content: Some("请在十分钟内完成验证。".to_string()),
+        html: None,
+        received_at: Some("2026-03-24T00:05:50Z".to_string()),
+    };
+
+    assert!(parse_mailbox_code(&detail).is_none());
+}
+
+#[test]
+pub(crate) fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
+    let detail = KaisouMailMessageDetail {
+        id: "msg_negative_code".to_string(),
+        subject: Some("OpenAI receipt 438211".to_string()),
+        content: Some("Invoice total: 23.00 USD".to_string()),
+        html: None,
+        received_at: Some("2026-03-24T00:05:00Z".to_string()),
+    };
+
+    assert!(parse_mailbox_code(&detail).is_none());
+}
+
+use super::*;

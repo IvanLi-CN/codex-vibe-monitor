@@ -89,6 +89,62 @@ function useAutoDismiss(notificationId: string, pending: boolean, onDismiss: (id
   return { pause, resume };
 }
 
+function MotherSwitchUndoToastContent({
+  notification,
+  message,
+  pending,
+  onUndo,
+  onDismiss,
+}: {
+  notification: MotherSwitchUndoNotification;
+  message: string;
+  pending: boolean;
+  onUndo: () => void;
+  onDismiss: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-warning/16 text-warning">
+        <AppIcon name="crown" className="h-5 w-5" aria-hidden />
+      </div>
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="space-y-1">
+          <p className="text-sm font-semibold">
+            {t("accountPool.upstreamAccounts.mother.notifications.title")}
+          </p>
+          <p className="text-sm leading-6 text-base-content/82">{message}</p>
+        </div>
+        {notification.error ? <p className="text-xs text-error">{notification.error}</p> : null}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={onUndo}
+            disabled={pending}
+            className="h-8 rounded-full bg-warning/85 px-3 text-warning-content hover:bg-warning"
+          >
+            {pending ? (
+              <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <AppIcon name="undo-variant" className="mr-2 h-4 w-4" aria-hidden />
+            )}
+            {t("accountPool.upstreamAccounts.mother.notifications.undo")}
+          </Button>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center rounded-full px-3 text-xs font-medium text-base-content/72 transition hover:bg-white/10 hover:text-base-content"
+            onClick={() => onDismiss(notification.id)}
+          >
+            {t("accountPool.upstreamAccounts.mother.notifications.dismiss")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MotherSwitchUndoToast({
   notification,
   onDismiss,
@@ -153,44 +209,13 @@ export function MotherSwitchUndoToast({
       onMouseEnter={pause}
       onMouseLeave={resume}
     >
-      <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-warning/16 text-warning">
-          <AppIcon name="crown" className="h-5 w-5" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="space-y-1">
-            <p className="text-sm font-semibold">
-              {t("accountPool.upstreamAccounts.mother.notifications.title")}
-            </p>
-            <p className="text-sm leading-6 text-base-content/82">{message}</p>
-          </div>
-          {notification.error ? <p className="text-xs text-error">{notification.error}</p> : null}
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={() => void handleUndo()}
-              disabled={pending}
-              className="h-8 rounded-full bg-warning/85 px-3 text-warning-content hover:bg-warning"
-            >
-              {pending ? (
-                <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
-              ) : (
-                <AppIcon name="undo-variant" className="mr-2 h-4 w-4" aria-hidden />
-              )}
-              {t("accountPool.upstreamAccounts.mother.notifications.undo")}
-            </Button>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center rounded-full px-3 text-xs font-medium text-base-content/72 transition hover:bg-white/10 hover:text-base-content"
-              onClick={() => onDismiss(notification.id)}
-            >
-              {t("accountPool.upstreamAccounts.mother.notifications.dismiss")}
-            </button>
-          </div>
-        </div>
-      </div>
+      <MotherSwitchUndoToastContent
+        notification={notification}
+        message={message}
+        pending={pending}
+        onUndo={() => void handleUndo()}
+        onDismiss={onDismiss}
+      />
     </div>
   );
 }

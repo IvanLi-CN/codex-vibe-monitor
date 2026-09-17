@@ -1,516 +1,762 @@
-use super::*;
-use serde_json::json;
-use std::time::Instant;
-
-async fn assert_successful_oauth_sync(
-    state: &AppState,
-    account_id: i64,
-    usage_requests: &AtomicUsize,
-    token_requests: &AtomicUsize,
-    access_token: &str,
-    refresh_token: &str,
-) {
-    let after = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load oauth account after sync")
-        .expect("oauth account still exists");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(after.last_error.is_none());
-    assert!(after.last_route_failure_kind.is_none());
-    assert!(after.last_successful_sync_at.is_some());
-    assert_eq!(
-        after.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
-    );
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let decrypted = decrypt_credentials(
-        crypto_key,
-        after
-            .encrypted_credentials
-            .as_deref()
-            .expect("encrypted oauth credentials"),
+#[tokio::test]
+pub(crate) async fn cache_hit_protection_cooldown_restarts_with_single_probe() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cache Cooldown",
+        "cache-cooldown-key",
+        None,
+        Some("https://cache-cooldown.example.com/backend-api/codex"),
     )
-    .expect("decrypt synced credentials");
-    let StoredCredentials::Oauth(credentials) = decrypted else {
-        panic!("oauth account should keep oauth credentials");
-    };
-    assert_eq!(credentials.access_token, access_token);
-    assert_eq!(credentials.refresh_token.as_deref(), Some(refresh_token));
-    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+    .await;
+    let model = "gpt-cache-cooldown";
+    enable_cache_hit_protection(&state).await;
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+
+    assert_cache_hit_cooldown_restarts(&state, account_id, model).await;
 }
 
-async fn seed_manual_node_shunt_accounts(state: &Arc<AppState>) -> (i64, i64) {
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let occupying_account_id = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Occupying OAuth",
-        "occupying@example.com",
-        "org_occupying",
-        "user_occupying",
+async fn assert_cache_hit_cooldown_restarts(state: &AppState, account_id: i64, model: &str) {
+    for _ in 0..5 {
+        observe_model_route_cache_hit(
+            &state.pool,
+            account_id,
+            Some(model),
+            Some(3_840),
+            Some(0),
+            8,
+        )
+        .await
+        .expect("apply low cache-hit protection");
+    }
+    let first_cooldown = cache_hit_route_state(state, account_id, model).await;
+    assert_eq!(first_cooldown.0, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(first_cooldown.3, 0);
+    assert_eq!(first_cooldown.4, 1);
+    assert!(first_cooldown.6.is_some());
+
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cooldown_until = ?3 WHERE account_id = ?1 AND model = ?2",
     )
-    .await;
-    let queued_account_id = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Queued OAuth",
-        "queued@example.com",
-        "org_queued",
-        "user_queued",
-    )
-    .await;
-    set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-sync")).await;
-    set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-sync")).await;
-    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "node-shunt-sync",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: test_required_group_bound_proxy_keys(),
-            node_shunt_enabled: true,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 0,
-        },
-    )
+    .bind(account_id)
+    .bind(model)
+    .bind((Utc::now() - chrono::Duration::seconds(1)).to_rfc3339())
+    .execute(&state.pool)
     .await
-    .expect("save node shunt sync metadata");
-    drop(conn);
-    (occupying_account_id, queued_account_id)
-}
-
-async fn assert_node_shunt_unassigned(
-    state: &AppState,
-    occupying_account_id: i64,
-    queued_account_id: i64,
-) {
-    let assignments = build_upstream_account_node_shunt_assignments(state)
-        .await
-        .expect("build node shunt assignments");
+    .expect("expire cooldown");
     assert_eq!(
-        assignments
-            .account_proxy_keys
-            .get(&occupying_account_id)
-            .map(String::as_str),
-        Some(FORWARD_PROXY_DIRECT_KEY),
+        model_route_concurrency_limit(&state.pool, account_id, Some(model))
+            .await
+            .expect("load expired cooldown probe limit"),
+        Some(1)
     );
     assert!(
-        !assignments
-            .account_proxy_keys
-            .contains_key(&queued_account_id)
+        load_model_routing_states(&state.pool, account_id)
+            .await
+            .expect("load expired cache-hit route")
+            .into_iter()
+            .find(|route| route.model == model)
+            .expect("expired cache-hit route is visible")
+            .probe_required
+    );
+
+    observe_model_route_cache_hit(&state.pool, account_id, Some(model), None, None, 1)
+        .await
+        .expect("unknown probe observation");
+    let missing_usage_route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load expired route with missing cache usage")
+        .into_iter()
+        .find(|route| route.model == model)
+        .expect("missing-usage route is visible");
+    assert_eq!(missing_usage_route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(missing_usage_route.cache_concurrency_limit, Some(1));
+    assert!(missing_usage_route.cache_usage_missing_since.is_some());
+    assert_eq!(
+        missing_usage_route.cache_usage_missing_reason.as_deref(),
+        Some("missing_input_tokens")
+    );
+
+    for expected_streak in [1, 2] {
+        observe_model_route_cache_hit(
+            &state.pool,
+            account_id,
+            Some(model),
+            Some(3_840),
+            Some(0),
+            1,
+        )
+        .await
+        .expect("apply low probe observation");
+        let state_after_low = cache_hit_route_state(state, account_id, model).await;
+        assert_eq!(state_after_low.0, MODEL_ROUTE_STATE_DEGRADED);
+        assert_eq!(state_after_low.1, Some(1));
+        assert_eq!(state_after_low.3, expected_streak);
+    }
+    observe_model_route_cache_hit(
+        &state.pool,
+        account_id,
+        Some(model),
+        Some(3_840),
+        Some(0),
+        1,
+    )
+    .await
+    .expect("re-enter cache cooldown");
+    let second_cooldown = cache_hit_route_state(state, account_id, model).await;
+    assert_eq!(second_cooldown.0, MODEL_ROUTE_STATE_COOLING_DOWN);
+    assert_eq!(second_cooldown.4, 2);
+}
+
+#[tokio::test]
+pub(crate) async fn api_key_temporary_http_failure_changes_only_the_exact_model_route() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Temporary model scope",
+        "temporary-model-scope-key",
+        None,
+        Some("https://temporary-model-scope.example.com/backend-api/codex"),
+    )
+    .await;
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-temporary-model-scope",
+        account_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed temporary model sticky route");
+    let attempt_id = insert_model_failure_attempt(
+        &state,
+        account_id,
+        "temporary-model-502",
+        Some("gpt-5.6-terra"),
+    )
+    .await;
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        true,
+        Some("sticky-temporary-model-scope"),
+        StatusCode::BAD_GATEWAY,
+        "pool upstream responded with 502: Upstream access forbidden, please contact administrator",
+        Some("temporary-model-502"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(attempt_id),
+        None,
+    )
+    .await
+    .expect("record API key temporary HTTP failure");
+
+    let account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load API key account")
+        .expect("API key account exists");
+    assert_eq!(account.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(account.last_route_failure_kind.is_none());
+    assert!(account.cooldown_until.is_none());
+    assert_eq!(account.consecutive_route_failures, 0);
+    assert!(account.temporary_route_failure_streak_started_at.is_none());
+    assert_eq!(
+        load_sticky_route(&state.pool, "sticky-temporary-model-scope")
+            .await
+            .expect("load temporary model sticky route")
+            .map(|route| route.account_id),
+        Some(account_id),
+    );
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load temporary model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-5.6-terra")
+        .expect("temporary model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_DEMOTED);
+    assert_eq!(route.failure_count, 1);
+    assert_eq!(
+        route.last_failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX),
+    );
+
+    let event = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>, Option<String>)>(
+        "SELECT action, reason_code, http_status, failure_kind, model FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load temporary model event");
+    assert_eq!(event.0, UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_DEGRADED);
+    assert_eq!(
+        event.1.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX),
+    );
+    assert_eq!(event.2, Some(502));
+    assert_eq!(
+        event.3.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+    );
+    assert_eq!(event.4.as_deref(), Some("gpt-5.6-terra"));
+}
+
+#[tokio::test]
+pub(crate) async fn api_key_transport_failure_preserves_kind_and_changes_only_the_exact_model_route()
+ {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Temporary transport model scope",
+        "temporary-transport-model-key",
+        None,
+        Some("https://temporary-transport-model.example.com/backend-api/codex"),
+    )
+    .await;
+    let attempt_id = insert_model_failure_attempt(
+        &state,
+        account_id,
+        "temporary-model-stream",
+        Some("gpt-5.6-terra"),
+    )
+    .await;
+
+    record_pool_route_transport_failure_for_attempt_with_kind(
+        &state.pool,
+        account_id,
+        None,
+        "upstream stream error before first chunk",
+        PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+        Some("temporary-model-stream"),
+        Some(attempt_id),
+    )
+    .await
+    .expect("record API key temporary transport failure");
+
+    let account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load API key account")
+        .expect("API key account exists");
+    assert!(account.last_route_failure_kind.is_none());
+    assert!(account.cooldown_until.is_none());
+    assert_eq!(account.consecutive_route_failures, 0);
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load transport model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-5.6-terra")
+        .expect("transport model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_DEMOTED);
+    assert_eq!(
+        route.last_failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    );
+
+    let event = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
+        "SELECT attempt_id, failure_kind, model FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load temporary transport model event");
+    assert_eq!(event.0, Some(attempt_id));
+    assert_eq!(
+        event.1.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    );
+    assert_eq!(event.2.as_deref(), Some("gpt-5.6-terra"));
+}
+
+#[tokio::test]
+pub(crate) async fn api_key_pre_attempt_transport_failure_uses_the_exact_request_model() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Pre-attempt transport model scope",
+        "pre-attempt-transport-model-key",
+        None,
+        Some("https://pre-attempt-transport-model.example.com/backend-api/codex"),
+    )
+    .await;
+
+    record_pool_route_transport_failure_for_model(
+        &state.pool,
+        account_id,
+        None,
+        "no selectable forward proxy node",
+        Some("pre-attempt-transport-model"),
+        Some("gpt-5.6-terra"),
+    )
+    .await
+    .expect("record API key pre-attempt transport failure");
+
+    let account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load API key account")
+        .expect("API key account exists");
+    assert!(account.last_route_failure_kind.is_none());
+    assert!(account.cooldown_until.is_none());
+    assert_eq!(account.consecutive_route_failures, 0);
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load pre-attempt transport model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-5.6-terra")
+        .expect("pre-attempt transport model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_DEGRADED);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_DEMOTED);
+    assert_eq!(route.failure_count, 1);
+    assert_eq!(
+        route.last_failure_kind.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+    );
+
+    let event = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT attempt_id, reason_code, failure_kind, model FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load pre-attempt transport model event");
+    assert_eq!(event.0, None);
+    assert_eq!(
+        event.1.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE),
+    );
+    assert_eq!(
+        event.2.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+    );
+    assert_eq!(event.3.as_deref(), Some("gpt-5.6-terra"));
+}
+
+#[tokio::test]
+pub(crate) async fn api_key_explicit_model_429_honors_toggle_and_preserves_reason() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Explicit model 429",
+        "explicit-model-429-key",
+        None,
+        Some("https://explicit-model-429.example.com/backend-api/codex"),
+    )
+    .await;
+    let enabled_attempt = insert_model_failure_attempt(
+        &state,
+        account_id,
+        "explicit-model-429-enabled",
+        Some("gpt-rate-limited"),
+    )
+    .await;
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate limit reached for gpt-rate-limited",
+        Some("explicit-model-429-enabled"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(enabled_attempt),
+        None,
+    )
+    .await
+    .expect("record enabled explicit model 429");
+
+    let enabled_event = sqlx::query_as::<_, (Option<String>, Option<i64>, Option<String>)>(
+        "SELECT reason_code, http_status, model FROM pool_upstream_account_events WHERE account_id = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load enabled explicit model 429 event");
+    assert_eq!(
+        enabled_event.0.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT),
+    );
+    assert_eq!(enabled_event.1, Some(429));
+    assert_eq!(enabled_event.2.as_deref(), Some("gpt-rate-limited"));
+
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_429_rate_limit = 0 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("disable model 429 status changes");
+    let disabled_attempt = insert_model_failure_attempt(
+        &state,
+        account_id,
+        "explicit-model-429-disabled",
+        Some("gpt-rate-disabled"),
+    )
+    .await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate limit reached for gpt-rate-disabled",
+        Some("explicit-model-429-disabled"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(disabled_attempt),
+        None,
+    )
+    .await
+    .expect("record disabled explicit model 429");
+
+    assert!(
+        load_model_routing_states(&state.pool, account_id)
+            .await
+            .expect("load explicit model 429 routes")
+            .iter()
+            .all(|route| route.model != "gpt-rate-disabled")
     );
 }
 
 #[tokio::test]
-pub(crate) async fn expired_model_cooldown_reports_transition_at_expiry() {
+pub(crate) async fn api_key_unattributed_disabled_and_payload_failures_are_evidence_only() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
         &state,
-        "Expired model health",
-        "expired-model-health-key",
+        "Evidence only temporary failures",
+        "evidence-only-temporary-key",
         None,
-        Some("https://expired-model-health.example.com/backend-api/codex"),
+        Some("https://evidence-only-temporary.example.com/backend-api/codex"),
     )
     .await;
-    let cooldown_until = format_utc_iso(Utc::now() - ChronoDuration::seconds(5));
-    let changed_at = format_utc_iso(Utc::now() - ChronoDuration::seconds(20));
+
+    record_pool_route_http_failure(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::BAD_GATEWAY,
+        "pool upstream responded with 502",
+        Some("temporary-without-model"),
+    )
+    .await
+    .expect("record unattributed temporary failure");
+
+    let payload_attempt = insert_model_failure_attempt(
+        &state,
+        account_id,
+        "payload-too-large-model",
+        Some("gpt-payload"),
+    )
+    .await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "request body is too large",
+        Some("payload-too-large-model"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(payload_attempt),
+        None,
+    )
+    .await
+    .expect("record payload failure");
+
     sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_failure_at, cooldown_until) VALUES (?1, 'gpt-expired', 'cooling_down', 'excluded', 5, ?2, ?3, ?2, ?4)",
+        "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_5xx = 0 WHERE id = ?1",
     )
     .bind(account_id)
-    .bind(&changed_at)
-    .bind(format_utc_iso(Utc::now()))
-    .bind(&cooldown_until)
     .execute(&state.pool)
     .await
-    .expect("seed expired model route");
+    .expect("disable upstream 5xx model status changes");
+    let disabled_attempt = insert_model_failure_attempt(
+        &state,
+        account_id,
+        "disabled-502-model",
+        Some("gpt-disabled"),
+    )
+    .await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent_for_attempt(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::BAD_GATEWAY,
+        "pool upstream responded with 502",
+        Some("disabled-502-model"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(disabled_attempt),
+        None,
+    )
+    .await
+    .expect("record disabled model status change");
+
+    let account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load evidence-only account")
+        .expect("evidence-only account exists");
+    assert!(account.last_route_failure_kind.is_none());
+    assert!(account.cooldown_until.is_none());
+    assert_eq!(account.consecutive_route_failures, 0);
+    assert!(
+        load_model_routing_states(&state.pool, account_id)
+            .await
+            .expect("load evidence-only model routes")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+pub(crate) async fn stale_model_failure_does_not_overwrite_newer_success() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Stale model health",
+        "stale-model-health-key",
+        None,
+        Some("https://stale-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+
+    async fn attempt(
+        state: &AppState,
+        account_id: i64,
+        model: &str,
+        started_at: &str,
+        status: &str,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route', 1, 1, 0, ?5, ?6)",
+        )
+        .bind(format!("stale-model-{model}-{started_at}"))
+        .bind(format_utc_iso(Utc::now()))
+        .bind(model)
+        .bind(account_id)
+        .bind(started_at)
+        .bind(status)
+        .execute(&state.pool)
+        .await
+        .expect("insert stale model attempt")
+        .last_insert_rowid()
+    }
+
+    let now = Utc::now();
+    let old_started = format_utc_iso(now - chrono::Duration::seconds(5));
+    let newer_started = format_utc_iso(now - chrono::Duration::seconds(1));
+    let old_attempt = attempt(&state, account_id, "gpt-stale", &old_started, "failed").await;
+    let newer_attempt = attempt(&state, account_id, "gpt-stale", &newer_started, "pending").await;
+
+    record_model_route_success_from_attempt(
+        &state.pool,
+        account_id,
+        newer_attempt,
+        Some(&newer_started),
+    )
+    .await
+    .expect("record newer model success");
+    record_model_route_failure_from_attempt(
+        &state.pool,
+        account_id,
+        old_attempt,
+        StatusCode::BAD_REQUEST,
+        Some("model unavailable"),
+        Some("model_unavailable"),
+    )
+    .await
+    .expect("ignore stale model failure");
 
     let route = load_model_routing_states(&state.pool, account_id)
         .await
-        .expect("load expired model route")
+        .expect("load stale model route")
         .into_iter()
-        .find(|route| route.model == "gpt-expired")
-        .expect("expired model route exists");
+        .find(|route| route.model == "gpt-stale")
+        .expect("stale model route exists");
+    assert_eq!(route.failure_count, 0);
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert!(route.last_failure_at.is_none());
+}
+
+#[tokio::test]
+pub(crate) async fn later_failed_attempt_does_not_suppress_model_failure() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Later failed model attempt",
+        "later-failed-model-attempt-key",
+        None,
+        Some("https://later-failed-model-attempt.example.com/backend-api/codex"),
+    )
+    .await;
+    let now = Utc::now();
+    let local_started_at = |offset_seconds: i64| {
+        format_naive_precise(
+            (now + ChronoDuration::seconds(offset_seconds))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        )
+    };
+    let insert_attempt = |invoke_id: &str, started_at: String, status: &str| {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES (?1, ?2, '/v1/responses', 'pool', 'gpt-overlap', ?3, 'route', 1, 1, 0, ?4, ?5)",
+        )
+        .bind(invoke_id.to_string())
+        .bind(format_utc_iso(Utc::now()))
+        .bind(account_id)
+        .bind(started_at)
+        .bind(status.to_string())
+    };
+    let success_started = local_started_at(-3);
+    let success_attempt = insert_attempt("overlap-success", success_started.clone(), "success")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlap success")
+        .last_insert_rowid();
+    record_model_route_success_from_attempt(
+        &state.pool,
+        account_id,
+        success_attempt,
+        Some(&success_started),
+    )
+    .await
+    .expect("record overlap success");
+
+    let failing_started = local_started_at(-2);
+    let failing_attempt = insert_attempt("overlap-failure", failing_started, "failed")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlap failure")
+        .last_insert_rowid();
+    insert_attempt("overlap-later-failure", local_started_at(-1), "failed")
+        .execute(&state.pool)
+        .await
+        .expect("insert later failed overlap attempt");
+
+    record_model_route_failure_from_attempt(
+        &state.pool,
+        account_id,
+        failing_attempt,
+        StatusCode::BAD_REQUEST,
+        Some("model unavailable"),
+        Some("model_unavailable"),
+    )
+    .await
+    .expect("record unsuppressed overlap failure");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load overlap model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-overlap")
+        .expect("overlap model route exists");
+    assert_eq!(route.failure_count, 1);
     assert_eq!(route.state, MODEL_ROUTE_STATE_DEGRADED);
-    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_DEMOTED);
-    assert_eq!(
-        route.changed_at.as_deref().and_then(parse_to_utc_datetime),
-        parse_to_utc_datetime(&cooldown_until),
-    );
+}
+
+#[tokio::test]
+pub(crate) async fn observing_model_after_retention_window_resets_dynamic_health() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Expired model observation",
+        "expired-model-observation-key",
+        None,
+        Some("https://expired-model-observation.example.com/backend-api/codex"),
+    )
+    .await;
+    let old = format_utc_iso(Utc::now() - ChronoDuration::days(8));
+    let cooldown_until = format_utc_iso(Utc::now() + ChronoDuration::seconds(30));
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until) VALUES (?1, 'gpt-expired-observation', 'cooling_down', 'excluded', 5, ?2, ?2, ?2, ?2, ?2, 'model_unavailable', 'model unavailable', ?3)",
+    )
+    .bind(account_id)
+    .bind(&old)
+    .bind(&cooldown_until)
+    .execute(&state.pool)
+    .await
+    .expect("seed expired observation route");
+
+    observe_model_route_seen(&state.pool, account_id, Some("gpt-expired-observation"))
+        .await
+        .expect("observe expired model route");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load refreshed model route")
+        .into_iter()
+        .find(|route| route.model == "gpt-expired-observation")
+        .expect("refreshed model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(route.failure_count, 0);
+    assert!(route.last_failure_at.is_none());
+    assert!(route.last_failure_kind.is_none());
+    assert!(route.last_failure_message.is_none());
     assert!(route.cooldown_until.is_none());
 }
 
 #[tokio::test]
-pub(crate) async fn current_quota_route_failure_survives_informational_account_updates() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Quota exhausted after edit").await;
-
-    record_pool_route_http_failure(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-            false,
-            Some("sticky-quota-after-edit"),
-            StatusCode::TOO_MANY_REQUESTS,
-            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
-            Some("invk_quota_after_edit"),
-        )
-        .await
-        .expect("record wrapped 429 route failure before edit");
-
-    record_account_update_action(
-        &pool,
-        account_id,
-        "account settings were updated after the quota-exhausted failure",
-    )
-    .await
-    .expect("record account update action");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load updated row")
-        .expect("updated row exists");
-    let summary = build_summary_from_row(
-        &row,
+pub(crate) async fn precise_attempt_start_preserves_same_second_model_success() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Precise model health",
+        "precise-model-health-key",
         None,
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-    );
-    assert_eq!(
-        summary.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED)
-    );
-    assert_eq!(
-        row.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn oauth_summary_exports_missing_refresh_token_flag() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Manual RT omitted").await;
-    sqlx::query("UPDATE pool_upstream_accounts SET has_refresh_token = 0 WHERE id = ?")
-        .bind(account_id)
-        .execute(&pool)
-        .await
-        .expect("mark account as missing refresh token");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load no refresh token row")
-        .expect("no refresh token row exists");
-    let summary = build_summary_from_row(
-        &row,
-        None,
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-
-    assert!(!summary.has_refresh_token);
-}
-
-pub(crate) async fn insert_limit_sample(
-    pool: &SqlitePool,
-    account_id: i64,
-    captured_at: &str,
-    plan_type: Option<&str>,
-) {
-    sqlx::query(
-        r#"
-            INSERT INTO pool_upstream_account_limit_samples (
-                account_id, captured_at, limit_id, limit_name, plan_type,
-                primary_used_percent, primary_window_minutes, primary_resets_at,
-                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-                credits_has_credits, credits_unlimited, credits_balance
-            ) VALUES (
-                ?1, ?2, NULL, NULL, ?3,
-                NULL, NULL, NULL,
-                NULL, NULL, NULL,
-                NULL, NULL, NULL
-            )
-            "#,
-    )
-    .bind(account_id)
-    .bind(captured_at)
-    .bind(plan_type)
-    .execute(pool)
-    .await
-    .expect("insert limit sample");
-}
-
-pub(crate) async fn insert_limit_sample_with_usage(
-    pool: &SqlitePool,
-    account_id: i64,
-    captured_at: &str,
-    primary_used_percent: Option<f64>,
-    secondary_used_percent: Option<f64>,
-) {
-    sqlx::query(
-        r#"
-            INSERT INTO pool_upstream_account_limit_samples (
-                account_id, captured_at, limit_id, limit_name, plan_type,
-                primary_used_percent, primary_window_minutes, primary_resets_at,
-                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-                credits_has_credits, credits_unlimited, credits_balance
-            ) VALUES (
-                ?1, ?2, NULL, NULL, 'team',
-                ?3, 300, NULL,
-                ?4, 10080, NULL,
-                NULL, NULL, NULL
-            )
-            "#,
-    )
-    .bind(account_id)
-    .bind(captured_at)
-    .bind(primary_used_percent)
-    .bind(secondary_used_percent)
-    .execute(pool)
-    .await
-    .expect("insert limit sample with usage");
-}
-
-pub(crate) async fn insert_limit_sample_with_reset_times(
-    pool: &SqlitePool,
-    account_id: i64,
-    captured_at: &str,
-    primary_resets_at: Option<&str>,
-    secondary_resets_at: Option<&str>,
-    primary_used_percent: f64,
-    secondary_used_percent: f64,
-) {
-    sqlx::query(
-        r#"
-            INSERT INTO pool_upstream_account_limit_samples (
-                account_id, captured_at, limit_id, limit_name, plan_type,
-                primary_used_percent, primary_window_minutes, primary_resets_at,
-                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-                credits_has_credits, credits_unlimited, credits_balance
-            ) VALUES (
-                ?1, ?2, NULL, NULL, 'team',
-                ?3, 300, ?4,
-                ?5, 10080, ?6,
-                NULL, NULL, NULL
-            )
-            "#,
-    )
-    .bind(account_id)
-    .bind(captured_at)
-    .bind(primary_used_percent)
-    .bind(primary_resets_at)
-    .bind(secondary_used_percent)
-    .bind(secondary_resets_at)
-    .execute(pool)
-    .await
-    .expect("insert limit sample with reset times");
-}
-
-pub(crate) async fn seed_route_cooldown(
-    pool: &SqlitePool,
-    account_id: i64,
-    failure_kind: &str,
-    cooldown_secs: i64,
-) {
-    let now = Utc::now();
-    let now_iso = format_utc_iso(now);
-    let cooldown_until = format_utc_iso(now + ChronoDuration::seconds(cooldown_secs));
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET status = ?2,
-                last_error = ?3,
-                last_error_at = ?4,
-                last_route_failure_at = ?4,
-                last_route_failure_kind = ?5,
-                cooldown_until = ?6,
-                consecutive_route_failures = 1,
-                temporary_route_failure_streak_started_at = NULL,
-                updated_at = ?4
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind("seed route cooldown")
-    .bind(&now_iso)
-    .bind(failure_kind)
-    .bind(&cooldown_until)
-    .execute(pool)
-    .await
-    .expect("seed route cooldown");
-}
-
-#[test]
-pub(crate) fn pool_blocked_failure_kinds_are_not_temporary_route_failures() {
-    assert!(!route_failure_kind_is_temporary(Some(
-        PROXY_FAILURE_POOL_ROUTING_BLOCKED,
-    )));
-    assert!(!route_failure_kind_is_temporary(Some(
-        PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED,
-    )));
-}
-
-pub(crate) async fn seed_hard_unavailable_route_failure(
-    pool: &SqlitePool,
-    account_id: i64,
-    status: &str,
-    failure_kind: &str,
-    reason_code: &str,
-    http_status: Option<i64>,
-) {
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET status = ?2,
-                last_error = ?3,
-                last_error_at = ?4,
-                last_route_failure_at = ?4,
-                last_route_failure_kind = ?5,
-                cooldown_until = NULL,
-                consecutive_route_failures = 1,
-                temporary_route_failure_streak_started_at = NULL,
-                last_action = ?6,
-                last_action_source = ?7,
-                last_action_reason_code = ?8,
-                last_action_reason_message = ?3,
-                last_action_http_status = ?9,
-                last_action_at = ?4,
-                updated_at = ?4
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .bind(status)
-    .bind("seed hard unavailable")
-    .bind(&now_iso)
-    .bind(failure_kind)
-    .bind(UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE)
-    .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
-    .bind(reason_code)
-    .bind(http_status)
-    .execute(pool)
-    .await
-    .expect("seed hard unavailable");
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_success_does_not_clear_newer_route_failure_state() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Stale Success Guard").await;
-    seed_hard_unavailable_route_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
+        Some("https://precise-model-health.example.com/backend-api/codex"),
     )
     .await;
-
-    record_pool_route_success(
-        &pool,
-        account_id,
-        Utc::now() - ChronoDuration::minutes(5),
-        Some("sticky-stale-success"),
-        Some("invk_stale_success"),
-    )
-    .await
-    .expect("record stale route success");
-
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after stale success")
-        .expect("row exists after stale success");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-    );
-    assert_eq!(
-        after.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE)
-    );
-    assert!(
-        load_sticky_route(&pool, "sticky-stale-success")
-            .await
-            .expect("load sticky route after stale success")
-            .is_none()
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn model_success_is_recorded_when_account_success_is_stale() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Stale Account Success Model Recovery").await;
-    let request_started_at_utc = Utc::now() - ChronoDuration::seconds(5);
+    let base_epoch = Utc::now().timestamp();
+    let failure_at = Utc
+        .timestamp_opt(base_epoch, 100_000_000)
+        .single()
+        .expect("failure timestamp");
+    let request_started_at_utc = Utc
+        .timestamp_opt(base_epoch, 200_000_000)
+        .single()
+        .expect("request timestamp");
+    let failure_at = format_naive_precise(failure_at.with_timezone(&Shanghai).naive_local());
     let request_started_at = format_naive_precise(
         request_started_at_utc
             .with_timezone(&Shanghai)
             .naive_local(),
     );
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, 'gpt-precise', 'degraded', 'demoted', 1, ?2, ?2, ?2, ?2, 'model_unavailable', 'model unavailable')",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed precise model route");
     let attempt_id = sqlx::query(
-        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES ('stale-account-success-model', ?1, '/v1/responses', 'pool', 'gpt-stale-account-success', ?2, 'route', 1, 1, 0, ?3, 'failed')",
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES ('precise-model-health', ?1, '/v1/responses', 'pool', 'gpt-precise', ?2, 'route', 1, 1, 0, ?3, 'failed')",
     )
     .bind(format_utc_iso(Utc::now()))
     .bind(account_id)
     .bind(&request_started_at)
-    .execute(&pool)
+    .execute(&state.pool)
     .await
-    .expect("insert stale account success attempt")
+    .expect("insert precise model attempt")
     .last_insert_rowid();
 
-    let model_failure_at = format_naive_precise(
-        (request_started_at_utc - ChronoDuration::seconds(1))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
-    sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, 'gpt-stale-account-success', 'degraded', 'demoted', 1, ?2, ?2, ?3, ?2, 'model_unavailable', 'model unavailable')",
-    )
-    .bind(account_id)
-    .bind(&model_failure_at)
-    .bind(format_utc_iso(Utc::now()))
-    .execute(&pool)
-    .await
-    .expect("seed stale account success model failure");
-    seed_hard_unavailable_route_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
-    )
-    .await;
-
     record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
-        &pool,
+        &state.pool,
         account_id,
         request_started_at_utc,
         None,
@@ -520,965 +766,150 @@ pub(crate) async fn model_success_is_recorded_when_account_success_is_stale() {
         Some(attempt_id),
     )
     .await
-    .expect("record stale account success");
+    .expect("record same-second model success");
 
-    let route = load_model_routing_states(&pool, account_id)
+    let route = load_model_routing_states(&state.pool, account_id)
         .await
-        .expect("load stale account success model route")
+        .expect("load precise model route")
         .into_iter()
-        .find(|route| route.model == "gpt-stale-account-success")
-        .expect("stale account success model route exists");
+        .find(|route| route.model == "gpt-precise")
+        .expect("precise model route exists");
+    assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(route.failure_count, 0);
+}
+
+#[tokio::test]
+pub(crate) async fn manual_model_route_reset_fences_in_flight_failure() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Reset fence model health",
+        "reset-fence-model-health-key",
+        None,
+        Some("https://reset-fence-model-health.example.com/backend-api/codex"),
+    )
+    .await;
+    observe_model_route_seen(&state.pool, account_id, Some("gpt-reset-fence"))
+        .await
+        .expect("observe reset fence model");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_usage_missing_since = ?2, cache_usage_missing_reason = 'missing_input_tokens' WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
+    )
+    .bind(account_id)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(&state.pool)
+    .await
+    .expect("seed resettable cache-usage marker");
+
+    let attempt_started_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(2));
+    let attempt_id = sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES ('reset-fence-model-health', ?1, '/v1/responses', 'pool', 'gpt-reset-fence', ?2, 'route', 1, 1, 0, ?3, 'failed')",
+    )
+    .bind(format_utc_iso(Utc::now()))
+    .bind(account_id)
+    .bind(&attempt_started_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert reset fence model attempt")
+    .last_insert_rowid();
+
+    let traffic_before_reset = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_seen_at, last_success_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load reset fence timestamps before reset");
+
+    reset_model_route(&state.pool, account_id, "gpt-reset-fence")
+        .await
+        .expect("reset model route")
+        .expect("reset model route exists");
+    record_model_route_failure_from_attempt(
+        &state.pool,
+        account_id,
+        attempt_id,
+        StatusCode::BAD_REQUEST,
+        Some("model unavailable"),
+        Some("model_unavailable"),
+    )
+    .await
+    .expect("record in-flight model failure");
+
+    let route = load_model_routing_states(&state.pool, account_id)
+        .await
+        .expect("load reset fence route")
+        .into_iter()
+        .find(|item| item.model == "gpt-reset-fence")
+        .expect("reset fence route exists");
     assert_eq!(route.state, MODEL_ROUTE_STATE_AVAILABLE);
     assert_eq!(route.priority, MODEL_ROUTE_PRIORITY_NORMAL);
     assert_eq!(route.failure_count, 0);
     assert!(route.last_failure_at.is_none());
+    assert!(route.cache_usage_missing_since.is_none());
+    assert!(route.cache_usage_missing_reason.is_none());
 
-    let account = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load stale account success account")
-        .expect("stale account success account exists");
-    assert_eq!(account.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-}
-
-#[tokio::test]
-pub(crate) async fn image_intent_route_success_learns_supported_capability() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Image Success Learns Supported").await;
-
-    record_pool_route_success_for_endpoint_with_image_intent(
-        &pool,
-        account_id,
-        Utc::now(),
-        Some("sticky-image-supported"),
-        Some("invk_image_supported"),
-        "/v1/responses",
-        ImageIntent::Yes,
-    )
-    .await
-    .expect("record image route success");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after image success")
-        .expect("row exists after image success");
-    assert_eq!(
-        row.response_endpoint_capability.as_deref(),
-        Some("supported")
-    );
-    assert_eq!(
-        row.response_image_tool_capability.as_deref(),
-        Some("supported")
-    );
-    assert_eq!(row.chat_completions_capability.as_deref(), Some("unknown"));
-
-    let direct_account_id =
-        insert_oauth_account(&pool, "Direct Image Success Learns Supported").await;
-    record_pool_route_success_for_endpoint_with_image_intent(
-        &pool,
-        direct_account_id,
-        Utc::now(),
-        Some("sticky-direct-image-supported"),
-        Some("invk_direct_image_supported"),
-        "/v1/images/generations",
-        ImageIntent::DirectImage,
-    )
-    .await
-    .expect("record direct image route success");
-
-    let direct_row = load_upstream_account_row(&pool, direct_account_id)
-        .await
-        .expect("load row after direct image success")
-        .expect("row exists after direct image success");
-    assert_eq!(
-        direct_row.image_endpoint_capability.as_deref(),
-        Some("supported")
-    );
-    assert_eq!(
-        direct_row.response_endpoint_capability.as_deref(),
-        Some("unknown")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn chat_completions_route_learning_stays_on_chat_axis() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Chat Success Learns Supported").await;
-
-    record_pool_route_success_for_endpoint_with_image_intent(
-        &pool,
-        account_id,
-        Utc::now(),
-        Some("sticky-chat-supported"),
-        Some("invk_chat_supported"),
-        "/v1/chat/completions",
-        ImageIntent::No,
-    )
-    .await
-    .expect("record chat completions route success");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after chat success")
-        .expect("row exists after chat success");
-    assert_eq!(
-        row.chat_completions_capability.as_deref(),
-        Some("supported")
-    );
-    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
-    assert_eq!(row.image_endpoint_capability.as_deref(), Some("unknown"));
-
-    let unsupported_account_id =
-        insert_oauth_account(&pool, "Chat Failure Learns Unsupported").await;
-    record_pool_route_http_failure_for_endpoint_with_image_intent(
-        &pool,
-        unsupported_account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-chat-unsupported"),
-        StatusCode::NOT_FOUND,
-        "pool upstream responded with 404: unsupported endpoint /v1/chat/completions for this account",
-        Some("invk_chat_unsupported"),
-        "/v1/chat/completions",
-        ImageIntent::No,
-    )
-    .await
-    .expect("record explicit unsupported chat completions failure");
-
-    let unsupported_row = load_upstream_account_row(&pool, unsupported_account_id)
-        .await
-        .expect("load row after unsupported chat failure")
-        .expect("row exists after unsupported chat failure");
-    assert_eq!(
-        unsupported_row.chat_completions_capability.as_deref(),
-        Some("unsupported")
-    );
-    assert_eq!(
-        unsupported_row.response_endpoint_capability.as_deref(),
-        Some("unknown")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn standalone_search_learning_is_api_key_only_and_route_specific() {
-    let pool = test_pool().await;
-    let supported_id = insert_api_key_account(&pool, "Search Success Learns Supported").await;
-    record_pool_route_success_for_endpoint_with_image_intent(
-        &pool,
-        supported_id,
-        Utc::now(),
-        None,
-        Some("invk_search_supported"),
-        "/v1/alpha/search",
-        ImageIntent::No,
-    )
-    .await
-    .expect("record search route success");
-    let supported = load_upstream_account_row(&pool, supported_id)
-        .await
-        .expect("load supported search row")
-        .expect("supported search row exists");
-    assert_eq!(
-        supported.standalone_search_capability.as_deref(),
-        Some("supported")
-    );
-    assert_eq!(
-        supported.response_endpoint_capability.as_deref(),
-        Some("unknown")
-    );
-
-    let unsupported_id = insert_api_key_account(&pool, "Search 404 Learns Unsupported").await;
-    record_pool_route_http_failure_for_endpoint_with_image_intent(
-        &pool,
-        unsupported_id,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-        false,
-        None,
-        StatusCode::NOT_FOUND,
-        "pool upstream responded with 404",
-        Some("invk_search_unsupported"),
-        "/v1/alpha/search",
-        ImageIntent::No,
-    )
-    .await
-    .expect("record bare search 404");
-    let unsupported = load_upstream_account_row(&pool, unsupported_id)
-        .await
-        .expect("load unsupported search row")
-        .expect("unsupported search row exists");
-    assert_eq!(
-        unsupported.standalone_search_capability.as_deref(),
-        Some("unsupported")
-    );
-
-    let ambiguous_id = insert_api_key_account(&pool, "Search 400 Keeps Unknown").await;
-    record_pool_route_http_failure_for_endpoint_with_image_intent(
-        &pool,
-        ambiguous_id,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-        false,
-        None,
-        StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: request body is invalid",
-        Some("invk_search_ambiguous"),
-        "/v1/alpha/search",
-        ImageIntent::No,
-    )
-    .await
-    .expect("record ambiguous search 400");
-    let ambiguous = load_upstream_account_row(&pool, ambiguous_id)
-        .await
-        .expect("load ambiguous search row")
-        .expect("ambiguous search row exists");
-    assert_eq!(
-        ambiguous.standalone_search_capability.as_deref(),
-        Some("unknown")
-    );
-
-    let oauth_id = insert_oauth_account(&pool, "OAuth Search Does Not Learn").await;
-    record_pool_route_success_for_endpoint_with_image_intent(
-        &pool,
-        oauth_id,
-        Utc::now(),
-        None,
-        Some("invk_oauth_search"),
-        "/v1/alpha/search",
-        ImageIntent::No,
-    )
-    .await
-    .expect("record OAuth search route success");
-    let oauth = load_upstream_account_row(&pool, oauth_id)
-        .await
-        .expect("load OAuth search row")
-        .expect("OAuth search row exists");
-    assert_eq!(
-        oauth.standalone_search_capability.as_deref(),
-        Some("unknown")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn standalone_search_override_round_trips_through_account_detail() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Search Override Round Trip").await;
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET standalone_search_capability = 'unsupported',
-            standalone_search_capability_observed_at = '2026-08-05T15:00:00Z',
-            standalone_search_capability_reason = 'pool upstream responded with 404'
-        WHERE id = ?1
-        "#,
+    let traffic_after_reset = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT last_seen_at, last_success_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = 'gpt-reset-fence'",
     )
     .bind(account_id)
-    .execute(&state.pool)
+    .fetch_one(&state.pool)
     .await
-    .expect("seed unsupported search capability");
-
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                standalone_search_capability_override: OptionalField::Value(
-                    "supported".to_string(),
-                ),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("save search capability override");
-
-    assert_eq!(
-        detail.summary.standalone_search_capability.observed,
-        CapabilitySupport::Unsupported
-    );
-    assert_eq!(
-        detail.summary.standalone_search_capability.override_value,
-        Some(CapabilitySupport::Supported)
-    );
-    assert_eq!(
-        detail.summary.standalone_search_capability.effective,
-        CapabilitySupport::Supported
-    );
-    let row = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load account after search override")
-        .expect("account exists after search override");
-    assert_eq!(
-        row.policy_standalone_search_capability_override.as_deref(),
-        Some("supported")
-    );
-
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                standalone_search_capability_override: OptionalField::Null,
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("clear search capability override");
-
-    assert_eq!(
-        detail.summary.standalone_search_capability.override_value,
-        None
-    );
-    assert_eq!(
-        detail.summary.standalone_search_capability.effective,
-        CapabilitySupport::Unsupported
-    );
-    let row = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load account after clearing search override")
-        .expect("account exists after clearing search override");
-    assert_eq!(row.policy_standalone_search_capability_override, None);
+    .expect("load reset fence timestamps after reset");
+    assert_eq!(traffic_after_reset, traffic_before_reset);
 }
 
 #[tokio::test]
-pub(crate) async fn standalone_search_override_is_rejected_for_oauth_accounts() {
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
+pub(crate) async fn manual_model_route_reset_survives_diagnostic_persistence_failure() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_oauth_account(&state.pool, "OAuth Search Override Rejected").await;
-
-    let err = state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                standalone_search_capability_override: OptionalField::Value(
-                    "supported".to_string(),
-                ),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect_err("OAuth accounts must reject standalone search overrides");
-    assert_eq!(err.0, StatusCode::BAD_REQUEST);
-    assert!(err.1.contains("only supported for API key accounts"));
-
-    let err = state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                standalone_search_capability_override: OptionalField::Null,
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect_err("OAuth accounts must reject clearing standalone search overrides");
-    assert_eq!(err.0, StatusCode::BAD_REQUEST);
-
-    let row = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load OAuth account after rejected override")
-        .expect("OAuth account exists after rejected override");
-    assert_eq!(row.policy_standalone_search_capability_override, None);
-}
-
-#[tokio::test]
-pub(crate) async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Image Failure Learns Unsupported").await;
-
-    record_pool_route_http_failure_for_endpoint_with_image_intent(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-image-unsupported"),
-        StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: unsupported tool: image_generation is not supported by this account",
-        Some("invk_image_unsupported"),
-        "/v1/responses",
-        ImageIntent::Yes,
-    )
-    .await
-    .expect("record explicit unsupported image failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after unsupported image failure")
-        .expect("row exists after unsupported image failure");
-    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
-    assert_eq!(
-        row.response_image_tool_capability.as_deref(),
-        Some("unsupported")
-    );
-
-    let direct_account_id =
-        insert_oauth_account(&pool, "Direct Image Failure Learns Unsupported").await;
-    record_pool_route_http_failure_for_endpoint_with_image_intent(
-        &pool,
-        direct_account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-direct-image-unsupported"),
-        StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: No available channel for model gpt-image-1 under group default",
-        Some("invk_direct_image_unsupported"),
-        "/v1/images/generations",
-        ImageIntent::DirectImage,
-    )
-    .await
-    .expect("record explicit unsupported direct image failure");
-
-    let direct_row = load_upstream_account_row(&pool, direct_account_id)
-        .await
-        .expect("load row after unsupported direct image failure")
-        .expect("row exists after unsupported direct image failure");
-    assert_eq!(
-        direct_row.image_endpoint_capability.as_deref(),
-        Some("unsupported")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn stale_capability_observations_cannot_overwrite_newer_results() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Fenced Capability Observations").await;
-    let newer = "2026-09-13T10:00:01.000Z";
-    let older = "2026-09-13T10:00:00.000Z";
-
-    record_capability_observation_with_observed_at(
-        &pool,
-        account_id,
-        UpstreamCapabilityAxis::ResponseEndpoint,
-        CapabilitySupport::Supported,
-        Some("newer success"),
-        Some(newer),
-    )
-    .await
-    .expect("record newer capability observation");
-    record_capability_observation_with_observed_at(
-        &pool,
-        account_id,
-        UpstreamCapabilityAxis::ResponseEndpoint,
-        CapabilitySupport::Unsupported,
-        Some("older failure"),
-        Some(older),
-    )
-    .await
-    .expect("record stale capability observation");
-
-    record_compact_support_observation_with_observed_at(
-        &pool,
-        account_id,
-        COMPACT_SUPPORT_STATUS_SUPPORTED,
-        Some("newer success"),
-        Some(newer),
-    )
-    .await
-    .expect("record newer compact observation");
-    record_compact_support_observation_with_observed_at(
-        &pool,
-        account_id,
-        COMPACT_SUPPORT_STATUS_UNSUPPORTED,
-        Some("older failure"),
-        Some(older),
-    )
-    .await
-    .expect("record stale compact observation");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load fenced observation row")
-        .expect("fenced observation row exists");
-    assert_eq!(
-        row.response_endpoint_capability.as_deref(),
-        Some(CapabilitySupport::Supported.as_str())
-    );
-    assert_eq!(
-        row.response_endpoint_capability_observed_at.as_deref(),
-        Some(newer)
-    );
-    assert_eq!(
-        row.compact_support_status.as_deref(),
-        Some(COMPACT_SUPPORT_STATUS_SUPPORTED)
-    );
-    assert_eq!(row.compact_support_observed_at.as_deref(), Some(newer));
-}
-
-#[tokio::test]
-pub(crate) async fn image_intent_validation_failure_does_not_learn_unsupported_capability() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Image Validation Failure Keeps Unknown").await;
-
-    record_pool_route_http_failure_for_endpoint_with_image_intent(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-image-invalid-payload"),
-        StatusCode::BAD_REQUEST,
-        "pool upstream responded with 400: invalid image size: width must be divisible by 64",
-        Some("invk_image_invalid_payload"),
-        "/v1/responses",
-        ImageIntent::Yes,
-    )
-    .await
-    .expect("record image validation failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after image validation failure")
-        .expect("row exists after image validation failure");
-    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
-    assert_eq!(
-        row.response_image_tool_capability.as_deref(),
-        Some("unknown")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn mark_account_sync_success_preserves_route_cooldown_state() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Cooldown OAuth").await;
-    seed_route_cooldown(
-        &pool,
-        account_id,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
-        300,
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Reset diagnostic failure",
+        "reset-diagnostic-failure-key",
+        None,
+        Some("https://reset-diagnostic-failure.example.com/backend-api/codex"),
     )
     .await;
-
-    let before = load_upstream_account_row(&pool, account_id)
+    let model = "gpt-reset-diagnostic-failure";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
         .await
-        .expect("load row before sync")
-        .expect("row exists before sync");
-    mark_account_sync_success(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
-        SyncSuccessRouteState::PreserveFailureState,
-    )
-    .await
-    .expect("mark sync success");
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after sync")
-        .expect("row exists after sync");
+        .expect("observe reset diagnostic model");
+    let (decision, permit) = admit_priority_handoff(account_id, Some(model));
+    assert!(matches!(
+        decision,
+        PriorityHandoffAdmissionDecision::Admitted { .. }
+    ));
+    assert_eq!(
+        permit
+            .as_ref()
+            .and_then(|permit| permit.complete_failure(true)),
+        Some(PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON)
+    );
+    assert_eq!(
+        priority_handoff_admission_snapshot(account_id, Some(model)).0,
+        "coolingDown"
+    );
 
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(after.last_synced_at.is_some());
-    assert!(after.last_successful_sync_at.is_some());
-    assert_eq!(after.last_route_failure_at, before.last_route_failure_at);
+    sqlx::query("DROP TABLE pool_upstream_account_events")
+        .execute(&state.pool)
+        .await
+        .expect("drop diagnostic event table");
+    let reset = reset_model_route(&state.pool, account_id, model)
+        .await
+        .expect("reset should ignore diagnostic persistence failure")
+        .expect("reset model route exists");
+    assert_eq!(reset.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(reset.priority, MODEL_ROUTE_PRIORITY_NORMAL);
     assert_eq!(
-        after.last_route_failure_kind,
-        before.last_route_failure_kind
+        priority_handoff_admission_snapshot(account_id, Some(model)),
+        ("verifying".to_string(), 0)
     );
-    assert_eq!(after.cooldown_until, before.cooldown_until);
-    assert_eq!(
-        after.consecutive_route_failures,
-        before.consecutive_route_failures
-    );
+    drop(permit);
 }
 
-#[tokio::test]
-pub(crate) async fn mark_account_sync_success_clears_hard_unavailable_state_when_requested() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Recovered OAuth").await;
-    seed_hard_unavailable_route_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
-    )
-    .await;
-
-    mark_account_sync_success(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
-        SyncSuccessRouteState::ClearFailureState,
-    )
-    .await
-    .expect("mark sync success");
-
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after sync success")
-        .expect("row exists after sync success");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(after.last_error.is_none());
-    assert!(after.last_route_failure_kind.is_none());
-    assert!(after.cooldown_until.is_none());
-    assert_eq!(
-        after.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn sync_api_key_account_preserves_route_cooldown_state() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Cooldown API Key").await;
-    seed_route_cooldown(
-        &pool,
-        account_id,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
-        300,
-    )
-    .await;
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load api key row")
-        .expect("api key row exists");
-
-    sync_api_key_account(&pool, &row, SyncCause::Manual)
-        .await
-        .expect("sync api key account");
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after api key sync")
-        .expect("row exists after api key sync");
-
-    assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
-    );
-    assert!(after.cooldown_until.is_some());
-    assert_eq!(after.consecutive_route_failures, 1);
-}
-
-#[tokio::test]
-pub(crate) async fn sync_api_key_account_keeps_hard_unavailable_accounts_blocked() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Blocked API Key").await;
-    seed_hard_unavailable_route_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
-    )
-    .await;
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load api key row")
-        .expect("api key row exists");
-
-    sync_api_key_account(&pool, &row, SyncCause::Manual)
-        .await
-        .expect("sync api key account");
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after api key sync")
-        .expect("row exists after api key sync");
-
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert!(after.last_synced_at.is_some());
-    assert!(after.last_successful_sync_at.is_none());
-    assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
-    assert_eq!(
-        after.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
-    );
-    assert_eq!(
-        after.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
-    );
-    assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_group_probe()
- {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let account_id = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Reserved OAuth",
-        "reserved@example.com",
-        "org_reserved",
-        "user_reserved",
-    )
-    .await;
-
-    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-sync-reserved")).await;
-
-    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "node-shunt-sync-reserved",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: test_required_group_bound_proxy_keys(),
-            node_shunt_enabled: true,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 0,
-        },
-    )
-    .await
-    .expect("save reserved node shunt sync metadata");
-    drop(conn);
-
-    seed_hard_unavailable_route_failure(
-        &state.pool,
-        account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
-    )
-    .await;
-    state
-        .pool_routing_reservations
-        .lock()
-        .expect("pool routing reservations mutex poisoned")
-        .insert(
-            "test-node-shunt-sync-reservation".to_string(),
-            PoolRoutingReservation {
-                account_id,
-                model: None,
-                proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
-                created_at: Instant::now(),
-            },
-        );
-
-    let row = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load reserved account")
-        .expect("reserved account exists");
-    let scope = resolve_account_forward_proxy_scope_for_sync(state.as_ref(), &row, None)
-        .await
-        .expect("sync scope should reuse same-account live reservation");
-
-    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
-        panic!("expected sync scope to pin the live reserved node");
-    };
-    assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
-}
-
-#[tokio::test]
-pub(crate) async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
-    let (proxy_url, usage_requests, token_requests, server) =
-        spawn_proxy_only_oauth_sync_server().await;
-    let state = test_app_state_with_usage_and_oauth_base(
-        "http://unreachable.invalid/backend-api",
-        "http://unreachable.invalid",
-    )
-    .await;
-    let account_id = seed_refresh_due_account(&state, proxy_url).await;
-    let row = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load refresh-due account")
-        .expect("refresh-due account exists");
-    sync_oauth_account(state.as_ref(), &row, SyncCause::Manual)
-        .await
-        .expect("refresh-due sync should reuse the sync-only scoped node for refresh");
-
-    assert_successful_oauth_sync(
-        state.as_ref(),
-        account_id,
-        &usage_requests,
-        &token_requests,
-        "proxy-refreshed-access-token",
-        "proxy-refreshed-refresh-token",
-    )
-    .await;
-
-    server.abort();
-}
-
-async fn seed_refresh_due_account(state: &Arc<AppState>, proxy_url: String) -> i64 {
-    let secondary_proxy_key = {
-        let mut manager = state.forward_proxy.lock().await;
-        let settings = ForwardProxySettings {
-            proxy_urls: vec![proxy_url],
-            ..Default::default()
-        };
-        manager.apply_settings(settings);
-        manager.bound_group_runtime.insert(
-            "node-shunt-refresh".to_string(),
-            crate::forward_proxy::BoundForwardProxyGroupState {
-                current_binding_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
-                consecutive_network_failures: 0,
-            },
-        );
-        manager
-            .binding_nodes()
-            .into_iter()
-            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
-            .map(|node| node.key)
-            .expect("secondary proxy binding key")
-    };
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let account_id = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Refresh Due Scoped OAuth",
-        "proxy-refresh@example.com",
-        "org_proxy_refresh",
-        "user_proxy_refresh",
-    )
-    .await;
-
-    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-refresh")).await;
-    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "node-shunt-refresh",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: vec![
-                FORWARD_PROXY_DIRECT_KEY.to_string(),
-                secondary_proxy_key.clone(),
-            ],
-            node_shunt_enabled: true,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 0,
-        },
-    )
-    .await
-    .expect("save refresh-due node shunt metadata");
-    drop(conn);
-
-    state
-        .pool_routing_reservations
-        .lock()
-        .expect("pool routing reservations mutex poisoned")
-        .insert(
-            "test-node-shunt-refresh-reservation".to_string(),
-            PoolRoutingReservation {
-                account_id,
-                model: None,
-                proxy_key: Some(secondary_proxy_key),
-                created_at: Instant::now(),
-            },
-        );
-    set_test_account_token_expires_at(
-        &state.pool,
-        account_id,
-        &format_utc_iso(Utc::now() - ChronoDuration::minutes(5)),
-    )
-    .await;
-    account_id
-}
-
-#[tokio::test]
-pub(crate) async fn sync_scope_falls_back_to_shared_bound_group_when_exclusive_slot_is_full() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let (occupying_account_id, queued_account_id) = seed_manual_node_shunt_accounts(&state).await;
-
-    seed_hard_unavailable_route_failure(
-        &state.pool,
-        queued_account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
-    )
-    .await;
-
-    assert_node_shunt_unassigned(state.as_ref(), occupying_account_id, queued_account_id).await;
-
-    let row = load_upstream_account_row(&state.pool, queued_account_id)
-        .await
-        .expect("load queued account")
-        .expect("queued account exists");
-    let scope = resolve_account_forward_proxy_scope_for_sync(state.as_ref(), &row, None)
-        .await
-        .expect("sync scope should fall back to shared bound-group probe");
-
-    let ForwardProxyRouteScope::BoundGroup {
-        group_name,
-        bound_proxy_keys,
-    } = scope
-    else {
-        panic!("expected sync scope to probe the bound group without claiming an exclusive slot");
-    };
-    assert_eq!(group_name, "node-shunt-sync");
-    assert_eq!(bound_proxy_keys, test_required_group_bound_proxy_keys());
-}
-
-#[tokio::test]
-pub(crate) async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node() {
-    let (base_url, server) = spawn_usage_snapshot_server(
-        StatusCode::OK,
-        json!({
-            "planType": "team",
-            "rateLimit": {
-                "primaryWindow": {
-                    "usedPercent": 42,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
-            }
-        }),
-    )
-    .await;
-    let state = test_app_state_with_usage_base(&base_url).await;
-    let (occupying_account_id, queued_account_id) = seed_manual_node_shunt_accounts(&state).await;
-
-    seed_hard_unavailable_route_failure(
-        &state.pool,
-        queued_account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
-    )
-    .await;
-
-    assert_node_shunt_unassigned(state.as_ref(), occupying_account_id, queued_account_id).await;
-
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_manual_sync(state.clone(), queued_account_id)
-        .await
-        .expect("queued account manual sync should fall back to the shared bound node");
-
-    let after = load_upstream_account_row(&state.pool, queued_account_id)
-        .await
-        .expect("load queued account after sync")
-        .expect("queued account still exists");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(after.last_error.is_none());
-    assert!(after.last_route_failure_kind.is_none());
-    assert!(after.last_successful_sync_at.is_some());
-    assert_eq!(
-        after.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
-    );
-    assert_eq!(detail.summary.id, queued_account_id);
-    assert_eq!(
-        detail.summary.routing_block_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
-    );
-    assert_eq!(
-        detail.summary.routing_block_reason_message.as_deref(),
-        Some(group_node_shunt_unassigned_error_message()),
-    );
-
-    server.abort();
-}
+use super::*;

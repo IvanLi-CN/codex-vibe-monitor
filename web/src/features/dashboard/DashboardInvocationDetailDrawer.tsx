@@ -25,6 +25,16 @@ interface DashboardInvocationDetailDrawerProps {
 
 const TRANSIENT_RECORD_LOOKUP_RETRY_MS = 1_500;
 
+type LookupRecords = {
+  full: ApiInvocation | null;
+  selected: ApiInvocation | null;
+};
+
+function resolveTransientLookupRecord(records: LookupRecords, invocationId: string) {
+  const selectedRecord = records.selected?.invokeId === invocationId ? records.selected : null;
+  return records.full?.invokeId === invocationId ? records.full : selectedRecord;
+}
+
 type StatusMeta = {
   variant: "primary" | "secondary" | "success" | "warning" | "error";
   labelKey?: string;
@@ -100,6 +110,8 @@ export function DashboardInvocationDetailDrawer({
   const [fullRecord, setFullRecord] = useState<ApiInvocation | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const lookupRecordsRef = useRef<LookupRecords>({ full: null, selected: null });
+  lookupRecordsRef.current = { full: fullRecord, selected: selection?.invocation.record ?? null };
   const effectiveInvocationId = invocationId ?? selection?.invocation.record.invokeId ?? null;
   const dateTimeFormatter = useMemo(
     () =>
@@ -124,12 +136,10 @@ export function DashboardInvocationDetailDrawer({
       return;
     }
 
-    const selectedRecord =
-      selection?.invocation.record.invokeId === effectiveInvocationId
-        ? selection.invocation.record
-        : null;
-    const transientRecord =
-      fullRecord?.invokeId === effectiveInvocationId ? fullRecord : selectedRecord;
+    const transientRecord = resolveTransientLookupRecord(
+      lookupRecordsRef.current,
+      effectiveInvocationId,
+    );
     const isRetryLookup = retryRevision > 0 && transientRecord != null && !(transientRecord.id > 0);
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
@@ -181,7 +191,7 @@ export function DashboardInvocationDetailDrawer({
       setIsLoading(false);
       setLoadError(null);
     }
-  }, [effectiveInvocationId, fullRecord?.id, selectionRecord]);
+  }, [effectiveInvocationId, fullRecord, selectionRecord]);
 
   useEffect(() => {
     if (

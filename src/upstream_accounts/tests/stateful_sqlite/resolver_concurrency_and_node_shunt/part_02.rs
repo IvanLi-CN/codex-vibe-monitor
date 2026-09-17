@@ -1,5 +1,626 @@
-use super::*;
-use serde_json::json;
+#[tokio::test]
+pub(crate) async fn provisioning_scope_skips_proxy_keys_assigned_to_other_groups() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let secondary_proxy_key = {
+        let mut manager = state.forward_proxy.lock().await;
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
+        manager.apply_settings(settings);
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("secondary proxy binding key")
+    };
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Provisioning Cross Group Account",
+        "provision-cross-group@example.com",
+        "org_provision_cross_group",
+        "user_provision_cross_group",
+    )
+    .await;
+    let occupying_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Occupying Cross Group Account",
+        "occupying-cross-group@example.com",
+        "org_occupying_cross_group",
+        "user_occupying_cross_group",
+    )
+    .await;
+
+    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-provisioning-a")).await;
+    set_test_account_group_name(
+        &state.pool,
+        occupying_account_id,
+        Some("node-shunt-provisioning-b"),
+    )
+    .await;
+
+    disable_provisioning_account(&state.pool, account_id).await;
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-provisioning-a",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: vec![
+                FORWARD_PROXY_DIRECT_KEY.to_string(),
+                secondary_proxy_key.clone(),
+            ],
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save provisioning group a metadata");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-provisioning-b",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save provisioning group b metadata");
+    drop(conn);
+
+    assert_cross_group_provisioning_scope(
+        &state,
+        account_id,
+        occupying_account_id,
+        &secondary_proxy_key,
+    )
+    .await;
+}
+
+async fn disable_provisioning_account(pool: &SqlitePool, account_id: i64) {
+    sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0, updated_at = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind(format_utc_iso(Utc::now()))
+        .execute(pool)
+        .await
+        .expect("disable provisioning account");
+}
+
+async fn assert_cross_group_provisioning_scope(
+    state: &AppState,
+    account_id: i64,
+    occupying_account_id: i64,
+    secondary_proxy_key: &str,
+) {
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .expect("build node shunt assignments");
+    assert!(!assignments.account_proxy_keys.contains_key(&account_id));
+    assert_eq!(
+        assignments
+            .account_proxy_keys
+            .get(&occupying_account_id)
+            .map(String::as_str),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+    );
+    let existing_account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load provisioning account")
+        .expect("provisioning account row");
+    let scope = resolve_group_forward_proxy_scope_for_provisioning(
+        state,
+        &ResolvedRequiredGroupProxyBinding {
+            group_name: "node-shunt-provisioning-a".to_string(),
+            bound_proxy_keys: vec![
+                FORWARD_PROXY_DIRECT_KEY.to_string(),
+                secondary_proxy_key.to_string(),
+            ],
+            node_shunt_enabled: true,
+        },
+        Some(&assignments),
+        Some(&existing_account),
+        &HashSet::new(),
+    )
+    .await
+    .expect("provisioning should skip proxy keys assigned to other groups");
+    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+        panic!("expected provisioning scope to pin the remaining free node shunt slot");
+    };
+    assert_eq!(proxy_key, secondary_proxy_key);
+}
+
+#[tokio::test]
+pub(crate) async fn provisioning_scope_skips_proxy_keys_reserved_by_other_accounts() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let secondary_proxy_key = {
+        let mut manager = state.forward_proxy.lock().await;
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
+        manager.apply_settings(settings);
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("secondary proxy binding key")
+    };
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Provisioning Reserved Proxy Account",
+        "provision-reserved@example.com",
+        "org_provision_reserved",
+        "user_provision_reserved",
+    )
+    .await;
+
+    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-provisioning")).await;
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = 0,
+                updated_at = ?2
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("disable provisioning account");
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-provisioning",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: vec![
+                FORWARD_PROXY_DIRECT_KEY.to_string(),
+                secondary_proxy_key.clone(),
+            ],
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save node shunt provisioning metadata");
+    drop(conn);
+
+    assert_reserved_by_other_provisioning_scope(&state, account_id, &secondary_proxy_key).await;
+}
+
+async fn assert_reserved_by_other_provisioning_scope(
+    state: &AppState,
+    account_id: i64,
+    secondary_proxy_key: &str,
+) {
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .expect("build node shunt assignments");
+    assert!(!assignments.account_proxy_keys.contains_key(&account_id));
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "test-provisioning-live-reservation".to_string(),
+            PoolRoutingReservation {
+                account_id: 0,
+                model: None,
+                proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                created_at: Instant::now(),
+            },
+        );
+    let existing_account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load existing account")
+        .expect("existing account row");
+    let scope = resolve_group_forward_proxy_scope_for_provisioning(
+        state,
+        &ResolvedRequiredGroupProxyBinding {
+            group_name: "node-shunt-provisioning".to_string(),
+            bound_proxy_keys: vec![
+                FORWARD_PROXY_DIRECT_KEY.to_string(),
+                secondary_proxy_key.to_string(),
+            ],
+            node_shunt_enabled: true,
+        },
+        Some(&assignments),
+        Some(&existing_account),
+        &HashSet::new(),
+    )
+    .await
+    .expect("provisioning should skip proxy keys reserved by other accounts");
+    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+        panic!("expected provisioning scope to pin the remaining free node shunt slot");
+    };
+    assert_eq!(proxy_key, secondary_proxy_key);
+}
+
+#[tokio::test]
+pub(crate) async fn provisioning_scope_reuses_live_reserved_proxy_key_for_same_account() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let secondary_proxy_key = {
+        let mut manager = state.forward_proxy.lock().await;
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
+            ..Default::default()
+        };
+        manager.apply_settings(settings);
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("secondary proxy binding key")
+    };
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Provisioning Reserved Self Account",
+        "provision-reserved-self@example.com",
+        "org_provision_reserved_self",
+        "user_provision_reserved_self",
+    )
+    .await;
+
+    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-provisioning")).await;
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = 0,
+                updated_at = ?2
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("disable provisioning account");
+    let bound_proxy_keys = vec![
+        FORWARD_PROXY_DIRECT_KEY.to_string(),
+        secondary_proxy_key.clone(),
+    ];
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-provisioning",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: bound_proxy_keys.clone(),
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save node shunt provisioning metadata");
+    drop(conn);
+
+    assert_same_account_reuses_provisioning_scope(&state, account_id, bound_proxy_keys).await;
+}
+
+async fn assert_same_account_reuses_provisioning_scope(
+    state: &AppState,
+    account_id: i64,
+    bound_proxy_keys: Vec<String>,
+) {
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .expect("build node shunt assignments");
+    assert!(!assignments.account_proxy_keys.contains_key(&account_id));
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "test-provisioning-self-reservation".to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: None,
+                proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                created_at: Instant::now(),
+            },
+        );
+    let existing_account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load existing account")
+        .expect("existing account row");
+    let scope = resolve_group_forward_proxy_scope_for_provisioning(
+        state,
+        &ResolvedRequiredGroupProxyBinding {
+            group_name: "node-shunt-provisioning".to_string(),
+            bound_proxy_keys,
+            node_shunt_enabled: true,
+        },
+        Some(&assignments),
+        Some(&existing_account),
+        &HashSet::new(),
+    )
+    .await
+    .expect("same account should reuse its live reserved proxy key");
+    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+        panic!("expected provisioning scope to pin the same reserved node shunt slot");
+    };
+    assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+}
+
+#[tokio::test]
+pub(crate) async fn provisioning_scope_rejects_existing_account_without_node_shunt_slot_when_group_is_full()
+ {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Provisioned Disabled Account",
+        "provision-disabled@example.com",
+        "org_provision_disabled",
+        "user_provision_disabled",
+    )
+    .await;
+    let occupying_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Provisioned Occupying Account",
+        "provision-occupying@example.com",
+        "org_provision_occupying",
+        "user_provision_occupying",
+    )
+    .await;
+
+    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-provisioning")).await;
+    set_test_account_group_name(
+        &state.pool,
+        occupying_account_id,
+        Some("node-shunt-provisioning"),
+    )
+    .await;
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-provisioning",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save node shunt provisioning metadata");
+    drop(conn);
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = 0,
+                updated_at = ?2
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("disable provisioned account");
+
+    assert_full_group_rejects_unassigned_provisioning(&state, account_id, occupying_account_id)
+        .await;
+}
+
+async fn assert_full_group_rejects_unassigned_provisioning(
+    state: &AppState,
+    account_id: i64,
+    occupying_account_id: i64,
+) {
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .expect("build node shunt assignments");
+    assert!(!assignments.account_proxy_keys.contains_key(&account_id));
+    assert_eq!(
+        assignments
+            .account_proxy_keys
+            .get(&occupying_account_id)
+            .map(String::as_str),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+    );
+    let existing_account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load existing account")
+        .expect("existing account row");
+    let err = resolve_group_forward_proxy_scope_for_provisioning(
+        state,
+        &ResolvedRequiredGroupProxyBinding {
+            group_name: "node-shunt-provisioning".to_string(),
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
+            node_shunt_enabled: true,
+        },
+        Some(&assignments),
+        Some(&existing_account),
+        &HashSet::new(),
+    )
+    .await
+    .expect_err("existing account without a slot should be blocked when the group is full");
+    assert!(is_group_node_shunt_unassigned_message(&err.to_string()));
+}
+
+#[tokio::test]
+pub(crate) async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
+    let (usage_base_url, oauth_issuer, token_requests, server) = spawn_token_failure_oauth_server(
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": "invalid_grant",
+            "error_description": "refresh token revoked"
+        }),
+    )
+    .await;
+    let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let failing_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Failing Refresh Account",
+        "failing-refresh@example.com",
+        "org_failing_refresh",
+        "user_failing_refresh",
+    )
+    .await;
+    let fallback_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Fallback Refresh Account",
+        "fallback-refresh@example.com",
+        "org_fallback_refresh",
+        "user_fallback_refresh",
+    )
+    .await;
+
+    set_test_account_group_name(
+        &state.pool,
+        failing_account_id,
+        Some("node-shunt-refresh-failover"),
+    )
+    .await;
+    set_test_account_group_name(
+        &state.pool,
+        fallback_account_id,
+        Some("node-shunt-refresh-failover"),
+    )
+    .await;
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-refresh-failover",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save node shunt refresh failover metadata");
+    drop(conn);
+
+    set_test_account_token_expires_at(
+        &state.pool,
+        failing_account_id,
+        &format_utc_iso(Utc::now() - ChronoDuration::hours(1)),
+    )
+    .await;
+
+    assert_refresh_failure_reassigns_slot(
+        &state,
+        failing_account_id,
+        fallback_account_id,
+        &token_requests,
+    )
+    .await;
+    server.abort();
+}
+
+async fn assert_refresh_failure_reassigns_slot(
+    state: &AppState,
+    failing_account_id: i64,
+    fallback_account_id: i64,
+    token_requests: &AtomicUsize,
+) {
+    let resolution = resolve_pool_account_for_request(state, None, &[], &HashSet::new())
+        .await
+        .expect("resolve node shunt request after refresh failure");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected fallback account to be resolved after refresh failure");
+    };
+    assert_eq!(account.account_id, fallback_account_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &account.forward_proxy_scope else {
+        panic!("expected fallback account to receive a pinned node shunt proxy key");
+    };
+    assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    let failing_after = load_upstream_account_row(&state.pool, failing_account_id)
+        .await
+        .expect("load failing account after routing")
+        .expect("failing account exists after routing");
+    assert_eq!(failing_after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .expect("build refreshed node shunt assignments");
+    assert!(
+        !assignments
+            .account_proxy_keys
+            .contains_key(&failing_account_id)
+    );
+    assert_eq!(
+        assignments
+            .account_proxy_keys
+            .get(&fallback_account_id)
+            .map(String::as_str),
+        Some(FORWARD_PROXY_DIRECT_KEY)
+    );
+    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+}
 
 #[tokio::test]
 pub(crate) async fn resolver_ignores_stale_sticky_routes_when_applying_concurrency_limit() {
@@ -231,9 +852,7 @@ pub(crate) async fn resolver_preserves_fallback_sticky_without_model() {
 
 #[tokio::test]
 pub(crate) async fn maintenance_pass_skips_secondary_overflow_accounts_until_secondary_interval() {
-    let (usage_base_url, requests, server) = spawn_secondary_usage_server().await;
-
-    let state = test_app_state_with_usage_base(&usage_base_url).await;
+    let (state, requests, server) = spawn_secondary_interval_usage_state().await;
     let crypto_key = state
         .upstream_accounts
         .crypto_key
@@ -257,7 +876,6 @@ pub(crate) async fn maintenance_pass_skips_secondary_overflow_accounts_until_sec
         "user_secondary",
     )
     .await;
-
     save_pool_routing_maintenance_settings(
         &state.pool,
         PoolRoutingMaintenanceSettings {
@@ -320,7 +938,8 @@ pub(crate) async fn maintenance_pass_skips_secondary_overflow_accounts_until_sec
     server.abort();
 }
 
-async fn spawn_secondary_usage_server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+async fn spawn_secondary_interval_usage_state()
+-> (Arc<AppState>, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     async fn handler(State(requests): State<Arc<AtomicUsize>>) -> (StatusCode, String) {
         requests.fetch_add(1, Ordering::SeqCst);
         (
@@ -343,7 +962,6 @@ async fn spawn_secondary_usage_server() -> (String, Arc<AtomicUsize>, tokio::tas
             .to_string(),
         )
     }
-
     let requests = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
         .route("/backend-api/wham/usage", get(handler))
@@ -357,1204 +975,8 @@ async fn spawn_secondary_usage_server() -> (String, Arc<AtomicUsize>, tokio::tas
             .await
             .expect("serve usage server");
     });
-
-    (format!("http://{addr}/backend-api"), requests, server)
+    let state = test_app_state_with_usage_base(&format!("http://{addr}/backend-api")).await;
+    (state, requests, server)
 }
 
-#[tokio::test]
-pub(crate) async fn account_actors_are_released_after_idle_commands_finish() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Actor cleanup").await;
-
-    assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
-
-    state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: Some("released".to_string()),
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                bound_proxy_keys: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: None,
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("update account");
-    assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
-
-    state
-        .upstream_accounts
-        .account_ops
-        .run_delete_account(state.clone(), account_id)
-        .await
-        .expect("delete account");
-    assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_keeps_missing_scope_oauth_as_error() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Scope OAuth").await;
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-scope"),
-        StatusCode::UNAUTHORIZED,
-        "pool upstream responded with 401: Missing scopes: api.responses.write",
-        None,
-    )
-    .await
-    .expect("record route failure");
-
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
-            .bind(account_id)
-            .fetch_one(&pool)
-            .await
-            .expect("load account status");
-    assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_emits_suppressed_event_when_reason_toggle_disabled()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Suppressed Scope OAuth").await;
-    upsert_sticky_route(
-        &pool,
-        "sticky-suppressed-scope",
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed suppressed sticky route");
-    sqlx::query(
-            "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_401 = 0 WHERE id = ?1",
-        )
-        .bind(account_id)
-        .execute(&pool)
-        .await
-        .expect("disable 401 status change toggle");
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-suppressed-scope"),
-        StatusCode::UNAUTHORIZED,
-        "pool upstream responded with 401: Missing scopes: api.responses.write",
-        Some("invk_suppressed_scope"),
-    )
-    .await
-    .expect("record suppressed route failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load suppressed row")
-        .expect("suppressed row exists");
-    assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(row.last_error, None);
-    assert_eq!(row.last_action, None);
-    assert_eq!(row.last_route_failure_kind, None);
-    assert_eq!(row.cooldown_until, None);
-    assert_eq!(row.consecutive_route_failures, 0);
-    assert_eq!(
-        load_sticky_route(&pool, "sticky-suppressed-scope")
-            .await
-            .expect("load suppressed sticky route")
-            .map(|route| route.account_id),
-        Some(account_id),
-    );
-
-    let detail = load_upstream_account_detail(&pool, account_id)
-        .await
-        .expect("load suppressed detail")
-        .expect("suppressed detail exists");
-    let event = detail
-        .recent_actions
-        .first()
-        .expect("suppressed event should be recorded");
-    assert_eq!(
-        event.action,
-        UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED
-    );
-    assert_eq!(event.source, UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL);
-    assert_eq!(
-        event.reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401)
-    );
-    assert_eq!(event.http_status, Some(401));
-    assert_eq!(
-        event.failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
-    );
-    assert!(
-        event
-            .reason_message
-            .as_deref()
-            .is_some_and(|value| value.contains("Missing scopes: api.responses.write"))
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_preserves_sticky_route_when_single_account_rotation_429_is_suppressed()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Suppressed Single Rotation 429").await;
-    upsert_sticky_route(
-        &pool,
-        "sticky-suppressed-429",
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed suppressed 429 sticky route");
-    sqlx::query(
-            "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_429_rate_limit = 0 WHERE id = ?1",
-        )
-        .bind(account_id)
-        .execute(&pool)
-        .await
-        .expect("disable 429 rate-limit status change toggle");
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        true,
-        Some("sticky-suppressed-429"),
-        StatusCode::TOO_MANY_REQUESTS,
-        "pool upstream responded with 429: too many requests",
-        Some("invk_suppressed_429"),
-    )
-    .await
-    .expect("record suppressed single-account rotation 429");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load suppressed 429 row")
-        .expect("suppressed 429 row exists");
-    assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(row.last_error, None);
-    assert_eq!(row.last_action, None);
-    assert_eq!(row.last_route_failure_kind, None);
-    assert_eq!(row.cooldown_until, None);
-    assert_eq!(row.consecutive_route_failures, 0);
-    assert_eq!(
-        load_sticky_route(&pool, "sticky-suppressed-429")
-            .await
-            .expect("load suppressed 429 sticky route")
-            .map(|route| route.account_id),
-        Some(account_id),
-    );
-
-    let detail = load_upstream_account_detail(&pool, account_id)
-        .await
-        .expect("load suppressed 429 detail")
-        .expect("suppressed 429 detail exists");
-    let event = detail
-        .recent_actions
-        .first()
-        .expect("suppressed 429 event should be recorded");
-    assert_eq!(
-        event.action,
-        UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED
-    );
-    assert_eq!(event.source, UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL);
-    assert_eq!(
-        event.reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
-    );
-    assert_eq!(event.http_status, Some(429));
-    assert_eq!(
-        event.failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn automatic_single_rotation_429_clear_broadcasts_conversation_change() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_oauth_account(&state.pool, "Single Rotation 429").await;
-    let prompt_cache_key = "pck-single-rotation";
-    let mut broadcast_receiver = state.broadcaster.subscribe();
-    upsert_sticky_route(
-        &state.pool,
-        prompt_cache_key,
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed sticky route");
-    let generation_before = load_sticky_affinity_generation(&state.pool, prompt_cache_key)
-        .await
-        .expect("load sticky generation before 429");
-
-    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
-        state.as_ref(),
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        true,
-        Some(prompt_cache_key),
-        StatusCode::TOO_MANY_REQUESTS,
-        "pool upstream responded with 429: too many requests",
-        None,
-        "/v1/responses",
-        ImageIntent::Unknown,
-        None,
-        None,
-        Some(prompt_cache_key),
-    )
-    .await
-    .expect("record single-account rotation 429");
-
-    assert!(
-        load_sticky_route(&state.pool, prompt_cache_key)
-            .await
-            .expect("load sticky route")
-            .is_none(),
-        "the conversation should be unbound so the next attempt can pick the next candidate",
-    );
-    assert_eq!(
-        load_sticky_affinity_generation(&state.pool, prompt_cache_key)
-            .await
-            .expect("load sticky generation after 429"),
-        generation_before + 1,
-        "automatic 429 clear must fence stale completions",
-    );
-    assert!(matches!(
-        broadcast_receiver.recv().await.expect("conversation change broadcast"),
-        BroadcastPayload::PromptCacheConversationChanged { prompt_cache_key: key }
-            if key == prompt_cache_key
-    ));
-}
-
-#[tokio::test]
-pub(crate) async fn stale_failure_does_not_clear_rebound_sticky_target_for_same_account() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Rebound Sticky Account").await;
-    let sticky_key = "sticky-stale-failure-rebound";
-    let now_iso = format_utc_iso(Utc::now());
-
-    upsert_sticky_route(&pool, sticky_key, account_id, &now_iso)
-        .await
-        .expect("seed original sticky route");
-    let stale_generation = load_sticky_affinity_generation(&pool, sticky_key)
-        .await
-        .expect("load original sticky generation");
-    bump_sticky_affinity_generation(&pool, sticky_key, &now_iso)
-        .await
-        .expect("simulate a newer rebound generation");
-
-    assert!(
-        !delete_sticky_route_if_matches(
-            &pool,
-            sticky_key,
-            account_id,
-            Some(stale_generation),
-            &now_iso,
-        )
-        .await
-        .expect("stale clear should be suppressed"),
-        "an old failure must not clear the same account after a newer sticky generation",
-    );
-    assert_eq!(
-        load_sticky_route(&pool, sticky_key)
-            .await
-            .expect("load rebound sticky route")
-            .map(|route| route.account_id),
-        Some(account_id),
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_preserves_sticky_route_when_single_account_rotation_is_off()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Legacy 429 Sticky").await;
-    upsert_sticky_route(
-        &pool,
-        "sticky-legacy-429",
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed sticky route");
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-legacy-429"),
-        StatusCode::TOO_MANY_REQUESTS,
-        "pool upstream responded with 429: too many requests",
-        None,
-    )
-    .await
-    .expect("record legacy 429");
-
-    assert!(
-        load_sticky_route(&pool, "sticky-legacy-429")
-            .await
-            .expect("load sticky route")
-            .is_some(),
-        "legacy groups keep existing sticky route behavior",
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_does_not_learn_feature_level_model_error_as_system_deny()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Feature Unsupported OAuth").await;
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-feature-unsupported"),
-        StatusCode::BAD_REQUEST,
-        "unsupported_model: response_format is not supported for model gpt-4o",
-        Some("invk_feature_unsupported"),
-    )
-    .await
-    .expect("record feature-scoped bad request");
-
-    let learned_tags = sqlx::query_scalar::<_, String>(
-        r#"
-            SELECT tag.system_key
-            FROM pool_upstream_account_tags account_tag
-            JOIN pool_tags tag ON tag.id = account_tag.tag_id
-            WHERE account_tag.account_id = ?1
-              AND tag.system_key IS NOT NULL
-            ORDER BY tag.system_key ASC
-            "#,
-    )
-    .bind(account_id)
-    .fetch_all(&pool)
-    .await
-    .expect("load learned system tags");
-    assert!(
-        !learned_tags
-            .iter()
-            .any(|tag| tag == "unsupported_model:gpt-4o"),
-        "feature-scoped bad request should not poison model availability: {learned_tags:?}",
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_marks_explicit_invalidated_oauth_for_reauth() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Invalidated OAuth").await;
-
-    record_pool_route_http_failure(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-            false,
-            Some("sticky-invalidated"),
-            StatusCode::FORBIDDEN,
-            "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
-            None,
-        )
-        .await
-        .expect("record route failure");
-
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
-            .bind(account_id)
-            .fetch_one(&pool)
-            .await
-            .expect("load account status");
-    assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_keeps_bridge_exchange_oauth_as_error() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Bridge OAuth").await;
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        false,
-        Some("sticky-bridge"),
-        StatusCode::UNAUTHORIZED,
-        "oauth bridge token exchange failed: oauth bridge responded with 502",
-        None,
-    )
-    .await
-    .expect("record route failure");
-
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
-            .bind(account_id)
-            .fetch_one(&pool)
-            .await
-            .expect("load account status");
-    assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_marks_402_as_hard_error_and_records_reason() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Plan Blocked Key").await;
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-        false,
-        Some("sticky-402"),
-        StatusCode::PAYMENT_REQUIRED,
-        "pool upstream responded with 402: subscription required",
-        Some("invk_402"),
-    )
-    .await
-    .expect("record route failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load account row")
-        .expect("account should exist");
-    assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(
-        row.last_action_reason_code.as_deref(),
-        Some("upstream_http_402")
-    );
-    assert_eq!(
-        row.last_action_source.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
-    );
-    assert_eq!(row.last_action_http_status, Some(402));
-    assert_eq!(
-        row.last_route_failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
-    );
-    assert!(row.cooldown_until.is_none());
-}
-
-#[tokio::test]
-pub(crate) async fn route_triggered_402_summary_and_detail_export_as_upstream_rejected() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Workspace Blocked OAuth").await;
-
-    record_pool_route_http_failure(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-            false,
-            Some("sticky-402-workspace"),
-            StatusCode::PAYMENT_REQUIRED,
-            "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
-            Some("invk_workspace_402"),
-        )
-        .await
-        .expect("record route-triggered 402 failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load route-triggered 402 row")
-        .expect("route-triggered 402 row exists");
-    let summary = build_summary_from_row(
-        &row,
-        None,
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-
-    assert_eq!(
-        summary.display_status,
-        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-    );
-    assert_eq!(
-        summary.health_status,
-        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-    );
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
-    );
-    assert_eq!(
-        summary.last_action_reason_code.as_deref(),
-        Some("upstream_http_402")
-    );
-    assert_eq!(
-        summary.last_error.as_deref(),
-        Some(
-            "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}"
-        )
-    );
-
-    let detail = load_upstream_account_detail(&pool, account_id)
-        .await
-        .expect("load route-triggered 402 detail")
-        .expect("route-triggered 402 detail exists");
-    assert_eq!(
-        detail.summary.display_status,
-        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-    );
-    assert_eq!(
-        detail.summary.health_status,
-        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-    );
-    assert_eq!(
-        detail.summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
-    );
-    assert_eq!(
-        detail.summary.last_action_reason_code.as_deref(),
-        Some("upstream_http_402")
-    );
-    assert_eq!(
-        detail
-            .recent_actions
-            .first()
-            .and_then(|event| event.reason_code.as_deref()),
-        Some("upstream_http_402")
-    );
-    assert_eq!(
-        detail
-            .recent_actions
-            .first()
-            .and_then(|event| event.failure_kind.as_deref()),
-        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_keeps_unattributed_api_key_quota_429_diagnostic_only()
- {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Quota Exhausted Key").await;
-    upsert_sticky_route(
-        &pool,
-        "sticky-429-quota",
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed quota sticky route");
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-        false,
-        Some("sticky-429-quota"),
-        StatusCode::TOO_MANY_REQUESTS,
-        "insufficient_quota: pool upstream responded with 429: weekly cap exhausted",
-        Some("invk_quota_429"),
-    )
-    .await
-    .expect("record route failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load account row")
-        .expect("account should exist");
-    assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(row.last_action.is_none());
-    assert!(row.last_action_reason_code.is_none());
-    assert!(row.last_action_http_status.is_none());
-    assert!(row.last_route_failure_kind.is_none());
-    assert!(row.cooldown_until.is_none());
-    assert_eq!(row.consecutive_route_failures, 0);
-    assert_eq!(
-        load_sticky_route(&pool, "sticky-429-quota")
-            .await
-            .expect("load quota sticky route")
-            .map(|route| route.account_id),
-        Some(account_id),
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_keeps_unattributed_api_key_plain_429_diagnostic_only()
- {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Degraded Plain 429").await;
-    upsert_sticky_route(
-        &pool,
-        "sticky-degraded-first-hit",
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed sticky route");
-
-    record_pool_route_http_failure(
-        &pool,
-        account_id,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-        false,
-        Some("sticky-degraded-first-hit"),
-        StatusCode::TOO_MANY_REQUESTS,
-        "pool upstream responded with 429: too many requests",
-        Some("invk_degraded_first_hit"),
-    )
-    .await
-    .expect("record first degraded 429 failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load degraded row")
-        .expect("degraded row exists");
-    assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(row.last_action.is_none());
-    assert!(row.last_action_reason_code.is_none());
-    assert!(row.last_route_failure_kind.is_none());
-    assert!(row.cooldown_until.is_none());
-    assert_eq!(row.consecutive_route_failures, 0);
-    assert!(row.temporary_route_failure_streak_started_at.is_none());
-    assert_eq!(
-        load_sticky_route(&pool, "sticky-degraded-first-hit")
-            .await
-            .expect("load sticky route after degraded hit")
-            .map(|route| route.account_id),
-        Some(account_id)
-    );
-
-    let summary = build_summary_from_row(
-        &row,
-        None,
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_http_failure_keeps_unattributed_api_key_overload_diagnostic_only()
- {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Overloaded Key").await;
-
-    record_pool_route_http_failure(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-            false,
-            Some("sticky-overloaded"),
-            StatusCode::OK,
-            "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
-            Some("invk_overloaded"),
-        )
-        .await
-        .expect("record retryable overload route failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load overloaded row")
-        .expect("overloaded row exists");
-    assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(row.last_action.is_none());
-    assert!(row.last_action_reason_code.is_none());
-    assert!(row.last_action_http_status.is_none());
-    assert!(row.last_route_failure_kind.is_none());
-    assert!(row.cooldown_until.is_none());
-    assert_eq!(row.consecutive_route_failures, 0);
-    assert!(row.temporary_route_failure_streak_started_at.is_none());
-
-    let summary = build_summary_from_row(
-        &row,
-        None,
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_transport_failure_starts_temporary_cooldown_after_streak_window_expires()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Cooldown Escalation").await;
-    upsert_sticky_route(
-        &pool,
-        "sticky-degraded-cooldown",
-        account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed sticky route");
-
-    record_pool_route_transport_failure(
-        &pool,
-        account_id,
-        Some("sticky-degraded-cooldown"),
-        "failed to contact upstream",
-        Some("invk_transport_first"),
-    )
-    .await
-    .expect("record first transport failure");
-
-    let stale_started_at = format_utc_iso(
-        Utc::now() - ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS + 1),
-    );
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET temporary_route_failure_streak_started_at = ?2
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .bind(&stale_started_at)
-    .execute(&pool)
-    .await
-    .expect("stale degraded streak start");
-
-    record_pool_route_transport_failure(
-        &pool,
-        account_id,
-        Some("sticky-degraded-cooldown"),
-        "failed to contact upstream again",
-        Some("invk_transport_second"),
-    )
-    .await
-    .expect("record second transport failure");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load escalated row")
-        .expect("escalated row exists");
-    assert_eq!(
-        row.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED)
-    );
-    assert_eq!(
-        row.last_route_failure_kind.as_deref(),
-        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
-    );
-    assert!(row.cooldown_until.is_some());
-    assert_eq!(row.consecutive_route_failures, 2);
-    assert_eq!(
-        load_sticky_route(&pool, "sticky-degraded-cooldown")
-            .await
-            .expect("load sticky route after cooldown escalation")
-            .map(|route| route.account_id),
-        Some(account_id)
-    );
-
-    let summary = build_summary_from_row(
-        &row,
-        None,
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
-}
-
-#[tokio::test]
-pub(crate) async fn route_failure_event_records_the_exact_upstream_attempt_id() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Attempt Event Link").await;
-
-    record_pool_route_transport_failure_for_attempt(
-        &pool,
-        account_id,
-        None,
-        "failed to contact upstream",
-        Some("invk_attempt_event_link"),
-        Some(9_102),
-    )
-    .await
-    .expect("record route failure with attempt id");
-
-    let attempt_id = sqlx::query_scalar::<_, Option<i64>>(
-        r#"
-        SELECT attempt_id
-        FROM pool_upstream_account_events
-        WHERE account_id = ?1 AND invoke_id = ?2
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(account_id)
-    .bind("invk_attempt_event_link")
-    .fetch_one(&pool)
-    .await
-    .expect("load route failure event");
-
-    assert_eq!(attempt_id, Some(9_102));
-}
-
-#[tokio::test]
-pub(crate) async fn route_success_event_records_the_exact_upstream_attempt_id() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Attempt Success Event Link").await;
-
-    record_pool_route_success_with_image_intent_for_attempt(
-        &pool,
-        account_id,
-        Utc::now(),
-        None,
-        Some("invk_attempt_success_event_link"),
-        ImageIntent::Unknown,
-        Some(9_103),
-    )
-    .await
-    .expect("record route success with attempt id");
-
-    let attempt_id = sqlx::query_scalar::<_, Option<i64>>(
-        r#"
-        SELECT attempt_id
-        FROM pool_upstream_account_events
-        WHERE account_id = ?1 AND invoke_id = ?2
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(account_id)
-    .bind("invk_attempt_success_event_link")
-    .fetch_one(&pool)
-    .await
-    .expect("load route success event");
-
-    assert_eq!(attempt_id, Some(9_103));
-}
-
-#[tokio::test]
-pub(crate) async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_seconds() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Cooldown Cap").await;
-    let baseline_now = Utc::now();
-    let baseline_now_iso = format_utc_iso(baseline_now);
-    let stale_started_at = format_utc_iso(
-        baseline_now
-            - ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS + 5),
-    );
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET status = ?2,
-                last_error = ?3,
-                last_error_at = ?4,
-                last_route_failure_at = ?4,
-                last_route_failure_kind = ?5,
-                cooldown_until = NULL,
-                consecutive_route_failures = ?6,
-                temporary_route_failure_streak_started_at = ?7,
-                updated_at = ?4
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind("previous temporary failure")
-    .bind(&baseline_now_iso)
-    .bind(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
-    .bind(7_i64)
-    .bind(&stale_started_at)
-    .execute(&pool)
-    .await
-    .expect("seed high temporary failure streak");
-
-    record_pool_route_transport_failure(
-        &pool,
-        account_id,
-        None,
-        "failed to contact upstream again",
-        Some("invk_transport_cap"),
-    )
-    .await
-    .expect("record capped transport failure");
-
-    assert_transport_failure_cooldown_cap(&pool, account_id).await;
-}
-
-async fn assert_transport_failure_cooldown_cap(pool: &SqlitePool, account_id: i64) {
-    let (raw_failure_at, raw_cooldown_until): (String, String) = sqlx::query_as(
-        "SELECT last_route_failure_at, cooldown_until FROM pool_upstream_accounts WHERE id = ?1",
-    )
-    .bind(account_id)
-    .fetch_one(pool)
-    .await
-    .expect("load raw millisecond cooldown values");
-    assert!(raw_failure_at.contains('.'));
-    assert!(raw_cooldown_until.contains('.'));
-
-    let row = load_upstream_account_row(pool, account_id)
-        .await
-        .expect("load capped row")
-        .expect("capped row exists");
-    assert_eq!(
-        row.last_route_failure_at.as_deref(),
-        Some(raw_failure_at.as_str())
-    );
-    assert_eq!(
-        row.cooldown_until.as_deref(),
-        Some(raw_cooldown_until.as_str())
-    );
-    let cooldown_until = row
-        .cooldown_until
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .expect("cooldown should be set");
-    assert!(
-        row.cooldown_until
-            .as_deref()
-            .is_some_and(|value| value.contains('.')),
-        "new account cooldowns should retain millisecond precision"
-    );
-    let route_failure_at = row
-        .last_route_failure_at
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .expect("route failure timestamp should be set");
-    assert_eq!(parse_rfc3339_utc(&raw_cooldown_until), Some(cooldown_until));
-    assert_eq!(
-        cooldown_until - route_failure_at,
-        ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS)
-    );
-    assert!(account_has_active_cooldown(
-        row.cooldown_until.as_deref(),
-        cooldown_until - ChronoDuration::milliseconds(1)
-    ));
-    assert!(!account_has_active_cooldown(
-        row.cooldown_until.as_deref(),
-        cooldown_until
-    ));
-
-    let legacy_cooldown_until = format_utc_iso(cooldown_until + ChronoDuration::seconds(60));
-    sqlx::query("UPDATE pool_upstream_accounts SET cooldown_until = ?2 WHERE id = ?1")
-        .bind(account_id)
-        .bind(&legacy_cooldown_until)
-        .execute(pool)
-        .await
-        .expect("replace cooldown with a legacy second-precision value");
-    let legacy_row = load_upstream_account_row(pool, account_id)
-        .await
-        .expect("reload legacy cooldown row")
-        .expect("legacy cooldown row exists");
-    let legacy_until = parse_rfc3339_utc(&legacy_cooldown_until).expect("parse legacy cooldown");
-    assert!(account_has_active_cooldown(
-        legacy_row.cooldown_until.as_deref(),
-        legacy_until - ChronoDuration::milliseconds(1)
-    ));
-    assert!(!account_has_active_cooldown(
-        legacy_row.cooldown_until.as_deref(),
-        legacy_until
-    ));
-}
-
-#[test]
-pub(crate) fn classify_pool_account_http_failure_treats_usage_limit_reached_as_quota_exhausted() {
-    let classification = classify_pool_account_http_failure(
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-        StatusCode::TOO_MANY_REQUESTS,
-        "pool upstream responded with 429: The usage limit has been reached",
-    );
-
-    assert_eq!(
-        classification.disposition,
-        UpstreamAccountFailureDisposition::RateLimited
-    );
-    assert_eq!(
-        classification.reason_code,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
-    );
-    assert_eq!(
-        classification.failure_kind,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn quota_exhausted_oauth_summary_and_detail_export_as_rate_limited() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Quota Exhausted OAuth").await;
-
-    record_pool_route_http_failure(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
-            false,
-            Some("sticky-quota-exhausted"),
-            StatusCode::TOO_MANY_REQUESTS,
-            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
-            Some("invk_quota_exhausted"),
-        )
-        .await
-        .expect("record wrapped 429 route failure");
-
-    let route_failure_row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load route failure row")
-        .expect("route failure row exists");
-    record_account_sync_recovery_blocked(
-        &pool,
-        account_id,
-        &route_failure_row.status,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-        &route_failure_row.status,
-        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
-        "latest usage snapshot still shows an exhausted upstream usage limit window",
-        route_failure_row.last_error.as_deref(),
-        route_failure_row.last_route_failure_kind.as_deref(),
-    )
-    .await
-    .expect("record blocked sync recovery");
-
-    sqlx::query(
-        r#"
-            INSERT INTO pool_upstream_account_limit_samples (
-                account_id, captured_at, limit_id, limit_name, plan_type,
-                primary_used_percent, primary_window_minutes, primary_resets_at,
-                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-                credits_has_credits, credits_unlimited, credits_balance
-            ) VALUES (
-                ?1, ?2, NULL, NULL, 'team',
-                100.0, 300, ?3,
-                64.0, 10080, ?4,
-                1, 0, '0.00'
-            )
-            "#,
-    )
-    .bind(account_id)
-    .bind("2026-03-24T18:00:27Z")
-    .bind("2026-03-30T16:06:33Z")
-    .bind("2026-04-01T00:00:00Z")
-    .execute(&pool)
-    .await
-    .expect("insert exhausted usage sample");
-
-    assert_quota_exhausted_summary_and_detail(&pool, account_id).await;
-}
-
-async fn assert_quota_exhausted_summary_and_detail(pool: &SqlitePool, account_id: i64) {
-    let row = load_upstream_account_row(pool, account_id)
-        .await
-        .expect("load updated row")
-        .expect("updated row exists");
-    let latest = load_latest_usage_sample(pool, account_id)
-        .await
-        .expect("load latest usage sample");
-    let summary = build_summary_from_row(
-        &row,
-        latest.as_ref(),
-        row.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-    );
-    assert_eq!(
-        summary.last_error.as_deref(),
-        Some(
-            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached"
-        )
-    );
-    assert_eq!(
-        summary.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
-    );
-    assert_eq!(
-        summary
-            .primary_window
-            .as_ref()
-            .map(|window| window.used_percent),
-        Some(100.0)
-    );
-    assert_eq!(
-        summary
-            .primary_window
-            .as_ref()
-            .and_then(|window| window.resets_at.as_deref()),
-        Some("2026-03-30T16:06:33Z")
-    );
-
-    let detail = load_upstream_account_detail(pool, account_id)
-        .await
-        .expect("load detail export")
-        .expect("detail export exists");
-    assert_eq!(
-        detail.summary.display_status,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-    );
-    assert_eq!(
-        detail.summary.health_status,
-        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
-    );
-    assert_eq!(
-        detail.summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-    );
-    assert_eq!(
-        detail.summary.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
-    );
-    assert_eq!(
-        detail
-            .recent_actions
-            .first()
-            .map(|event| event.action.as_str()),
-        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
-    );
-    assert_eq!(
-        detail
-            .recent_actions
-            .first()
-            .and_then(|event| event.reason_code.as_deref()),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
-    );
-    assert_eq!(
-        detail
-            .recent_actions
-            .first()
-            .and_then(|event| event.failure_kind.as_deref()),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-    );
-}
+use super::*;

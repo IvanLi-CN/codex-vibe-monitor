@@ -1,5 +1,102 @@
+#[tokio::test]
+pub(crate) async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
+    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-429-stale-binding",
+        primary_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-stale-binding"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
+pub(crate) async fn pool_route_missing_credentials_sticky_binding_does_not_hide_pool_wide_429() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    clear_test_account_credentials(&state.pool, primary_id).await;
+    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-429-missing-creds-binding",
+        primary_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-missing-creds-binding"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
 #[test]
-fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailable_for_other_reasons() {
+pub(crate) fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailable_for_other_reasons()
+ {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -55,7 +152,7 @@ fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailable_for
 }
 
 #[tokio::test]
-async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
+pub(crate) async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -118,7 +215,7 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
 }
 
 #[tokio::test]
-async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
+pub(crate) async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
         &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],
     )
@@ -192,7 +289,8 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
 }
 
 #[tokio::test]
-async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_upstream_failure() {
+pub(crate) async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_upstream_failure()
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
         &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],
     )
@@ -289,7 +387,7 @@ async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_up
 }
 
 #[tokio::test]
-async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
+pub(crate) async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         Duration::from_millis(60),
@@ -341,7 +439,8 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
 }
 
 #[tokio::test]
-async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_first_attempt() {
+pub(crate) async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_first_attempt()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -406,7 +505,7 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_with_wait_respects_external_deadline() {
+pub(crate) async fn resolve_pool_account_for_request_with_wait_respects_external_deadline() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         Duration::from_secs(2),
@@ -417,19 +516,17 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
-    let mut wait_deadline = None;
+    let mut options = PoolAccountWaitOptions {
+        wait_for_no_available: true,
+        total_timeout_deadline: Some(Instant::now() + Duration::from_millis(40)),
+        ..Default::default()
+    };
     let resolution = resolve_pool_account_for_request_with_wait(
         state.as_ref(),
-        PoolAccountWaitOptions {
-            sticky_key: None,
-            requested_model: None,
-            excluded_ids: &[],
-            excluded_upstream_route_keys: &HashSet::new(),
-            required_upstream_route_key: None,
-            wait_for_no_available: true,
-            wait_deadline: &mut wait_deadline,
-            total_timeout_deadline: Some(Instant::now() + Duration::from_millis(40)),
-        },
+        None,
+        &[],
+        &HashSet::new(),
+        &mut options,
     )
     .await
     .expect("helper resolution should succeed");
@@ -447,17 +544,24 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
         "expected helper to stop on the external deadline, got {resolution:?}"
     );
     assert!(
-        wait_deadline.is_some(),
+        options.wait_deadline.is_some(),
         "bounded waits should record the deadline once they actually start"
     );
 }
 
+type PoolSelectionTaskOutput = (
+    anyhow::Result<PoolAccountResolutionWithWait>,
+    Option<Instant>,
+);
+
+fn panic_pool_route_selection() -> PoolSelectionTaskOutput {
+    panic!("synthetic pool route selection panic");
+}
+
 #[tokio::test]
-async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
+pub(crate) async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
     let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async {
-        panic!("synthetic pool route selection panic");
-        #[allow(unreachable_code)]
-        (Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired), None)
+        panic_pool_route_selection()
     }));
 
     let fallback_deadline = Some(Instant::now() + Duration::from_secs(1));
@@ -475,7 +579,7 @@ async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
 }
 
 #[test]
-fn elapsed_no_candidate_next_eligible_at_retries_with_a_bounded_delay() {
+pub(crate) fn elapsed_no_candidate_next_eligible_at_retries_with_a_bounded_delay() {
     let audit = PoolRoutingNoCandidateAudit {
         terminal_reason_code: "expiredCooldownProbe".to_string(),
         candidate_count: 1,
@@ -498,7 +602,7 @@ fn elapsed_no_candidate_next_eligible_at_retries_with_a_bounded_delay() {
 }
 
 #[tokio::test]
-async fn failover_route_selection_task_preserves_the_external_deadline() {
+pub(crate) async fn failover_route_selection_task_preserves_the_external_deadline() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         Duration::from_secs(2),
@@ -544,7 +648,7 @@ async fn failover_route_selection_task_preserves_the_external_deadline() {
 }
 
 #[tokio::test]
-async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
+pub(crate) async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
     struct DropSignal(Arc<AtomicBool>);
 
     impl Drop for DropSignal {
@@ -559,9 +663,7 @@ async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
     let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let _drop_signal = DropSignal(inner_dropped);
         let _ = started_tx.send(());
-        std::future::pending::<()>().await;
-        #[allow(unreachable_code)]
-        (Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired), None)
+        std::future::pending::<PoolSelectionTaskOutput>().await
     }));
     let outer = tokio::spawn(await_pool_route_selection_task(task, None));
     started_rx
@@ -583,7 +685,8 @@ async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
 }
 
 #[tokio::test]
-async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_the_fence_commits() {
+pub(crate) async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_the_fence_commits()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -678,7 +781,7 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
-async fn failed_failure_persistence_releases_reservation_without_waking_waiters() {
+pub(crate) async fn failed_failure_persistence_releases_reservation_without_waking_waiters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -727,7 +830,8 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
 }
 
 #[tokio::test]
-async fn guarded_failed_failure_persistence_releases_reservation_without_waking_waiters() {
+pub(crate) async fn guarded_failed_failure_persistence_releases_reservation_without_waking_waiters()
+{
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -783,7 +887,7 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
 }
 
 #[tokio::test]
-async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
+pub(crate) async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -841,137 +945,4 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
     );
 }
 
-#[tokio::test]
-async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    let account_id =
-        insert_test_pool_oauth_account(&state, "Orphan Failure Fence", "orphan-fence-token").await;
-    let invoke_id = "proxy-98765-orphan-failure-fence";
-    let reservation_key = pool_routing_reservation_key_for_invoke_id(invoke_id)
-        .expect("legacy proxy invoke id should map to its reservation");
-    state
-        .pool_routing_reservations
-        .lock()
-        .expect("pool routing reservations mutex poisoned")
-        .insert(
-            reservation_key.clone(),
-            PoolRoutingReservation {
-                account_id,
-                model: None,
-                proxy_key: None,
-                created_at: Instant::now(),
-            },
-        );
-    let availability = state.pool_routing_availability.subscribe();
-    let initial_generation = *availability.borrow();
-
-    clean_up_pool_route_after_orphan_recovery(
-        state.as_ref(),
-        invoke_id,
-        None,
-        Some(account_id),
-        "test",
-        true,
-    )
-    .await;
-
-    let failure_at: Option<String> = sqlx::query_scalar(
-        "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",
-    )
-    .bind(account_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load orphan recovery route failure");
-    assert!(
-        failure_at.is_some(),
-        "orphan cleanup must commit the route failure before making the slot available"
-    );
-    assert!(
-        !state
-            .pool_routing_reservations
-            .lock()
-            .expect("pool routing reservations mutex poisoned")
-            .contains_key(&reservation_key),
-        "orphan cleanup should release only after the failure write returns"
-    );
-    assert_ne!(
-        *availability.borrow(),
-        initial_generation,
-        "reservation release should notify waiting routing requests"
-    );
-}
-
-#[tokio::test]
-async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_starts() {
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-        Duration::from_secs(2),
-        Duration::from_millis(100),
-    )
-    .await;
-    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
-
-    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
-    let runtime_handle = tokio::runtime::Handle::current();
-    let delayed_release_task = std::thread::spawn(move || {
-        wait_started_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("helper should signal once the bounded wait starts");
-        runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
-        });
-    });
-
-    let started = Instant::now();
-    let mut wait_deadline = None;
-    let resolution = resolve_pool_account_for_request_with_wait(
-        state.as_ref(),
-        PoolAccountWaitOptions {
-            sticky_key: None,
-            requested_model: None,
-            excluded_ids: &[],
-            excluded_upstream_route_keys: &HashSet::new(),
-            required_upstream_route_key: None,
-            wait_for_no_available: true,
-            wait_deadline: &mut wait_deadline,
-            total_timeout_deadline: Some(Instant::now() + Duration::from_secs(5)),
-        },
-    )
-    .await
-    .expect("helper resolution should succeed");
-    let elapsed = started.elapsed();
-
-    delayed_release_task
-        .join()
-        .expect("delayed release thread should join");
-
-    assert!(
-        elapsed < Duration::from_millis(5_500),
-        "helper should still resolve once the account recovers after the bounded wait begins, elapsed={elapsed:?}"
-    );
-    match resolution {
-        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account)) => {
-            assert_eq!(account.account_id, delayed_id);
-            assert_eq!(
-                account.auth.authorization_header_value(),
-                Some("Bearer upstream-delayed")
-            );
-        }
-        other => panic!("expected post-wait recovery to succeed, got {other:?}"),
-    }
-    assert!(
-        wait_deadline.is_some(),
-        "bounded waits should record the deadline once they actually start"
-    );
-}
-
-// The account-creation helper drives work through `Handle::block_on` on a
-// separate thread after the waiter subscribes. A current-thread runtime cannot
-// make progress while this test synchronously joins that helper.
+use super::*;

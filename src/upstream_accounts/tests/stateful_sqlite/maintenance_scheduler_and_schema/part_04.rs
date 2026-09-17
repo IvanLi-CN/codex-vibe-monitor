@@ -1,1535 +1,981 @@
-use super::*;
+#[tokio::test]
+pub(crate) async fn maintenance_dedupe_flag_resets_after_panicking_job() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = 777_i64;
 
-#[test]
-pub(crate) fn compare_routing_candidates_treats_zero_percent_single_window_as_limited() {
-    let mut single_window = test_routing_candidate(1);
-    single_window.primary_used_percent = Some(0.0);
-    single_window.primary_window_minutes = Some(7 * 24 * 60);
-    single_window.active_sticky_conversations = 2;
-
-    let unlimited = test_routing_candidate(2);
-
-    assert_eq!(
-        compare_routing_candidates(&single_window, &unlimited),
-        std::cmp::Ordering::Greater,
-        "a single remote window sample, even at 0%, should still participate in the tighter long-window load caps",
-    );
-}
-
-#[test]
-pub(crate) fn candidate_capacity_profile_tightens_for_long_only_accounts() {
-    let mut long_only = test_routing_candidate(1);
-    long_only.secondary_used_percent = Some(10.0);
-    long_only.secondary_window_minutes = Some(7 * 24 * 60);
-    let mut short_window = test_routing_candidate(2);
-    short_window.primary_used_percent = Some(10.0);
-    short_window.primary_window_minutes = Some(300);
-
-    let long_only_capacity = long_only.capacity_profile();
-    let short_window_capacity = short_window.capacity_profile();
-
-    assert_eq!(long_only_capacity.soft_limit, 1);
-    assert_eq!(long_only_capacity.hard_cap, 2);
-    assert_eq!(short_window_capacity.soft_limit, 2);
-    assert_eq!(short_window_capacity.hard_cap, 3);
-}
-
-#[test]
-pub(crate) fn candidate_capacity_profile_preserves_legacy_limit_signals_without_window_metadata() {
-    let mut legacy_long_only = test_routing_candidate(1);
-    legacy_long_only.secondary_used_percent = Some(10.0);
-
-    let mut locally_limited = test_routing_candidate(2);
-    locally_limited.local_secondary_limit = Some(100.0);
-
-    let legacy_capacity = legacy_long_only.capacity_profile();
-    let local_capacity = locally_limited.capacity_profile();
-
-    assert_eq!(legacy_capacity.soft_limit, 1);
-    assert_eq!(legacy_capacity.hard_cap, 2);
-    assert_eq!(local_capacity.soft_limit, 1);
-    assert_eq!(local_capacity.hard_cap, 2);
-}
-
-#[test]
-pub(crate) fn derive_work_status_only_counts_last_selected_within_five_minute_window() {
-    let now = Utc
-        .with_ymd_and_hms(2026, 4, 1, 12, 0, 0)
-        .single()
-        .expect("valid now");
-    let recent_selected =
-        format_utc_iso(now - ChronoDuration::minutes(4) - ChronoDuration::seconds(59));
-    let stale_selected =
-        format_utc_iso(now - ChronoDuration::minutes(5) - ChronoDuration::seconds(1));
-
-    assert_eq!(
-        derive_upstream_account_work_status(
+    let first: Result<AccountSubmitOutcome<()>, AccountCommandDispatchError<anyhow::Error>> = state
+        .upstream_accounts
+        .account_ops
+        .submit_command(
+            state.clone(),
+            account_id,
+            AccountCommand::MaintenanceSync,
             true,
-            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
-            UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(&recent_selected),
-            now,
-        ),
-        UPSTREAM_ACCOUNT_WORK_STATUS_WORKING
-    );
-    assert_eq!(
-        derive_upstream_account_work_status(
+            |_state, _id| async move {
+                let _: Result<(), anyhow::Error> = Ok(());
+                panic!("simulated maintenance panic");
+            },
+        )
+        .await;
+    assert!(matches!(
+        first,
+        Err(AccountCommandDispatchError::ActorUnavailable(
+            AccountCommand::MaintenanceSync
+        ))
+    ));
+
+    let second = state
+        .upstream_accounts
+        .account_ops
+        .submit_command(
+            state.clone(),
+            account_id,
+            AccountCommand::MaintenanceSync,
             true,
-            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
-            UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(&stale_selected),
-            now,
-        ),
-        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+            |_state, _id| async move { Result::<(), anyhow::Error>::Ok(()) },
+        )
+        .await
+        .expect("second maintenance command should be accepted");
+    assert!(matches!(second, AccountSubmitOutcome::Completed(())));
+    assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+}
+
+#[tokio::test]
+pub(crate) async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_database() {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure schema");
+
+    let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+    let row = load_pool_routing_settings_seeded(&pool, &config)
+        .await
+        .expect("load seeded routing settings");
+
+    assert_eq!(row.masked_api_key, None);
+    assert_eq!(row.primary_sync_interval_secs, None);
+    assert_eq!(row.secondary_sync_interval_secs, None);
+    assert_eq!(row.priority_available_account_cap, None);
+    assert_eq!(row.responses_first_byte_timeout_secs, None);
+    assert_eq!(row.compact_first_byte_timeout_secs, None);
+    assert_eq!(row.responses_stream_timeout_secs, None);
+    assert_eq!(row.compact_stream_timeout_secs, None);
+    assert_eq!(row.default_first_byte_timeout_secs, None);
+    assert_eq!(row.upstream_handshake_timeout_secs, None);
+    assert_eq!(row.request_read_timeout_secs, None);
+    assert_eq!(row.cache_hit_protection_enabled, Some(0));
+    assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
+    assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+}
+
+#[tokio::test]
+pub(crate) async fn ensure_upstream_accounts_schema_migrates_api_keys_to_explicit_transit_proxy_bindings()
+ {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure initial schema");
+
+    let inherited_proxy_id = insert_api_key_account(&pool, "Legacy group proxy").await;
+    let direct_proxy_id = insert_api_key_account(&pool, "No legacy proxy").await;
+    let explicit_proxy_id = insert_api_key_account(&pool, "Explicit proxy override").await;
+    let oauth_id = insert_oauth_account(&pool, "OAuth group remains").await;
+    upsert_test_group_binding(&pool, "legacy-relay", vec!["legacy-edge".to_string()]).await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET group_name = CASE id
+                WHEN ?1 THEN 'legacy-relay'
+                WHEN ?2 THEN NULL
+                WHEN ?3 THEN 'legacy-relay'
+            END,
+            is_mother = CASE WHEN id = ?1 THEN 1 ELSE 0 END,
+            bound_proxy_keys_json = CASE
+                WHEN id = ?3 THEN '["account-edge"]'
+                ELSE NULL
+            END
+        WHERE id IN (?1, ?2, ?3)
+        "#,
+    )
+    .bind(inherited_proxy_id)
+    .bind(direct_proxy_id)
+    .bind(explicit_proxy_id)
+    .execute(&pool)
+    .await
+    .expect("seed legacy API Key proxy bindings");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_concurrency_limit = 7, policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 3 WHERE id = ?1",
+    )
+    .bind(inherited_proxy_id)
+    .execute(&pool)
+    .await
+    .expect("seed legacy transit group policy snapshot");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("migrate legacy API Key proxy bindings");
+
+    assert_api_key_transit_proxy_migration(
+        &pool,
+        inherited_proxy_id,
+        direct_proxy_id,
+        explicit_proxy_id,
+        oauth_id,
+    )
+    .await;
+}
+
+async fn assert_api_key_transit_proxy_migration(
+    pool: &SqlitePool,
+    inherited_proxy_id: i64,
+    direct_proxy_id: i64,
+    explicit_proxy_id: i64,
+    oauth_id: i64,
+) {
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i64, Option<String>)>(
+        "SELECT id, group_name, is_mother, bound_proxy_keys_json FROM pool_upstream_accounts WHERE id IN (?1, ?2, ?3) ORDER BY id ASC",
+    )
+    .bind(inherited_proxy_id)
+    .bind(direct_proxy_id)
+    .bind(explicit_proxy_id)
+    .fetch_all(pool)
+    .await
+    .expect("load migrated API Key accounts");
+    let bindings = rows
+        .into_iter()
+        .map(|(id, group_name, is_mother, raw)| {
+            (
+                id,
+                (
+                    group_name,
+                    is_mother,
+                    decode_group_bound_proxy_keys_json(raw.as_deref()),
+                ),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        bindings.get(&inherited_proxy_id),
+        Some(&(None, 0, vec!["legacy-edge".to_string()]))
+    );
+    assert_eq!(
+        bindings.get(&direct_proxy_id),
+        Some(&(None, 0, vec![FORWARD_PROXY_DIRECT_KEY.to_string()]))
+    );
+    assert_eq!(
+        bindings.get(&explicit_proxy_id),
+        Some(&(None, 0, vec!["account-edge".to_string()]))
+    );
+    let transit_policy: (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT policy_concurrency_limit, policy_upstream_429_retry_enabled, policy_upstream_429_max_retries FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(inherited_proxy_id)
+    .fetch_one(pool)
+    .await
+    .expect("load cleared transit policy snapshot");
+    assert_eq!(transit_policy, (None, None, None));
+    let oauth_group: Option<String> =
+        sqlx::query_scalar("SELECT group_name FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(oauth_id)
+            .fetch_one(pool)
+            .await
+            .expect("load untouched OAuth group");
+    assert_eq!(oauth_group.as_deref(), Some(test_required_group_name()));
+    let migration_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_events WHERE action = ?1")
+            .bind(API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_ACTION)
+            .fetch_one(pool)
+            .await
+            .expect("count transit proxy migration events");
+    assert_eq!(migration_events, 3);
+    ensure_upstream_accounts_schema(pool)
+        .await
+        .expect("rerun idempotent transit proxy migration");
+    let migration_events_after_rerun: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_events WHERE action = ?1")
+            .bind(API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_ACTION)
+            .fetch_one(pool)
+            .await
+            .expect("count idempotent transit proxy migration events");
+    assert_eq!(migration_events_after_rerun, 3);
+}
+
+#[tokio::test]
+pub(crate) async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_before_seed()
+ {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    sqlx::query(
+        r#"
+            CREATE TABLE pool_routing_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                encrypted_api_key TEXT,
+                masked_api_key TEXT,
+                primary_sync_interval_secs INTEGER,
+                secondary_sync_interval_secs INTEGER,
+                priority_available_account_cap INTEGER,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy pool_routing_settings");
+    sqlx::query(
+        r#"
+            CREATE TABLE pool_upstream_account_model_routes (
+                account_id INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                state TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                streak_started_at TEXT,
+                changed_at TEXT,
+                last_seen_at TEXT NOT NULL,
+                last_success_at TEXT,
+                last_failure_at TEXT,
+                last_failure_kind TEXT,
+                last_failure_message TEXT,
+                cooldown_until TEXT,
+                UNIQUE(account_id, model)
+            )
+            "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy model routing table");
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, last_seen_at) VALUES (7, 'gpt-legacy', 'degraded', 'demoted', datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy model routing row");
+    sqlx::query(
+        r#"
+            INSERT INTO pool_routing_settings (
+                id,
+                encrypted_api_key,
+                masked_api_key,
+                primary_sync_interval_secs,
+                secondary_sync_interval_secs,
+                priority_available_account_cap,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+            "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .bind("legacy-ciphertext")
+    .bind("sk-legacy")
+    .bind(300_i64)
+    .bind(2400_i64)
+    .bind(99_i64)
+    .execute(&pool)
+    .await
+    .expect("insert legacy pool routing row");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("upgrade schema");
+
+    assert_legacy_routing_schema_upgrade(&pool).await;
+}
+
+async fn assert_legacy_routing_schema_upgrade(pool: &SqlitePool) {
+    let columns = sqlx::query("PRAGMA table_info('pool_routing_settings')")
+        .fetch_all(pool)
+        .await
+        .expect("load table info")
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<std::collections::HashSet<_>>();
+    for column in [
+        "responses_first_byte_timeout_secs",
+        "compact_first_byte_timeout_secs",
+        "responses_stream_timeout_secs",
+        "compact_stream_timeout_secs",
+        "default_first_byte_timeout_secs",
+        "upstream_handshake_timeout_secs",
+        "request_read_timeout_secs",
+        "cache_hit_protection_enabled",
+        "cache_hit_low_rate_threshold_percent",
+        "cache_hit_overflow_mode",
+    ] {
+        assert!(
+            columns.contains(column),
+            "expected upgraded schema to contain {column}"
+        );
+    }
+    let model_route_columns =
+        sqlx::query("PRAGMA table_info('pool_upstream_account_model_routes')")
+            .fetch_all(pool)
+            .await
+            .expect("load model routing table info")
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect::<std::collections::HashSet<_>>();
+    for column in [
+        "reset_fence_at",
+        "cache_concurrency_limit",
+        "cache_recovery_limit",
+        "cache_low_hit_streak",
+        "cache_cooldown_level",
+        "cache_last_hit_rate_percent",
+    ] {
+        assert!(
+            model_route_columns.contains(column),
+            "expected upgraded model routing schema to contain {column}"
+        );
+    }
+    let persisted_model_route = sqlx::query_as::<_, (String, String, Option<i64>, Option<i64>, i64, i64, Option<i64>)>(
+        "SELECT state, priority, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent FROM pool_upstream_account_model_routes WHERE account_id = 7 AND model = 'gpt-legacy'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("load upgraded legacy model route");
+    assert_eq!(persisted_model_route.0, "degraded");
+    assert_eq!(persisted_model_route.1, "demoted");
+    assert_eq!(persisted_model_route.2, None);
+    assert_eq!(persisted_model_route.3, None);
+    assert_eq!(persisted_model_route.4, 0);
+    assert_eq!(persisted_model_route.5, 0);
+    assert_eq!(persisted_model_route.6, None);
+    assert_legacy_routing_settings(pool).await;
+}
+
+async fn assert_legacy_routing_settings(pool: &SqlitePool) {
+    let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+    let row = load_pool_routing_settings_seeded(pool, &config)
+        .await
+        .expect("load upgraded routing settings");
+    assert_eq!(row.encrypted_api_key.as_deref(), Some("legacy-ciphertext"));
+    assert_eq!(row.masked_api_key.as_deref(), Some("sk-legacy"));
+    assert_eq!(row.primary_sync_interval_secs, Some(300));
+    assert_eq!(row.secondary_sync_interval_secs, Some(2400));
+    assert_eq!(row.priority_available_account_cap, Some(99));
+    assert_eq!(row.responses_first_byte_timeout_secs, None);
+    assert_eq!(row.compact_first_byte_timeout_secs, None);
+    assert_eq!(row.responses_stream_timeout_secs, None);
+    assert_eq!(row.compact_stream_timeout_secs, None);
+    assert_eq!(row.default_first_byte_timeout_secs, None);
+    assert_eq!(row.upstream_handshake_timeout_secs, None);
+    assert_eq!(row.request_read_timeout_secs, None);
+    assert_eq!(row.cache_hit_protection_enabled, Some(0));
+    assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
+    assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+    let resolved = resolve_pool_routing_timeouts(pool, &config)
+        .await
+        .expect("resolve routing timeouts");
+    let defaults = pool_routing_timeouts_from_config(&config);
+    assert_eq!(
+        resolved.responses_first_byte_timeout,
+        defaults.responses_first_byte_timeout
+    );
+    assert_eq!(
+        resolved.compact_first_byte_timeout,
+        defaults.compact_first_byte_timeout
+    );
+    assert_eq!(
+        resolved.responses_stream_timeout,
+        defaults.responses_stream_timeout
+    );
+    assert_eq!(
+        resolved.compact_stream_timeout,
+        defaults.compact_stream_timeout
+    );
+    assert_eq!(
+        resolved.default_first_byte_timeout,
+        defaults.default_first_byte_timeout
+    );
+    assert_eq!(resolved.default_send_timeout, defaults.default_send_timeout);
+    assert_eq!(resolved.request_read_timeout, defaults.request_read_timeout);
+}
+
+#[tokio::test]
+pub(crate) async fn ensure_upstream_accounts_schema_resets_mixed_response_capability_once() {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure schema");
+
+    let account_id = insert_oauth_account(&pool, "Legacy Mixed Capability").await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'supported',
+            response_endpoint_capability_observed_at = '2026-07-17T08:00:00Z',
+            response_endpoint_capability_reason = 'legacy mixed response capability',
+            policy_response_endpoint_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("seed legacy mixed response capability");
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET capability_axis_split_migrated = 0
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("reset capability-axis migration flag");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("run capability-axis cutover");
+
+    assert_mixed_capability_reset(&pool, account_id).await;
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_endpoint_capability = 'supported',
+            response_endpoint_capability_reason = 'responses endpoint request succeeded',
+            policy_response_endpoint_capability_override = 'supported',
+            chat_completions_capability = 'supported',
+            chat_completions_capability_reason = 'chat completions endpoint request succeeded',
+            policy_chat_completions_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("seed post-cutover capability state");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("rerun schema maintenance after cutover");
+
+    assert_mixed_capability_preserved(&pool, account_id).await;
+}
+
+async fn assert_mixed_capability_reset(pool: &SqlitePool, account_id: i64) {
+    let row = load_upstream_account_row(pool, account_id)
+        .await
+        .expect("load row after capability-axis cutover")
+        .expect("row exists after capability-axis cutover");
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(row.chat_completions_capability.as_deref(), Some("unknown"));
+    assert_eq!(row.response_endpoint_capability_observed_at, None);
+    assert_eq!(row.chat_completions_capability_observed_at, None);
+    assert_eq!(row.response_endpoint_capability_reason, None);
+    assert_eq!(row.chat_completions_capability_reason, None);
+    assert_eq!(row.policy_response_endpoint_capability_override, None);
+    assert_eq!(row.policy_chat_completions_capability_override, None);
+}
+
+async fn assert_mixed_capability_preserved(pool: &SqlitePool, account_id: i64) {
+    let row = load_upstream_account_row(pool, account_id)
+        .await
+        .expect("load row after second schema run")
+        .expect("row exists after second schema run");
+    assert_eq!(
+        row.response_endpoint_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.chat_completions_capability.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.policy_response_endpoint_capability_override.as_deref(),
+        Some("supported")
+    );
+    assert_eq!(
+        row.policy_chat_completions_capability_override.as_deref(),
+        Some("unsupported")
+    );
+    let migrated: i64 = sqlx::query_scalar(
+        "SELECT capability_axis_split_migrated FROM pool_routing_settings WHERE id = ?1",
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .fetch_one(pool)
+    .await
+    .expect("load capability-axis migration flag");
+    assert_eq!(migrated, 1);
+}
+
+#[tokio::test]
+pub(crate) async fn ensure_upstream_accounts_schema_repairs_only_responses_lite_image_tool_misclassifications()
+ {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure schema");
+
+    let repaired_account_id = insert_oauth_account(&pool, "Responses Lite misclassification").await;
+    let retained_account_id = insert_oauth_account(&pool, "Actual unsupported image tool").await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_image_tool_capability = 'unsupported',
+            response_image_tool_capability_observed_at = '2026-07-24T00:00:00Z',
+            response_image_tool_capability_reason = ?2,
+            policy_response_image_tool_capability_override = 'supported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(repaired_account_id)
+    .bind("Responses Lite rejected top-level tool type image_generation")
+    .execute(&pool)
+    .await
+    .expect("seed Lite misclassification");
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET response_image_tool_capability = 'unsupported',
+            response_image_tool_capability_observed_at = '2026-07-24T00:00:00Z',
+            response_image_tool_capability_reason = 'unsupported tool: image_generation',
+            policy_response_image_tool_capability_override = 'unsupported'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(retained_account_id)
+    .execute(&pool)
+    .await
+    .expect("seed actual unsupported capability");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("repair Lite misclassification");
+
+    let repaired = load_upstream_account_row(&pool, repaired_account_id)
+        .await
+        .expect("load repaired account")
+        .expect("repaired account exists");
+    assert_eq!(
+        repaired.response_image_tool_capability.as_deref(),
+        Some("unknown")
+    );
+    assert_eq!(repaired.response_image_tool_capability_observed_at, None);
+    assert_eq!(repaired.response_image_tool_capability_reason, None);
+    assert_eq!(
+        repaired
+            .policy_response_image_tool_capability_override
+            .as_deref(),
+        Some("supported")
+    );
+
+    let retained = load_upstream_account_row(&pool, retained_account_id)
+        .await
+        .expect("load retained account")
+        .expect("retained account exists");
+    assert_eq!(
+        retained.response_image_tool_capability.as_deref(),
+        Some("unsupported")
+    );
+    assert_eq!(
+        retained.response_image_tool_capability_reason.as_deref(),
+        Some("unsupported tool: image_generation")
+    );
+    assert_eq!(
+        retained
+            .policy_response_image_tool_capability_override
+            .as_deref(),
+        Some("unsupported")
     );
 }
 
-#[test]
-pub(crate) fn normalize_concurrency_limit_rejects_values_outside_supported_range() {
-    assert_eq!(
-        normalize_concurrency_limit(Some(-1), "concurrencyLimit"),
-        Err((
-            StatusCode::BAD_REQUEST,
-            "concurrencyLimit must be between 0 and 30".to_string(),
-        ))
-    );
-    assert_eq!(
-        normalize_concurrency_limit(Some(31), "concurrencyLimit"),
-        Err((
-            StatusCode::BAD_REQUEST,
-            "concurrencyLimit must be between 0 and 30".to_string(),
-        ))
-    );
-    assert_eq!(normalize_concurrency_limit(None, "concurrencyLimit"), Ok(0));
-    assert_eq!(
-        normalize_concurrency_limit(Some(30), "concurrencyLimit"),
-        Ok(30)
-    );
-}
+#[tokio::test]
+pub(crate) async fn ensure_upstream_accounts_schema_migrates_legacy_block_policy_to_no_new_priority()
+ {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    seed_legacy_block_policy_schema(&pool).await;
 
-#[test]
-pub(crate) fn build_effective_routing_rule_uses_smallest_non_zero_concurrency_limit() {
-    let tags = vec![
-        test_account_tag_summary(1, "unlimited", 0),
-        test_account_tag_summary(2, "soft", 6),
-        test_account_tag_summary(3, "strict", 3),
-    ];
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("upgrade legacy policy columns");
 
-    let rule = build_effective_routing_rule(&tags);
-
-    assert_eq!(rule.concurrency_limit, 3);
-    assert_eq!(rule.source_tag_ids, vec![1, 2, 3]);
+    let legacy_model_mappings = sqlx::query_as::<_, (String, String)>(
+        r#"
+            SELECT display_name, model_mappings_json
+            FROM pool_upstream_accounts
+            ORDER BY display_name
+            "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load migrated model mappings");
     assert_eq!(
-        rule.source_tag_names,
+        legacy_model_mappings,
         vec![
-            "unlimited".to_string(),
-            "soft".to_string(),
-            "strict".to_string(),
+            ("legacy-allow".to_string(), "[]".to_string()),
+            ("legacy-block".to_string(), "[]".to_string()),
+            ("legacy-inherit".to_string(), "[]".to_string()),
+        ],
+        "legacy accounts must receive an empty mapping list during the online migration"
+    );
+
+    let account_values = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+            SELECT display_name, policy_priority_tier
+            FROM pool_upstream_accounts
+            ORDER BY display_name
+            "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load account policies");
+    assert_eq!(
+        account_values,
+        vec![
+            ("legacy-allow".to_string(), None),
+            ("legacy-block".to_string(), Some("no_new".to_string())),
+            ("legacy-inherit".to_string(), None),
+        ]
+    );
+
+    let group_values = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+            SELECT group_name, policy_priority_tier
+            FROM pool_upstream_account_group_notes
+            ORDER BY group_name
+            "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load group policies");
+    assert_eq!(
+        group_values,
+        vec![
+            ("legacy-allow-group".to_string(), None),
+            ("legacy-block-group".to_string(), Some("no_new".to_string())),
+            ("legacy-inherit-group".to_string(), None),
         ]
     );
 }
 
-#[test]
-pub(crate) fn normalize_tag_priority_tier_defaults_to_normal_and_rejects_invalid_values() {
-    assert_eq!(
-        normalize_tag_priority_tier(None),
-        Ok(TagPriorityTier::Normal)
-    );
-    assert_eq!(
-        normalize_tag_priority_tier(Some("primary")),
-        Ok(TagPriorityTier::Primary)
-    );
-    assert_eq!(
-        normalize_tag_priority_tier(Some("fallback")),
-        Ok(TagPriorityTier::Fallback)
-    );
-    assert_eq!(
-        normalize_tag_priority_tier(Some("unexpected")),
-        Err((
-            StatusCode::BAD_REQUEST,
-            "priorityTier must be one of: primary, normal, fallback, no_new".to_string(),
-        ))
-    );
-}
-
-#[test]
-pub(crate) fn build_effective_routing_rule_uses_most_conservative_priority_tier() {
-    let mut primary = test_account_tag_summary(1, "primary", 0);
-    primary.routing_rule.priority_tier = TagPriorityTier::Primary;
-    let mut normal = test_account_tag_summary(2, "normal", 0);
-    normal.routing_rule.priority_tier = TagPriorityTier::Normal;
-    let mut fallback = test_account_tag_summary(3, "fallback", 0);
-    fallback.routing_rule.priority_tier = TagPriorityTier::Fallback;
-
-    let rule = build_effective_routing_rule(&[primary, normal, fallback]);
-
-    assert_eq!(rule.priority_tier, TagPriorityTier::Fallback);
-}
-
-#[test]
-pub(crate) fn normalize_tag_fast_mode_rewrite_mode_defaults_to_keep_original_and_rejects_invalid_values()
- {
-    assert_eq!(
-        normalize_tag_fast_mode_rewrite_mode(None),
-        Ok(TagFastModeRewriteMode::KeepOriginal)
-    );
-    assert_eq!(
-        normalize_tag_fast_mode_rewrite_mode(Some("force_add")),
-        Ok(TagFastModeRewriteMode::ForceAdd)
-    );
-    assert_eq!(
-            normalize_tag_fast_mode_rewrite_mode(Some("unexpected")),
-            Err((
-                StatusCode::BAD_REQUEST,
-                "fastModeRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add".to_string(),
-            ))
-        );
-}
-
-#[test]
-pub(crate) fn build_effective_routing_rule_uses_most_conservative_fast_mode_rewrite_mode() {
-    let mut keep_original = test_account_tag_summary(1, "keep", 0);
-    keep_original.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
-    let mut fill_missing = test_account_tag_summary(2, "fill", 0);
-    fill_missing.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::FillMissing;
-    let mut force_add = test_account_tag_summary(3, "add", 0);
-    force_add.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceAdd;
-    let mut force_remove = test_account_tag_summary(4, "remove", 0);
-    force_remove.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
-
-    let rule =
-        build_effective_routing_rule(&[keep_original, fill_missing, force_add, force_remove]);
-
-    assert_eq!(
-        rule.fast_mode_rewrite_mode,
-        TagFastModeRewriteMode::ForceRemove
-    );
-}
-
-#[test]
-pub(crate) fn build_effective_routing_rule_intersects_available_models_and_collects_system_denies()
-{
-    let mut first = test_account_tag_summary(1, "first", 0);
-    first.routing_rule.available_models = vec!["gpt-5.5".to_string(), "gpt-5.4-mini".to_string()];
-    let mut second = test_account_tag_summary(2, "second", 0);
-    second.routing_rule.available_models = vec!["gpt-5.4-mini".to_string(), "gpt-4.1".to_string()];
-    second.system_key = Some("unsupported_model:gpt-5.5".to_string());
-
-    let rule = build_effective_routing_rule(&[first, second]);
-
-    assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
-    assert!(rule.available_models_defined);
-    assert_eq!(rule.field_sources.available_models, "tag");
-    assert_eq!(rule.system_denied_models, vec!["gpt-5.5".to_string()]);
-    assert_eq!(rule.field_sources.system_denied_models, "system");
-}
-
-#[test]
-pub(crate) fn build_effective_routing_rule_intersects_available_models_by_alias() {
-    let mut first = test_account_tag_summary(1, "first", 0);
-    first.routing_rule.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
-    let mut second = test_account_tag_summary(2, "second", 0);
-    second.routing_rule.available_models = vec!["gpt-5.5".to_string()];
-
-    let rule = build_effective_routing_rule(&[first, second]);
-
-    assert_eq!(
-        rule.available_models,
-        vec!["gpt-5.5-2026-01-15".to_string()]
-    );
-    assert!(rule.available_models_defined);
-    assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
-}
-
-#[test]
-pub(crate) fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_all() {
-    let mut first = test_account_tag_summary(1, "first", 0);
-    first.routing_rule.available_models = vec!["gpt-4o".to_string()];
-    let mut second = test_account_tag_summary(2, "second", 0);
-    second.routing_rule.available_models = vec!["o3".to_string()];
-
-    let rule = build_effective_routing_rule(&[first, second]);
-
-    assert!(rule.available_models_defined);
-    assert!(rule.available_models.is_empty());
-    assert!(!account_accepts_requested_model(Some("gpt-4o"), &rule));
-    assert!(!account_accepts_requested_model(Some("o3"), &rule));
-}
-
-#[test]
-pub(crate) fn build_effective_routing_rule_ignores_editable_fields_from_protected_system_tags() {
-    let mut system_tag = test_account_tag_summary(1, "system", 3);
-    system_tag.protected = true;
-    system_tag.system_key = Some("unsupported_model:gpt-5.4".to_string());
-    system_tag.routing_rule.allow_cut_in = false;
-    system_tag.routing_rule.priority_tier = TagPriorityTier::Fallback;
-    system_tag.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
-    system_tag.routing_rule.upstream_429_retry_enabled = true;
-    system_tag.routing_rule.upstream_429_max_retries = 4;
-    system_tag.routing_rule.available_models = vec!["gpt-5.4-mini".to_string()];
-
-    let rule = build_effective_routing_rule(&[system_tag]);
-
-    assert!(rule.allow_cut_in);
-    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
-    assert_eq!(
-        rule.fast_mode_rewrite_mode,
-        TagFastModeRewriteMode::KeepOriginal
-    );
-    assert_eq!(rule.concurrency_limit, 0);
-    assert!(!rule.upstream_429_retry_enabled);
-    assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
-    assert_eq!(rule.system_denied_models, vec!["gpt-5.4".to_string()]);
-}
-
-#[test]
-pub(crate) fn root_and_lower_model_policies_fail_closed_on_blank_entries() {
-    let mut root_rule = test_effective_routing_rule(0);
-    apply_root_available_models(&mut root_rule, Some(r#"[" "]"#), Some("denylist"));
-    assert!(root_rule.available_models_defined);
-    assert!(root_rule.available_models.is_empty());
-    assert_eq!(
-        root_rule.available_models_mode,
-        AvailableModelsMode::Allowlist
-    );
-    assert!(!account_accepts_requested_model(
-        Some("gpt-5.4"),
-        &root_rule
-    ));
-
-    let mut lower_rule = test_effective_routing_rule(0);
-    apply_routing_policy_override(
-        &mut lower_rule,
-        "group",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-        None,
-        Some(r#"[" "]"#),
-        Some("denylist"),
-    );
-    assert!(lower_rule.available_models_defined);
-    assert!(lower_rule.available_models.is_empty());
-    assert_eq!(
-        lower_rule.available_models_mode,
-        AvailableModelsMode::Allowlist
-    );
-    assert!(!account_accepts_requested_model(
-        Some("gpt-5.4"),
-        &lower_rule
-    ));
-}
-
-#[test]
-pub(crate) fn apply_tag_layer_routing_policy_preserves_inherited_available_models_when_tags_do_not_define_them()
- {
-    let mut inherited = test_effective_routing_rule(0);
-    inherited.available_models = vec!["gpt-5.5".to_string()];
-    inherited.available_models_defined = true;
-    inherited.field_sources.available_models = "group".to_string();
-
-    let tag_rule = build_effective_routing_rule(&[test_account_tag_summary(1, "tag", 0)]);
-
-    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
-
-    assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
-    assert!(inherited.available_models_defined);
-    assert_eq!(inherited.field_sources.available_models, "group");
-}
-
-#[test]
-pub(crate) fn apply_tag_layer_routing_policy_intersects_tag_models_with_inherited_group_models() {
-    let mut inherited = test_effective_routing_rule(0);
-    inherited.available_models = vec!["gpt-4o".to_string(), "gpt-5.5".to_string()];
-    inherited.available_models_defined = true;
-    inherited.field_sources.available_models = "group".to_string();
-
-    let mut tag = test_account_tag_summary(1, "tag", 0);
-    tag.routing_rule.available_models = vec!["gpt-5.5".to_string(), "o3".to_string()];
-    let tag_rule = build_effective_routing_rule(&[tag]);
-
-    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
-
-    assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
-    assert!(inherited.available_models_defined);
-    assert_eq!(inherited.field_sources.available_models, "tag");
-}
-
-#[test]
-pub(crate) fn apply_tag_layer_routing_policy_intersects_inherited_models_by_alias() {
-    let mut inherited = test_effective_routing_rule(0);
-    inherited.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
-    inherited.available_models_defined = true;
-    inherited.field_sources.available_models = "group".to_string();
-
-    let mut tag = test_account_tag_summary(1, "tag", 0);
-    tag.routing_rule.available_models = vec!["gpt-5.5".to_string(), "o3".to_string()];
-    let tag_rule = build_effective_routing_rule(&[tag]);
-
-    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
-
-    assert_eq!(
-        inherited.available_models,
-        vec!["gpt-5.5-2026-01-15".to_string()]
-    );
-    assert!(inherited.available_models_defined);
-    assert_eq!(inherited.field_sources.available_models, "tag");
-    assert!(account_accepts_requested_model(Some("gpt-5.5"), &inherited));
-}
-
-#[test]
-pub(crate) fn apply_tag_layer_routing_policy_keeps_group_tag_disjoint_models_as_deny_all() {
-    let mut inherited = test_effective_routing_rule(0);
-    inherited.available_models = vec!["gpt-4o".to_string()];
-    inherited.available_models_defined = true;
-    inherited.field_sources.available_models = "group".to_string();
-
-    let mut tag = test_account_tag_summary(1, "tag", 0);
-    tag.routing_rule.available_models = vec!["gpt-5.5".to_string()];
-    let tag_rule = build_effective_routing_rule(&[tag]);
-
-    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
-
-    assert!(inherited.available_models_defined);
-    assert!(inherited.available_models.is_empty());
-    assert!(!account_accepts_requested_model(Some("gpt-4o"), &inherited));
-    assert!(!account_accepts_requested_model(
-        Some("gpt-5.5"),
-        &inherited
-    ));
-    assert_eq!(inherited.field_sources.available_models, "tag");
-}
-
-#[test]
-pub(crate) fn apply_tag_layer_routing_policy_keeps_inherited_denylist_and_adds_tag_constraint() {
-    let mut inherited = test_effective_routing_rule(0);
-    inherited.available_models = vec!["gpt-5.4".to_string()];
-    inherited.available_models_mode = AvailableModelsMode::Denylist;
-    inherited.available_models_defined = true;
-    inherited.field_sources.available_models = "group".to_string();
-    inherited.field_sources.available_models_mode = "group".to_string();
-
-    let mut tag = test_account_tag_summary(1, "tag", 0);
-    tag.routing_rule.available_models = vec!["gpt-5.4".to_string(), "gpt-4.1".to_string()];
-    let tag_rule = build_effective_routing_rule(&[tag]);
-
-    apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
-
-    assert_eq!(
-        inherited.available_models_mode,
-        AvailableModelsMode::Denylist
-    );
-    assert_eq!(inherited.available_models, vec!["gpt-5.4".to_string()]);
-    assert_eq!(
-        inherited.tag_available_models,
-        Some(vec!["gpt-5.4".to_string(), "gpt-4.1".to_string()])
-    );
-    assert!(!account_accepts_requested_model(
-        Some("gpt-5.4"),
-        &inherited
-    ));
-    assert!(account_accepts_requested_model(Some("gpt-4.1"), &inherited));
-}
-
-#[test]
-pub(crate) fn malformed_available_models_mode_keeps_legacy_allowlist_semantics() {
-    assert_eq!(
-        AvailableModelsMode::from_str(Some("unexpected")),
-        AvailableModelsMode::Allowlist
-    );
-}
-
-#[test]
-pub(crate) fn account_accepts_requested_model_supports_exact_alias_and_system_deny() {
-    let mut rule = test_effective_routing_rule(0);
-    rule.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
-    rule.available_models_defined = true;
-    assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
-    assert!(account_accepts_requested_model(
-        Some("gpt-5.5-2026-01-15"),
-        &rule
-    ));
-    assert!(!account_accepts_requested_model(Some("gpt-4.1"), &rule));
-
-    rule.system_denied_models = vec!["gpt-5.5".to_string()];
-    assert!(!account_accepts_requested_model(
-        Some("gpt-5.5-2026-01-15"),
-        &rule
-    ));
-    assert!(account_accepts_requested_model(None, &rule));
-}
-
-#[test]
-pub(crate) fn account_accepts_concurrency_limit_treats_zero_as_unlimited_and_allows_sticky_reuse() {
-    let unlimited = test_effective_routing_rule(0);
-    let limited = test_effective_routing_rule(2);
-
-    assert!(account_accepts_concurrency_limit(
-        99,
-        PoolRoutingSelectionSource::FreshAssignment,
-        &unlimited,
-    ));
-    assert!(account_accepts_concurrency_limit(
-        1,
-        PoolRoutingSelectionSource::FreshAssignment,
-        &limited,
-    ));
-    assert!(!account_accepts_concurrency_limit(
-        2,
-        PoolRoutingSelectionSource::FreshAssignment,
-        &limited,
-    ));
-    assert!(account_accepts_concurrency_limit(
-        2,
-        PoolRoutingSelectionSource::StickyReuse,
-        &limited,
-    ));
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_uses_tag_layer_over_group_limit() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Group Tag Limit").await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
-        .bind(account_id)
-        .bind("alpha")
-        .execute(&pool)
-        .await
-        .expect("assign group name");
-
-    let mut relaxed_rule = test_tag_routing_rule();
-    relaxed_rule.concurrency_limit = 6;
-    let relaxed_tag = insert_test_tag(&pool, "alpha-relaxed", &relaxed_rule)
-        .await
-        .expect("insert relaxed tag");
-
-    let mut strict_rule = test_tag_routing_rule();
-    strict_rule.concurrency_limit = 2;
-    let strict_tag = insert_test_tag(&pool, "alpha-strict", &strict_rule)
-        .await
-        .expect("insert strict tag");
-
-    sync_account_tag_links(
-        &pool,
-        account_id,
-        &[relaxed_tag.summary.id, strict_tag.summary.id],
-    )
-    .await
-    .expect("attach tags");
-
-    let mut conn = pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "alpha",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: vec![],
-            node_shunt_enabled: false,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 4,
-        },
-    )
-    .await
-    .expect("save group metadata");
-    drop(conn);
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load effective routing rule");
-
-    assert_eq!(rule.concurrency_limit, 2);
-    assert_eq!(rule.field_sources.concurrency_limit, "tag");
-    assert_eq!(
-        rule.source_tag_ids,
-        vec![relaxed_tag.summary.id, strict_tag.summary.id]
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_ignores_group_policy_for_api_key_transit()
- {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Transit Group Policy Guard").await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
-        .bind(account_id)
-        .bind("legacy-transit")
-        .execute(&pool)
-        .await
-        .expect("assign legacy transit group name");
-
-    let mut conn = pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "legacy-transit",
-        UpstreamAccountGroupMetadata::default(),
-    )
-    .await
-    .expect("save legacy transit group metadata");
-    drop(conn);
-    sqlx::query(
-        "UPDATE pool_upstream_account_group_notes SET policy_priority_tier = 'fallback' WHERE group_name = ?1",
-    )
-    .bind("legacy-transit")
-    .execute(&pool)
-    .await
-    .expect("seed legacy transit group policy");
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load transit effective routing rule");
-
-    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
-    assert_eq!(rule.field_sources.priority_tier, "root");
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_reads_tag_available_models_from_db() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Tag Model Constraint").await;
-
-    let mut tag_rule = test_tag_routing_rule();
-    tag_rule.available_models = vec!["gpt-5.5".to_string()];
-    let tag = insert_test_tag(&pool, "tag-model-constraint", &tag_rule)
-        .await
-        .expect("insert model tag");
-    sync_account_tag_links(&pool, account_id, &[tag.summary.id])
-        .await
-        .expect("attach model tag");
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load effective routing rule");
-
-    assert_eq!(rule.available_models, vec!["gpt-5.5".to_string()]);
-    assert!(rule.available_models_defined);
-    assert_eq!(rule.field_sources.available_models, "tag");
-    assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
-    assert!(!account_accepts_requested_model(Some("gpt-4.1"), &rule));
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_fails_closed_on_malformed_tag_models() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Malformed Tag Model Constraint").await;
-    let now_iso = format_utc_iso(Utc::now());
-    let tag_id: i64 = sqlx::query_scalar(
-        r#"
-            INSERT INTO pool_tags (
-                name, system_key, protected, allow_cut_out, allow_cut_in, priority_tier,
-                fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
-                upstream_429_max_retries, available_models_json, created_at, updated_at
-            ) VALUES ('malformed-tag-models', NULL, 0, 1, 1, 'normal', 'keep_original', 0, 0, 0,
-                      'not-json', ?1, ?1)
-            RETURNING id
-            "#,
-    )
-    .bind(&now_iso)
-    .fetch_one(&pool)
-    .await
-    .expect("insert malformed tag");
+async fn seed_legacy_block_policy_schema(pool: &SqlitePool) {
     sqlx::query(
         r#"
-            INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?3)
+            CREATE TABLE pool_upstream_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'codex',
+                display_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                email TEXT,
+                chatgpt_account_id TEXT,
+                last_synced_at TEXT,
+                last_successful_sync_at TEXT,
+                policy_block_new_conversations INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
             "#,
     )
-    .bind(account_id)
-    .bind(tag_id)
-    .bind(&now_iso)
-    .execute(&pool)
+    .execute(pool)
     .await
-    .expect("attach malformed tag");
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load effective routing rule");
-
-    assert!(rule.available_models_defined);
-    assert!(rule.available_models.is_empty());
-    assert_eq!(rule.field_sources.available_models, "tag");
-    assert!(!account_accepts_requested_model(Some("gpt-5.4"), &rule));
-}
-
-#[tokio::test]
-pub(crate) async fn ensure_account_has_unsupported_model_tag_creates_generic_system_deny_tag() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Unsupported Model Learn").await;
-
-    ensure_account_has_unsupported_model_tag(&pool, account_id, "gpt-5.4-mini")
-        .await
-        .expect("learn unsupported model deny");
-
-    let row: (Option<String>, i64) = sqlx::query_as(
-        r#"
-            SELECT tag.system_key, tag.protected
-            FROM pool_upstream_account_tags link
-            INNER JOIN pool_tags tag ON tag.id = link.tag_id
-            WHERE link.account_id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .fetch_one(&pool)
-    .await
-    .expect("load linked deny tag");
-
-    assert_eq!(row.0.as_deref(), Some("unsupported_model:gpt-5.4-mini"));
-    assert_eq!(row.1, 1);
-}
-
-#[tokio::test]
-pub(crate) async fn ensure_protected_system_tag_clears_legacy_editable_policy() {
-    let pool = test_pool().await;
-    let now_iso = format_utc_iso(Utc::now());
+    .expect("create legacy account table");
     sqlx::query(
         r#"
-            UPDATE pool_tags
-            SET system_key = NULL,
-                protected = 0,
-                allow_cut_out = 0,
-                allow_cut_in = 0,
-                priority_tier = 'fallback',
-                fast_mode_rewrite_mode = 'force_remove',
-                concurrency_limit = 7,
-                upstream_429_retry_enabled = 1,
-                upstream_429_max_retries = 9,
-                available_models_json = '["gpt-5.4"]',
-                updated_at = ?2
-            WHERE name = ?1
+            INSERT INTO pool_upstream_accounts (
+                kind, display_name, status, policy_block_new_conversations, created_at, updated_at
+            ) VALUES
+                ('api_key', 'legacy-block', 'active', 1, datetime('now'), datetime('now')),
+                ('api_key', 'legacy-allow', 'active', 0, datetime('now'), datetime('now')),
+                ('api_key', 'legacy-inherit', 'active', NULL, datetime('now'), datetime('now'))
             "#,
     )
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
-    .bind(&now_iso)
-    .execute(&pool)
+    .execute(pool)
     .await
-    .expect("prepare legacy tag");
-
-    ensure_protected_system_tag(
-        &pool,
-        GPT55_UNSUPPORTED_SYSTEM_TAG_NAME,
-        GPT55_UNSUPPORTED_SYSTEM_TAG_KEY,
-    )
-    .await
-    .expect("promote legacy system tag");
-
-    let row: (i64, i64, String, String, i64, i64, String) = sqlx::query_as(
-        r#"
-            SELECT allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode,
-                   concurrency_limit, upstream_429_retry_enabled, available_models_json
-            FROM pool_tags
-            WHERE system_key = ?1
-            "#,
-    )
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
-    .fetch_one(&pool)
-    .await
-    .expect("load promoted system tag");
-
-    assert_eq!(row.0, 1);
-    assert_eq!(row.1, 1);
-    assert_eq!(row.2, "normal");
-    assert_eq!(row.3, "keep_original");
-    assert_eq!(row.4, 0);
-    assert_eq!(row.5, 0);
-    assert_eq!(row.6, "[\"gpt-5.4\"]");
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_applies_group_tag_account_overrides() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Layered Policy").await;
+    .expect("insert legacy account policies");
     sqlx::query(
         r#"
-            UPDATE pool_upstream_accounts
-            SET group_name = ?2,
-                policy_allow_cut_in = 1,
-                policy_fast_mode_rewrite_mode = 'force_remove',
-                policy_upstream_429_retry_enabled = 1,
-                policy_upstream_429_max_retries = 4
-            WHERE id = ?1
+            CREATE TABLE pool_upstream_account_group_notes (
+                group_name TEXT PRIMARY KEY,
+                note TEXT NOT NULL,
+                policy_block_new_conversations INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
             "#,
     )
-    .bind(account_id)
-    .bind("layered")
-    .execute(&pool)
+    .execute(pool)
     .await
-    .expect("assign account override");
-
-    let mut tag_rule = test_tag_routing_rule();
-    tag_rule.allow_cut_in = false;
-    tag_rule.priority_tier = TagPriorityTier::Fallback;
-    tag_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::FillMissing;
-    tag_rule.concurrency_limit = 3;
-    tag_rule.upstream_429_retry_enabled = true;
-    tag_rule.upstream_429_max_retries = 2;
-    let tag = insert_test_tag(&pool, "layered-tag", &tag_rule)
-        .await
-        .expect("insert layered tag");
-    sync_account_tag_links(&pool, account_id, &[tag.summary.id])
-        .await
-        .expect("attach layered tag");
-
-    let mut conn = pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "layered",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: vec![],
-            node_shunt_enabled: false,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 8,
-        },
-    )
-    .await
-    .expect("save legacy group metadata");
-    drop(conn);
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_account_group_notes
-            SET policy_priority_tier = 'primary',
-                policy_fast_mode_rewrite_mode = 'force_add',
-                policy_concurrency_limit = 5
-            WHERE group_name = 'layered'
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .expect("save group policy override");
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load layered effective routing rule");
-
-    assert_eq!(rule.priority_tier, TagPriorityTier::Fallback);
-    assert_eq!(
-        rule.fast_mode_rewrite_mode,
-        TagFastModeRewriteMode::ForceRemove
-    );
-    assert_eq!(rule.concurrency_limit, 3);
-    assert_eq!(rule.field_sources.concurrency_limit, "tag");
-    assert!(rule.allow_cut_in);
-    assert_eq!(rule.field_sources.allow_cut_in, "account");
-    assert!(rule.upstream_429_retry_enabled);
-    assert_eq!(rule.upstream_429_max_retries, 4);
-    assert_eq!(rule.field_sources.priority_tier, "tag");
-    assert_eq!(rule.field_sources.fast_mode_rewrite_mode, "account");
-    assert_eq!(rule.field_sources.upstream_429_retry, "account");
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_lets_tag_disable_group_retry() {
-    let pool = test_pool().await;
-    let account_id = insert_api_key_account(&pool, "Tag Retry Disable").await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
-        .bind(account_id)
-        .bind("retry-group")
-        .execute(&pool)
-        .await
-        .expect("assign group name");
-
-    let tag_rule = test_tag_routing_rule();
-    assert!(!tag_rule.upstream_429_retry_enabled);
-    let tag = insert_test_tag(&pool, "retry-disabled-tag", &tag_rule)
-        .await
-        .expect("insert retry-disabled tag");
-    sync_account_tag_links(&pool, account_id, &[tag.summary.id])
-        .await
-        .expect("attach retry-disabled tag");
-
-    let mut conn = pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "retry-group",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: vec![],
-            node_shunt_enabled: false,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 0,
-        },
-    )
-    .await
-    .expect("save group metadata");
-    drop(conn);
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_account_group_notes
-            SET policy_upstream_429_retry_enabled = 1,
-                policy_upstream_429_max_retries = 5
-            WHERE group_name = 'retry-group'
-            "#,
-    )
-    .execute(&pool)
-    .await
-    .expect("save group retry policy");
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load effective routing rule");
-
-    assert!(!rule.upstream_429_retry_enabled);
-    assert_eq!(rule.upstream_429_max_retries, 0);
-    assert_eq!(rule.field_sources.upstream_429_retry, "tag");
-}
-
-#[tokio::test]
-pub(crate) async fn load_effective_routing_rule_for_account_allows_account_block_override_to_clear_group()
- {
-    let pool = test_pool().await;
+    .expect("create legacy group table");
     sqlx::query(
         r#"
             INSERT INTO pool_upstream_account_group_notes (
-                group_name,
-                note,
-                policy_priority_tier,
-                created_at,
-                updated_at
-            ) VALUES ('blocked-group', '', 'no_new', '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z')
+                group_name, note, policy_block_new_conversations, created_at, updated_at
+            ) VALUES
+                ('legacy-block-group', '', 1, datetime('now'), datetime('now')),
+                ('legacy-allow-group', '', 0, datetime('now'), datetime('now')),
+                ('legacy-inherit-group', '', NULL, datetime('now'), datetime('now'))
             "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
-    .expect("save group block policy");
-    let account_id = insert_api_key_account(&pool, "Account Block Override").await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET group_name = 'blocked-group',
-                policy_priority_tier = 'normal'
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .execute(&pool)
-    .await
-    .expect("save account routing policy");
-    let tag = insert_test_tag(&pool, "block-tag", &test_tag_routing_rule())
-        .await
-        .expect("insert block tag");
-    sync_account_tag_links(&pool, account_id, &[tag.summary.id])
-        .await
-        .expect("attach block tag");
-
-    let rule = load_effective_routing_rule_for_account(&pool, account_id)
-        .await
-        .expect("load effective routing rule");
-
-    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
-    assert_eq!(rule.field_sources.priority_tier, "account");
+    .expect("insert legacy group policies");
 }
 
 #[tokio::test]
-pub(crate) async fn update_upstream_account_preserves_account_policy_when_routing_rule_is_missing()
-{
+pub(crate) async fn update_pool_routing_settings_allows_maintenance_only_patch() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Preserve Account Policy").await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET policy_allow_cut_in = 0,
-                policy_fast_mode_rewrite_mode = 'force_add',
-                policy_upstream_429_retry_enabled = 1,
-                policy_upstream_429_max_retries = 3
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("seed account policy");
-
-    apply_and_assert_preserved_policy(&state, account_id).await;
-}
-
-async fn apply_and_assert_preserved_policy(state: &Arc<AppState>, account_id: i64) {
-    let detail = state
+    let crypto_key = state
         .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: Some("metadata only".to_string()),
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                bound_proxy_keys: OptionalField::Missing,
-                enabled: Some(false),
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: None,
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    save_pool_routing_api_key(&state.pool, crypto_key, "pool-live-key")
         .await
-        .expect("metadata-only update");
+        .expect("seed pool api key");
 
-    let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
-        .await
-        .expect("load preserved policy");
-    assert!(!rule.allow_cut_in);
-    assert_eq!(rule.field_sources.allow_cut_in, "account");
-    assert_eq!(
-        rule.fast_mode_rewrite_mode,
-        TagFastModeRewriteMode::ForceAdd
-    );
-    assert_eq!(rule.field_sources.fast_mode_rewrite_mode, "account");
-    assert!(rule.upstream_429_retry_enabled);
-    assert_eq!(rule.upstream_429_max_retries, 3);
-    assert_eq!(rule.field_sources.upstream_429_retry, "account");
-    assert!(!detail.summary.effective_routing_rule.allow_cut_in);
-    assert_eq!(
-        detail.summary.effective_routing_rule.fast_mode_rewrite_mode,
-        TagFastModeRewriteMode::ForceAdd
-    );
-    assert_eq!(
-        detail
-            .summary
-            .effective_routing_rule
-            .field_sources
-            .fast_mode_rewrite_mode,
-        "account"
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn update_upstream_account_clears_individual_account_policy_override() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Clear Account Policy").await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET policy_allow_cut_in = 0,
-                policy_fast_mode_rewrite_mode = 'force_add',
-                policy_available_models_json = '[]'
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("seed account policy");
-
-    state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                bound_proxy_keys: OptionalField::Missing,
-                note: None,
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_cut_out: OptionalField::Missing,
-                    allow_cut_in: OptionalField::Null,
-                    priority_tier: OptionalField::Missing,
-                    fast_mode_rewrite_mode: OptionalField::Missing,
-                    image_tool_rewrite_mode: OptionalField::Missing,
-                    codex_imagegen_rewrite_mode: OptionalField::Missing,
-                    request_compression_algorithm: OptionalField::Missing,
-                    concurrency_limit: OptionalField::Missing,
-                    upstream_429_retry_enabled: OptionalField::Missing,
-                    upstream_429_max_retries: OptionalField::Missing,
-                    available_models: OptionalField::Missing,
-                    available_models_mode: OptionalField::Missing,
-                    status_change_reasons: None,
-                    timeouts: None,
-                }),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("clear account policy field");
-
-    let stored = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
-            "SELECT policy_allow_cut_in, policy_fast_mode_rewrite_mode, policy_available_models_json FROM pool_upstream_accounts WHERE id = ?1",
-        )
-        .bind(account_id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load stored policy");
-    assert_eq!(stored.0, None);
-    assert_eq!(stored.1.as_deref(), Some("force_add"));
-    assert_eq!(stored.2.as_deref(), Some("[]"));
-}
-
-#[tokio::test]
-pub(crate) async fn update_upstream_account_patches_one_timeout_without_clearing_other_overrides() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Patch Timeout Policy").await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET policy_responses_first_byte_timeout_secs = 180,
-                policy_compact_first_byte_timeout_secs = 300,
-                policy_image_first_byte_timeout_secs = 360,
-                policy_responses_stream_timeout_secs = 1800,
-                policy_compact_stream_timeout_secs = 300
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("seed account timeout overrides");
-    assert_eq!(
-        load_upstream_account_row(&state.pool, account_id)
+    let payload: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "maintenance": {
+            "secondarySyncIntervalSecs": 2400
+        }
+    }))
+    .expect("deserialize maintenance patch");
+    let Json(response) =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
             .await
-            .expect("load seeded account")
-            .expect("seeded account exists")
-            .policy_image_first_byte_timeout_secs,
-        Some(360)
-    );
+            .expect("update routing settings");
+    let expected_mask = mask_api_key("pool-live-key");
 
-    apply_and_assert_patched_timeout(&state, account_id).await;
+    assert!(response.api_key_configured);
+    assert_eq!(
+        response.masked_api_key.as_deref(),
+        Some(expected_mask.as_str())
+    );
+    assert_eq!(response.maintenance.primary_sync_interval_secs, 300);
+    assert_eq!(response.maintenance.secondary_sync_interval_secs, 2400);
+    assert_eq!(response.maintenance.priority_available_account_cap, 100);
+
+    let stored = load_pool_routing_settings(&state.pool)
+        .await
+        .expect("load routing settings");
+    assert!(stored.encrypted_api_key.is_some());
+    assert_eq!(stored.secondary_sync_interval_secs, Some(2400));
 }
 
-async fn apply_and_assert_patched_timeout(state: &Arc<AppState>, account_id: i64) {
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(state.clone(), account_id, patch_one_timeout_request())
-        .await
-        .expect("patch one account timeout field");
-
-    let stored_image_timeout: Option<i64> = sqlx::query_scalar(
-        "SELECT policy_image_first_byte_timeout_secs FROM pool_upstream_accounts WHERE id = ?1",
+#[tokio::test]
+pub(crate) async fn warm_pool_routing_runtime_cache_best_effort_skips_invalid_encrypted_api_key() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    sqlx::query(
+        r#"
+            UPDATE pool_routing_settings
+            SET encrypted_api_key = ?1
+            WHERE id = ?2
+            "#,
     )
-    .bind(account_id)
-    .fetch_one(&state.pool)
+    .bind("not-a-valid-ciphertext")
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(&state.pool)
     .await
-    .expect("load stored image timeout override");
-    assert_eq!(stored_image_timeout, Some(360));
+    .expect("poison encrypted api key");
 
-    let response_rule = detail.summary.effective_routing_rule;
-    assert_eq!(
-        response_rule.timeouts.responses_first_byte_timeout_secs,
-        Some(180)
-    );
-    assert_eq!(
-        response_rule.timeouts.compact_first_byte_timeout_secs,
-        Some(300)
-    );
-    assert_eq!(
-        response_rule.timeouts.image_first_byte_timeout_secs,
-        Some(360)
-    );
-    assert_eq!(
-        response_rule.timeouts.responses_stream_timeout_secs,
-        Some(1900)
-    );
-    assert_eq!(
-        response_rule.timeouts.compact_stream_timeout_secs,
-        Some(300)
-    );
-    assert_eq!(
-        response_rule
-            .timeout_field_sources
-            .responses_first_byte_timeout_secs,
-        "account"
-    );
-    assert_eq!(
-        response_rule
-            .timeout_field_sources
-            .responses_stream_timeout_secs,
-        "account"
+    {
+        let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+        *runtime_cache = None;
+    }
+
+    assert!(
+        refresh_pool_routing_runtime_cache(state.as_ref())
+            .await
+            .is_err(),
+        "invalid ciphertext should still fail direct refresh"
     );
 
-    let stored = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
-            "SELECT policy_responses_first_byte_timeout_secs, policy_compact_first_byte_timeout_secs, policy_image_first_byte_timeout_secs, policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs FROM pool_upstream_accounts WHERE id = ?1",
-        )
-        .bind(account_id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load stored timeout policy");
-    assert_eq!(
-        stored,
-        (Some(180), Some(300), Some(360), Some(1900), Some(300))
-    );
+    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
-    let reloaded_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
-        .await
-        .expect("reload effective routing rule");
-    assert_eq!(
-        reloaded_rule.timeouts.responses_first_byte_timeout_secs,
-        Some(180)
-    );
-    assert_eq!(
-        reloaded_rule.timeouts.compact_first_byte_timeout_secs,
-        Some(300)
-    );
-    assert_eq!(
-        reloaded_rule.timeouts.image_first_byte_timeout_secs,
-        Some(360)
-    );
-    assert_eq!(
-        reloaded_rule.timeouts.responses_stream_timeout_secs,
-        Some(1900)
-    );
-    assert_eq!(
-        reloaded_rule.timeouts.compact_stream_timeout_secs,
-        Some(300)
+    assert!(
+        state.pool_routing_runtime_cache.lock().await.is_none(),
+        "best-effort startup warmup should leave the cache empty after decrypt failures"
     );
 }
 
-fn patch_one_timeout_request() -> UpdateUpstreamAccountRequest {
-    UpdateUpstreamAccountRequest {
-        routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-            timeouts: Some(UpdateRoutingTimeoutSettingsRequest {
-                responses_stream_timeout_secs: OptionalField::Value(1900),
-                ..UpdateRoutingTimeoutSettingsRequest::default()
-            }),
-            allow_cut_out: OptionalField::Missing,
-            allow_cut_in: OptionalField::Missing,
-            priority_tier: OptionalField::Missing,
-            fast_mode_rewrite_mode: OptionalField::Missing,
-            image_tool_rewrite_mode: OptionalField::Missing,
-            codex_imagegen_rewrite_mode: OptionalField::Missing,
-            request_compression_algorithm: OptionalField::Missing,
-            concurrency_limit: OptionalField::Missing,
-            upstream_429_retry_enabled: OptionalField::Missing,
-            upstream_429_max_retries: OptionalField::Missing,
-            available_models: OptionalField::Missing,
-            available_models_mode: OptionalField::Missing,
-            status_change_reasons: None,
-        }),
-        ..UpdateUpstreamAccountRequest::default()
+#[tokio::test]
+pub(crate) async fn refresh_pool_routing_runtime_cache_preserves_last_good_cache_after_decrypt_failure()
+ {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    save_pool_routing_api_key(&state.pool, crypto_key, "pool-live-key")
+        .await
+        .expect("seed pool api key");
+
+    let cache = refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("populate runtime cache");
+    assert_eq!(cache.api_key.as_deref(), Some("pool-live-key"));
+
+    sqlx::query(
+        r#"
+            UPDATE pool_routing_settings
+            SET encrypted_api_key = ?1
+            WHERE id = ?2
+            "#,
+    )
+    .bind("not-a-valid-ciphertext")
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(&state.pool)
+    .await
+    .expect("poison encrypted api key");
+
+    assert!(
+        refresh_pool_routing_runtime_cache(state.as_ref())
+            .await
+            .is_err(),
+        "refresh should fail once the stored api key becomes unreadable"
+    );
+    let cached = state.pool_routing_runtime_cache.lock().await.clone();
+    assert_eq!(
+        cached.as_ref().and_then(|value| value.api_key.as_deref()),
+        Some("pool-live-key"),
+        "failed refreshes should keep the last working routing cache in memory"
+    );
+}
+
+pub(crate) fn maintenance_candidates(
+    id: i64,
+    status: &str,
+    last_synced_at: Option<&str>,
+    last_error_at: Option<&str>,
+    token_expires_at: Option<&str>,
+    primary_used_percent: Option<f64>,
+    secondary_used_percent: Option<f64>,
+) -> MaintenanceCandidateRow {
+    MaintenanceCandidateRow {
+        id,
+        status: status.to_string(),
+        last_synced_at: last_synced_at.map(ToOwned::to_owned),
+        last_action_source: None,
+        last_action_at: None,
+        last_selected_at: None,
+        last_error_at: last_error_at.map(ToOwned::to_owned),
+        last_error: None,
+        last_route_failure_at: None,
+        last_route_failure_kind: None,
+        last_action_reason_code: None,
+        cooldown_until: None,
+        temporary_route_failure_streak_started_at: None,
+        token_expires_at: token_expires_at.map(ToOwned::to_owned),
+        primary_used_percent,
+        primary_resets_at: None,
+        secondary_used_percent,
+        secondary_resets_at: None,
+        credits_has_credits: None,
+        credits_unlimited: None,
+        credits_balance: None,
     }
 }
 
-#[tokio::test]
-pub(crate) async fn update_upstream_account_writes_positive_new_conversation_policy() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Positive Account Policy").await;
+#[test]
+pub(crate) fn resolve_due_maintenance_dispatch_plans_prioritizes_forced_accounts_and_overflow() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+        .single()
+        .expect("valid time");
+    let settings = PoolRoutingMaintenanceSettings {
+        primary_sync_interval_secs: 300,
+        secondary_sync_interval_secs: 1800,
+        priority_available_account_cap: 1,
+    };
+    let refresh_lead_time = Duration::from_secs(15 * 60);
 
-    state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: None,
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                bound_proxy_keys: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_cut_out: OptionalField::Missing,
-                    allow_cut_in: OptionalField::Missing,
-                    priority_tier: OptionalField::Value("no_new".to_string()),
-                    fast_mode_rewrite_mode: OptionalField::Missing,
-                    image_tool_rewrite_mode: OptionalField::Missing,
-                    codex_imagegen_rewrite_mode: OptionalField::Missing,
-                    request_compression_algorithm: OptionalField::Missing,
-                    concurrency_limit: OptionalField::Missing,
-                    upstream_429_retry_enabled: OptionalField::Missing,
-                    upstream_429_max_retries: OptionalField::Missing,
-                    available_models: OptionalField::Missing,
-                    available_models_mode: OptionalField::Missing,
-                    status_change_reasons: None,
-                    timeouts: None,
-                }),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("save positive new conversation policy");
+    let mut recent_error = maintenance_candidates(
+        3,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        None,
+        Some("2026-03-23T11:58:30Z"),
+        Some("2026-04-23T12:00:00Z"),
+        Some(8.0),
+        Some(8.0),
+    );
+    recent_error.last_action_source =
+        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+    recent_error.last_action_at = Some("2026-03-23T11:58:30Z".to_string());
 
-    let stored = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT policy_priority_tier FROM pool_upstream_accounts WHERE id = ?1",
-    )
-    .bind(account_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load stored policy");
-    assert_eq!(stored, Some("no_new".to_string()));
+    let mut stale_error = maintenance_candidates(
+        4,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        None,
+        Some("2026-03-23T11:50:00Z"),
+        Some("2026-04-23T12:00:00Z"),
+        Some(9.0),
+        Some(9.0),
+    );
+    stale_error.last_action_source =
+        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+    stale_error.last_action_at = Some("2026-03-23T11:50:00Z".to_string());
 
-    let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
-        .await
-        .expect("load effective routing rule");
-    assert_eq!(rule.priority_tier, TagPriorityTier::NoNew);
-    assert_eq!(rule.field_sources.priority_tier, "account");
+    let plans = resolve_due_maintenance_dispatch_plans(
+        vec![
+            maintenance_candidates(
+                1,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                Some("2026-03-23T11:40:00Z"),
+                None,
+                Some("2026-04-23T12:00:00Z"),
+                Some(15.0),
+                Some(10.0),
+            ),
+            maintenance_candidates(
+                2,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                Some("2026-03-23T11:20:00Z"),
+                None,
+                Some("2026-04-23T12:00:00Z"),
+                Some(12.0),
+                Some(22.0),
+            ),
+            recent_error,
+            stale_error,
+            maintenance_candidates(
+                5,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                Some("2026-03-23T11:50:00Z"),
+                None,
+                Some("2026-04-23T12:00:00Z"),
+                Some(5.0),
+                None,
+            ),
+            maintenance_candidates(
+                6,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                Some("2026-03-23T11:54:00Z"),
+                None,
+                Some("2026-03-23T12:10:00Z"),
+                Some(4.0),
+                Some(4.0),
+            ),
+        ],
+        settings,
+        refresh_lead_time,
+        now,
+    );
+
+    let plan_map = plans
+        .into_iter()
+        .map(|plan| (plan.account_id, (plan.tier, plan.sync_interval_secs)))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(plan_map.get(&1), Some(&(MaintenanceTier::Priority, 300)));
+    assert_eq!(plan_map.get(&2), Some(&(MaintenanceTier::Secondary, 1800)));
+    assert_eq!(plan_map.get(&4), Some(&(MaintenanceTier::Priority, 300)));
+    assert_eq!(plan_map.get(&5), Some(&(MaintenanceTier::Priority, 300)));
+    assert_eq!(plan_map.get(&6), Some(&(MaintenanceTier::Priority, 300)));
+    assert!(!plan_map.contains_key(&3));
 }
 
-#[tokio::test]
-pub(crate) async fn update_upstream_account_preserves_priority_tier_when_omitted() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Preserve Legacy Block").await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET policy_priority_tier = 'no_new'
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("seed positive and legacy new conversation policy");
-
-    state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: None,
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                bound_proxy_keys: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_cut_out: OptionalField::Value(false),
-                    allow_cut_in: OptionalField::Missing,
-                    priority_tier: OptionalField::Missing,
-                    fast_mode_rewrite_mode: OptionalField::Missing,
-                    image_tool_rewrite_mode: OptionalField::Missing,
-                    codex_imagegen_rewrite_mode: OptionalField::Missing,
-                    request_compression_algorithm: OptionalField::Missing,
-                    concurrency_limit: OptionalField::Missing,
-                    upstream_429_retry_enabled: OptionalField::Missing,
-                    upstream_429_max_retries: OptionalField::Missing,
-                    available_models: OptionalField::Missing,
-                    available_models_mode: OptionalField::Missing,
-                    status_change_reasons: None,
-                    timeouts: None,
-                }),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("save unrelated account policy field");
-
-    let stored = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
-            "SELECT policy_priority_tier, policy_allow_cut_out FROM pool_upstream_accounts WHERE id = ?1",
-        )
-        .bind(account_id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load stored policy");
-    assert_eq!(stored, (Some("no_new".to_string()), Some(0)));
-}
-
-#[tokio::test]
-pub(crate) async fn update_upstream_account_accepts_no_new_priority_write() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Legacy Block Write").await;
-
-    state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: None,
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                bound_proxy_keys: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_cut_out: OptionalField::Missing,
-                    allow_cut_in: OptionalField::Missing,
-                    priority_tier: OptionalField::Value("no_new".to_string()),
-                    fast_mode_rewrite_mode: OptionalField::Missing,
-                    image_tool_rewrite_mode: OptionalField::Missing,
-                    codex_imagegen_rewrite_mode: OptionalField::Missing,
-                    request_compression_algorithm: OptionalField::Missing,
-                    concurrency_limit: OptionalField::Missing,
-                    upstream_429_retry_enabled: OptionalField::Missing,
-                    upstream_429_max_retries: OptionalField::Missing,
-                    available_models: OptionalField::Missing,
-                    available_models_mode: OptionalField::Missing,
-                    status_change_reasons: None,
-                    timeouts: None,
-                }),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("save legacy block new conversations policy");
-
-    let stored = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT policy_priority_tier FROM pool_upstream_accounts WHERE id = ?1",
-    )
-    .bind(account_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load stored policy");
-    assert_eq!(stored, Some("no_new".to_string()));
-
-    let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
-        .await
-        .expect("load effective routing rule");
-    assert_eq!(rule.priority_tier, TagPriorityTier::NoNew);
-    assert_eq!(rule.field_sources.priority_tier, "account");
-}
-
-#[tokio::test]
-pub(crate) async fn update_upstream_account_does_not_change_priority_tier_when_omitted() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let account_id = insert_api_key_account(&state.pool, "Legacy Only Missing").await;
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET policy_priority_tier = 'no_new'
-            WHERE id = ?1
-            "#,
-    )
-    .bind(account_id)
-    .execute(&state.pool)
-    .await
-    .expect("seed legacy-only new conversation policy");
-
-    state
-        .upstream_accounts
-        .account_ops
-        .run_update_account(
-            state.clone(),
-            account_id,
-            UpdateUpstreamAccountRequest {
-                display_name: None,
-                email: OptionalField::Missing,
-                group_name: None,
-                group_bound_proxy_keys: None,
-                group_node_shunt_enabled: None,
-                group_single_account_rotation_enabled: None,
-                note: None,
-                group_note: None,
-                concurrency_limit: None,
-                upstream_base_url: OptionalField::Missing,
-                bound_proxy_keys: OptionalField::Missing,
-                enabled: None,
-                is_mother: None,
-                api_key: None,
-                local_primary_limit: None,
-                local_secondary_limit: None,
-                local_limit_unit: None,
-                tag_ids: None,
-                routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
-                    allow_cut_out: OptionalField::Value(false),
-                    allow_cut_in: OptionalField::Missing,
-                    priority_tier: OptionalField::Missing,
-                    fast_mode_rewrite_mode: OptionalField::Missing,
-                    image_tool_rewrite_mode: OptionalField::Missing,
-                    codex_imagegen_rewrite_mode: OptionalField::Missing,
-                    request_compression_algorithm: OptionalField::Missing,
-                    concurrency_limit: OptionalField::Missing,
-                    upstream_429_retry_enabled: OptionalField::Missing,
-                    upstream_429_max_retries: OptionalField::Missing,
-                    available_models: OptionalField::Missing,
-                    available_models_mode: OptionalField::Missing,
-                    status_change_reasons: None,
-                    timeouts: None,
-                }),
-                ..UpdateUpstreamAccountRequest::default()
-            },
-        )
-        .await
-        .expect("save unrelated account policy field");
-
-    let stored = sqlx::query_as::<_, (Option<String>, Option<i64>)>(
-            "SELECT policy_priority_tier, policy_allow_cut_out FROM pool_upstream_accounts WHERE id = ?1",
-        )
-        .bind(account_id)
-        .fetch_one(&state.pool)
-        .await
-        .expect("load stored policy");
-    assert_eq!(stored, (Some("no_new".to_string()), Some(0)));
-}
+use super::*;

@@ -11,10 +11,6 @@ mod dispatch;
 )]
 mod failover;
 mod payload_utils;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Capture backfill adapters preserve established call-site contracts."
-)]
 mod raw_capture;
 #[expect(
     clippy::too_many_arguments,

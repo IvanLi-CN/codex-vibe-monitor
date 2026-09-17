@@ -1,427 +1,218 @@
-use super::*;
-use crate::tests::insert_test_pool_oauth_account;
-use serde_json::json;
+#[tokio::test]
+pub(crate) async fn standalone_search_override_is_rejected_for_oauth_accounts() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_oauth_account(&state.pool, "OAuth Search Override Rejected").await;
 
-async fn assert_sticky_route_owner(pool: &SqlitePool, sticky_key: &str, expected_account_id: i64) {
-    assert_eq!(
-        load_sticky_route(pool, sticky_key)
-            .await
-            .expect("load sticky route")
-            .map(|route| route.account_id),
-        Some(expected_account_id),
-    );
+    let err = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Value(
+                    "supported".to_string(),
+                ),
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect_err("OAuth accounts must reject standalone search overrides");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(err.1.contains("only supported for API key accounts"));
+
+    let err = state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(
+            state.clone(),
+            account_id,
+            UpdateUpstreamAccountRequest {
+                standalone_search_capability_override: OptionalField::Null,
+                ..UpdateUpstreamAccountRequest::default()
+            },
+        )
+        .await
+        .expect_err("OAuth accounts must reject clearing standalone search overrides");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load OAuth account after rejected override")
+        .expect("OAuth account exists after rejected override");
+    assert_eq!(row.policy_standalone_search_capability_override, None);
 }
 
 #[tokio::test]
-pub(crate) async fn classified_sync_failure_preserves_existing_route_cooldown_across_new_error_timestamp()
- {
+pub(crate) async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability() {
     let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Preserved Cooldown OAuth").await;
-    let previous_failure_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(2));
-    let cooldown_until = format_utc_iso(Utc::now() + ChronoDuration::minutes(5));
+    let account_id = insert_oauth_account(&pool, "Image Failure Learns Unsupported").await;
 
-    sqlx::query(
-        r#"
-            UPDATE pool_upstream_accounts
-            SET status = ?2,
-                last_error = ?3,
-                last_error_at = ?4,
-                last_route_failure_at = ?4,
-                last_route_failure_kind = ?5,
-                cooldown_until = ?6,
-                consecutive_route_failures = 1,
-                last_action = ?7,
-                last_action_source = ?8,
-                last_action_reason_code = ?9,
-                last_action_reason_message = ?3,
-                last_action_http_status = ?10,
-                last_action_at = ?4,
-                updated_at = ?4
-            WHERE id = ?1
-            "#,
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-image-unsupported"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: unsupported tool: image_generation is not supported by this account",
+        Some("invk_image_unsupported"),
+        "/v1/responses",
+        ImageIntent::Yes,
     )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind("seed preserved cooldown")
-    .bind(&previous_failure_at)
-    .bind(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
-    .bind(&cooldown_until)
-    .bind(UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED)
-    .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
-    .bind(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
-    .bind(429)
-    .execute(&pool)
     .await
-    .expect("seed preserved cooldown row");
+    .expect("record explicit unsupported image failure");
 
     let row = load_upstream_account_row(&pool, account_id)
         .await
-        .expect("load seeded cooldown row")
-        .expect("seeded cooldown row exists");
-    record_classified_account_sync_failure(
+        .expect("load row after unsupported image failure")
+        .expect("row exists after unsupported image failure");
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(
+        row.response_image_tool_capability.as_deref(),
+        Some("unsupported")
+    );
+
+    let direct_account_id =
+        insert_oauth_account(&pool, "Direct Image Failure Learns Unsupported").await;
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
         &pool,
-        &row,
-        row.status.as_str(),
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-        "usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable",
+        direct_account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-direct-image-unsupported"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: No available channel for model gpt-image-1 under group default",
+        Some("invk_direct_image_unsupported"),
+        "/v1/images/generations",
+        ImageIntent::DirectImage,
     )
     .await
-    .expect("record classified retry failure");
+    .expect("record explicit unsupported direct image failure");
 
-    let after = load_upstream_account_row(&pool, account_id)
+    let direct_row = load_upstream_account_row(&pool, direct_account_id)
         .await
-        .expect("load cooldown row after retry failure")
-        .expect("cooldown row after retry failure exists");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        .expect("load row after unsupported direct image failure")
+        .expect("row exists after unsupported direct image failure");
     assert_eq!(
-        after.last_action_reason_code.as_deref(),
-        Some("upstream_http_5xx")
+        direct_row.image_endpoint_capability.as_deref(),
+        Some("unsupported")
     );
-    assert_eq!(after.last_action_http_status, Some(502));
-    assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
-    );
-    assert_eq!(after.last_route_failure_at, after.last_error_at);
-    assert_ne!(
-        after.last_route_failure_at.as_deref(),
-        Some(previous_failure_at.as_str())
-    );
-
-    let summary = build_summary_from_row(
-        &after,
-        None,
-        after.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
-    assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 }
 
 #[tokio::test]
-pub(crate) async fn classified_sync_hard_unavailable_replaces_stale_quota_marker_from_current_syncing_row()
- {
+pub(crate) async fn stale_capability_observations_cannot_overwrite_newer_results() {
     let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Fenced Capability Observations").await;
+    let newer = "2026-09-13T10:00:01.000Z";
+    let older = "2026-09-13T10:00:00.000Z";
 
-    for (reason_code, http_status, failure_kind, error_message) in [
-        (
-            "upstream_http_401",
-            StatusCode::UNAUTHORIZED,
-            PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
-            "usage endpoint returned 401 Unauthorized: Missing scopes: api.responses.write",
-        ),
-        (
-            "upstream_http_402",
-            StatusCode::PAYMENT_REQUIRED,
-            PROXY_FAILURE_UPSTREAM_HTTP_402,
-            "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
-        ),
-        (
-            "upstream_http_403",
-            StatusCode::FORBIDDEN,
-            PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
-            "usage endpoint returned 403 Forbidden: You have insufficient permissions for this operation.",
-        ),
-    ] {
-        assert_hard_unavailable_sync_failure(
-            &pool,
-            reason_code,
-            http_status,
-            failure_kind,
-            error_message,
-        )
-        .await;
-    }
+    record_capability_observation_with_observed_at(
+        &pool,
+        account_id,
+        UpstreamCapabilityAxis::ResponseEndpoint,
+        CapabilitySupport::Supported,
+        Some("newer success"),
+        Some(newer),
+    )
+    .await
+    .expect("record newer capability observation");
+    record_capability_observation_with_observed_at(
+        &pool,
+        account_id,
+        UpstreamCapabilityAxis::ResponseEndpoint,
+        CapabilitySupport::Unsupported,
+        Some("older failure"),
+        Some(older),
+    )
+    .await
+    .expect("record stale capability observation");
+
+    record_compact_support_observation_with_observed_at(
+        &pool,
+        account_id,
+        COMPACT_SUPPORT_STATUS_SUPPORTED,
+        Some("newer success"),
+        Some(newer),
+    )
+    .await
+    .expect("record newer compact observation");
+    record_compact_support_observation_with_observed_at(
+        &pool,
+        account_id,
+        COMPACT_SUPPORT_STATUS_UNSUPPORTED,
+        Some("older failure"),
+        Some(older),
+    )
+    .await
+    .expect("record stale compact observation");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load fenced observation row")
+        .expect("fenced observation row exists");
+    assert_eq!(
+        row.response_endpoint_capability.as_deref(),
+        Some(CapabilitySupport::Supported.as_str())
+    );
+    assert_eq!(
+        row.response_endpoint_capability_observed_at.as_deref(),
+        Some(newer)
+    );
+    assert_eq!(
+        row.compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_SUPPORTED)
+    );
+    assert_eq!(row.compact_support_observed_at.as_deref(), Some(newer));
 }
 
-async fn assert_hard_unavailable_sync_failure(
-    pool: &SqlitePool,
-    reason_code: &str,
-    http_status: StatusCode,
-    failure_kind: &str,
-    error_message: &str,
-) {
-    let account_id =
-        insert_oauth_account(pool, &format!("Syncing hard unavailable {reason_code}")).await;
-    seed_hard_unavailable_route_failure(
-        pool,
+#[tokio::test]
+pub(crate) async fn image_intent_validation_failure_does_not_learn_unsupported_capability() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Image Validation Failure Keeps Unknown").await;
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent(
+        &pool,
         account_id,
-        UPSTREAM_ACCOUNT_STATUS_ERROR,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        Some(429),
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-image-invalid-payload"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: invalid image size: width must be divisible by 64",
+        Some("invk_image_invalid_payload"),
+        "/v1/responses",
+        ImageIntent::Yes,
+    )
+    .await
+    .expect("record image validation failure");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after image validation failure")
+        .expect("row exists after image validation failure");
+    assert_eq!(row.response_endpoint_capability.as_deref(), Some("unknown"));
+    assert_eq!(
+        row.response_image_tool_capability.as_deref(),
+        Some("unknown")
+    );
+}
+
+#[tokio::test]
+pub(crate) async fn mark_account_sync_success_preserves_route_cooldown_state() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Cooldown OAuth").await;
+    seed_route_cooldown(
+        &pool,
+        account_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        300,
     )
     .await;
-    set_account_status(pool, account_id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None)
-        .await
-        .expect("mark row syncing");
-
-    let current_row = load_upstream_account_row(pool, account_id)
-        .await
-        .expect("load current syncing row")
-        .expect("current syncing row exists");
-    assert_eq!(current_row.status, UPSTREAM_ACCOUNT_STATUS_SYNCING);
-    record_classified_account_sync_failure(
-        pool,
-        &current_row,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-        error_message,
-    )
-    .await
-    .expect("record hard unavailable failure against syncing row");
-
-    let after = load_upstream_account_row(pool, account_id)
-        .await
-        .expect("load syncing row after hard unavailable failure")
-        .expect("syncing row after hard unavailable failure exists");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(after.last_action_reason_code.as_deref(), Some(reason_code));
-    assert_eq!(
-        after.last_action_http_status,
-        Some(http_status.as_u16() as i64)
-    );
-    assert_eq!(after.last_route_failure_kind.as_deref(), Some(failure_kind));
-    assert_eq!(after.last_route_failure_at, after.last_error_at);
-    if reason_code == "upstream_http_402" {
-        let cooldown_until = after
-            .cooldown_until
-            .as_deref()
-            .and_then(parse_rfc3339_utc)
-            .expect("maintenance-triggered 402 should write explicit cooldown");
-        let failed_at = after
-            .last_action_at
-            .as_deref()
-            .and_then(parse_rfc3339_utc)
-            .expect("maintenance-triggered 402 should record last_action_at");
-        assert_eq!(
-            cooldown_until - failed_at,
-            ChronoDuration::seconds(UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,)
-        );
-    } else {
-        assert_eq!(after.cooldown_until, None);
-    }
-    assert_eq!(after.temporary_route_failure_streak_started_at, None);
-    let summary = build_summary_from_row(
-        &after,
-        None,
-        after.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(
-        summary.display_status,
-        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-    );
-    assert_eq!(
-        summary.health_status,
-        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-    );
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
-    );
-    assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
-}
-
-#[tokio::test]
-pub(crate) async fn classified_sync_wrapped_upstream_rejected_permission_keeps_existing_cooldown_policy()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Wrapped upstream rejected cooldown").await;
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load fresh row")
-        .expect("fresh row exists");
-    record_classified_account_sync_failure(
-        &pool,
-        &row,
-        row.status.as_str(),
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-        "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden",
-    )
-    .await
-    .expect("record wrapped upstream rejected sync failure");
-
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after wrapped upstream rejected sync failure")
-        .expect("row after wrapped upstream rejected sync failure exists");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert_eq!(
-        after.last_action_reason_code.as_deref(),
-        Some("upstream_http_403")
-    );
-    assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
-    );
-    assert_eq!(
-        after.cooldown_until, None,
-        "wrapped upstream auth errors should keep the old no-cooldown behavior"
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn classified_sync_failure_emits_suppressed_event_when_reason_toggle_disabled() {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Suppressed Sync 402").await;
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_402 = 0 WHERE id = ?1",
-    )
-    .bind(account_id)
-    .execute(&pool)
-    .await
-    .expect("disable sync 402 status change toggle");
-
-    let row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load fresh row")
-        .expect("fresh row exists");
-    record_classified_account_sync_failure(
-        &pool,
-        &row,
-        row.status.as_str(),
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-        "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
-    )
-    .await
-    .expect("record suppressed sync failure");
-
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after suppressed sync failure")
-        .expect("row after suppressed sync failure exists");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(after.last_error, None);
-    assert_eq!(after.last_action, None);
-    assert_eq!(after.last_route_failure_kind, None);
-    assert_eq!(after.cooldown_until, None);
-
-    let detail = load_upstream_account_detail(&pool, account_id)
-        .await
-        .expect("load suppressed sync detail")
-        .expect("suppressed sync detail exists");
-    assert_eq!(
-        detail.summary.display_status,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-    );
-    assert_eq!(
-        detail.summary.health_status,
-        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
-    );
-    assert_eq!(
-        detail.summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
-    );
-    let event = detail
-        .recent_actions
-        .first()
-        .expect("suppressed sync event should be recorded");
-    assert_eq!(
-        event.action,
-        UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED
-    );
-    assert_eq!(
-        event.source,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE
-    );
-    assert_eq!(
-        event.reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402)
-    );
-    assert_eq!(event.http_status, Some(402));
-    assert_eq!(
-        event.failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
-    );
-    assert!(
-        event
-            .reason_message
-            .as_deref()
-            .is_some_and(|value| value.contains("402 Payment Required"))
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn classified_sync_non_rejected_failure_clears_existing_maintenance_rejected_cooldown()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Rejected Cooldown Replaced").await;
-
-    record_account_sync_hard_unavailable(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-            "upstream_http_402",
-            "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
-            PROXY_FAILURE_UPSTREAM_HTTP_402,
-        )
-        .await
-        .expect("seed maintenance rejected cooldown");
 
     let before = load_upstream_account_row(&pool, account_id)
         .await
-        .expect("load row before replacement failure")
-        .expect("row exists before replacement failure");
-    assert!(before.cooldown_until.is_some());
-
-    record_classified_account_sync_failure(
-            &pool,
-            &before,
-            before.status.as_str(),
-            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-            "usage endpoint returned 403 Forbidden: You have insufficient permissions for this operation.",
-        )
-        .await
-        .expect("record replacement sync failure");
-
-    let after = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row after replacement failure")
-        .expect("row exists after replacement failure");
-    assert_eq!(
-        after.last_action_reason_code.as_deref(),
-        Some("upstream_http_403")
-    );
-    assert_eq!(after.cooldown_until, None);
-}
-
-#[tokio::test]
-pub(crate) async fn mark_account_sync_success_clears_explicit_maintenance_upstream_rejected_cooldown()
- {
-    let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Rejected Cooldown Success").await;
-
-    record_account_sync_hard_unavailable(
-            &pool,
-            account_id,
-            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-            "upstream_http_402",
-            "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
-            PROXY_FAILURE_UPSTREAM_HTTP_402,
-        )
-        .await
-        .expect("seed maintenance rejected cooldown");
-
-    let before = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load row before success")
-        .expect("row exists before success");
-    assert!(before.cooldown_until.is_some());
-
+        .expect("load row before sync")
+        .expect("row exists before sync");
     mark_account_sync_success(
         &pool,
         account_id,
@@ -430,25 +221,30 @@ pub(crate) async fn mark_account_sync_success_clears_explicit_maintenance_upstre
     )
     .await
     .expect("mark sync success");
-
     let after = load_upstream_account_row(&pool, account_id)
         .await
-        .expect("load row after success")
-        .expect("row exists after success");
+        .expect("load row after sync")
+        .expect("row exists after sync");
+
     assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert!(after.cooldown_until.is_none());
+    assert!(after.last_synced_at.is_some());
+    assert!(after.last_successful_sync_at.is_some());
+    assert_eq!(after.last_route_failure_at, before.last_route_failure_at);
     assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_HTTP_402),
-        "preserve-failure success should keep the last route failure marker while clearing the explicit maintenance cooldown"
+        after.last_route_failure_kind,
+        before.last_route_failure_kind
+    );
+    assert_eq!(after.cooldown_until, before.cooldown_until);
+    assert_eq!(
+        after.consecutive_route_failures,
+        before.consecutive_route_failures
     );
 }
 
 #[tokio::test]
-pub(crate) async fn classified_sync_failure_preserves_quota_marker_from_current_syncing_row() {
+pub(crate) async fn mark_account_sync_success_clears_hard_unavailable_state_when_requested() {
     let pool = test_pool().await;
-    let account_id = insert_oauth_account(&pool, "Quota Syncing Preserve").await;
-
+    let account_id = insert_oauth_account(&pool, "Recovered OAuth").await;
     seed_hard_unavailable_route_failure(
         &pool,
         account_id,
@@ -458,78 +254,110 @@ pub(crate) async fn classified_sync_failure_preserves_quota_marker_from_current_
         Some(429),
     )
     .await;
-    set_account_status(&pool, account_id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None)
-        .await
-        .expect("mark row syncing");
 
-    let current_row = load_upstream_account_row(&pool, account_id)
-        .await
-        .expect("load current syncing row")
-        .expect("current syncing row exists");
-    assert_eq!(current_row.status, UPSTREAM_ACCOUNT_STATUS_SYNCING);
-
-    record_classified_account_sync_failure(
+    mark_account_sync_success(
         &pool,
-        &current_row,
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
-        "usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable",
+        account_id,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+        SyncSuccessRouteState::ClearFailureState,
     )
     .await
-    .expect("record retry failure against syncing row");
+    .expect("mark sync success");
 
     let after = load_upstream_account_row(&pool, account_id)
         .await
-        .expect("load syncing row after retry failure")
-        .expect("syncing row after retry failure exists");
+        .expect("load row after sync success")
+        .expect("row exists after sync success");
     assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(after.last_error.is_none());
+    assert!(after.last_route_failure_kind.is_none());
+    assert!(after.cooldown_until.is_none());
+    assert_eq!(
+        after.last_action.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+    );
+}
+
+#[tokio::test]
+pub(crate) async fn sync_api_key_account_preserves_route_cooldown_state() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Cooldown API Key").await;
+    seed_route_cooldown(
+        &pool,
+        account_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        300,
+    )
+    .await;
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load api key row")
+        .expect("api key row exists");
+
+    sync_api_key_account(&pool, &row, SyncCause::Manual)
+        .await
+        .expect("sync api key account");
+    let after = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after api key sync")
+        .expect("row exists after api key sync");
+
+    assert_eq!(
+        after.last_route_failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert!(after.cooldown_until.is_some());
+    assert_eq!(after.consecutive_route_failures, 1);
+}
+
+#[tokio::test]
+pub(crate) async fn sync_api_key_account_keeps_hard_unavailable_accounts_blocked() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Blocked API Key").await;
+    seed_hard_unavailable_route_failure(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load api key row")
+        .expect("api key row exists");
+
+    sync_api_key_account(&pool, &row, SyncCause::Manual)
+        .await
+        .expect("sync api key account");
+    let after = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after api key sync")
+        .expect("row exists after api key sync");
+
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    assert!(after.last_synced_at.is_some());
+    assert!(after.last_successful_sync_at.is_none());
+    assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+    assert_eq!(
+        after.last_action.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+    );
     assert_eq!(
         after.last_action_reason_code.as_deref(),
-        Some("upstream_http_5xx")
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
     );
     assert_eq!(
         after.last_route_failure_kind.as_deref(),
         Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
     );
-    assert_eq!(after.last_route_failure_at, after.last_error_at);
-
-    let summary = build_summary_from_row(
-        &after,
-        None,
-        after.last_activity_at.clone(),
-        vec![],
-        None,
-        0,
-        Utc::now(),
-    );
-    assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-    assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-    assert_eq!(
-        summary.work_status,
-        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-    );
-    assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 }
 
 #[tokio::test]
-pub(crate) async fn oauth_sync_proactively_quarantines_snapshot_exhausted_account_without_prior_route_failure()
+pub(crate) async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_group_probe()
  {
-    let (base_url, server) = spawn_usage_snapshot_server(
-        StatusCode::OK,
-        json!({
-            "planType": "team",
-            "rateLimit": {
-                "primaryWindow": {
-                    "usedPercent": 100,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
-            }
-        }),
-    )
-    .await;
-    let state = test_app_state_with_usage_base(&base_url).await;
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let crypto_key = state
         .upstream_accounts
         .crypto_key
@@ -538,873 +366,22 @@ pub(crate) async fn oauth_sync_proactively_quarantines_snapshot_exhausted_accoun
     let account_id = insert_syncable_oauth_account(
         &state.pool,
         crypto_key,
-        "Sync Snapshot Exhausted",
-        "snapshot-exhausted@example.com",
-        "org_snapshot_exhausted",
-        "user_snapshot_exhausted",
-    )
-    .await;
-    let row = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load oauth row")
-        .expect("oauth row exists");
-
-    sync_oauth_account(&state, &row, SyncCause::Maintenance)
-        .await
-        .expect("sync oauth account");
-
-    let after = load_upstream_account_row(&state.pool, account_id)
-        .await
-        .expect("load oauth row after proactive quarantine")
-        .expect("oauth row exists after proactive quarantine");
-    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
-    assert!(after.last_successful_sync_at.is_none());
-    assert_eq!(
-        after.last_action.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
-    );
-    assert_eq!(
-        after.last_action_reason_code.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED)
-    );
-    assert_eq!(
-        after.last_route_failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED)
-    );
-    server.abort();
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_short_circuits_when_only_persisted_snapshot_exhausted_accounts_remain()
-{
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let first = insert_api_key_account(&state.pool, "Exhausted A").await;
-    let second = insert_api_key_account(&state.pool, "Exhausted B").await;
-    let third = insert_api_key_account(&state.pool, "Exhausted C").await;
-    let now_iso = format_utc_iso(Utc::now());
-    for account_id in [first, second, third] {
-        insert_limit_sample_with_usage(&state.pool, account_id, &now_iso, Some(100.0), Some(40.0))
-            .await;
-    }
-
-    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
-        .await
-        .expect("resolve pool account");
-    assert!(matches!(resolution, PoolAccountResolution::RateLimited));
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_skips_persisted_snapshot_exhausted_account_before_routing() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let exhausted = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Exhausted Candidate",
-        "exhausted-candidate@example.com",
-        "org_exhausted_candidate",
-        "user_exhausted_candidate",
-    )
-    .await;
-    let available = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Available Candidate",
-        "available-candidate@example.com",
-        "org_available_candidate",
-        "user_available_candidate",
-    )
-    .await;
-    let now_iso = format_utc_iso(Utc::now());
-    insert_limit_sample_with_usage(&state.pool, exhausted, &now_iso, Some(100.0), Some(20.0)).await;
-    insert_limit_sample_with_usage(&state.pool, available, &now_iso, Some(42.0), Some(10.0)).await;
-
-    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
-        .await
-        .expect("resolve pool account");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected resolver to pick an available account");
-    };
-    assert_eq!(account.account_id, available);
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_reuses_sticky_snapshot_exhausted_account_until_conversation_gets_429()
-{
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let crypto_key = state
-        .upstream_accounts
-        .crypto_key
-        .as_ref()
-        .expect("test crypto key");
-    let exhausted = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Sticky Snapshot Exhausted",
-        "sticky-snapshot-exhausted@example.com",
-        "org_sticky_snapshot_exhausted",
-        "user_sticky_snapshot_exhausted",
-    )
-    .await;
-    let available = insert_syncable_oauth_account(
-        &state.pool,
-        crypto_key,
-        "Sticky Snapshot Available",
-        "sticky-snapshot-available@example.com",
-        "org_sticky_snapshot_available",
-        "user_sticky_snapshot_available",
-    )
-    .await;
-    let now_iso = format_utc_iso(Utc::now());
-    insert_limit_sample_with_usage(&state.pool, exhausted, &now_iso, Some(100.0), Some(20.0)).await;
-    insert_limit_sample_with_usage(&state.pool, available, &now_iso, Some(42.0), Some(10.0)).await;
-    upsert_sticky_route(
-        &state.pool,
-        "sticky-snapshot-exhausted",
-        exhausted,
-        &now_iso,
-    )
-    .await
-    .expect("seed sticky route");
-
-    let resolution = resolve_pool_account_for_request(
-        &state,
-        Some("sticky-snapshot-exhausted"),
-        &[],
-        &HashSet::new(),
-    )
-    .await
-    .expect("resolve sticky snapshot exhausted account");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected sticky exhausted account to remain reusable, got {resolution:?}");
-    };
-    assert_eq!(account.account_id, exhausted);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::StickyReuse
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_preserves_sticky_record_but_rotates_after_auth_hard_failure() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let failed = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Sticky Auth Failed",
-        "sk-sticky-auth-failed",
-        Some("sticky-auth-rotation"),
-        Some("https://sticky-auth-failed.example.com/backend-api/codex"),
-    )
-    .await;
-    let available = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Sticky Auth Replacement",
-        "sk-sticky-auth-replacement",
-        Some("sticky-auth-rotation"),
-        Some("https://sticky-auth-replacement.example.com/backend-api/codex"),
-    )
-    .await;
-    let now_iso = format_utc_iso(Utc::now());
-    upsert_sticky_route(&state.pool, "sticky-auth-failed", failed, &now_iso)
-        .await
-        .expect("seed auth sticky route");
-
-    record_pool_route_http_failure(
-        &state.pool,
-        failed,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
-        false,
-        Some("sticky-auth-failed"),
-        StatusCode::UNAUTHORIZED,
-        "pool upstream responded with 401: invalid api key",
-        Some("invk_auth_failed"),
-    )
-    .await
-    .expect("record auth hard failure");
-
-    assert_eq!(
-        load_sticky_route(&state.pool, "sticky-auth-failed")
-            .await
-            .expect("load preserved sticky route")
-            .map(|route| route.account_id),
-        Some(failed),
-    );
-
-    let resolution =
-        resolve_pool_account_for_request(&state, Some("sticky-auth-failed"), &[], &HashSet::new())
-            .await
-            .expect("resolve after auth hard failure");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected resolver to rotate to another available account, got {resolution:?}");
-    };
-    assert_eq!(account.account_id, available);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::FreshAssignment
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_prefers_primary_priority_before_normal_and_fallback() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let fallback_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fallback Priority Candidate",
-        "sk-priority-fallback",
-        Some("routing-priority"),
-        Some("https://routing-fallback.example.com/backend-api/codex"),
-    )
-    .await;
-    let normal_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Normal Priority Candidate",
-        "sk-priority-normal",
-        Some("routing-priority"),
-        Some("https://routing-normal.example.com/backend-api/codex"),
-    )
-    .await;
-    let primary_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Primary Priority Candidate",
-        "sk-priority-primary",
-        Some("routing-priority"),
-        Some("https://routing-primary.example.com/backend-api/codex"),
+        "Reserved OAuth",
+        "reserved@example.com",
+        "org_reserved",
+        "user_reserved",
     )
     .await;
 
-    let mut fallback_rule = test_tag_routing_rule();
-    fallback_rule.priority_tier = TagPriorityTier::Fallback;
-    let fallback_tag = insert_test_tag(&state.pool, "fallback-priority", &fallback_rule)
-        .await
-        .expect("insert fallback tag");
-    let normal_tag = insert_test_tag(&state.pool, "normal-priority", &test_tag_routing_rule())
-        .await
-        .expect("insert normal tag");
-    let mut primary_rule = test_tag_routing_rule();
-    primary_rule.priority_tier = TagPriorityTier::Primary;
-    let primary_tag = insert_test_tag(&state.pool, "primary-priority", &primary_rule)
-        .await
-        .expect("insert primary tag");
-    sync_account_tag_links(&state.pool, fallback_account_id, &[fallback_tag.summary.id])
-        .await
-        .expect("attach fallback tag");
-    sync_account_tag_links(&state.pool, normal_account_id, &[normal_tag.summary.id])
-        .await
-        .expect("attach normal tag");
-    sync_account_tag_links(&state.pool, primary_account_id, &[primary_tag.summary.id])
-        .await
-        .expect("attach primary tag");
-
-    let now_iso = format_utc_iso(Utc::now());
-    insert_limit_sample_with_usage(
-        &state.pool,
-        fallback_account_id,
-        &now_iso,
-        Some(1.0),
-        Some(1.0),
-    )
-    .await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        normal_account_id,
-        &now_iso,
-        Some(10.0),
-        Some(1.0),
-    )
-    .await;
-    insert_limit_sample_with_usage(
-        &state.pool,
-        primary_account_id,
-        &now_iso,
-        Some(35.0),
-        Some(1.0),
-    )
-    .await;
-
-    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
-        .await
-        .expect("resolve pool account");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected resolver to pick a prioritized account");
-    };
-    assert_eq!(account.account_id, primary_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::FreshAssignment
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_account() {
-    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard().await;
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let fallback_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fallback Sticky Handoff Source",
-        "sk-fallback-sticky-handoff-source",
-        Some("fallback-sticky-handoff"),
-        Some("https://fallback-sticky-handoff-source.example.com/backend-api/codex"),
-    )
-    .await;
-    let primary_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Primary Sticky Handoff Target",
-        "sk-primary-sticky-handoff-target",
-        Some("fallback-sticky-handoff"),
-        Some("https://primary-sticky-handoff-target.example.com/backend-api/codex"),
-    )
-    .await;
-    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-        .bind(fallback_account_id)
-        .bind(TagPriorityTier::Fallback.as_str())
-        .execute(&state.pool)
-        .await
-        .expect("set fallback sticky priority");
-    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-        .bind(primary_account_id)
-        .bind(TagPriorityTier::Primary.as_str())
-        .execute(&state.pool)
-        .await
-        .expect("set primary handoff priority");
-
-    let sticky_key = "fallback-sticky-handoff";
-    let now_iso = format_utc_iso(Utc::now());
-    upsert_sticky_route(&state.pool, sticky_key, fallback_account_id, &now_iso)
-        .await
-        .expect("seed fallback sticky route");
-
-    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
-        &state,
-        Some(sticky_key),
-        Some("gpt-fallback-sticky-handoff"),
-        &[],
-        &HashSet::new(),
-        None,
-    )
-    .await
-    .expect("resolve fallback sticky handoff");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected higher priority account to receive the request");
-    };
-    assert_eq!(account.account_id, primary_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::PriorityHandoff
-    );
-    assert_sticky_route_owner(&state.pool, sticky_key, fallback_account_id).await;
-
-    let no_model_resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
-        &state,
-        Some(sticky_key),
-        None,
-        &[],
-        &HashSet::new(),
-        None,
-    )
-    .await
-    .expect("resolve fallback sticky without model");
-    let PoolAccountResolution::Resolved(no_model_account) = no_model_resolution else {
-        panic!("expected fallback sticky source without a request model");
-    };
-    assert_eq!(no_model_account.account_id, fallback_account_id);
-    assert_eq!(
-        no_model_account.routing_source,
-        PoolRoutingSelectionSource::StickyReuse
-    );
-
-    record_pool_route_success_with_affinity_generation(
-        &state.pool,
-        account.account_id,
-        Utc::now(),
-        Some(sticky_key),
-        None,
-        None,
-        account.sticky_affinity_generation,
-    )
-    .await
-    .expect("record successful handoff");
-    assert_sticky_route_owner(&state.pool, sticky_key, primary_account_id).await;
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
-    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard().await;
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let target_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fresh Assignment Handoff Target",
-        "sk-fresh-assignment-handoff-target",
-        Some("fresh-assignment-handoff"),
-        Some("https://fresh-assignment-handoff-target.example.com/backend-api/codex"),
-    )
-    .await;
-    let alternate_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fresh Assignment Handoff Alternate",
-        "sk-fresh-assignment-handoff-alternate",
-        Some("fresh-assignment-handoff"),
-        Some("https://fresh-assignment-handoff-alternate.example.com/backend-api/codex"),
-    )
-    .await;
-    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-        .bind(target_account_id)
-        .bind(TagPriorityTier::Primary.as_str())
-        .execute(&state.pool)
-        .await
-        .expect("set fresh assignment target priority");
-
-    let (decision, held_permit) =
-        admit_priority_handoff(target_account_id, Some("gpt-fresh-assignment-handoff"));
-    assert!(matches!(
-        decision,
-        PriorityHandoffAdmissionDecision::Admitted { .. }
-    ));
-    assert!(held_permit.is_some());
-
-    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-        &state,
-        None,
-        Some("gpt-fresh-assignment-handoff"),
-        &[],
-        &HashSet::new(),
-        None,
-        None,
-        None,
-        "/v1/responses",
-        crate::ImageIntent::Unknown,
-        false,
-        None,
-    )
-    .await
-    .expect("resolve fresh assignment around busy handoff");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected alternate account after busy handoff, got {resolution:?}");
-    };
-    assert_eq!(account.account_id, alternate_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::PriorityHandoff
-    );
-    let audit = account
-        .routing_selection_audit
-        .expect("fresh assignment should carry handoff audit");
-    assert_eq!(
-        audit
-            .handoff_admission
-            .as_ref()
-            .expect("busy handoff decision should be audited")
-            .decision,
-        "admitted"
-    );
-    assert_eq!(audit.excluded_candidates[0].account_id, target_account_id);
-    let admitted_generation = audit
-        .handoff_admission
-        .as_ref()
-        .expect("alternate handoff should carry admission generation")
-        .generation;
-    assert_eq!(
-        complete_priority_handoff_for_request(
-            alternate_account_id,
-            Some("gpt-fresh-assignment-handoff"),
-            Some(admitted_generation),
-            true,
-            false,
-        ),
-        Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
-    );
-    assert_eq!(
-        priority_handoff_admission_snapshot(
-            alternate_account_id,
-            Some("gpt-fresh-assignment-handoff")
-        ),
-        ("verifying".to_string(), 1)
-    );
-    drop(held_permit);
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_request_driven_priority_recovery_precedes_healthy_lower_priority_winner()
- {
-    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard().await;
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let recovery_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Degraded Primary Recovery Target",
-        "sk-request-recovery-target",
-        Some("request-driven-recovery"),
-        Some("https://request-recovery-target.example.com/backend-api/codex"),
-    )
-    .await;
-    let healthy_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Healthy Normal Winner",
-        "sk-request-recovery-healthy",
-        Some("request-driven-recovery"),
-        Some("https://request-recovery-healthy.example.com/backend-api/codex"),
-    )
-    .await;
-    for (account_id, tier) in [
-        (recovery_account_id, TagPriorityTier::Primary),
-        (healthy_account_id, TagPriorityTier::Normal),
-    ] {
-        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-            .bind(account_id)
-            .bind(tier.as_str())
-            .execute(&state.pool)
-            .await
-            .expect("set request recovery priority");
-    }
-    let requested_model = "gpt-request-driven-recovery";
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, ?2, 'degraded', 'demoted', 1, ?3, ?3, ?3, 'model_unavailable', 'model unavailable')",
-    )
-    .bind(recovery_account_id)
-    .bind(requested_model)
-    .bind(&now_iso)
-    .execute(&state.pool)
-    .await
-    .expect("seed degraded recovery model route");
-
-    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-        &state,
-        None,
-        Some(requested_model),
-        &[],
-        &HashSet::new(),
-        None,
-        None,
-        None,
-        "/v1/responses",
-        crate::ImageIntent::Unknown,
-        false,
-        None,
-    )
-    .await
-    .expect("resolve request-driven recovery");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected recovery target to be admitted, got {resolution:?}");
-    };
-    assert_eq!(account.account_id, recovery_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::PriorityHandoff
-    );
-    let audit = account
-        .routing_selection_audit
-        .expect("recovery admission should carry an audit");
-    assert_eq!(audit.winner_reason_code, "requestDrivenRecoveryAdmission");
-    let admission = audit
-        .handoff_admission
-        .expect("recovery admission should be recorded");
-    assert_eq!(admission.trigger.as_deref(), Some("modelRouteRecovery"));
-    assert_eq!(admission.verification_success_count, 0);
-    assert_ne!(account.account_id, healthy_account_id);
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_admits_first_untracked_priority_fresh_assignment() {
-    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard().await;
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let target_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Untracked Fresh Assignment Handoff Target",
-        "sk-untracked-fresh-assignment-handoff-target",
-        Some("untracked-fresh-assignment-handoff"),
-        Some("https://untracked-fresh-assignment-handoff-target.example.com/backend-api/codex"),
-    )
-    .await;
-    let alternate_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Untracked Fresh Assignment Handoff Alternate",
-        "sk-untracked-fresh-assignment-handoff-alternate",
-        Some("untracked-fresh-assignment-handoff"),
-        Some("https://untracked-fresh-assignment-handoff-alternate.example.com/backend-api/codex"),
-    )
-    .await;
-    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-        .bind(target_account_id)
-        .bind(TagPriorityTier::Primary.as_str())
-        .execute(&state.pool)
-        .await
-        .expect("set untracked fresh assignment target priority");
-
-    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-        &state,
-        None,
-        Some("gpt-untracked-fresh-assignment-handoff"),
-        &[],
-        &HashSet::new(),
-        None,
-        None,
-        None,
-        "/v1/responses",
-        crate::ImageIntent::Unknown,
-        false,
-        None,
-    )
-    .await
-    .expect("resolve first untracked priority assignment");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected first untracked priority assignment, got {resolution:?}");
-    };
-    assert_eq!(account.account_id, target_account_id);
-    assert_ne!(account.account_id, alternate_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::PriorityHandoff
-    );
-    assert_eq!(
-        account
-            .routing_selection_audit
-            .as_ref()
-            .and_then(|audit| audit.handoff_admission.as_ref())
-            .map(|admission| admission.decision.as_str()),
-        Some("admitted")
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_keeps_fallback_sticky_when_no_higher_priority_candidate_exists() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let sticky_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fallback Sticky Source",
-        "sk-fallback-sticky-source",
-        Some("fallback-sticky-only"),
-        Some("https://fallback-sticky-source.example.com/backend-api/codex"),
-    )
-    .await;
-    let peer_fallback_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fallback Sticky Peer",
-        "sk-fallback-sticky-peer",
-        Some("fallback-sticky-only"),
-        Some("https://fallback-sticky-peer.example.com/backend-api/codex"),
-    )
-    .await;
-    for account_id in [sticky_account_id, peer_fallback_account_id] {
-        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-            .bind(account_id)
-            .bind(TagPriorityTier::Fallback.as_str())
-            .execute(&state.pool)
-            .await
-            .expect("set fallback-only priority");
-    }
-
-    let sticky_key = "fallback-sticky-only";
-    upsert_sticky_route(
-        &state.pool,
-        sticky_key,
-        sticky_account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed fallback-only sticky route");
-
-    let resolution =
-        resolve_pool_account_for_request(&state, Some(sticky_key), &[], &HashSet::new())
-            .await
-            .expect("resolve fallback-only sticky route");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected fallback sticky account to remain reusable");
-    };
-    assert_eq!(account.account_id, sticky_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::StickyReuse
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_preserves_same_tier_fallback_penalty_failover_during_proactive_handoff()
- {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let sticky_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Penalized Fallback Sticky Source",
-        "sk-penalized-fallback-sticky-source",
-        Some("fallback-sticky-penalty"),
-        Some("https://penalized-fallback-sticky-source.example.com/backend-api/codex"),
-    )
-    .await;
-    let peer_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Healthy Fallback Peer",
-        "sk-healthy-fallback-peer",
-        Some("fallback-sticky-penalty"),
-        Some("https://healthy-fallback-peer.example.com/backend-api/codex"),
-    )
-    .await;
-    for account_id in [sticky_account_id, peer_account_id] {
-        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-            .bind(account_id)
-            .bind(TagPriorityTier::Fallback.as_str())
-            .execute(&state.pool)
-            .await
-            .expect("set fallback penalty priority");
-    }
-
-    let requested_model = "gpt-fallback-penalty";
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, ?2, 'degraded', 'demoted', 1, ?3, ?3, ?3, 'model_unavailable', 'model unavailable')",
-    )
-    .bind(sticky_account_id)
-    .bind(requested_model)
-    .bind(&now_iso)
-    .execute(&state.pool)
-    .await
-    .expect("seed fallback model penalty");
-    let sticky_key = "fallback-sticky-penalty";
-    upsert_sticky_route(&state.pool, sticky_key, sticky_account_id, &now_iso)
-        .await
-        .expect("seed penalized fallback sticky route");
-
-    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
-        &state,
-        Some(sticky_key),
-        Some(requested_model),
-        &[],
-        &HashSet::new(),
-        None,
-    )
-    .await
-    .expect("resolve fallback penalty failover");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected healthy same-tier fallback peer to win");
-    };
-    assert_eq!(account.account_id, peer_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::FreshAssignment
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_allows_fallback_failover_when_sticky_source_is_unusable() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let sticky_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Unusable Fallback Sticky Source",
-        "sk-unusable-fallback-sticky-source",
-        Some("fallback-sticky-unusable"),
-        Some("https://unusable-fallback-sticky-source.example.com/backend-api/codex"),
-    )
-    .await;
-    let fallback_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fallback Failover Candidate",
-        "sk-fallback-failover-candidate",
-        Some("fallback-sticky-unusable"),
-        Some("https://fallback-failover-candidate.example.com/backend-api/codex"),
-    )
-    .await;
-    for account_id in [sticky_account_id, fallback_account_id] {
-        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
-            .bind(account_id)
-            .bind(TagPriorityTier::Fallback.as_str())
-            .execute(&state.pool)
-            .await
-            .expect("set fallback failover priority");
-    }
-    sqlx::query("UPDATE pool_upstream_accounts SET status = ?2 WHERE id = ?1")
-        .bind(sticky_account_id)
-        .bind(UPSTREAM_ACCOUNT_STATUS_ERROR)
-        .execute(&state.pool)
-        .await
-        .expect("make sticky fallback unusable");
-
-    let sticky_key = "fallback-sticky-unusable";
-    upsert_sticky_route(
-        &state.pool,
-        sticky_key,
-        sticky_account_id,
-        &format_utc_iso(Utc::now()),
-    )
-    .await
-    .expect("seed unusable fallback sticky route");
-
-    let resolution =
-        resolve_pool_account_for_request(&state, Some(sticky_key), &[], &HashSet::new())
-            .await
-            .expect("resolve fallback failover");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected usable fallback candidate after sticky source became unusable");
-    };
-    assert_eq!(account.account_id, fallback_account_id);
-    assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::FreshAssignment
-    );
-}
-
-#[tokio::test]
-pub(crate) async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_priority_ready_account()
- {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let slot_owner_id =
-        insert_test_pool_oauth_account(&state, "Node Shunt Slot Owner", "oauth-soft-degrade-owner")
-            .await;
-    let soft_degraded_id = insert_test_pool_oauth_account(
-        &state,
-        "Node Shunt Soft Degraded",
-        "oauth-soft-degrade-target",
-    )
-    .await;
-    let fallback_ready_id = insert_test_pool_oauth_account(
-        &state,
-        "Fallback Ready Candidate",
-        "oauth-soft-degrade-fallback",
-    )
-    .await;
-    set_test_account_group_name(&state.pool, slot_owner_id, Some("soft-degrade-priority")).await;
-    set_test_account_group_name(&state.pool, soft_degraded_id, Some("soft-degrade-priority")).await;
-    set_test_account_group_name(
-        &state.pool,
-        fallback_ready_id,
-        Some("soft-degrade-fallback"),
-    )
-    .await;
-
-    let mut primary_rule = test_tag_routing_rule();
-    primary_rule.priority_tier = TagPriorityTier::Primary;
-    let primary_tag = insert_test_tag(&state.pool, "soft-degrade-owner-primary", &primary_rule)
-        .await
-        .expect("insert primary owner tag");
-    let normal_tag = insert_test_tag(
-        &state.pool,
-        "soft-degrade-target-normal",
-        &test_tag_routing_rule(),
-    )
-    .await
-    .expect("insert normal target tag");
-    let mut fallback_rule = test_tag_routing_rule();
-    fallback_rule.priority_tier = TagPriorityTier::Fallback;
-    let fallback_tag = insert_test_tag(&state.pool, "soft-degrade-ready-fallback", &fallback_rule)
-        .await
-        .expect("insert fallback ready tag");
-    sync_account_tag_links(&state.pool, slot_owner_id, &[primary_tag.summary.id])
-        .await
-        .expect("attach primary owner tag");
-    sync_account_tag_links(&state.pool, soft_degraded_id, &[normal_tag.summary.id])
-        .await
-        .expect("attach normal target tag");
-    sync_account_tag_links(&state.pool, fallback_ready_id, &[fallback_tag.summary.id])
-        .await
-        .expect("attach fallback ready tag");
+    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-sync-reserved")).await;
 
     let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
     save_group_metadata_record_conn(
         &mut conn,
-        "soft-degrade-priority",
+        "node-shunt-sync-reserved",
         UpstreamAccountGroupMetadata {
             note: None,
-            bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
             single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
@@ -1413,14 +390,152 @@ pub(crate) async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead
         },
     )
     .await
-    .expect("save node shunt metadata");
+    .expect("save reserved node shunt sync metadata");
+    drop(conn);
+
+    seed_hard_unavailable_route_failure(
+        &state.pool,
+        account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "test-node-shunt-sync-reservation".to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: None,
+                proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                created_at: Instant::now(),
+            },
+        );
+
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load reserved account")
+        .expect("reserved account exists");
+    let scope = resolve_account_forward_proxy_scope_for_sync(state.as_ref(), &row, None)
+        .await
+        .expect("sync scope should reuse same-account live reservation");
+
+    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+        panic!("expected sync scope to pin the live reserved node");
+    };
+    assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+}
+
+#[tokio::test]
+pub(crate) async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
+    let (proxy_url, usage_requests, token_requests, server) =
+        spawn_proxy_only_oauth_sync_server().await;
+    let state = test_app_state_with_usage_and_oauth_base(
+        "http://unreachable.invalid/backend-api",
+        "http://unreachable.invalid",
+    )
+    .await;
+    let account_id = seed_refresh_due_sync_scope(&state, proxy_url).await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+
+    let row = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load refresh-due account")
+        .expect("refresh-due account exists");
+    sync_oauth_account(state.as_ref(), &row, SyncCause::Manual)
+        .await
+        .expect("refresh-due sync should reuse the sync-only scoped node for refresh");
+
+    let after = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load refresh-due account after sync")
+        .expect("refresh-due account still exists");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(after.last_error.is_none());
+    assert!(after.last_route_failure_kind.is_none());
+    assert!(after.last_successful_sync_at.is_some());
+    assert_eq!(
+        after.last_action.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+    );
+    assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+
+    let decrypted = decrypt_credentials(
+        crypto_key,
+        after
+            .encrypted_credentials
+            .as_deref()
+            .expect("encrypted oauth credentials"),
+    )
+    .expect("decrypt refreshed credentials");
+    let StoredCredentials::Oauth(credentials) = decrypted else {
+        panic!("unexpected credential kind after refresh-due sync")
+    };
+    assert_eq!(credentials.access_token, "proxy-refreshed-access-token");
+    assert_eq!(
+        credentials.refresh_token.as_deref(),
+        Some("proxy-refreshed-refresh-token")
+    );
+
+    server.abort();
+}
+
+async fn seed_refresh_due_sync_scope(state: &AppState, proxy_url: String) -> i64 {
+    let secondary_proxy_key = {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(ForwardProxySettings {
+            proxy_urls: vec![proxy_url],
+            ..Default::default()
+        });
+        manager.bound_group_runtime.insert(
+            "node-shunt-refresh".to_string(),
+            crate::forward_proxy::BoundForwardProxyGroupState {
+                current_binding_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                consecutive_network_failures: 0,
+            },
+        );
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("secondary proxy binding key")
+    };
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Refresh Due Scoped OAuth",
+        "proxy-refresh@example.com",
+        "org_proxy_refresh",
+        "user_proxy_refresh",
+    )
+    .await;
+    set_test_account_group_name(&state.pool, account_id, Some("node-shunt-refresh")).await;
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
     save_group_metadata_record_conn(
         &mut conn,
-        "soft-degrade-fallback",
+        "node-shunt-refresh",
         UpstreamAccountGroupMetadata {
             note: None,
-            bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
-            node_shunt_enabled: false,
+            bound_proxy_keys: vec![
+                FORWARD_PROXY_DIRECT_KEY.to_string(),
+                secondary_proxy_key.clone(),
+            ],
+            node_shunt_enabled: true,
             single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
@@ -1428,118 +543,386 @@ pub(crate) async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead
         },
     )
     .await
-    .expect("save fallback metadata");
+    .expect("save refresh-due node shunt metadata");
+    drop(conn);
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "test-node-shunt-refresh-reservation".to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: None,
+                proxy_key: Some(secondary_proxy_key),
+                created_at: Instant::now(),
+            },
+        );
+    set_test_account_token_expires_at(
+        &state.pool,
+        account_id,
+        &format_utc_iso(Utc::now() - ChronoDuration::minutes(5)),
+    )
+    .await;
+    account_id
+}
+
+#[tokio::test]
+pub(crate) async fn sync_scope_falls_back_to_shared_bound_group_when_exclusive_slot_is_full() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let occupying_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Occupying OAuth",
+        "occupying@example.com",
+        "org_occupying",
+        "user_occupying",
+    )
+    .await;
+    let queued_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Queued OAuth",
+        "queued@example.com",
+        "org_queued",
+        "user_queued",
+    )
+    .await;
+
+    set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-sync")).await;
+    set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-sync")).await;
+
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "node-shunt-sync",
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save node shunt sync metadata");
     drop(conn);
 
-    assert_soft_degraded_priority_winner(&state, slot_owner_id, soft_degraded_id).await;
+    seed_hard_unavailable_route_failure(
+        &state.pool,
+        queued_account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+
+    let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+        .await
+        .expect("build node shunt assignments");
+    assert_eq!(
+        assignments
+            .account_proxy_keys
+            .get(&occupying_account_id)
+            .map(String::as_str),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+    );
+    assert!(
+        !assignments
+            .account_proxy_keys
+            .contains_key(&queued_account_id),
+        "queued account should remain unassigned when the only slot is occupied",
+    );
+
+    let row = load_upstream_account_row(&state.pool, queued_account_id)
+        .await
+        .expect("load queued account")
+        .expect("queued account exists");
+    let scope = resolve_account_forward_proxy_scope_for_sync(state.as_ref(), &row, None)
+        .await
+        .expect("sync scope should fall back to shared bound-group probe");
+
+    let ForwardProxyRouteScope::BoundGroup {
+        group_name,
+        bound_proxy_keys,
+    } = scope
+    else {
+        panic!("expected sync scope to probe the bound group without claiming an exclusive slot");
+    };
+    assert_eq!(group_name, "node-shunt-sync");
+    assert_eq!(bound_proxy_keys, test_required_group_bound_proxy_keys());
 }
 
-async fn assert_soft_degraded_priority_winner(
+async fn seed_group_node_shunt_unassigned_accounts(
     state: &AppState,
-    slot_owner_id: i64,
-    soft_degraded_id: i64,
-) {
-    let resolution =
-        resolve_pool_account_for_request(state, None, &[slot_owner_id], &HashSet::new())
-            .await
-            .expect("resolve soft-degraded priority candidate");
-    let PoolAccountResolution::Resolved(account) = resolution else {
-        panic!("expected soft-degraded candidate to remain routable");
-    };
-    assert_eq!(account.account_id, soft_degraded_id);
+    group_name: &str,
+    occupying_display_name: &str,
+    queued_display_name: &str,
+) -> (i64, i64) {
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let occupying_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        occupying_display_name,
+        "occupying@example.com",
+        "org_occupying",
+        "user_occupying",
+    )
+    .await;
+    let queued_account_id = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        queued_display_name,
+        "queued@example.com",
+        "org_queued",
+        "user_queued",
+    )
+    .await;
+    for account_id in [occupying_account_id, queued_account_id] {
+        set_test_account_group_name(&state.pool, account_id, Some(group_name)).await;
+    }
+    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        group_name,
+        UpstreamAccountGroupMetadata {
+            note: None,
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
+            node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: 0,
+        },
+    )
+    .await
+    .expect("save node shunt sync metadata");
+    drop(conn);
+    seed_hard_unavailable_route_failure(
+        &state.pool,
+        queued_account_id,
+        UPSTREAM_ACCOUNT_STATUS_ERROR,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+        Some(429),
+    )
+    .await;
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .expect("build node shunt assignments");
     assert_eq!(
-        account.routing_source,
-        PoolRoutingSelectionSource::FreshAssignment
+        assignments
+            .account_proxy_keys
+            .get(&occupying_account_id)
+            .map(String::as_str),
+        Some(FORWARD_PROXY_DIRECT_KEY),
     );
-    let ForwardProxyRouteScope::BoundGroup { group_name, .. } = &account.forward_proxy_scope else {
-        panic!("expected soft-degraded node shunt candidate to use bound-group live fallback");
-    };
-    assert_eq!(group_name, "soft-degrade-priority");
+    assert!(
+        !assignments
+            .account_proxy_keys
+            .contains_key(&queued_account_id)
+    );
+    (occupying_account_id, queued_account_id)
 }
 
-#[test]
-pub(crate) fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_priority_is_higher()
+#[tokio::test]
+pub(crate) async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node() {
+    let (base_url, server) = spawn_usage_snapshot_server(
+        StatusCode::OK,
+        json!({
+            "planType": "team",
+            "rateLimit": {
+                "primaryWindow": {
+                    "usedPercent": 42,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1771322400
+                }
+            }
+        }),
+    )
+    .await;
+    let state = test_app_state_with_usage_base(&base_url).await;
+    let (_occupying_account_id, queued_account_id) = seed_group_node_shunt_unassigned_accounts(
+        &state,
+        "node-shunt-sync",
+        "Occupying OAuth",
+        "Queued OAuth",
+    )
+    .await;
+
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_manual_sync(state.clone(), queued_account_id)
+        .await
+        .expect("queued account manual sync should fall back to the shared bound node");
+
+    let after = load_upstream_account_row(&state.pool, queued_account_id)
+        .await
+        .expect("load queued account after sync")
+        .expect("queued account still exists");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(after.last_error.is_none());
+    assert!(after.last_route_failure_kind.is_none());
+    assert!(after.last_successful_sync_at.is_some());
+    assert_eq!(
+        after.last_action.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+    );
+    assert_eq!(detail.summary.id, queued_account_id);
+    assert_eq!(
+        detail.summary.routing_block_reason_code.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
+    );
+    assert_eq!(
+        detail.summary.routing_block_reason_message.as_deref(),
+        Some(group_node_shunt_unassigned_error_message()),
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+pub(crate) async fn maintenance_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node()
  {
-    let retry_original = PoolRoutingCandidateScore {
-        eligibility: PoolRoutingCandidateEligibility::SoftDegraded,
-        route_binding_failure_penalty: 0,
-        model_route_penalty: 0,
-        routing_priority_rank: 0,
-        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
-        dispatch_state: PoolRoutingCandidateDispatchState::RetryOriginalNode,
-        single_account_rotation_enabled: false,
-        secondary_reset_proximity_secs: None,
-        primary_reset_proximity_secs: None,
-        scarcity_score: 0.0,
-        effective_load: 0,
-        last_selected_at: None,
-        account_id: 10,
-    };
-    let ready_after_migration = PoolRoutingCandidateScore {
-        eligibility: PoolRoutingCandidateEligibility::SoftDegraded,
-        route_binding_failure_penalty: 0,
-        model_route_penalty: 0,
-        routing_priority_rank: 2,
-        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
-        dispatch_state: PoolRoutingCandidateDispatchState::ReadyAfterMigration,
-        single_account_rotation_enabled: false,
-        secondary_reset_proximity_secs: None,
-        primary_reset_proximity_secs: None,
-        scarcity_score: 0.0,
-        effective_load: 0,
-        last_selected_at: None,
-        account_id: 11,
-    };
+    let (base_url, server) = spawn_usage_snapshot_server(
+        StatusCode::OK,
+        json!({
+            "planType": "team",
+            "rateLimit": {
+                "primaryWindow": {
+                    "usedPercent": 42,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1771322400
+                }
+            }
+        }),
+    )
+    .await;
+    let state = test_app_state_with_usage_base(&base_url).await;
+    let (_occupying_account_id, queued_account_id) = seed_group_node_shunt_unassigned_accounts(
+        &state,
+        "node-shunt-maint",
+        "Occupying Maintenance OAuth",
+        "Queued Maintenance OAuth",
+    )
+    .await;
 
+    let outcome = state
+        .upstream_accounts
+        .account_ops
+        .run_maintenance_sync(state.clone(), queued_account_id)
+        .await
+        .expect("maintenance sync should execute via shared bound-node probe");
+    assert!(matches!(outcome, MaintenanceDispatchOutcome::Executed));
+
+    let after = load_upstream_account_row(&state.pool, queued_account_id)
+        .await
+        .expect("load queued maintenance account after sync")
+        .expect("queued maintenance account still exists");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(after.last_error.is_none());
+    assert!(after.last_route_failure_kind.is_none());
+    assert!(after.last_successful_sync_at.is_some());
     assert_eq!(
-        compare_pool_routing_candidate_scores(&retry_original, &ready_after_migration),
-        std::cmp::Ordering::Greater
+        after.last_action.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
     );
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), queued_account_id)
+        .await
+        .expect("load queued maintenance detail")
+        .expect("queued maintenance detail exists");
     assert_eq!(
-        compare_pool_routing_candidate_scores(&ready_after_migration, &retry_original),
-        std::cmp::Ordering::Less
+        detail.summary.routing_block_reason_code.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
     );
+
+    server.abort();
 }
 
-#[test]
-pub(crate) fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_higher() {
-    let overflow = PoolRoutingCandidateScore {
-        eligibility: PoolRoutingCandidateEligibility::Assignable,
-        route_binding_failure_penalty: 0,
-        model_route_penalty: 0,
-        routing_priority_rank: 0,
-        capacity_lane: PoolRoutingCandidateCapacityLane::Overflow,
-        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
-        single_account_rotation_enabled: false,
-        secondary_reset_proximity_secs: None,
-        primary_reset_proximity_secs: None,
-        scarcity_score: 0.0,
-        effective_load: 9,
-        last_selected_at: None,
-        account_id: 12,
-    };
-    let primary = PoolRoutingCandidateScore {
-        eligibility: PoolRoutingCandidateEligibility::Assignable,
-        route_binding_failure_penalty: 0,
-        model_route_penalty: 0,
-        routing_priority_rank: 2,
-        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
-        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
-        single_account_rotation_enabled: false,
-        secondary_reset_proximity_secs: None,
-        primary_reset_proximity_secs: None,
-        scarcity_score: 0.0,
-        effective_load: 1,
-        last_selected_at: None,
-        account_id: 13,
-    };
+#[tokio::test]
+pub(crate) async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node() {
+    let (base_url, server) = spawn_usage_snapshot_server(
+        StatusCode::OK,
+        json!({
+            "planType": "team",
+            "rateLimit": {
+                "primaryWindow": {
+                    "usedPercent": 42,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1771322400
+                }
+            }
+        }),
+    )
+    .await;
+    let state = test_app_state_with_usage_base(&base_url).await;
+    let (_occupying_account_id, queued_account_id) = seed_group_node_shunt_unassigned_accounts(
+        &state,
+        "node-shunt-bulk",
+        "Occupying Bulk OAuth",
+        "Queued Bulk OAuth",
+    )
+    .await;
 
+    let response = create_bulk_upstream_account_sync_job(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(BulkUpstreamAccountSyncJobRequest {
+            account_ids: vec![queued_account_id],
+        }),
+    )
+    .await
+    .expect("create bulk sync job")
+    .0;
+    let job = state
+        .upstream_accounts
+        .get_bulk_sync_job(&response.job_id)
+        .await
+        .expect("bulk sync job exists");
+    let terminal = timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(terminal) = job.terminal_event.lock().await.clone() {
+                return terminal;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bulk sync job should finish within timeout");
+    let BulkUpstreamAccountSyncTerminalEvent::Completed(payload) = terminal else {
+        panic!("bulk sync job should complete successfully");
+    };
+    assert_eq!(payload.counts.total, 1);
+    assert_eq!(payload.counts.completed, 1);
+    assert_eq!(payload.counts.failed, 0);
+    assert_eq!(payload.snapshot.rows.len(), 1);
     assert_eq!(
-        compare_pool_routing_candidate_scores(&overflow, &primary),
-        std::cmp::Ordering::Greater
+        payload.snapshot.rows[0].status,
+        BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED
     );
-    assert_eq!(
-        compare_pool_routing_candidate_scores(&primary, &overflow),
-        std::cmp::Ordering::Less
-    );
+    assert_eq!(payload.snapshot.rows[0].account_id, queued_account_id);
+
+    let after = load_upstream_account_row(&state.pool, queued_account_id)
+        .await
+        .expect("load queued bulk account after sync")
+        .expect("queued bulk account still exists");
+    assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(after.last_successful_sync_at.is_some());
+
+    server.abort();
 }
+
+use super::*;

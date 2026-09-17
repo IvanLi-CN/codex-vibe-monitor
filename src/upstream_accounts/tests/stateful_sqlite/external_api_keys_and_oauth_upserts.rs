@@ -127,7 +127,7 @@ struct ExternalUpsertMetadata<'a> {
     note: Option<&'a str>,
 }
 
-fn test_external_upsert_metadata<'a>(
+fn external_upsert_metadata<'a>(
     display_name: &'a str,
     group_name: Option<&'a str>,
     note: Option<&'a str>,
@@ -454,14 +454,8 @@ async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i
             "user_partner_alpha",
             "alpha-access",
             "alpha-refresh",
-            test_external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
-        )
-    };
-    let missing_err = external_upsert_oauth_upstream_account_route(
-        State(state.clone()),
-        HeaderMap::new(),
-        AxumPath("partner-source-1".to_string()),
-        Json(request()),
+            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
+        )),
     )
     .await
     .expect_err("missing bearer token should be rejected");
@@ -471,7 +465,14 @@ async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i
         State(state.clone()),
         external_api_auth_headers("cvm_ext_invalid"),
         AxumPath("partner-source-1".to_string()),
-        Json(request()),
+        Json(test_external_upsert_request(
+            "alpha@example.com",
+            "org_partner_alpha",
+            "user_partner_alpha",
+            "alpha-access",
+            "alpha-refresh",
+            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
+        )),
     )
     .await
     .expect_err("unknown bearer token should be rejected");
@@ -481,7 +482,14 @@ async fn assert_external_api_key_authentication(state: &Arc<AppState>, key_id: i
         State(state.clone()),
         external_api_auth_headers_with_scheme(secret, "bearer"),
         AxumPath("partner-source-1".to_string()),
-        Json(request()),
+        Json(test_external_upsert_request(
+            "alpha@example.com",
+            "org_partner_alpha",
+            "user_partner_alpha",
+            "alpha-access",
+            "alpha-refresh",
+            external_upsert_metadata("Partner Alpha OAuth", None, Some("initial note")),
+        )),
     )
     .await
     .expect("active external key should authenticate");
@@ -651,21 +659,91 @@ async fn external_oauth_upsert_is_idempotent_per_client_and_isolated_across_clie
     let (_client_b_key_id, client_b_secret, client_b_row) =
         create_external_api_key_for_test(&state, "Partner Client B").await;
 
-    let client_a_first_id =
-        assert_idempotent_external_client_upsert(&state, &client_a_secret, &client_a_row).await;
-
-    run_external_upsert(
-        &state,
-        &client_b_secret,
+    let _ = external_upsert_oauth_upstream_account_route(
+        State(state.clone()),
+        external_api_auth_headers(&client_a_secret),
+        AxumPath("shared-source-001".to_string()),
+        Json(test_external_upsert_request(
+            "shared-a@example.com",
+            "org_shared_a",
+            "user_shared_a",
+            "access-a-1",
+            "refresh-a-1",
+            external_upsert_metadata("Shared Client A", None, Some("note-a-1")),
+        )),
+    )
+    .await
+    .expect("client A first upsert");
+    let client_a_first = load_upstream_account_row_by_external_identity(
+        &state.pool,
+        &client_a_row.client_id,
         "shared-source-001",
-        test_external_upsert_request(
+    )
+    .await
+    .expect("load client A first account")
+    .expect("client A first account should exist");
+
+    let _ = external_upsert_oauth_upstream_account_route(
+        State(state.clone()),
+        external_api_auth_headers(&client_a_secret),
+        AxumPath("shared-source-001".to_string()),
+        Json(test_external_upsert_request(
+            "shared-a@example.com",
+            "org_shared_a",
+            "user_shared_a",
+            "access-a-2",
+            "refresh-a-2",
+            external_upsert_metadata("Shared Client A Updated", None, Some("note-a-2")),
+        )),
+    )
+    .await
+    .expect("client A second upsert should be idempotent");
+    let client_a_second = load_upstream_account_row_by_external_identity(
+        &state.pool,
+        &client_a_row.client_id,
+        "shared-source-001",
+    )
+    .await
+    .expect("load client A second account")
+    .expect("client A second account should exist");
+    assert_eq!(client_a_second.id, client_a_first.id);
+    assert_eq!(client_a_second.display_name, "Shared Client A Updated");
+    assert_eq!(client_a_second.note.as_deref(), Some("note-a-2"));
+
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let decrypted_client_a = decrypt_credentials(
+        crypto_key,
+        client_a_second
+            .encrypted_credentials
+            .as_deref()
+            .expect("client A encrypted credentials"),
+    )
+    .expect("decrypt client A credentials");
+    let StoredCredentials::Oauth(client_a_credentials) = decrypted_client_a else {
+        panic!("client A should keep oauth credentials");
+    };
+    assert_eq!(client_a_credentials.access_token, "access-a-2");
+    assert_eq!(
+        client_a_credentials.refresh_token.as_deref(),
+        Some("refresh-a-2")
+    );
+
+    let _ = external_upsert_oauth_upstream_account_route(
+        State(state.clone()),
+        external_api_auth_headers(&client_b_secret),
+        AxumPath("shared-source-001".to_string()),
+        Json(test_external_upsert_request(
             "shared-b@example.com",
             "org_shared_b",
             "user_shared_b",
             "access-b-1",
             "refresh-b-1",
-            test_external_upsert_metadata("Shared Client B", None, Some("note-b-1")),
-        ),
+            external_upsert_metadata("Shared Client B", None, Some("note-b-1")),
+        )),
     )
     .await;
     let client_b_account = load_upstream_account_row_by_external_identity(
@@ -786,7 +864,7 @@ async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_
             "user_email_preserve",
             "preserve-access-1",
             "preserve-refresh-1",
-            test_external_upsert_metadata("External Email Preserve", None, None),
+            external_upsert_metadata("External Email Preserve", None, None),
         )),
     )
     .await
@@ -820,7 +898,7 @@ async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_
             "user_email_preserve",
             "preserve-access-2",
             "preserve-refresh-2",
-            test_external_upsert_metadata("External Email Preserve", None, None),
+            external_upsert_metadata("External Email Preserve", None, None),
         )),
     )
     .await
@@ -885,7 +963,7 @@ async fn external_oauth_patch_updates_metadata_without_overwriting_credentials()
             "user_patch",
             "patch-access-1",
             "patch-refresh-1",
-            test_external_upsert_metadata("Patch Original", None, Some("before patch")),
+            external_upsert_metadata("Patch Original", None, Some("before patch")),
         )),
     )
     .await
@@ -968,7 +1046,7 @@ async fn external_oauth_patch_preserves_system_tags_when_tag_ids_is_empty() {
             "user_patch_tags",
             "patch-access-tags-1",
             "patch-refresh-tags-1",
-            test_external_upsert_metadata("Patch Tags Original", None, Some("before patch")),
+            external_upsert_metadata("Patch Tags Original", None, Some("before patch")),
         )),
     )
     .await
@@ -1166,8 +1244,8 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic",
             "atomic-access-1",
             "atomic-refresh-1",
-            test_external_upsert_metadata("Atomic Existing", None, Some("before atomic failure")),
-        ),
+            external_upsert_metadata("Atomic Existing", None, Some("before atomic failure")),
+        )),
     )
     .await;
 
@@ -1181,12 +1259,8 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic_conflict",
             "atomic-conflict-access",
             "atomic-conflict-refresh",
-            test_external_upsert_metadata(
-                "Conflicting Display Name",
-                None,
-                Some("conflict holder"),
-            ),
-        ),
+            external_upsert_metadata("Conflicting Display Name", None, Some("conflict holder")),
+        )),
     )
     .await;
 
@@ -1211,7 +1285,7 @@ async fn external_oauth_upsert_keeps_existing_credentials_when_metadata_validati
             "user_atomic",
             "atomic-access-2",
             "atomic-refresh-2",
-            test_external_upsert_metadata(
+            external_upsert_metadata(
                 "Conflicting Display Name",
                 None,
                 Some("after atomic failure"),

@@ -107,39 +107,45 @@ function ScrollableJsonTree({
   );
 }
 
-export function StructuredPayloadViewer({
+type ParsedPayload = Exclude<ReturnType<typeof parseStructuredPayload>, null>;
+
+function LargePayloadNotice({
   value,
   labels,
   className,
-}: StructuredPayloadViewerProps) {
-  const byteLength = useMemo(() => getUtf8ByteLength(value), [value]);
-  const isLarge = byteLength > STRUCTURED_PAYLOAD_AUTO_PARSE_LIMIT_BYTES;
-  const [largePayloadConsentValue, setLargePayloadConsentValue] = useState<string | null>(null);
-  const parseLargePayload = largePayloadConsentValue === value;
-  const parsed = useMemo(
-    () => (isLarge && !parseLargePayload ? null : parseStructuredPayload(value)),
-    [isLarge, parseLargePayload, value],
-  );
-
-  if (parsed == null) {
-    return (
-      <div className={cn("min-w-0 max-w-full overflow-hidden space-y-2", className)}>
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
-          <span className="text-xs leading-5 text-base-content/72">{labels.largePayload}</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setLargePayloadConsentValue(value)}
-          >
-            {labels.parseLargePayload}
-          </Button>
-        </div>
-        <RawText value={value} />
+  onParse,
+}: {
+  value: string;
+  labels: StructuredPayloadViewerProps["labels"];
+  className?: string;
+  onParse: () => void;
+}) {
+  return (
+    <div className={cn("min-w-0 max-w-full overflow-hidden space-y-2", className)}>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
+        <span className="text-xs leading-5 text-base-content/72">{labels.largePayload}</span>
+        <Button type="button" variant="outline" size="sm" onClick={onParse}>
+          {labels.parseLargePayload}
+        </Button>
       </div>
-    );
-  }
+      <RawText value={value} />
+    </div>
+  );
+}
 
+function StructuredPayloadContent({
+  value,
+  parsed,
+  byteLength,
+  labels,
+  className,
+}: {
+  value: string;
+  parsed: ParsedPayload;
+  byteLength: number;
+  labels: StructuredPayloadViewerProps["labels"];
+  className?: string;
+}) {
   if (parsed.kind === "text") {
     return (
       <div className={cn("min-w-0 max-w-full overflow-hidden", className)} data-payload-kind="text">
@@ -220,5 +226,41 @@ export function StructuredPayloadViewer({
         )}
       </div>
     </div>
+  );
+}
+
+export function StructuredPayloadViewer({
+  value,
+  labels,
+  className,
+}: StructuredPayloadViewerProps) {
+  const byteLength = useMemo(() => getUtf8ByteLength(value), [value]);
+  const isLarge = byteLength > STRUCTURED_PAYLOAD_AUTO_PARSE_LIMIT_BYTES;
+  const [largePayloadConsentValue, setLargePayloadConsentValue] = useState<string | null>(null);
+  const parseLargePayload = largePayloadConsentValue === value;
+  const parsed = useMemo(
+    () => (isLarge && !parseLargePayload ? null : parseStructuredPayload(value)),
+    [isLarge, parseLargePayload, value],
+  );
+
+  if (parsed == null) {
+    return (
+      <LargePayloadNotice
+        value={value}
+        labels={labels}
+        className={className}
+        onParse={() => setLargePayloadConsentValue(value)}
+      />
+    );
+  }
+
+  return (
+    <StructuredPayloadContent
+      value={value}
+      parsed={parsed}
+      byteLength={byteLength}
+      labels={labels}
+      className={className}
+    />
   );
 }

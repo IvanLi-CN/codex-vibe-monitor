@@ -102,17 +102,9 @@ mod oauth_route_body_rewrite_and_timeout;
     clippy::type_complexity,
     reason = "Test fixture tuples mirror statistics row shapes."
 )]
-mod parallel_work_stats_and_timeseries;
+pub(crate) mod parallel_work_stats_and_timeseries;
 mod pricing_catalog_and_models_passthrough;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Test insertion helpers mirror persisted prompt-cache fields."
-)]
 mod prompt_cache_conversation_queries;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Test insertion helpers mirror persisted rollup fields."
-)]
 mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
 mod proxy_pool_roundtrip_and_retry_servers;
@@ -136,12 +128,20 @@ mod routing_failover_terminal_reasoning;
 mod routing_timeout_and_overload_failover;
 mod runtime_overlay_and_group_rule_behaviors;
 mod startup_rebuild_and_retention_basics;
-mod system_status_and_account_roster;
+pub(crate) mod system_status_and_account_roster;
 
+pub(crate) use parallel_work_stats_and_timeseries::part_01::{
+    SeedInvocationArchiveBatchRow, assert_f64_close, seed_invocation_archive_batch,
+    seed_invocation_archive_batch_with_details,
+};
 pub(crate) use parallel_work_stats_and_timeseries::*;
 pub(crate) use proxy_backfill_and_cost_repairs::*;
 pub(crate) use proxy_pool_roundtrip_and_retry_servers::*;
 pub(crate) use request_preparation_and_handshake_failures::*;
 pub(crate) use routing_failover_terminal_reasoning::*;
 pub(crate) use runtime_overlay_and_group_rule_behaviors::*;
+pub(crate) use system_status_and_account_roster::part_02::test_state_with_openai_base_and_pool_no_available_wait;
+pub(crate) use system_status_and_account_roster::part_03::{
+    insert_test_pool_oauth_account, seed_pool_routing_api_key,
+};
 pub(crate) use system_status_and_account_roster::*;
