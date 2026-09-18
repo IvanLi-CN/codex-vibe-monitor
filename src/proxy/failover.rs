@@ -1031,65 +1031,68 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
             let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
             let live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
-            let prepared_request_body = match prepare_pool_request_body_for_account(
-                proxy_request_id,
-                body.as_ref(),
-                original_uri,
-                &method,
-                headers
-                    .get(header::CONTENT_ENCODING)
-                    .and_then(|value| value.to_str().ok()),
-                account.fast_mode_rewrite_mode,
-                account.image_tool_rewrite_mode,
-                account.codex_imagegen_rewrite_mode,
-                codex_imagegen_protocol_from_headers(headers),
-                runtime_snapshot_context
-                    .as_ref()
-                    .map(|context| &context.request_info),
-                runtime_snapshot_context
-                    .as_ref()
-                    .and_then(|context| context.hosted_image_intent),
-                model_mapping.as_ref(),
-            )
-            .await
-            {
-                Ok(prepared) => prepared,
-                Err(err) => {
-                    record_pool_request_prepare_failure_attempt(PoolPrepareFailureAttemptRequest {
-                        state: state.as_ref(),
-                        trace_context: trace_context.as_ref(),
-                        account: &account,
-                        requested_model: requested_model.as_deref(),
-                        model_mapping_pattern,
-                        attempt_index: (attempt_count + 1) as i64,
-                        distinct_account_index: distinct_account_count as i64,
-                        same_account_retry_index,
-                        status: err.status,
-                        message: &err.message,
-                    })
-                    .await;
-                    release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                    return Err(PoolUpstreamError {
-                        codex_imagegen_rewrite: None,
-                        account: Some(account.clone()),
-                        status: err.status,
-                        message: err.message,
-                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                        blocked_binding: None,
-                        connect_latency_ms: 0.0,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        canonical_error_message: None,
-                        downstream_error_message: None,
-                        upstream_request_id: None,
-                        proxy_binding_key_snapshot: None,
-                        oauth_responses_debug: None,
-                        attempt_summary: PoolAttemptSummary::default(),
-                        requested_service_tier: None,
-                        request_body_for_capture: None,
-                    });
-                }
-            };
+            let prepared_request_body =
+                match prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+                    proxy_request_id,
+                    body: body.as_ref(),
+                    original_uri,
+                    method: &method,
+                    content_encoding: headers
+                        .get(header::CONTENT_ENCODING)
+                        .and_then(|value| value.to_str().ok()),
+                    fast_mode_rewrite_mode: account.fast_mode_rewrite_mode,
+                    image_tool_rewrite_mode: account.image_tool_rewrite_mode,
+                    codex_imagegen_rewrite_mode: account.codex_imagegen_rewrite_mode,
+                    codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
+                    projected_request_info: runtime_snapshot_context
+                        .as_ref()
+                        .map(|context| &context.request_info),
+                    projected_hosted_image_intent: runtime_snapshot_context
+                        .as_ref()
+                        .and_then(|context| context.hosted_image_intent),
+                    model_mapping: model_mapping.as_ref(),
+                })
+                .await
+                {
+                    Ok(prepared) => prepared,
+                    Err(err) => {
+                        record_pool_request_prepare_failure_attempt(
+                            PoolPrepareFailureAttemptRequest {
+                                state: state.as_ref(),
+                                trace_context: trace_context.as_ref(),
+                                account: &account,
+                                requested_model: requested_model.as_deref(),
+                                model_mapping_pattern,
+                                attempt_index: (attempt_count + 1) as i64,
+                                distinct_account_index: distinct_account_count as i64,
+                                same_account_retry_index,
+                                status: err.status,
+                                message: &err.message,
+                            },
+                        )
+                        .await;
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                        return Err(PoolUpstreamError {
+                            codex_imagegen_rewrite: None,
+                            account: Some(account.clone()),
+                            status: err.status,
+                            message: err.message,
+                            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            blocked_binding: None,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            canonical_error_message: None,
+                            downstream_error_message: None,
+                            upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
+                            oauth_responses_debug: None,
+                            attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: None,
+                            request_body_for_capture: None,
+                        });
+                    }
+                };
             let attempted_requested_service_tier =
                 prepared_request_body.requested_service_tier.clone();
             let attempted_requested_image_intent = prepared_request_body.requested_image_intent;
