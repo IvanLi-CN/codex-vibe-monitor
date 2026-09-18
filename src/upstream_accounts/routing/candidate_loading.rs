@@ -1283,7 +1283,6 @@ pub(crate) async fn load_transport_decode_sticky_escape_states_at(
     if account_ids.is_empty() {
         return Ok(HashMap::new());
     }
-
     let started_at = std::time::Instant::now();
     let mut seen_account_ids = HashSet::new();
     let unique_account_ids = account_ids
@@ -1292,7 +1291,6 @@ pub(crate) async fn load_transport_decode_sticky_escape_states_at(
         .filter(|account_id| seen_account_ids.insert(*account_id))
         .collect::<Vec<_>>();
     let mut rows = Vec::new();
-
     // SQLite limits compound SELECT terms; each account subquery stays capped at two rows.
     for account_id_batch in unique_account_ids.chunks(400) {
         let mut query = QueryBuilder::<Sqlite>::new("");
@@ -1314,7 +1312,6 @@ pub(crate) async fn load_transport_decode_sticky_escape_states_at(
                 .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
                 .push(") ORDER BY occurred_at DESC, id DESC LIMIT 2)");
         }
-
         rows.extend(
             query
                 .build_query_as::<(i64, String, Option<String>)>()
@@ -1364,7 +1361,6 @@ pub(crate) async fn load_transport_decode_sticky_escape_states_at(
         })
         .filter(|(_, state)| now < state.until)
         .collect::<HashMap<_, _>>();
-
     let elapsed_ms = started_at.elapsed().as_secs_f64() * 1_000.0;
     if elapsed_ms >= 1_000.0 {
         warn!(
