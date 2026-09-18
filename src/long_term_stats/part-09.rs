@@ -30,14 +30,73 @@ struct LongTermRefreshArchiveScanState {
     clear_all_attempt_markers: bool,
 }
 
-async fn refresh_long_term_stats_inner(
+fn long_term_refresh_reconstructable_start(
+    retention_start: NaiveDate,
+    statistics_start_date: Option<&str>,
+    previous_state: Option<&LongTermStateRow>,
+) -> NaiveDate {
+    long_term_reconstructable_start(
+        retention_start,
+        statistics_start_date,
+        previous_state.and_then(|state| state.integrity_source_start_date.as_deref()),
+    )
+}
+
+async fn reconcile_long_term_refresh_sources_with_context(
+    pool: &Pool<Sqlite>,
+    ready_state: bool,
+    integrity_audit_due: bool,
+    today: NaiveDate,
+    reconstructable_start: NaiveDate,
+    invalidated_terminal_proof_buckets: &[i64],
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<Option<NaiveDate>> {
+    reconcile_long_term_refresh_sources(
+        pool,
+        ready_state,
+        integrity_audit_due,
+        today,
+        reconstructable_start,
+        invalidated_terminal_proof_buckets,
+        control,
+    )
+    .await
+}
+
+struct LongTermRefreshPreparedSources {
+    ready_state: bool,
+    retention_start: NaiveDate,
+    today: NaiveDate,
+    reconstructable_start: NaiveDate,
+    scheduled_repair_date: Option<NaiveDate>,
+    terminal_proof_reconciliation_incomplete: bool,
+    archive_read_failed: bool,
+    unreadable_source_start_date: Option<NaiveDate>,
+    rows: Vec<LongTermInvocationRow>,
+    processed_rows_count: i64,
+    archive_markers: Vec<(String, String)>,
+    failed_archive_paths: HashSet<String>,
+    failed_archive_ranges: Vec<(String, String)>,
+    clear_all_attempt_markers: bool,
+    all_archive_paths: Vec<ArchiveBatchPathRow>,
+    archive_attempt_accounts: HashMap<(String, String), i64>,
+    attempt_archive_markers: HashSet<(String, String)>,
+    account_identities: HashMap<i64, LongTermAccountIdentity>,
+    live_upstream_account_id_sql: &'static str,
+    statistics_start_date: Option<String>,
+    hourly: HashMap<(i64, String, String), LongTermBucket>,
+    daily: HashMap<(String, String, String), LongTermBucket>,
+    affected_archive_dates: HashSet<NaiveDate>,
+}
+
+async fn prepare_long_term_refresh_sources(
     pool: &Pool<Sqlite>,
     retention_days: u64,
     initial_materialization: bool,
     refresh_started_at: &str,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<()> {
-    let setup = prepare_long_term_refresh(
+) -> Result<LongTermRefreshPreparedSources> {
+    let setup = prepare_long_term_refresh_setup(
         pool,
         retention_days,
         initial_materialization,
@@ -57,11 +116,159 @@ async fn refresh_long_term_stats_inner(
         invalidated_terminal_proof_buckets,
         account_identities,
     } = setup;
-    let mut hourly: HashMap<(i64, String, String), LongTermBucket> = HashMap::new();
-    let mut daily: HashMap<(String, String, String), LongTermBucket> = HashMap::new();
+    let mut hourly = HashMap::new();
+    let mut daily = HashMap::new();
     let mut statistics_start_date = previous_state
         .as_ref()
         .and_then(|state| state.statistics_start_date.clone());
+    let source = load_long_term_refresh_source_state(
+        pool,
+        ready_state,
+        retention_start,
+        live_tail_start.as_deref(),
+        live_upstream_account_id_sql,
+        control,
+    )
+    .await?;
+    aggregate_long_term_refresh_rows(LongTermRefreshAggregationContext {
+        pool,
+        rows: &source.rows,
+        account_identities: &account_identities,
+        ready_state,
+        hourly: &mut hourly,
+        daily: &mut daily,
+        statistics_start_date: &mut statistics_start_date,
+        control,
+    })
+    .await?;
+    let reconstructable_start = long_term_refresh_reconstructable_start(
+        retention_start,
+        statistics_start_date.as_deref(),
+        previous_state.as_ref(),
+    );
+    let scheduled_repair_date = reconcile_long_term_refresh_sources_with_context(
+        pool,
+        ready_state,
+        integrity_audit_due,
+        today,
+        reconstructable_start,
+        &invalidated_terminal_proof_buckets,
+        control,
+    )
+    .await?;
+    Ok(LongTermRefreshPreparedSources {
+        ready_state,
+        retention_start,
+        today,
+        reconstructable_start,
+        scheduled_repair_date,
+        terminal_proof_reconciliation_incomplete,
+        archive_read_failed: source.archive_read_failed,
+        unreadable_source_start_date: source.unreadable_source_start_date,
+        rows: source.rows,
+        processed_rows_count: source.processed_rows_count,
+        archive_markers: source.archive_markers,
+        failed_archive_paths: source.failed_archive_paths,
+        failed_archive_ranges: source.failed_archive_ranges,
+        clear_all_attempt_markers: source.clear_all_attempt_markers,
+        all_archive_paths: source.all_archive_paths,
+        archive_attempt_accounts: source.archive_attempt_accounts,
+        attempt_archive_markers: source.attempt_archive_markers,
+        account_identities,
+        live_upstream_account_id_sql,
+        statistics_start_date,
+        hourly,
+        daily,
+        affected_archive_dates: source.affected_archive_dates,
+    })
+}
+
+async fn prepare_long_term_refresh_setup(
+    pool: &Pool<Sqlite>,
+    retention_days: u64,
+    initial_materialization: bool,
+    refresh_started_at: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<LongTermRefreshSetup> {
+    prepare_long_term_refresh(
+        pool,
+        retention_days,
+        initial_materialization,
+        refresh_started_at,
+        control,
+    )
+    .await
+}
+
+async fn refresh_long_term_stats_inner(
+    pool: &Pool<Sqlite>,
+    retention_days: u64,
+    initial_materialization: bool,
+    refresh_started_at: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let prepared = prepare_long_term_refresh_sources(
+        pool,
+        retention_days,
+        initial_materialization,
+        refresh_started_at,
+        control,
+    )
+    .await?;
+    continue_long_term_refresh_after_sources(LongTermRefreshPostSourceInput {
+        pool,
+        ready_state: prepared.ready_state,
+        initial_materialization,
+        retention_start: prepared.retention_start,
+        today: prepared.today,
+        reconstructable_start: prepared.reconstructable_start,
+        scheduled_repair_date: prepared.scheduled_repair_date,
+        terminal_proof_reconciliation_incomplete: prepared.terminal_proof_reconciliation_incomplete,
+        archive_read_failed: prepared.archive_read_failed,
+        unreadable_source_start_date: prepared.unreadable_source_start_date,
+        rows: prepared.rows,
+        processed_rows_count: prepared.processed_rows_count,
+        archive_markers: prepared.archive_markers,
+        failed_archive_paths: prepared.failed_archive_paths,
+        failed_archive_ranges: prepared.failed_archive_ranges,
+        clear_all_attempt_markers: prepared.clear_all_attempt_markers,
+        all_archive_paths: prepared.all_archive_paths,
+        archive_attempt_accounts: prepared.archive_attempt_accounts,
+        attempt_archive_markers: prepared.attempt_archive_markers,
+        account_identities: prepared.account_identities,
+        live_upstream_account_id_sql: prepared.live_upstream_account_id_sql,
+        statistics_start_date: prepared.statistics_start_date,
+        hourly: prepared.hourly,
+        daily: prepared.daily,
+        affected_archive_dates: prepared.affected_archive_dates,
+        control,
+    })
+    .await
+}
+
+struct LongTermRefreshLoadedSources {
+    rows: Vec<LongTermInvocationRow>,
+    processed_rows_count: i64,
+    archive_markers: Vec<(String, String)>,
+    failed_archive_paths: HashSet<String>,
+    failed_archive_ranges: Vec<(String, String)>,
+    affected_archive_dates: HashSet<NaiveDate>,
+    unreadable_source_start_date: Option<NaiveDate>,
+    archive_read_failed: bool,
+    clear_all_attempt_markers: bool,
+    all_archive_paths: Vec<ArchiveBatchPathRow>,
+    archive_attempt_accounts: HashMap<(String, String), i64>,
+    attempt_archive_markers: HashSet<(String, String)>,
+}
+
+async fn load_long_term_refresh_source_state(
+    pool: &Pool<Sqlite>,
+    ready_state: bool,
+    retention_start: NaiveDate,
+    live_tail_start: Option<&str>,
+    live_upstream_account_id_sql: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<LongTermRefreshLoadedSources> {
     let LongTermRefreshSourceState {
         rows,
         processed_rows_count,
@@ -79,70 +286,25 @@ async fn refresh_long_term_stats_inner(
         pool,
         ready_state,
         retention_start,
-        live_tail_start.as_deref(),
+        live_tail_start,
         live_upstream_account_id_sql,
         control,
     )
     .await?;
-    aggregate_long_term_refresh_rows(LongTermRefreshAggregationContext {
-        pool,
-        rows: &rows,
-        account_identities: &account_identities,
-        ready_state,
-        hourly: &mut hourly,
-        daily: &mut daily,
-        statistics_start_date: &mut statistics_start_date,
-        control,
-    })
-    .await?;
-
-    let reconstructable_start = long_term_reconstructable_start(
-        retention_start,
-        statistics_start_date.as_deref(),
-        previous_state
-            .as_ref()
-            .and_then(|state| state.integrity_source_start_date.as_deref()),
-    );
-    let scheduled_repair_date = reconcile_long_term_refresh_sources(
-        pool,
-        ready_state,
-        integrity_audit_due,
-        today,
-        reconstructable_start,
-        &invalidated_terminal_proof_buckets,
-        control,
-    )
-    .await?;
-
-    continue_long_term_refresh_after_sources(LongTermRefreshPostSourceInput {
-        pool,
-        ready_state,
-        initial_materialization,
-        retention_start,
-        today,
-        reconstructable_start,
-        scheduled_repair_date,
-        terminal_proof_reconciliation_incomplete,
-        archive_read_failed,
-        unreadable_source_start_date,
+    Ok(LongTermRefreshLoadedSources {
         rows,
         processed_rows_count,
         archive_markers,
         failed_archive_paths,
         failed_archive_ranges,
+        affected_archive_dates,
+        unreadable_source_start_date,
+        archive_read_failed,
         clear_all_attempt_markers,
         all_archive_paths,
         archive_attempt_accounts,
         attempt_archive_markers,
-        account_identities,
-        live_upstream_account_id_sql,
-        statistics_start_date,
-        hourly,
-        daily,
-        affected_archive_dates,
-        control,
     })
-    .await
 }
 
 fn long_term_refresh_attempt_date_range(

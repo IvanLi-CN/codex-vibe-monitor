@@ -658,11 +658,12 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
     if !long_term_projection_archive_batches_exist(pool).await? {
         return Ok(());
     }
+    ensure_long_term_projection_archive_trigger_definitions(pool).await
+}
 
-    // Archive writes and rewrites are source changes for durable long-term rollups. Invocation
-    // archives provide the terminal facts; attempt archives provide a later account-attribution
-    // fallback. Both must invalidate the same target dates. Recreate these triggers so upgrades
-    // do not retain a prior definition that only observed invocation archives.
+async fn ensure_long_term_projection_archive_trigger_definitions(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
     sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_archive_insert")
         .execute(pool)
         .await?;
