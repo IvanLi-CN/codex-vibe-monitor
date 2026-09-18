@@ -49,8 +49,7 @@ pub(crate) async fn run_startup_backfill_task(
     _zero_update_streak: u32,
     source_unavailable_probe: bool,
 ) -> Result<(StartupBackfillRunState, String)> {
-    let scan_limit = startup_backfill_scan_limit(source_unavailable_probe);
-    let max_elapsed = Some(startup_backfill_run_budget(source_unavailable_probe));
+    let (scan_limit, max_elapsed) = startup_backfill_task_limits(source_unavailable_probe);
     let raw_path_fallback_root = state.config.database_path.parent();
     match task {
         StartupBackfillTask::ProxyUsage => {
@@ -142,6 +141,13 @@ pub(crate) async fn run_startup_backfill_task(
             run_historical_rollups_backfill(state, cursor_id).await
         }
     }
+}
+
+fn startup_backfill_task_limits(source_unavailable_probe: bool) -> (u64, Option<Duration>) {
+    (
+        startup_backfill_scan_limit(source_unavailable_probe),
+        Some(startup_backfill_run_budget(source_unavailable_probe)),
+    )
 }
 
 async fn run_proxy_usage_backfill(

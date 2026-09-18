@@ -679,27 +679,8 @@ fn subtract_invocation_hourly_rollup_delta(
     archive_delta: &InvocationHourlyRollupDelta,
     materialized_row: Option<&InvocationHourlyRollupRecord>,
 ) -> InvocationHourlyRollupDelta {
-    let first_byte_materialized = materialized_row
-        .map(|row| decode_approx_histogram(&row.first_byte_histogram))
-        .unwrap_or_else(empty_approx_histogram);
-    let first_response_materialized = materialized_row
-        .map(|row| decode_approx_histogram(&row.first_response_byte_total_histogram))
-        .unwrap_or_else(empty_approx_histogram);
-    let first_token_materialized = materialized_row
-        .map(|row| decode_approx_histogram(&row.first_token_histogram))
-        .unwrap_or_else(empty_approx_histogram);
-    let first_byte_histogram = subtract_approx_histogram_counts(
-        &archive_delta.first_byte_histogram,
-        &first_byte_materialized,
-    );
-    let first_response_byte_total_histogram = subtract_approx_histogram_counts(
-        &archive_delta.first_response_byte_total_histogram,
-        &first_response_materialized,
-    );
-    let first_token_histogram = subtract_approx_histogram_counts(
-        &archive_delta.first_token_histogram,
-        &first_token_materialized,
-    );
+    let (first_byte_histogram, first_response_byte_total_histogram, first_token_histogram) =
+        subtract_invocation_hourly_rollup_histograms(archive_delta, materialized_row);
     let row_i64 = |value: fn(&InvocationHourlyRollupRecord) -> i64| {
         materialized_row.map(value).unwrap_or(0).max(0)
     };
@@ -787,6 +768,39 @@ fn subtract_invocation_hourly_rollup_delta(
         first_token_histogram,
         ..InvocationHourlyRollupDelta::default()
     }
+}
+
+fn subtract_invocation_hourly_rollup_histograms(
+    archive_delta: &InvocationHourlyRollupDelta,
+    materialized_row: Option<&InvocationHourlyRollupRecord>,
+) -> (
+    ApproxHistogramCounts,
+    ApproxHistogramCounts,
+    ApproxHistogramCounts,
+) {
+    let first_byte_materialized = materialized_row
+        .map(|row| decode_approx_histogram(&row.first_byte_histogram))
+        .unwrap_or_else(empty_approx_histogram);
+    let first_response_materialized = materialized_row
+        .map(|row| decode_approx_histogram(&row.first_response_byte_total_histogram))
+        .unwrap_or_else(empty_approx_histogram);
+    let first_token_materialized = materialized_row
+        .map(|row| decode_approx_histogram(&row.first_token_histogram))
+        .unwrap_or_else(empty_approx_histogram);
+    (
+        subtract_approx_histogram_counts(
+            &archive_delta.first_byte_histogram,
+            &first_byte_materialized,
+        ),
+        subtract_approx_histogram_counts(
+            &archive_delta.first_response_byte_total_histogram,
+            &first_response_materialized,
+        ),
+        subtract_approx_histogram_counts(
+            &archive_delta.first_token_histogram,
+            &first_token_materialized,
+        ),
+    )
 }
 
 fn invocation_hourly_rollup_delta_is_empty(delta: &InvocationHourlyRollupDelta) -> bool {

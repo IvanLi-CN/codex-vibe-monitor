@@ -541,9 +541,7 @@ async fn isolate_deterministic_p1_failure(
                         })
                     })
                     .unwrap_or_else(|| Err(anyhow!("terminal journal unavailable for quarantine")));
-                if let Err(quarantine_err) = quarantine_result {
-                    return Err(quarantine_err);
-                }
+                quarantine_result?;
                 poison_record_count = poison_record_count.saturating_add(1);
                 warn!(
                     invoke_id = %terminal.record.invoke_id,
@@ -809,9 +807,7 @@ fn finish_p2_system_task_result(
     system_task_lock_failure: bool,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
 ) -> Option<RetainedBatch> {
-    let Some(system_task_error) = system_task_error else {
-        return None;
-    };
+    let system_task_error = system_task_error?;
     let system_task_batch_ref = system_task_batch
         .as_ref()
         .expect("system task failure must retain its isolated batch");

@@ -109,7 +109,7 @@ async fn run_startup_backfill_tasks(
         let task_result = tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
-            result = run_startup_backfill_task_if_due_outcome(&state, *task, gate) => result,
+            result = run_startup_backfill_task_if_due_outcome(state, *task, gate) => result,
         };
         match task_result {
             Ok(outcome) => {

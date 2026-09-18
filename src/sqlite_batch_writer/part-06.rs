@@ -36,6 +36,11 @@ enum ShutdownBatchOutcome {
     Break,
 }
 
+struct ShutdownFailureContext {
+    logical_rows: usize,
+    p2_retryable_failure: bool,
+}
+
 impl SqliteBatchWriterLoop {
     fn from_config(config: SqliteBatchWriterConfig) -> Self {
         let SqliteBatchWriterConfig {
@@ -604,7 +609,10 @@ impl SqliteBatchWriterLoop {
         let pending_bytes_before_merge = self.pending.estimated_memory_bytes();
         let p2_defer_reason = retained.p2_defer;
         let p2_deferred = p2_defer_reason.is_some();
-        let p2_retryable_failure = retained.p2_retryable_failure;
+        let failure_context = ShutdownFailureContext {
+            logical_rows,
+            p2_retryable_failure: retained.p2_retryable_failure,
+        };
         let mut retained_batch = retained.batch;
         retained_batch.merge_all(self.pending.take());
         let merged_rows = retained_batch.logical_rows();
@@ -619,10 +627,9 @@ impl SqliteBatchWriterLoop {
             return self
                 .finish_shutdown_failure(
                     retained_batch,
-                    logical_rows,
                     merged_rows,
                     merged_bytes,
-                    p2_retryable_failure,
+                    failure_context,
                     shutdown_deadline,
                     receiver_closed,
                 )
@@ -649,17 +656,16 @@ impl SqliteBatchWriterLoop {
     async fn finish_shutdown_failure(
         &mut self,
         retained_batch: PendingBatch,
-        logical_rows: usize,
         merged_rows: usize,
         merged_bytes: usize,
-        p2_retryable_failure: bool,
+        failure_context: ShutdownFailureContext,
         shutdown_deadline: Instant,
         receiver_closed: bool,
     ) -> Result<ShutdownBatchOutcome, String> {
         let retry_delay = if !retained_batch.terminal_invocations.is_empty() {
             self.transaction_sequence = self.transaction_sequence.saturating_add(1);
             Some(self.p1_retry.failed(self.transaction_sequence))
-        } else if p2_retryable_failure {
+        } else if failure_context.p2_retryable_failure {
             self.transaction_sequence = self.transaction_sequence.saturating_add(1);
             Some(self.p2_schedule.failed(self.transaction_sequence))
         } else {
@@ -683,7 +689,8 @@ impl SqliteBatchWriterLoop {
             return Ok(ShutdownBatchOutcome::Break);
         }
         Err(format!(
-            "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
+            "sqlite batch writer retained {} logical rows after shutdown flush",
+            failure_context.logical_rows
         ))
     }
 

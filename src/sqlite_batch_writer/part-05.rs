@@ -37,10 +37,8 @@ async fn flush_pending_batch_inner(
         tx.commit().await?;
         remove_terminal_overlays(runtime_store, terminal_overlay_keys);
     }
-    if invalidate_prompt_cache {
-        if let Some(cache) = prompt_cache {
-            invalidate_prompt_cache_conversations_cache(cache).await;
-        }
+    if invalidate_prompt_cache && let Some(cache) = prompt_cache {
+        invalidate_prompt_cache_conversations_cache(cache).await;
     }
     Ok(deferred_batch)
 }
