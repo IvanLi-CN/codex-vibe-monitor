@@ -208,6 +208,29 @@ fn finalize_import_batch(batch: ImportBatch) -> Json<ImportedOauthImportResponse
     Json(batch.into_response())
 }
 
+fn imported_oauth_import_success_result(
+    normalized: NormalizedImportedOauthCredentials,
+    account_id: i64,
+    existing: bool,
+    detail: Option<String>,
+    matched_account: Option<ImportedOauthMatchSummary>,
+) -> ImportedOauthImportResult {
+    ImportedOauthImportResult {
+        source_id: normalized.source_id,
+        file_name: normalized.file_name,
+        email: Some(normalized.email),
+        chatgpt_account_id: Some(normalized.chatgpt_account_id),
+        account_id: Some(account_id),
+        status: if existing {
+            IMPORT_RESULT_STATUS_UPDATED_EXISTING.to_string()
+        } else {
+            IMPORT_RESULT_STATUS_CREATED.to_string()
+        },
+        detail,
+        matched_account,
+    }
+}
+
 impl ImportBatch {
     fn new(input_files: usize, selected_files: usize) -> Self {
         Self {

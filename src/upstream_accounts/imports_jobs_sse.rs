@@ -1258,20 +1258,13 @@ pub(crate) async fn import_validated_oauth_accounts(
         }
         batch.record_success(
             existing_match.is_some(),
-            ImportedOauthImportResult {
-                source_id: normalized.source_id,
-                file_name: normalized.file_name,
-                email: Some(normalized.email),
-                chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                account_id: Some(persisted_account_id),
-                status: if existing_match.is_some() {
-                    IMPORT_RESULT_STATUS_UPDATED_EXISTING.to_string()
-                } else {
-                    IMPORT_RESULT_STATUS_CREATED.to_string()
-                },
-                detail: import_warning,
+            imported_oauth_import_success_result(
+                normalized,
+                persisted_account_id,
+                existing_match.is_some(),
+                import_warning,
                 matched_account,
-            },
+            ),
         );
     }
 
