@@ -1,6 +1,7 @@
 import {
   type FocusEvent,
   type KeyboardEvent,
+  type MutableRefObject,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -64,14 +65,108 @@ interface InlineChartInteractionApi {
   getItemProps: (index: number) => InlineChartItemProps;
 }
 
-export function useInlineChartInteraction({
+function handleInlineChartKeyDown(
+  event: KeyboardEvent<HTMLDivElement>,
+  itemCount: number,
+  currentIndex: number,
+  moveByKeyboard: (index: number) => void,
+  close: () => void,
+) {
+  if (itemCount === 0) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveByKeyboard(currentIndex - 1);
+    return;
+  }
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveByKeyboard(currentIndex + 1);
+    return;
+  }
+  if (event.key === "Home") {
+    event.preventDefault();
+    moveByKeyboard(0);
+    return;
+  }
+  if (event.key === "End") {
+    event.preventDefault();
+    moveByKeyboard(itemCount - 1);
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    close();
+  }
+}
+
+function createInlineChartItemProps({
+  index,
+  registerItem,
+  state,
+  openAtIndex,
+  resolveAnchorFromClientPoint,
+  resolveAnchorFromItem,
+  lastPointerTypeRef,
+  close,
+}: {
+  index: number;
+  registerItem: (index: number) => (node: ChartItemElement | null) => void;
+  state: InlineChartInteractionState;
+  openAtIndex: (index: number, anchor: TooltipAnchor | null, isPinned: boolean) => void;
+  resolveAnchorFromClientPoint: (x: number, y: number) => TooltipAnchor | null;
+  resolveAnchorFromItem: (index: number) => TooltipAnchor | null;
+  lastPointerTypeRef: MutableRefObject<string | null>;
+  close: () => void;
+}): InlineChartItemProps {
+  return {
+    ref: registerItem(index),
+    onPointerEnter: (event) => {
+      if (event.pointerType !== "mouse" || state.isPinned) return;
+      openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
+    },
+    onPointerMove: (event) => {
+      if (event.pointerType !== "mouse" || state.isPinned) return;
+      openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
+    },
+    onPointerDown: (event) => {
+      lastPointerTypeRef.current = event.pointerType;
+    },
+    onMouseEnter: (event) => {
+      if (state.isPinned) return;
+      openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
+    },
+    onMouseMove: (event) => {
+      if (state.isPinned) return;
+      openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
+    },
+    onMouseDown: () => {
+      lastPointerTypeRef.current = "mouse";
+    },
+    onTouchStart: () => {
+      lastPointerTypeRef.current = "touch";
+    },
+    onClick: () => {
+      const pointerType = lastPointerTypeRef.current;
+      if (!pointerType || pointerType === "mouse") return;
+      if (state.isPinned && state.activeIndex === index) {
+        close();
+        return;
+      }
+      openAtIndex(index, resolveAnchorFromItem(index), true);
+    },
+    "data-inline-chart-index": index,
+  };
+}
+
+function useInlineChartInteractionAnchors({
+  containerRef,
+  itemRefs,
   itemCount,
-  defaultIndex,
-}: UseInlineChartInteractionOptions): InlineChartInteractionApi {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
-  const itemRefs = useRef<Array<ChartItemElement | null>>([]);
-  const lastPointerTypeRef = useRef<string | null>(null);
+}: {
+  containerRef: RefObject<HTMLDivElement | null>;
+  itemRefs: MutableRefObject<Array<ChartItemElement | null>>;
+  itemCount: number;
+}) {
   const [state, setState] = useState<InlineChartInteractionState>({
     activeIndex: null,
     isPinned: false,
@@ -85,32 +180,32 @@ export function useInlineChartInteraction({
       setState({ activeIndex: null, isPinned: false, isOpen: false });
       setAnchor(null);
     }
-  }, [itemCount, state.activeIndex]);
+  }, [itemCount, itemRefs, state.activeIndex]);
 
   const resolveAnchorFromClientPoint = useCallback(
     (clientX: number, clientY: number): TooltipAnchor | null => {
       const container = containerRef.current;
       if (!container) return null;
       const rect = container.getBoundingClientRect();
-      return {
-        x: clientX - rect.left,
-        y: clientY - rect.top,
-      };
+      return { x: clientX - rect.left, y: clientY - rect.top };
     },
-    [],
+    [containerRef],
   );
 
-  const resolveAnchorFromItem = useCallback((index: number): TooltipAnchor | null => {
-    const container = containerRef.current;
-    const item = itemRefs.current[index];
-    if (!container || !item) return null;
-    const containerRect = container.getBoundingClientRect();
-    const itemRect = item.getBoundingClientRect();
-    return {
-      x: itemRect.left - containerRect.left + itemRect.width / 2,
-      y: itemRect.top - containerRect.top + itemRect.height / 2,
-    };
-  }, []);
+  const resolveAnchorFromItem = useCallback(
+    (index: number): TooltipAnchor | null => {
+      const container = containerRef.current;
+      const item = itemRefs.current[index];
+      if (!container || !item) return null;
+      const containerRect = container.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      return {
+        x: itemRect.left - containerRect.left + itemRect.width / 2,
+        y: itemRect.top - containerRect.top + itemRect.height / 2,
+      };
+    },
+    [containerRef, itemRefs],
+  );
 
   const openAtIndex = useCallback(
     (index: number, nextAnchor: TooltipAnchor | null, isPinned: boolean) => {
@@ -130,17 +225,78 @@ export function useInlineChartInteraction({
 
   useEffect(() => {
     if (!state.isPinned) return undefined;
-
     const handlePointerDown = (event: PointerEvent) => {
       const container = containerRef.current;
-      if (!container) return;
-      if (container.contains(event.target as Node)) return;
+      if (!container || container.contains(event.target as Node)) return;
       close();
     };
-
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [close, state.isPinned]);
+  }, [close, containerRef, state.isPinned]);
+
+  return {
+    state,
+    anchor,
+    resolveAnchorFromClientPoint,
+    resolveAnchorFromItem,
+    openAtIndex,
+    close,
+  };
+}
+
+function createInlineChartContainerProps({
+  itemCount,
+  handleFocus,
+  handleBlur,
+  handleKeyDown,
+  state,
+  close,
+  ariaLabel,
+  describedBy,
+  onBlur,
+}: {
+  itemCount: number;
+  handleFocus: () => void;
+  handleBlur: (
+    event: FocusEvent<HTMLDivElement>,
+    onBlur?: (event: FocusEvent<HTMLDivElement>) => void,
+  ) => void;
+  handleKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+  state: InlineChartInteractionState;
+  close: () => void;
+  ariaLabel: string;
+  describedBy?: string;
+  onBlur?: (event: FocusEvent<HTMLDivElement>) => void;
+}) {
+  return {
+    tabIndex: itemCount > 0 ? 0 : -1,
+    role: "group" as const,
+    "aria-label": ariaLabel,
+    "aria-describedby": describedBy,
+    onFocus: handleFocus,
+    onBlur: (event: FocusEvent<HTMLDivElement>) => handleBlur(event, onBlur),
+    onKeyDown: handleKeyDown,
+    onPointerLeave: (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (state.isPinned || event.pointerType !== "mouse") return;
+      close();
+    },
+    onMouseLeave: () => {
+      if (state.isPinned) return;
+      close();
+    },
+  };
+}
+
+export function useInlineChartInteraction({
+  itemCount,
+  defaultIndex,
+}: UseInlineChartInteractionOptions): InlineChartInteractionApi {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<Array<ChartItemElement | null>>([]);
+  const lastPointerTypeRef = useRef<string | null>(null);
+  const { state, anchor, resolveAnchorFromClientPoint, resolveAnchorFromItem, openAtIndex, close } =
+    useInlineChartInteractionAnchors({ containerRef, itemRefs, itemCount });
 
   const handleFocus = useCallback(() => {
     if (itemCount === 0 || state.isOpen) return;
@@ -167,34 +323,14 @@ export function useInlineChartInteraction({
   );
 
   const handleKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
-      if (itemCount === 0) return;
-      const currentIndex = state.activeIndex ?? defaultIndex;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        moveByKeyboard(currentIndex - 1);
-        return;
-      }
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        moveByKeyboard(currentIndex + 1);
-        return;
-      }
-      if (event.key === "Home") {
-        event.preventDefault();
-        moveByKeyboard(0);
-        return;
-      }
-      if (event.key === "End") {
-        event.preventDefault();
-        moveByKeyboard(itemCount - 1);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    },
+    (event: KeyboardEvent<HTMLDivElement>) =>
+      handleInlineChartKeyDown(
+        event,
+        itemCount,
+        state.activeIndex ?? defaultIndex,
+        moveByKeyboard,
+        close,
+      ),
     [close, defaultIndex, itemCount, moveByKeyboard, state.activeIndex],
   );
 
@@ -206,82 +342,36 @@ export function useInlineChartInteraction({
   );
 
   const getItemProps = useCallback(
-    (index: number): InlineChartItemProps => ({
-      ref: registerItem(index),
-      onPointerEnter: (event) => {
-        if (event.pointerType !== "mouse" || state.isPinned) return;
-        openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
-      },
-      onPointerMove: (event) => {
-        if (event.pointerType !== "mouse" || state.isPinned) return;
-        openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
-      },
-      onPointerDown: (event) => {
-        lastPointerTypeRef.current = event.pointerType;
-      },
-      onMouseEnter: (event) => {
-        if (state.isPinned) return;
-        openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
-      },
-      onMouseMove: (event) => {
-        if (state.isPinned) return;
-        openAtIndex(index, resolveAnchorFromClientPoint(event.clientX, event.clientY), false);
-      },
-      onMouseDown: () => {
-        lastPointerTypeRef.current = "mouse";
-      },
-      onTouchStart: () => {
-        lastPointerTypeRef.current = "touch";
-      },
-      onClick: () => {
-        const pointerType = lastPointerTypeRef.current;
-        if (!pointerType || pointerType === "mouse") return;
-        if (state.isPinned && state.activeIndex === index) {
-          close();
-          return;
-        }
-        openAtIndex(index, resolveAnchorFromItem(index), true);
-      },
-      "data-inline-chart-index": index,
-    }),
-    [
-      close,
-      openAtIndex,
-      registerItem,
-      resolveAnchorFromClientPoint,
-      resolveAnchorFromItem,
-      state.activeIndex,
-      state.isPinned,
-    ],
+    (index: number) =>
+      createInlineChartItemProps({
+        index,
+        registerItem,
+        state,
+        openAtIndex,
+        resolveAnchorFromClientPoint,
+        resolveAnchorFromItem,
+        lastPointerTypeRef,
+        close,
+      }),
+    [close, openAtIndex, registerItem, resolveAnchorFromClientPoint, resolveAnchorFromItem, state],
   );
 
   const getContainerProps = useCallback(
-    ({
-      ariaLabel,
-      describedBy,
-      onBlur,
-    }: {
+    (options: {
       ariaLabel: string;
       describedBy?: string;
       onBlur?: (event: FocusEvent<HTMLDivElement>) => void;
-    }) => ({
-      tabIndex: itemCount > 0 ? 0 : -1,
-      role: "group" as const,
-      "aria-label": ariaLabel,
-      "aria-describedby": describedBy,
-      onFocus: handleFocus,
-      onBlur: (event: FocusEvent<HTMLDivElement>) => handleBlur(event, onBlur),
-      onKeyDown: handleKeyDown,
-      onPointerLeave: (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (state.isPinned || event.pointerType !== "mouse") return;
-        close();
-      },
-      onMouseLeave: () => {
-        if (state.isPinned) return;
-        close();
-      },
-    }),
-    [close, handleBlur, handleFocus, handleKeyDown, itemCount, state.isPinned],
+    }) =>
+      createInlineChartContainerProps({
+        ...options,
+        itemCount,
+        handleFocus,
+        handleBlur,
+        handleKeyDown,
+        state,
+        close,
+      }),
+    [close, handleBlur, handleFocus, handleKeyDown, itemCount, state],
   );
 
   return {
