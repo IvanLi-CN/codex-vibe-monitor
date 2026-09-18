@@ -33,51 +33,74 @@ function parseStructuredJson(value: string): StructuredPayloadValue | null {
   }
 }
 
+type ParsedSseEventBlock = Omit<ParsedSseEvent, "sequence"> & {
+  recognizedFieldCount: number;
+};
+
+function parseSseField(line: string): [string, string] | null {
+  if (!line || line.startsWith(":")) return null;
+
+  const separatorIndex = line.indexOf(":");
+  const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
+  const rawValue = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
+  return [field, rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue];
+}
+
+function parseSseEventBlock(block: string): ParsedSseEventBlock {
+  let event: string | null = null;
+  let id: string | null = null;
+  let retry: string | null = null;
+  let recognizedFieldCount = 0;
+  const dataLines: string[] = [];
+
+  for (const line of block.split("\n")) {
+    const parsedField = parseSseField(line);
+    if (!parsedField) continue;
+    const [field, fieldValue] = parsedField;
+
+    switch (field) {
+      case "event":
+        event = fieldValue;
+        recognizedFieldCount += 1;
+        break;
+      case "id":
+        id = fieldValue;
+        recognizedFieldCount += 1;
+        break;
+      case "retry":
+        retry = fieldValue;
+        recognizedFieldCount += 1;
+        break;
+      case "data":
+        dataLines.push(fieldValue);
+        recognizedFieldCount += 1;
+        break;
+    }
+  }
+
+  const dataText = dataLines.join("\n");
+  return {
+    event,
+    id,
+    retry,
+    dataText,
+    data: dataText ? parseStructuredJson(dataText) : null,
+    recognizedFieldCount,
+  };
+}
+
 function parseSseEvents(value: string): ParsedSseEvent[] | null {
   const normalized = value.replace(/\r\n/g, "\n");
   const blocks = normalized.split(/\n{2,}/).filter((block) => block.trim().length > 0);
   if (blocks.length === 0) return null;
 
-  let recognizedFieldCount = 0;
-  const events = blocks
-    .map((block) => {
-      let event: string | null = null;
-      let id: string | null = null;
-      let retry: string | null = null;
-      const dataLines: string[] = [];
-
-      for (const line of block.split("\n")) {
-        if (!line || line.startsWith(":")) continue;
-        const separatorIndex = line.indexOf(":");
-        const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
-        const rawValue = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
-        const fieldValue = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
-
-        if (field === "event") {
-          recognizedFieldCount += 1;
-          event = fieldValue;
-        } else if (field === "id") {
-          recognizedFieldCount += 1;
-          id = fieldValue;
-        } else if (field === "retry") {
-          recognizedFieldCount += 1;
-          retry = fieldValue;
-        } else if (field === "data") {
-          recognizedFieldCount += 1;
-          dataLines.push(fieldValue);
-        }
-      }
-
-      const dataText = dataLines.join("\n");
-      return {
-        sequence: 0,
-        event,
-        id,
-        retry,
-        dataText,
-        data: dataText ? parseStructuredJson(dataText) : null,
-      };
-    })
+  const eventBlocks = blocks.map(parseSseEventBlock);
+  const recognizedFieldCount = eventBlocks.reduce(
+    (count, eventBlock) => count + eventBlock.recognizedFieldCount,
+    0,
+  );
+  const events = eventBlocks
+    .map(({ recognizedFieldCount: _, ...event }) => ({ sequence: 0, ...event }))
     .filter((entry) => entry.event || entry.id || entry.retry || entry.dataText)
     .map((entry, index) => ({ ...entry, sequence: index + 1 }));
 
