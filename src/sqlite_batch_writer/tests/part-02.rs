@@ -673,7 +673,7 @@ async fn assert_deferred_terminal_flush_before_p2(
     assert!(retained.pending_depth > 0);
     assert!(retained.transfer_bytes > 0);
     let persisted_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-terminal-flush-now-deferred' AND status = 'success'",
+            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'batch-terminal-flush-now-deferred-derived' AND status = 'success'",
         )
         .fetch_one(pool)
         .await
