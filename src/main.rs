@@ -131,7 +131,8 @@ mod sqlite_batch_writer;
 mod stats;
 mod terminal_journal;
 mod terminal_projection;
-mod test_support;
+#[cfg(test)]
+pub(crate) mod tests;
 mod upstream_accounts;
 
 use api::*;
@@ -152,7 +153,5 @@ use sqlite_batch_writer::*;
 use stats::*;
 pub(crate) use summary_source_change::*;
 pub(crate) use terminal_projection::*;
-#[allow(unused_imports)]
-pub(crate) use test_support::tests;
 use upstream_accounts::*;
 include!("main/runtime_items.rs");
