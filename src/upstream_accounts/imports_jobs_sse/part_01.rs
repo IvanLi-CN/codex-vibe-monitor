@@ -155,6 +155,113 @@ async fn update_imported_oauth_validation_job_invalid(
     .await;
 }
 
+fn invalid_imported_oauth_import_result(
+    item: ImportOauthCredentialFileRequest,
+    detail: String,
+) -> ImportedOauthImportResult {
+    ImportedOauthImportResult {
+        source_id: item.source_id,
+        file_name: item.file_name,
+        email: None,
+        chatgpt_account_id: None,
+        account_id: None,
+        status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+        detail: Some(detail),
+        matched_account: None,
+    }
+}
+
+fn failed_imported_oauth_import_result(
+    normalized: NormalizedImportedOauthCredentials,
+    account_id: Option<i64>,
+    matched_account: Option<ImportedOauthMatchSummary>,
+    detail: String,
+) -> ImportedOauthImportResult {
+    ImportedOauthImportResult {
+        source_id: normalized.source_id,
+        file_name: normalized.file_name,
+        email: Some(normalized.email),
+        chatgpt_account_id: Some(normalized.chatgpt_account_id),
+        account_id,
+        status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+        detail: Some(detail),
+        matched_account,
+    }
+}
+
+struct ImportedOauthCreatePlan {
+    group_name: Option<String>,
+    tag_ids: Vec<i64>,
+    requested_group_metadata_changes: RequestedGroupMetadataChanges,
+}
+
+async fn persist_imported_oauth_account(
+    state: Arc<AppState>,
+    crypto_key: &[u8; 32],
+    existing_row: Option<&UpstreamAccountRow>,
+    normalized: &NormalizedImportedOauthCredentials,
+    probe: &ImportedOauthProbeOutcome,
+    plan: &ImportedOauthCreatePlan,
+) -> Result<(i64, Option<String>), (StatusCode, String)> {
+    let encrypted_credentials = encrypt_credentials(
+        crypto_key,
+        &StoredCredentials::Oauth(probe.credentials.clone()),
+    )
+    .map_err(internal_error_tuple)?;
+    if let Some(existing_row) = existing_row {
+        let warning = state
+            .upstream_accounts
+            .account_ops
+            .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
+            .await?;
+        return Ok((existing_row.id, warning));
+    }
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    ensure_display_name_available_for_oauth_identity(
+        &mut *tx,
+        &normalized.display_name,
+        None,
+        probe.claims.chatgpt_account_id.as_deref(),
+        probe.claims.chatgpt_user_id.as_deref(),
+        plan.group_name.as_deref(),
+        probe.claims.chatgpt_plan_type.as_deref(),
+    )
+    .await?;
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: None,
+            display_name: &normalized.display_name,
+            chosen_email: Some(normalized.email.clone()),
+            verified_email: normalize_email_value(probe.claims.email.clone()),
+            group_name: plan.group_name.clone(),
+            is_mother: false,
+            note: None,
+            tag_ids: plan.tag_ids.clone(),
+            requested_group_metadata_changes: plan.requested_group_metadata_changes.clone(),
+            claims: &probe.claims,
+            encrypted_credentials,
+            has_refresh_token: oauth_credentials_have_refresh_token(&probe.credentials),
+            token_expires_at: &probe.token_expires_at,
+            external_identity: None,
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+    let warning = state
+        .upstream_accounts
+        .account_ops
+        .run_persist_imported_oauth(state.clone(), account_id, probe.clone())
+        .await?;
+    publish_new_account_routing_availability_if_selectable(state.as_ref(), account_id).await;
+    Ok((account_id, warning))
+}
+
 async fn process_imported_oauth_validation_job_item(
     context: &ImportedOauthValidationJobContext<'_>,
     row_index: usize,

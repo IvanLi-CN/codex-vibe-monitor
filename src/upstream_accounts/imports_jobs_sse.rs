@@ -1169,7 +1169,11 @@ pub(crate) async fn import_validated_oauth_accounts(
     .await?;
     let group_name = Some(resolved_group_binding.group_name.clone());
     reject_manual_tag_ids(&tag_ids)?;
-    let tag_ids = Vec::new();
+    let create_plan = ImportedOauthCreatePlan {
+        group_name,
+        tag_ids: Vec::new(),
+        requested_group_metadata_changes,
+    };
     let cached_validation_results = if let Some(job_id) = normalize_optional_text(validation_job_id)
     {
         if let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await {
@@ -1217,16 +1221,7 @@ pub(crate) async fn import_validated_oauth_accounts(
                 Ok(value) => value,
                 Err(message) => {
                     failed += 1;
-                    results.push(ImportedOauthImportResult {
-                        source_id: item.source_id,
-                        file_name: item.file_name,
-                        email: None,
-                        chatgpt_account_id: None,
-                        account_id: None,
-                        status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                        detail: Some(message),
-                        matched_account: None,
-                    });
+                    results.push(invalid_imported_oauth_import_result(item, message));
                     continue;
                 }
             },
@@ -1239,16 +1234,12 @@ pub(crate) async fn import_validated_oauth_accounts(
         );
         if !seen_keys.insert(match_key) {
             failed += 1;
-            results.push(ImportedOauthImportResult {
-                source_id: normalized.source_id,
-                file_name: normalized.file_name,
-                email: Some(normalized.email),
-                chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                account_id: None,
-                status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                detail: Some("duplicate credential in selected import set".to_string()),
-                matched_account: None,
-            });
+            results.push(failed_imported_oauth_import_result(
+                normalized,
+                None,
+                None,
+                "duplicate credential in selected import set".to_string(),
+            ));
             continue;
         }
 
@@ -1263,16 +1254,12 @@ pub(crate) async fn import_validated_oauth_accounts(
             Ok(value) => value,
             Err(err) => {
                 failed += 1;
-                results.push(ImportedOauthImportResult {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    account_id: None,
-                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                    detail: Some(err.to_string()),
-                    matched_account: None,
-                });
+                results.push(failed_imported_oauth_import_result(
+                    normalized,
+                    None,
+                    None,
+                    err.to_string(),
+                ));
                 continue;
             }
         };
@@ -1289,16 +1276,12 @@ pub(crate) async fn import_validated_oauth_accounts(
             Ok(scope) => scope,
             Err(err) => {
                 failed += 1;
-                results.push(ImportedOauthImportResult {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    account_id: existing_match.as_ref().map(|row| row.id),
-                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                    detail: Some(err.to_string()),
+                results.push(failed_imported_oauth_import_result(
+                    normalized,
+                    existing_match.as_ref().map(|row| row.id),
                     matched_account,
-                });
+                    err.to_string(),
+                ));
                 continue;
             }
         };
@@ -1324,90 +1307,27 @@ pub(crate) async fn import_validated_oauth_accounts(
                     Ok(value) => value,
                     Err(err) => {
                         failed += 1;
-                        results.push(ImportedOauthImportResult {
-                            source_id: normalized.source_id,
-                            file_name: normalized.file_name,
-                            email: Some(normalized.email),
-                            chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                            account_id: existing_match.as_ref().map(|row| row.id),
-                            status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                            detail: Some(err.to_string()),
+                        results.push(failed_imported_oauth_import_result(
+                            normalized,
+                            existing_match.as_ref().map(|row| row.id),
                             matched_account,
-                        });
+                            err.to_string(),
+                        ));
                         continue;
                     }
                 }
             }
         };
 
-        let encrypted_credentials = encrypt_credentials(
+        let (persisted_account_id, import_warning) = persist_imported_oauth_account(
+            state.clone(),
             crypto_key,
-            &StoredCredentials::Oauth(probe.credentials.clone()),
+            existing_match.as_ref(),
+            &normalized,
+            &probe,
+            &create_plan,
         )
-        .map_err(internal_error_tuple)?;
-        let (persisted_account_id, import_warning) = if let Some(existing_row) =
-            existing_match.as_ref()
-        {
-            let warning = state
-                .upstream_accounts
-                .account_ops
-                .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
-                .await?;
-            (existing_row.id, warning)
-        } else {
-            let persisted_account_id = {
-                let mut tx = state
-                    .pool
-                    .begin_with("BEGIN IMMEDIATE")
-                    .await
-                    .map_err(internal_error_tuple)?;
-                ensure_display_name_available_for_oauth_identity(
-                    &mut *tx,
-                    &normalized.display_name,
-                    None,
-                    probe.claims.chatgpt_account_id.as_deref(),
-                    probe.claims.chatgpt_user_id.as_deref(),
-                    group_name.as_deref(),
-                    probe.claims.chatgpt_plan_type.as_deref(),
-                )
-                .await?;
-                let account_id = upsert_oauth_account(
-                    &mut tx,
-                    OauthAccountUpsert {
-                        account_id: None,
-                        display_name: &normalized.display_name,
-                        chosen_email: Some(normalized.email.clone()),
-                        verified_email: normalize_email_value(probe.claims.email.clone()),
-                        group_name: group_name.clone(),
-                        is_mother: false,
-                        note: None,
-                        tag_ids: tag_ids.clone(),
-                        requested_group_metadata_changes: requested_group_metadata_changes.clone(),
-                        claims: &probe.claims,
-                        encrypted_credentials,
-                        has_refresh_token: oauth_credentials_have_refresh_token(&probe.credentials),
-                        token_expires_at: &probe.token_expires_at,
-                        external_identity: None,
-                    },
-                )
-                .await
-                .map_err(internal_error_tuple)?;
-                tx.commit().await.map_err(internal_error_tuple)?;
-                account_id
-            };
-
-            let warning = state
-                .upstream_accounts
-                .account_ops
-                .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
-                .await?;
-            publish_new_account_routing_availability_if_selectable(
-                state.as_ref(),
-                persisted_account_id,
-            )
-            .await;
-            (persisted_account_id, warning)
-        };
+        .await?;
 
         if existing_match.is_some() {
             updated_existing += 1;
