@@ -231,6 +231,35 @@ fn imported_oauth_import_success_result(
     }
 }
 
+struct ImportedOauthSuccessRecord {
+    existing: bool,
+    normalized: NormalizedImportedOauthCredentials,
+    account_id: i64,
+    detail: Option<String>,
+    matched_account: Option<ImportedOauthMatchSummary>,
+}
+
+fn record_imported_oauth_success(
+    batch: &mut ImportBatch,
+    consumed_proxy_keys: &mut HashSet<String>,
+    usage_scope: &ForwardProxyRouteScope,
+    record: ImportedOauthSuccessRecord,
+) {
+    if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = usage_scope {
+        consumed_proxy_keys.insert(proxy_key.clone());
+    }
+    batch.record_success(
+        record.existing,
+        imported_oauth_import_success_result(
+            record.normalized,
+            record.account_id,
+            record.existing,
+            record.detail,
+            record.matched_account,
+        ),
+    );
+}
+
 fn normalize_imported_oauth_for_import(
     cached_validation: Option<&ImportedOauthValidatedImportData>,
     item: &ImportOauthCredentialFileRequest,

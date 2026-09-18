@@ -1238,18 +1238,17 @@ pub(crate) async fn import_validated_oauth_accounts(
         )
         .await?;
 
-        if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
-            consumed_proxy_keys.insert(proxy_key.clone());
-        }
-        batch.record_success(
-            existing_match.is_some(),
-            imported_oauth_import_success_result(
+        record_imported_oauth_success(
+            &mut batch,
+            &mut consumed_proxy_keys,
+            &usage_scope,
+            ImportedOauthSuccessRecord {
+                existing: existing_match.is_some(),
                 normalized,
-                persisted_account_id,
-                existing_match.is_some(),
-                import_warning,
+                account_id: persisted_account_id,
+                detail: import_warning,
                 matched_account,
-            ),
+            },
         );
     }
 
