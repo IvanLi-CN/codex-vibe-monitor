@@ -148,11 +148,16 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_records_route
             upstream_base_url_host: None,
             request_model: None,
         },
-        first_account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: first_account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         &stale_started,
     )
     .await;
@@ -175,11 +180,16 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_records_route
             upstream_base_url_host: None,
             request_model: None,
         },
-        second_account_id,
-        "route-secondary",
-        2,
-        2,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: second_account_id,
+            upstream_route_key: "route-secondary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 2,
+            distinct_account_index: 2,
+            same_account_retry_index: 1,
+        },
         &stale_started,
     )
     .await;
