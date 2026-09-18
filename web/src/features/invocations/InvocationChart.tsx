@@ -55,6 +55,34 @@ function chartDataIndex(value: number, length: number) {
   return Math.max(0, Math.min(length - 1, Math.round(value)));
 }
 
+function buildInvocationChartData(
+  records: ApiInvocation[],
+  localeTag: string,
+): InvocationChartData[] {
+  const chronological = [...records].sort((a, b) => {
+    const aEpoch = parseIsoEpoch(a.occurredAt);
+    const bEpoch = parseIsoEpoch(b.occurredAt);
+    if (aEpoch == null && bEpoch == null) return 0;
+    if (aEpoch == null) return -1;
+    if (bEpoch == null) return 1;
+    return aEpoch - bEpoch;
+  });
+
+  return chronological.map((record, index) => {
+    const occurredEpoch = parseIsoEpoch(record.occurredAt);
+    const occurred = occurredEpoch != null ? new Date(occurredEpoch * 1000) : null;
+    const timeLabel = occurred
+      ? occurred.toLocaleTimeString(localeTag, {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        })
+      : record.occurredAt;
+    return { i: index, timeLabel, totalTokens: record.totalTokens ?? 0, cost: record.cost ?? 0 };
+  });
+}
+
 function InvocationChartView({
   data,
   numberFormatter,
@@ -160,36 +188,7 @@ export function InvocationChart({ records, isLoading }: InvocationChartProps) {
     [localeTag],
   );
 
-  const data = useMemo<InvocationChartData[]>(() => {
-    const chronological = [...records].sort((a, b) => {
-      const aEpoch = parseIsoEpoch(a.occurredAt);
-      const bEpoch = parseIsoEpoch(b.occurredAt);
-      if (aEpoch == null && bEpoch == null) return 0;
-      if (aEpoch == null) return -1;
-      if (bEpoch == null) return 1;
-      return aEpoch - bEpoch;
-    });
-
-    return chronological.map((record, index) => {
-      const occurredEpoch = parseIsoEpoch(record.occurredAt);
-      const occurred = occurredEpoch != null ? new Date(occurredEpoch * 1000) : null;
-      const timeLabel = occurred
-        ? occurred.toLocaleTimeString(localeTag, {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false,
-          })
-        : record.occurredAt;
-
-      return {
-        i: index, // use index as evenly spaced axis
-        timeLabel,
-        totalTokens: record.totalTokens ?? 0,
-        cost: record.cost ?? 0,
-      };
-    });
-  }, [records, localeTag]);
+  const data = useMemo(() => buildInvocationChartData(records, localeTag), [records, localeTag]);
 
   const seriesNames = useMemo(
     () => ({
