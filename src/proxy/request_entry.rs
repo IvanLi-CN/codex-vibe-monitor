@@ -1351,6 +1351,80 @@ fn encode_pool_request_reader(
     }
 }
 
+fn build_snapshot_upstream_request_body(
+    snapshot: &PoolReplayBodySnapshot,
+    content_encoding: RequestBodyContentEncoding,
+    compression_mode: PoolRequestBodyCompressionMode,
+    logical_body_bytes: ObservedBodyBytes,
+) -> PreparedPoolUpstreamRequestBody {
+    let transmitted_body_bytes = ObservedByteCounter::default();
+    PreparedPoolUpstreamRequestBody {
+        body: counted_http_body_from_snapshot(snapshot, transmitted_body_bytes.clone()),
+        content_length: Some(pool_request_snapshot_body_bytes(snapshot)),
+        content_encoding,
+        compression_mode,
+        byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+            logical_body_bytes,
+            transmitted_body_bytes,
+        },
+    }
+}
+
+fn build_identity_streaming_upstream_request_body(
+    decoded_reader: BoxedPoolRequestReader,
+    snapshot: &PoolReplayBodySnapshot,
+    snapshot_is_decoded: bool,
+) -> PreparedPoolUpstreamRequestBody {
+    let transmitted_body_bytes = ObservedByteCounter::default();
+    let logical_body_bytes = if snapshot_is_decoded {
+        ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(snapshot))
+    } else {
+        ObservedBodyBytes::Counter(transmitted_body_bytes.clone())
+    };
+    PreparedPoolUpstreamRequestBody {
+        body: counted_http_body_from_reader(decoded_reader, transmitted_body_bytes.clone()),
+        content_length: None,
+        content_encoding: RequestBodyContentEncoding::Identity,
+        compression_mode: PoolRequestBodyCompressionMode::Identity,
+        byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+            logical_body_bytes,
+            transmitted_body_bytes,
+        },
+    }
+}
+
+fn build_recompressed_upstream_request_body(
+    decoded_reader: BoxedPoolRequestReader,
+    target_encoding: RequestBodyContentEncoding,
+    level: AsyncCompressionLevel,
+    snapshot: &PoolReplayBodySnapshot,
+    snapshot_is_decoded: bool,
+) -> PreparedPoolUpstreamRequestBody {
+    let logical_body_bytes = if snapshot_is_decoded {
+        ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(snapshot))
+    } else {
+        ObservedBodyBytes::Counter(ObservedByteCounter::default())
+    };
+    let decoded_reader = match &logical_body_bytes {
+        ObservedBodyBytes::Fixed(_) => decoded_reader,
+        ObservedBodyBytes::Counter(counter) => {
+            Box::pin(CountingAsyncRead::new(decoded_reader, counter.clone()))
+        }
+    };
+    let encoded_reader = encode_pool_request_reader(decoded_reader, target_encoding, level);
+    let transmitted_body_bytes = ObservedByteCounter::default();
+    PreparedPoolUpstreamRequestBody {
+        body: counted_http_body_from_reader(encoded_reader, transmitted_body_bytes.clone()),
+        content_length: None,
+        content_encoding: target_encoding,
+        compression_mode: PoolRequestBodyCompressionMode::Recompressed,
+        byte_observation: PreparedPoolUpstreamRequestBodyObservation {
+            logical_body_bytes,
+            transmitted_body_bytes,
+        },
+    }
+}
+
 pub(crate) async fn build_pool_upstream_request_body(
     prepared: &PreparedPoolRequestBody,
     request_compression_algorithm: RequestCompressionAlgorithm,
@@ -1358,17 +1432,12 @@ pub(crate) async fn build_pool_upstream_request_body(
     downstream_content_encoding: Option<&str>,
 ) -> Result<PreparedPoolUpstreamRequestBody, PoolRequestBodyPreparationError> {
     if matches!(prepared.snapshot, PoolReplayBodySnapshot::Empty) {
-        let transmitted_body_bytes = ObservedByteCounter::default();
-        return Ok(PreparedPoolUpstreamRequestBody {
-            body: Body::from(Bytes::new()),
-            content_length: Some(0),
-            content_encoding: RequestBodyContentEncoding::Identity,
-            compression_mode: PoolRequestBodyCompressionMode::Identity,
-            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
-                logical_body_bytes: ObservedBodyBytes::Fixed(0),
-                transmitted_body_bytes,
-            },
-        });
+        return Ok(build_snapshot_upstream_request_body(
+            &prepared.snapshot,
+            RequestBodyContentEncoding::Identity,
+            PoolRequestBodyCompressionMode::Identity,
+            ObservedBodyBytes::Fixed(0),
+        ));
     }
 
     let downstream_encoding =
@@ -1387,22 +1456,12 @@ pub(crate) async fn build_pool_upstream_request_body(
     if prepared.snapshot_is_decoded
         && matches!(target_encoding, RequestBodyContentEncoding::Identity)
     {
-        let transmitted_body_bytes = ObservedByteCounter::default();
-        return Ok(PreparedPoolUpstreamRequestBody {
-            body: counted_http_body_from_snapshot(
-                &prepared.snapshot,
-                transmitted_body_bytes.clone(),
-            ),
-            content_length: Some(pool_request_snapshot_body_bytes(&prepared.snapshot)),
-            content_encoding: RequestBodyContentEncoding::Identity,
-            compression_mode: PoolRequestBodyCompressionMode::Identity,
-            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
-                logical_body_bytes: ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(
-                    &prepared.snapshot,
-                )),
-                transmitted_body_bytes,
-            },
-        });
+        return Ok(build_snapshot_upstream_request_body(
+            &prepared.snapshot,
+            RequestBodyContentEncoding::Identity,
+            PoolRequestBodyCompressionMode::Identity,
+            ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot)),
+        ));
     }
 
     if !prepared.snapshot_is_decoded && target_encoding == downstream_encoding {
@@ -1411,7 +1470,6 @@ pub(crate) async fn build_pool_upstream_request_body(
         } else {
             PoolRequestBodyCompressionMode::Passthrough
         };
-        let transmitted_body_bytes = ObservedByteCounter::default();
         let logical_body_bytes = if matches!(target_encoding, RequestBodyContentEncoding::Identity)
         {
             ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
@@ -1420,19 +1478,12 @@ pub(crate) async fn build_pool_upstream_request_body(
                 count_decoded_request_snapshot_bytes(&prepared.snapshot, target_encoding).await?,
             )
         };
-        return Ok(PreparedPoolUpstreamRequestBody {
-            body: counted_http_body_from_snapshot(
-                &prepared.snapshot,
-                transmitted_body_bytes.clone(),
-            ),
-            content_length: Some(pool_request_snapshot_body_bytes(&prepared.snapshot)),
-            content_encoding: target_encoding,
+        return Ok(build_snapshot_upstream_request_body(
+            &prepared.snapshot,
+            target_encoding,
             compression_mode,
-            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
-                logical_body_bytes,
-                transmitted_body_bytes,
-            },
-        });
+            logical_body_bytes,
+        ));
     }
 
     let raw_reader = open_pool_request_snapshot_reader(&prepared.snapshot).await?;
@@ -1443,47 +1494,21 @@ pub(crate) async fn build_pool_upstream_request_body(
     };
 
     if matches!(target_encoding, RequestBodyContentEncoding::Identity) {
-        let transmitted_body_bytes = ObservedByteCounter::default();
-        return Ok(PreparedPoolUpstreamRequestBody {
-            body: counted_http_body_from_reader(decoded_reader, transmitted_body_bytes.clone()),
-            content_length: None,
-            content_encoding: RequestBodyContentEncoding::Identity,
-            compression_mode: PoolRequestBodyCompressionMode::Identity,
-            byte_observation: PreparedPoolUpstreamRequestBodyObservation {
-                logical_body_bytes: if prepared.snapshot_is_decoded {
-                    ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
-                } else {
-                    ObservedBodyBytes::Counter(transmitted_body_bytes.clone())
-                },
-                transmitted_body_bytes,
-            },
-        });
+        return Ok(build_identity_streaming_upstream_request_body(
+            decoded_reader,
+            &prepared.snapshot,
+            prepared.snapshot_is_decoded,
+        ));
     }
 
     let level = request_compression_preset_to_async_level(request_compression_level_preset);
-    let logical_body_bytes = if prepared.snapshot_is_decoded {
-        ObservedBodyBytes::Fixed(pool_request_snapshot_body_bytes(&prepared.snapshot))
-    } else {
-        ObservedBodyBytes::Counter(ObservedByteCounter::default())
-    };
-    let decoded_reader = match &logical_body_bytes {
-        ObservedBodyBytes::Fixed(_) => decoded_reader,
-        ObservedBodyBytes::Counter(counter) => {
-            Box::pin(CountingAsyncRead::new(decoded_reader, counter.clone()))
-        }
-    };
-    let encoded_reader = encode_pool_request_reader(decoded_reader, target_encoding, level);
-    let transmitted_body_bytes = ObservedByteCounter::default();
-    Ok(PreparedPoolUpstreamRequestBody {
-        body: counted_http_body_from_reader(encoded_reader, transmitted_body_bytes.clone()),
-        content_length: None,
-        content_encoding: target_encoding,
-        compression_mode: PoolRequestBodyCompressionMode::Recompressed,
-        byte_observation: PreparedPoolUpstreamRequestBodyObservation {
-            logical_body_bytes,
-            transmitted_body_bytes,
-        },
-    })
+    Ok(build_recompressed_upstream_request_body(
+        decoded_reader,
+        target_encoding,
+        level,
+        &prepared.snapshot,
+        prepared.snapshot_is_decoded,
+    ))
 }
 
 pub(crate) fn pool_request_snapshot_preserves_content_length(
