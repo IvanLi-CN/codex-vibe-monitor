@@ -1275,5 +1275,5 @@ pub(crate) async fn import_validated_oauth_accounts(
         );
     }
 
-    Ok(Json(batch.into_response()))
+    Ok(finalize_import_batch(batch))
 }

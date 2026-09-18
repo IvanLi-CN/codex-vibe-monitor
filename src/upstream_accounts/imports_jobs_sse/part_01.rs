@@ -204,6 +204,10 @@ struct ImportBatch {
     results: Vec<ImportedOauthImportResult>,
 }
 
+fn finalize_import_batch(batch: ImportBatch) -> Json<ImportedOauthImportResponse> {
+    Json(batch.into_response())
+}
+
 impl ImportBatch {
     fn new(input_files: usize, selected_files: usize) -> Self {
         Self {
