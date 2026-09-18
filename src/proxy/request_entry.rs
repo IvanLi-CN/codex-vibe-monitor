@@ -4514,6 +4514,99 @@ mod tests {
         assert_eq!(prepared.requested_hosted_image_intent, ImageIntent::No);
     }
 
+    async fn assert_file_backed_chat_projection(projection: &RequestSemanticProjection) {
+        assert!(projection.body_rewritten);
+        assert!(projection.buffer_bytes <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES);
+        assert_eq!(
+            projection.request_info.reasoning_effort.as_deref(),
+            Some("high")
+        );
+        let forwarded_bytes = projection
+            .upstream_snapshot
+            .to_bytes()
+            .await
+            .expect("read rewritten replay snapshot");
+        assert_eq!(
+            forwarded_bytes
+                .windows(b"\"include_usage\"".len())
+                .filter(|window| *window == b"\"include_usage\"")
+                .count(),
+            1
+        );
+        let forwarded: Value =
+            serde_json::from_slice(&forwarded_bytes).expect("parse rewritten replay snapshot");
+        assert_eq!(forwarded["stream_options"]["include_usage"], true);
+        assert_eq!(forwarded["stream_options"]["other_option"], "preserved");
+        let PoolReplayBodySnapshot::File { temp_file, size } = &projection.upstream_snapshot else {
+            panic!("rewritten body must remain file-backed");
+        };
+        let mut config = crate::tests::test_config();
+        config.proxy_raw_dir = std::env::temp_dir().join(format!(
+            "cvm-request-semantic-raw-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        config.proxy_raw_compression = RawCompressionCodec::None;
+        config.proxy_raw_max_bytes = None;
+        let raw = store_raw_payload_snapshot_file(
+            &config,
+            "request-semantic-file-backed",
+            "request",
+            temp_file.path.clone(),
+            *size,
+        )
+        .await;
+        let raw_path = raw.path.expect("raw capture path");
+        assert_eq!(
+            Sha256::digest(tokio::fs::read(&raw_path).await.expect("read raw capture")).to_vec(),
+            Sha256::digest(&forwarded_bytes).to_vec()
+        );
+        let _ = tokio::fs::remove_dir_all(&config.proxy_raw_dir).await;
+    }
+
+    async fn assert_file_backed_responses_projection(
+        projection: &RequestSemanticProjection,
+        original_digest: &[u8],
+        size: usize,
+    ) {
+        assert!(!projection.body_rewritten);
+        assert!(projection.buffer_bytes <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES);
+        assert_eq!(
+            projection.request_info.reasoning_effort.as_deref(),
+            Some("medium")
+        );
+        assert_eq!(projection.request_info.image_intent.as_deref(), Some("yes"));
+        assert_eq!(
+            projection.request_info.compaction_request_kind,
+            Some(CompactionKind::RemoteV2)
+        );
+        assert_eq!(
+            Sha256::digest(
+                projection
+                    .upstream_snapshot
+                    .to_bytes()
+                    .await
+                    .expect("read forwarded replay snapshot")
+            )
+            .to_vec(),
+            original_digest
+        );
+        for _ in 0..2 {
+            let replay = counted_http_body_from_snapshot(
+                &projection.upstream_snapshot,
+                ObservedByteCounter::default(),
+            );
+            assert_eq!(
+                Sha256::digest(
+                    axum::body::to_bytes(replay, size + 1)
+                        .await
+                        .expect("read direct retry replay body")
+                )
+                .to_vec(),
+                original_digest
+            );
+        }
+    }
+
     #[tokio::test]
     async fn request_semantic_projection_keeps_file_backed_bodies_file_backed() {
         for (request_id, size, target, case_suffix) in [
@@ -4535,7 +4628,7 @@ mod tests {
             body.extend_from_slice(prefix);
             body.resize(size - suffix.len(), b'x');
             body.extend_from_slice(suffix);
-            let original_digest = Sha256::digest(&body);
+            let original_digest = Sha256::digest(&body).to_vec();
             let snapshot = pool_replay_snapshot_from_bytes_with_memory_threshold(
                 request_id,
                 Bytes::from(body),
@@ -4578,94 +4671,14 @@ mod tests {
                         .to_bytes()
                         .await
                         .expect("read original replay snapshot")
-                ),
+                )
+                .to_vec(),
                 original_digest
             );
             if target == ProxyCaptureTarget::ChatCompletions {
-                assert!(projection.body_rewritten);
-                assert!(projection.buffer_bytes <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES);
-                assert_eq!(
-                    projection.request_info.reasoning_effort.as_deref(),
-                    Some("high")
-                );
-                let forwarded_bytes = projection
-                    .upstream_snapshot
-                    .to_bytes()
-                    .await
-                    .expect("read rewritten replay snapshot");
-                assert_eq!(
-                    forwarded_bytes
-                        .windows(b"\"include_usage\"".len())
-                        .filter(|window| *window == b"\"include_usage\"")
-                        .count(),
-                    1
-                );
-                let forwarded: Value = serde_json::from_slice(&forwarded_bytes)
-                    .expect("parse rewritten replay snapshot");
-                assert_eq!(forwarded["stream_options"]["include_usage"], true);
-                assert_eq!(forwarded["stream_options"]["other_option"], "preserved");
-                let PoolReplayBodySnapshot::File { temp_file, size } =
-                    &projection.upstream_snapshot
-                else {
-                    panic!("rewritten body must remain file-backed");
-                };
-                let mut config = crate::tests::test_config();
-                config.proxy_raw_dir = std::env::temp_dir().join(format!(
-                    "cvm-request-semantic-raw-{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
-                ));
-                config.proxy_raw_compression = RawCompressionCodec::None;
-                config.proxy_raw_max_bytes = None;
-                let raw = store_raw_payload_snapshot_file(
-                    &config,
-                    "request-semantic-file-backed",
-                    "request",
-                    temp_file.path.clone(),
-                    *size,
-                )
-                .await;
-                let raw_path = raw.path.expect("raw capture path");
-                assert_eq!(
-                    Sha256::digest(tokio::fs::read(&raw_path).await.expect("read raw capture")),
-                    Sha256::digest(&forwarded_bytes)
-                );
-                let _ = tokio::fs::remove_dir_all(&config.proxy_raw_dir).await;
+                assert_file_backed_chat_projection(&projection).await;
             } else {
-                assert!(!projection.body_rewritten);
-                assert!(projection.buffer_bytes <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES);
-                assert_eq!(
-                    projection.request_info.reasoning_effort.as_deref(),
-                    Some("medium")
-                );
-                assert_eq!(projection.request_info.image_intent.as_deref(), Some("yes"));
-                assert_eq!(
-                    projection.request_info.compaction_request_kind,
-                    Some(CompactionKind::RemoteV2)
-                );
-                assert_eq!(
-                    Sha256::digest(
-                        projection
-                            .upstream_snapshot
-                            .to_bytes()
-                            .await
-                            .expect("read forwarded replay snapshot")
-                    ),
-                    original_digest
-                );
-                for _ in 0..2 {
-                    let replay = counted_http_body_from_snapshot(
-                        &projection.upstream_snapshot,
-                        ObservedByteCounter::default(),
-                    );
-                    assert_eq!(
-                        Sha256::digest(
-                            axum::body::to_bytes(replay, size + 1)
-                                .await
-                                .expect("read direct retry replay body")
-                        ),
-                        original_digest
-                    );
-                }
+                assert_file_backed_responses_projection(&projection, &original_digest, size).await;
             }
             assert_eq!(projection.json_parse_count, 1);
             assert_eq!(projection.whole_body_materialization_count, 0);
