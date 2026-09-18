@@ -22,10 +22,6 @@ mod upstream_transport;
     reason = "Usage persistence adapters preserve established database call contracts."
 )]
 mod usage_persistence;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "WebSocket preparation adapters preserve established call-site contracts."
-)]
 mod websocket;
 
 pub(crate) use dispatch::*;
