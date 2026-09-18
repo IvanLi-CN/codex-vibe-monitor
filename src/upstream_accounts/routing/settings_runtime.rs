@@ -552,7 +552,6 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group(
         resolve_effective_routing_timeout_settings(root, group_settings.as_ref(), None, None);
     Ok((effective, sources, resolved))
 }
-
 pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversation(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -603,22 +602,35 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
         } else {
             None
         };
-
-    let conversation_settings = if let Some(prompt_cache_key) = prompt_cache_key
+    let conversation_settings = load_conversation_timeout_settings(pool, prompt_cache_key).await?;
+    let (effective, sources, resolved) = resolve_effective_routing_timeout_settings(
+        root,
+        group_settings.as_ref(),
+        None,
+        conversation_settings.as_ref(),
+    );
+    Ok((effective, sources, resolved))
+}
+async fn load_conversation_timeout_settings(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: Option<&str>,
+) -> Result<Option<RoutingTimeoutSettings>> {
+    let Some(prompt_cache_key) = prompt_cache_key
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        #[derive(Debug, FromRow)]
-        struct ConversationTimeoutRow {
-            responses_first_byte_timeout_secs: Option<i64>,
-            compact_first_byte_timeout_secs: Option<i64>,
-            image_first_byte_timeout_secs: Option<i64>,
-            responses_stream_timeout_secs: Option<i64>,
-            compact_stream_timeout_secs: Option<i64>,
-        }
-
-        sqlx::query_as::<_, ConversationTimeoutRow>(
-            r#"
+    else {
+        return Ok(None);
+    };
+    #[derive(Debug, FromRow)]
+    struct ConversationTimeoutRow {
+        responses_first_byte_timeout_secs: Option<i64>,
+        compact_first_byte_timeout_secs: Option<i64>,
+        image_first_byte_timeout_secs: Option<i64>,
+        responses_stream_timeout_secs: Option<i64>,
+        compact_stream_timeout_secs: Option<i64>,
+    }
+    let settings = sqlx::query_as::<_, ConversationTimeoutRow>(
+        r#"
             SELECT
                 responses_first_byte_timeout_secs,
                 compact_first_byte_timeout_secs,
@@ -628,33 +640,22 @@ pub(crate) async fn load_effective_request_path_timeouts_for_group_and_conversat
             FROM prompt_cache_conversation_bindings
             WHERE prompt_cache_key = ?1
             LIMIT 1
-            "#,
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_optional(pool)
+    .await?
+    .and_then(|row| {
+        routing_timeout_settings_from_columns(
+            row.responses_first_byte_timeout_secs,
+            row.compact_first_byte_timeout_secs,
+            row.image_first_byte_timeout_secs,
+            row.responses_stream_timeout_secs,
+            row.compact_stream_timeout_secs,
         )
-        .bind(prompt_cache_key)
-        .fetch_optional(pool)
-        .await?
-        .and_then(|row| {
-            routing_timeout_settings_from_columns(
-                row.responses_first_byte_timeout_secs,
-                row.compact_first_byte_timeout_secs,
-                row.image_first_byte_timeout_secs,
-                row.responses_stream_timeout_secs,
-                row.compact_stream_timeout_secs,
-            )
-        })
-    } else {
-        None
-    };
-
-    let (effective, sources, resolved) = resolve_effective_routing_timeout_settings(
-        root,
-        group_settings.as_ref(),
-        None,
-        conversation_settings.as_ref(),
-    );
-    Ok((effective, sources, resolved))
+    });
+    Ok(settings)
 }
-
 pub(crate) async fn load_pool_routing_settings(
     pool: &Pool<Sqlite>,
 ) -> Result<PoolRoutingSettingsRow> {
