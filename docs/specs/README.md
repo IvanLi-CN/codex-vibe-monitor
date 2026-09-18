@@ -93,6 +93,7 @@
 | -     | API Key 优先级迁移准入控制                                                | active    | `priority-handoff-admission/SPEC.md`                       | `priority-handoff-admission/IMPLEMENTATION.md`                       | topic anchor: API Key / routing / sticky priority handoff    |
 
 | - | 全源码结构质量合同 | active | `source-quality-contract/SPEC.md` | `source-quality-contract/IMPLEMENTATION.md` | topic anchor: source quality / AST boundaries / CI gates |
+| - | 全源码结构质量零收敛 | active | `source-quality-zero/SPEC.md` | `source-quality-zero/IMPLEMENTATION.md` | topic anchor: source quality / zero ratchet / remediation frontier |
 
 ## Archived Sources
 

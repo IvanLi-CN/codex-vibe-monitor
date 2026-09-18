@@ -1,0 +1,41 @@
+name: Initiative Source Quality Zero
+
+on:
+  push:
+    branches:
+      - prd/source-quality-zero
+
+concurrency:
+  group: initiative-source-quality-zero-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  initiative-source-structure-check:
+    name: initiative-source-structure-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify successor Spec surfaces
+        run: |
+          set -euo pipefail
+          test -f docs/specs/source-quality-zero/SPEC.md
+          test -f docs/specs/source-quality-zero/IMPLEMENTATION.md
+          test -f docs/specs/source-quality-zero/HISTORY.md
+          grep -Fq 'REQ-SQZ-001' docs/specs/source-quality-zero/SPEC.md
+          grep -Fq 'VER-SQZ-003' docs/specs/source-quality-zero/SPEC.md
+          grep -Fq '## Related ADRs' docs/specs/source-quality-zero/SPEC.md
+          grep -Fxq 'None' <(sed -n '/^## Related ADRs$/,/^## /p' docs/specs/source-quality-zero/SPEC.md | tail -n +2)
+
+      - name: Run source structure ratchet
+        run: tools/source-structure-check/check --all
+
+      - name: Verify clean Bootstrap patch
+        run: git diff-tree --check --no-commit-id -r "$GITHUB_SHA"
