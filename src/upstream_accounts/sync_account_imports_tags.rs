@@ -2625,48 +2625,52 @@ pub(crate) async fn load_upstream_account_groups(
 
     let mut groups = Vec::with_capacity(rows.len());
     for row in rows {
-        let node_shunt_enabled =
-            decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
-        let single_account_rotation_enabled = decode_group_single_account_rotation_enabled(
-            row.single_account_rotation_enabled.unwrap_or_default(),
-        );
-        let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
-            row.upstream_429_retry_enabled.unwrap_or_default(),
-        );
-        let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
-            upstream_429_retry_enabled,
-            decode_group_upstream_429_max_retries(row.upstream_429_max_retries.unwrap_or_default()),
-        );
-        let routing_rule = group_routing_rule_from_group_list_row(
-            &row,
-            upstream_429_retry_enabled,
-            upstream_429_max_retries,
-        );
-        let (effective_timeouts, timeout_field_sources, _) =
-            load_effective_request_path_timeouts_for_group(
-                &state.pool,
-                &state.config,
-                Some(row.group_name.as_str()),
-            )
-            .await?;
-        groups.push(UpstreamAccountGroupSummary {
-            group_name: row.group_name,
-            account_count: row.account_count,
-            note: normalize_optional_text(row.note),
-            bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                row.bound_proxy_keys_json.as_deref(),
-            ),
-            node_shunt_enabled,
-            single_account_rotation_enabled,
-            upstream_429_retry_enabled,
-            upstream_429_max_retries,
-            concurrency_limit: row.concurrency_limit.unwrap_or_default(),
-            effective_timeouts,
-            timeout_field_sources,
-            routing_rule,
-        });
+        groups.push(build_upstream_account_group_summary(state, row).await?);
     }
     Ok(groups)
+}
+
+async fn build_upstream_account_group_summary(
+    state: &AppState,
+    row: UpstreamAccountGroupListRow,
+) -> Result<UpstreamAccountGroupSummary> {
+    let node_shunt_enabled =
+        decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
+    let single_account_rotation_enabled = decode_group_single_account_rotation_enabled(
+        row.single_account_rotation_enabled.unwrap_or_default(),
+    );
+    let upstream_429_retry_enabled =
+        decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled.unwrap_or_default());
+    let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+        upstream_429_retry_enabled,
+        decode_group_upstream_429_max_retries(row.upstream_429_max_retries.unwrap_or_default()),
+    );
+    let routing_rule = group_routing_rule_from_group_list_row(
+        &row,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+    );
+    let (effective_timeouts, timeout_field_sources, _) =
+        load_effective_request_path_timeouts_for_group(
+            &state.pool,
+            &state.config,
+            Some(row.group_name.as_str()),
+        )
+        .await?;
+    Ok(UpstreamAccountGroupSummary {
+        group_name: row.group_name,
+        account_count: row.account_count,
+        note: normalize_optional_text(row.note),
+        bound_proxy_keys: decode_group_bound_proxy_keys_json(row.bound_proxy_keys_json.as_deref()),
+        node_shunt_enabled,
+        single_account_rotation_enabled,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+        concurrency_limit: row.concurrency_limit.unwrap_or_default(),
+        effective_timeouts,
+        timeout_field_sources,
+        routing_rule,
+    })
 }
 pub(crate) async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
