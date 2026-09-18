@@ -483,9 +483,11 @@ async fn load_long_term_refresh_live_rows(
 }
 
 fn long_term_refresh_live_rows_sql(upstream_account_id_sql: &str, ready_state: bool) -> String {
-    let tail_predicate = ready_state.then_some(
-        " AND (datetime(inv.occurred_at) >= datetime(?1) OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)))",
-    ).unwrap_or_default();
+    let tail_predicate = if ready_state {
+        " AND (datetime(inv.occurred_at) >= datetime(?1) OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)))"
+    } else {
+        ""
+    };
     format!(
         "SELECT inv.id, inv.invoke_id, inv.occurred_at, inv.status, inv.model, CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.requestModel') AS TEXT)), '') END AS request_model, CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.responseModel') AS TEXT)), '') END AS response_model, CASE WHEN json_valid(inv.payload) THEN NULLIF(TRIM(CAST(json_extract(inv.payload, '$.reasoningEffort') AS TEXT)), '') END AS reasoning_effort, {upstream_account_id_sql} AS upstream_account_id, NULL AS upstream_account_kind, NULL AS upstream_account_name, inv.total_tokens, inv.output_tokens, inv.cost, inv.t_total_ms, inv.t_req_read_ms, inv.t_req_parse_ms, inv.t_upstream_connect_ms, inv.t_upstream_ttfb_ms, inv.t_upstream_stream_ms, inv.error_message FROM codex_invocations inv WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending'){tail_predicate} ORDER BY inv.occurred_at ASC, inv.id ASC"
     )

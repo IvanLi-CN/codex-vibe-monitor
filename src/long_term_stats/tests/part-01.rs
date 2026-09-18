@@ -258,7 +258,7 @@ async fn restore_initial_replay_archive(
     sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, total_tokens, output_tokens, cost) VALUES (1, 'restored-earlier-archive', ?1, 'success', 'gpt-5', 100, 40, 0.1)",
         )
-        .bind(&occurred_at)
+        .bind(occurred_at)
         .execute(&restored_pool)
         .await
         .expect("insert restored invocation archive row");
