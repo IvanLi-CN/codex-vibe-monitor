@@ -27,6 +27,59 @@ pub(crate) struct PreAttemptProxyCaptureError<'a> {
     pub(crate) response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 }
 
+struct AdmittedProxyCaptureSnapshotRequest<'a> {
+    state: &'a AppState,
+    admitted_runtime_snapshot: Option<&'a AdmittedProxyRuntimeSnapshot>,
+    invoke_id: &'a str,
+    occurred_at: &'a str,
+    capture_target: ProxyCaptureTarget,
+    requester_ip: Option<&'a str>,
+    sticky_key: Option<&'a str>,
+    prompt_cache_key: Option<&'a str>,
+}
+
+async fn emit_admitted_proxy_capture_snapshot(request: AdmittedProxyCaptureSnapshotRequest<'_>) {
+    let AdmittedProxyCaptureSnapshotRequest {
+        state,
+        admitted_runtime_snapshot,
+        invoke_id,
+        occurred_at,
+        capture_target,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+    } = request;
+    if admitted_runtime_snapshot.is_some() {
+        return;
+    }
+    let shell_started = Instant::now();
+    let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        capture_target,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+    );
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state, admitted_running_record).await
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast admitted running proxy capture snapshot"
+        );
+    } else {
+        debug!(
+            invoke_id = %invoke_id,
+            occurred_at = %occurred_at,
+            running_shell_emitted = true,
+            running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
+            "admitted proxy capture handler emitted fallback running shell"
+        );
+    }
+}
+
 async fn next_request_body_chunk<S>(
     stream: &mut S,
     remaining: Duration,

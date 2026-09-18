@@ -640,37 +640,17 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
-    if admitted_runtime_snapshot.is_none() {
-        let shell_started = Instant::now();
-        let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
-            &invoke_id,
-            &occurred_at,
-            capture_target,
-            requester_ip.as_deref(),
-            header_sticky_key.as_deref(),
-            header_prompt_cache_key.as_deref(),
-        );
-        if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
-            state.as_ref(),
-            admitted_running_record,
-        )
-        .await
-        {
-            warn!(
-                ?err,
-                invoke_id = %invoke_id,
-                "failed to broadcast admitted running proxy capture snapshot"
-            );
-        } else {
-            debug!(
-                invoke_id = %invoke_id,
-                occurred_at = %occurred_at,
-                running_shell_emitted = true,
-                running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
-                "admitted proxy capture handler emitted fallback running shell"
-            );
-        }
-    }
+    emit_admitted_proxy_capture_snapshot(AdmittedProxyCaptureSnapshotRequest {
+        state: state.as_ref(),
+        admitted_runtime_snapshot: admitted_runtime_snapshot.as_ref(),
+        invoke_id: &invoke_id,
+        occurred_at: &occurred_at,
+        capture_target,
+        requester_ip: requester_ip.as_deref(),
+        sticky_key: header_sticky_key.as_deref(),
+        prompt_cache_key: header_prompt_cache_key.as_deref(),
+    })
+    .await;
     let proxy_settings = state.proxy_model_settings.read().await.clone();
     let req_read_started = Instant::now();
     let request_body_snapshot = match read_request_body_snapshot_with_partial_limit(
