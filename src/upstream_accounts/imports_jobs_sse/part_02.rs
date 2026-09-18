@@ -203,23 +203,24 @@ async fn run_imported_oauth_import(
     let mut batch = ImportBatch::new(items.len(), selected_source_ids.len());
     let mut seen_keys = HashSet::new();
     let mut consumed_proxy_keys = HashSet::new();
-    let mut context = ImportedOauthImportContext {
-        state,
-        crypto_key: &crypto_key,
-        selected_source_ids: &selected_source_ids,
-        cached_validation_results: &cached_validation_results,
-        resolved_group_binding: &resolved_group_binding,
-        create_plan: &create_plan,
-        assignments: &assignments,
-        refresh_scope: &refresh_scope,
-        batch: &mut batch,
-        seen_keys: &mut seen_keys,
-        consumed_proxy_keys: &mut consumed_proxy_keys,
-    };
-    for item in items {
-        process_imported_oauth_import_item(&mut context, item).await?;
+    {
+        let mut context = ImportedOauthImportContext {
+            state,
+            crypto_key: &crypto_key,
+            selected_source_ids: &selected_source_ids,
+            cached_validation_results: &cached_validation_results,
+            resolved_group_binding: &resolved_group_binding,
+            create_plan: &create_plan,
+            assignments: &assignments,
+            refresh_scope: &refresh_scope,
+            batch: &mut batch,
+            seen_keys: &mut seen_keys,
+            consumed_proxy_keys: &mut consumed_proxy_keys,
+        };
+        for item in items {
+            process_imported_oauth_import_item(&mut context, item).await?;
+        }
     }
-    drop(context);
     Ok(batch.into_response())
 }
 

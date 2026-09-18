@@ -35,7 +35,7 @@ struct ExternalOauthCreatePlan {
 
 enum ExternalOauthPersistenceResult {
     Created(i64),
-    Existing(UpstreamAccountDetail),
+    Existing(Box<UpstreamAccountDetail>),
 }
 
 fn normalize_external_source_account_id(raw: &str) -> Result<String, (StatusCode, String)> {
@@ -644,7 +644,7 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
         ExternalOauthPersistenceResult::Created(account_id) => {
             complete_external_new_oauth_upsert(state, account_id, prepared.probe).await
         }
-        ExternalOauthPersistenceResult::Existing(detail) => Ok(detail),
+        ExternalOauthPersistenceResult::Existing(detail) => Ok(*detail),
     }
 }
 
@@ -766,7 +766,7 @@ async fn persist_external_new_oauth_account(
             reprobe,
         )
         .await
-        .map(ExternalOauthPersistenceResult::Existing);
+        .map(|detail| ExternalOauthPersistenceResult::Existing(Box::new(detail)));
     }
     let display_name = resolve_external_create_display_name(
         &mut tx,

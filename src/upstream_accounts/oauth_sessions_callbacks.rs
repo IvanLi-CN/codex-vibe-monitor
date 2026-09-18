@@ -774,12 +774,19 @@ fn requested_group_metadata_changes_from_oauth_login_update(
     )
 }
 
+struct NormalizedOauthLoginGroupMetadata {
+    note_missing: bool,
+    note: Option<String>,
+    limit_missing: bool,
+    limit: i64,
+}
+
 fn normalize_oauth_login_group_metadata(
     requested_note: OptionalField<String>,
     existing_note: Option<String>,
     requested_limit: OptionalField<i64>,
     existing_limit: i64,
-) -> Result<(bool, Option<String>, bool, i64), (StatusCode, String)> {
+) -> Result<NormalizedOauthLoginGroupMetadata, (StatusCode, String)> {
     let note_missing = matches!(requested_note, OptionalField::Missing);
     let note = match requested_note {
         OptionalField::Missing => existing_note,
@@ -794,7 +801,12 @@ fn normalize_oauth_login_group_metadata(
             normalize_concurrency_limit(Some(value), "concurrencyLimit")?
         }
     };
-    Ok((note_missing, note, limit_missing, limit))
+    Ok(NormalizedOauthLoginGroupMetadata {
+        note_missing,
+        note,
+        limit_missing,
+        limit,
+    })
 }
 
 fn decode_oauth_login_group_metadata(
@@ -972,17 +984,16 @@ pub(crate) async fn update_oauth_login_session(
         session_group_single_account_rotation_enabled,
         session_group_single_account_rotation_enabled_requested,
     ) = decode_oauth_login_group_metadata(&session);
-    let (
-        requested_group_note_missing,
-        mut normalized_group_note,
-        requested_group_concurrency_limit_missing,
-        mut normalized_group_concurrency_limit,
-    ) = normalize_oauth_login_group_metadata(
+    let normalized_group_metadata = normalize_oauth_login_group_metadata(
         requested_group_note,
         session.group_note.clone(),
         requested_concurrency_limit,
         session.group_concurrency_limit,
     )?;
+    let requested_group_note_missing = normalized_group_metadata.note_missing;
+    let mut normalized_group_note = normalized_group_metadata.note;
+    let requested_group_concurrency_limit_missing = normalized_group_metadata.limit_missing;
+    let mut normalized_group_concurrency_limit = normalized_group_metadata.limit;
     let group_name_changed = group_name.as_deref() != session.group_name.as_deref();
     let requested_group_bound_proxy_keys = match requested_group_bound_proxy_keys {
         OptionalField::Missing if group_name_changed => None,

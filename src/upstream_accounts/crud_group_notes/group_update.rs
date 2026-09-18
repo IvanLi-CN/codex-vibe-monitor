@@ -298,8 +298,7 @@ fn normalize_group_routing_rule<'a>(
                 .map(|mode| mode.as_str().to_owned())
         })
         .transpose()?;
-    let (available_models_json, available_models_mode, preserve_available_models_json) =
-        normalize_group_available_models(rule)?;
+    let normalized_available_models = normalize_group_available_models(rule)?;
     let timeout_patch = rule.timeouts.clone().unwrap_or_default();
     let responses_first_byte_timeout_secs = normalize_optional_timeout_override_secs(
         &timeout_patch.responses_first_byte_timeout_secs,
@@ -331,9 +330,9 @@ fn normalize_group_routing_rule<'a>(
         policy_image_tool_rewrite_mode,
         policy_codex_imagegen_rewrite_mode,
         policy_request_compression_algorithm,
-        available_models_json,
-        available_models_mode,
-        preserve_available_models_json,
+        available_models_json: normalized_available_models.json,
+        available_models_mode: normalized_available_models.mode,
+        preserve_available_models_json: normalized_available_models.preserve,
         status_change,
         responses_first_byte_timeout_secs,
         compact_first_byte_timeout_secs,
@@ -343,9 +342,15 @@ fn normalize_group_routing_rule<'a>(
     })
 }
 
+struct NormalizedGroupAvailableModels {
+    json: Option<String>,
+    mode: Option<String>,
+    preserve: bool,
+}
+
 fn normalize_group_available_models(
     rule: &UpdateGroupAccountRoutingRuleRequest,
-) -> Result<(Option<String>, Option<String>, bool), (StatusCode, String)> {
+) -> Result<NormalizedGroupAvailableModels, (StatusCode, String)> {
     let mut available_models_json = match &rule.available_models {
         OptionalField::Missing | OptionalField::Null => None,
         OptionalField::Value(value) => Some(
@@ -378,7 +383,11 @@ fn normalize_group_available_models(
     }
     let preserve = matches!(rule.available_models, OptionalField::Missing)
         && !matches!(rule.available_models_mode, OptionalField::Null);
-    Ok((available_models_json, available_models_mode, preserve))
+    Ok(NormalizedGroupAvailableModels {
+        json: available_models_json,
+        mode: available_models_mode,
+        preserve,
+    })
 }
 
 fn normalize_group_status_change_reasons(

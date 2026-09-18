@@ -4,7 +4,6 @@ use super::*;
 mod sync_account_imports_tags;
 #[path = "sync_group_sessions.rs"]
 #[expect(
-    clippy::too_many_arguments,
     clippy::type_complexity,
     reason = "Group session adapters mirror persisted group metadata and usage row shapes."
 )]
