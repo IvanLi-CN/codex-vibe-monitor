@@ -1186,17 +1186,32 @@ impl ViaPoolResolutionTerminalError {
     }
 }
 
-pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
-    state: &AppState,
-    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
-    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+struct SingleAccountBindingTerminalErrorRequest<'a> {
+    state: &'a AppState,
+    trace_context: Option<&'a PoolUpstreamAttemptTraceContext>,
+    binding_constraint: Option<&'a PromptCacheConversationBindingConstraint>,
     owner_auto_guard_active: bool,
-    prompt_cache_key: Option<&str>,
+    prompt_cache_key: Option<&'a str>,
     account: Option<PoolResolvedAccount>,
     message: Option<String>,
     attempt_count: usize,
     distinct_account_count: usize,
+}
+
+pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
+    request: SingleAccountBindingTerminalErrorRequest<'_>,
 ) -> Option<ProxyErrorResponse> {
+    let SingleAccountBindingTerminalErrorRequest {
+        state,
+        trace_context,
+        binding_constraint,
+        owner_auto_guard_active,
+        prompt_cache_key,
+        account,
+        message,
+        attempt_count,
+        distinct_account_count,
+    } = request;
     let err = build_single_account_binding_blocked_error(SingleAccountBindingBlockedErrorRequest {
         state,
         binding_constraint,
@@ -1228,6 +1243,29 @@ pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
     Some(proxy_error_response_from_pool_upstream_error(err, None))
 }
 
+async fn maybe_persist_initial_account_binding_terminal_error(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+    prompt_cache_key: Option<&str>,
+    account: Option<PoolResolvedAccount>,
+    message: Option<String>,
+) -> Option<ProxyErrorResponse> {
+    maybe_persist_single_account_binding_terminal_error(SingleAccountBindingTerminalErrorRequest {
+        state,
+        trace_context,
+        binding_constraint,
+        owner_auto_guard_active,
+        prompt_cache_key,
+        account,
+        message,
+        attempt_count: 1,
+        distinct_account_count: 1,
+    })
+    .await
+}
+
 pub(crate) async fn unwrap_via_pool_initial_account(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
@@ -1252,7 +1290,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
         | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(_))) => {
-            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
+            if let Some(err) = maybe_persist_initial_account_binding_terminal_error(
                 state,
                 trace_context,
                 binding_constraint,
@@ -1260,8 +1298,6 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 prompt_cache_key,
                 None,
                 None,
-                1,
-                1,
             )
             .await
             {
@@ -1273,7 +1309,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
-            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
+            if let Some(err) = maybe_persist_initial_account_binding_terminal_error(
                 state,
                 trace_context,
                 binding_constraint,
@@ -1281,8 +1317,6 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 prompt_cache_key,
                 None,
                 None,
-                1,
-                1,
             )
             .await
             {
@@ -1294,7 +1328,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
-            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
+            if let Some(err) = maybe_persist_initial_account_binding_terminal_error(
                 state,
                 trace_context,
                 binding_constraint,
@@ -1302,8 +1336,6 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 prompt_cache_key,
                 None,
                 None,
-                1,
-                1,
             )
             .await
             {
@@ -1317,7 +1349,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
             blocked,
         ))) => {
-            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
+            if let Some(err) = maybe_persist_initial_account_binding_terminal_error(
                 state,
                 trace_context,
                 binding_constraint,
@@ -1325,8 +1357,6 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 prompt_cache_key,
                 Some(blocked.account.clone()),
                 Some(blocked.message.clone()),
-                1,
-                1,
             )
             .await
             {
@@ -1342,7 +1372,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::BlockedByPolicy(
             message,
         ))) => {
-            if let Some(err) = maybe_persist_single_account_binding_terminal_error(
+            if let Some(err) = maybe_persist_initial_account_binding_terminal_error(
                 state,
                 trace_context,
                 binding_constraint,
@@ -1350,8 +1380,6 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 prompt_cache_key,
                 None,
                 Some(message.clone()),
-                1,
-                1,
             )
             .await
             {
