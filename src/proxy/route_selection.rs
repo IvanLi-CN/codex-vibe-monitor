@@ -1064,45 +1064,12 @@ fn analyze_replay_snapshot_route_value(
     .into_iter()
     .find_map(normalize);
     let requested_model = normalize(value.model);
-    let image_intent = match capture_target {
-        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
-            ImageIntent::DirectImage
-        }
-        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
-            if requested_model
-                .as_deref()
-                .is_some_and(is_openai_image_generation_model)
-                || value.contains_image_generation
-                || value.contains_codex_image_generation
-            {
-                ImageIntent::Yes
-            } else {
-                ImageIntent::No
-            }
-        }
-        Some(ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch) | None => {
-            ImageIntent::Unknown
-        }
-    };
-    let hosted_image_intent = match capture_target {
-        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
-            ImageIntent::DirectImage
-        }
-        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
-            if requested_model
-                .as_deref()
-                .is_some_and(is_openai_image_generation_model)
-                || value.contains_image_generation
-            {
-                ImageIntent::Yes
-            } else {
-                ImageIntent::No
-            }
-        }
-        Some(ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch) | None => {
-            ImageIntent::Unknown
-        }
-    };
+    let (image_intent, hosted_image_intent) = replay_snapshot_image_intents(
+        capture_target,
+        requested_model.as_deref(),
+        value.contains_image_generation,
+        value.contains_codex_image_generation,
+    );
     let compaction_kind = match capture_target {
         Some(ProxyCaptureTarget::ResponsesCompact) => Some(CompactionKind::Compact),
         Some(ProxyCaptureTarget::Responses) if value.declares_remote_v2_compaction => {
@@ -1135,6 +1102,33 @@ fn analyze_replay_snapshot_route_value(
         file_read_count: 0,
         json_parse_count: 0,
         parse_outcome: "empty",
+    }
+}
+
+fn replay_snapshot_image_intents(
+    capture_target: Option<ProxyCaptureTarget>,
+    requested_model: Option<&str>,
+    contains_image_generation: bool,
+    contains_codex_image_generation: bool,
+) -> (ImageIntent, ImageIntent) {
+    match capture_target {
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            (ImageIntent::DirectImage, ImageIntent::DirectImage)
+        }
+        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
+            let hosted_image = requested_model.is_some_and(is_openai_image_generation_model)
+                || contains_image_generation;
+            let image = hosted_image || contains_codex_image_generation;
+            (
+                image.then_some(ImageIntent::Yes).unwrap_or(ImageIntent::No),
+                hosted_image
+                    .then_some(ImageIntent::Yes)
+                    .unwrap_or(ImageIntent::No),
+            )
+        }
+        Some(ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch) | None => {
+            (ImageIntent::Unknown, ImageIntent::Unknown)
+        }
     }
 }
 
