@@ -1482,6 +1482,7 @@ async fn persist_upstream_account_action_with_proxy_snapshot_and_attempt(
         payload.reason_code,
         reason_message.as_deref(),
     );
+    let proxy_snapshot = proxy_snapshot.as_ref();
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_events (
@@ -1498,21 +1499,9 @@ async fn persist_upstream_account_action_with_proxy_snapshot_and_attempt(
     .bind(payload.source)
     .bind(account_display_name)
     .bind(account_group_name)
-    .bind(
-        proxy_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.proxy_key.as_str()),
-    )
-    .bind(
-        proxy_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.proxy_display_name.as_str()),
-    )
-    .bind(
-        proxy_snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.proxy_egress_ip.as_deref()),
-    )
+    .bind(proxy_snapshot.map(|snapshot| snapshot.proxy_key.as_str()))
+    .bind(proxy_snapshot.map(|snapshot| snapshot.proxy_display_name.as_str()))
+    .bind(proxy_snapshot.and_then(|snapshot| snapshot.proxy_egress_ip.as_deref()))
     .bind(result)
     .bind(reason_message.as_deref())
     .bind(payload.reason_code)
@@ -1551,6 +1540,14 @@ async fn persist_upstream_account_action_with_proxy_snapshot_and_attempt(
         .await?;
     }
 
+    delete_expired_upstream_account_events(pool, account_id).await?;
+    Ok(())
+}
+
+async fn delete_expired_upstream_account_events(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<()> {
     let retention_cutoff = format_utc_iso(
         Utc::now() - ChronoDuration::days(upstream_account_history_retention_days() as i64),
     );
