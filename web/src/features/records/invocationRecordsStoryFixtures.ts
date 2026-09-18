@@ -747,10 +747,18 @@ export function createStoryInvocationResponseBodiesById(records: ApiInvocation[]
   return responseBodiesById;
 }
 
+function storyInvocationAt(index: number): ApiInvocation {
+  const record = STORYBOOK_INVOCATION_RECORDS[index];
+  if (!record) {
+    throw new Error(`Missing Storybook invocation record at index ${index}`);
+  }
+  return record;
+}
+
 export const STORYBOOK_TTFT_RESPONSE_DURATION_RECORDS: ApiInvocation[] = [
-  STORYBOOK_INVOCATION_RECORDS[5]!,
-  STORYBOOK_INVOCATION_RECORDS[4]!,
-  STORYBOOK_INVOCATION_RECORDS[1]!,
+  storyInvocationAt(5),
+  storyInvocationAt(4),
+  storyInvocationAt(1),
 ];
 
 function sum(values: number[]) {

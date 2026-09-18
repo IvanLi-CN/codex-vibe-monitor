@@ -73,9 +73,12 @@ export function ListBodyState({
       ) : null}
       {showSkeleton ? (
         <div className="mt-6 w-full max-w-2xl space-y-3" aria-hidden>
-          {Array.from({ length: Math.max(1, skeletonRows) }, (_, index) => (
+          {Array.from(
+            { length: Math.max(1, skeletonRows) },
+            (_, index) => `skeleton-${index + 1}`,
+          ).map((skeletonId) => (
             <div
-              key={index}
+              key={skeletonId}
               className="grid grid-cols-[minmax(7rem,0.8fr)_minmax(10rem,1.4fr)_minmax(6rem,0.6fr)] gap-3 rounded-xl border border-base-300/50 bg-base-100/65 p-3"
             >
               <div className="h-3 rounded-full bg-base-content/10" />

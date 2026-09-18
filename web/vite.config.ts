@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type UserConfig } from "vite";
-import { VitePWA } from "vite-plugin-pwa";
+import { type ManifestOptions, VitePWA } from "vite-plugin-pwa";
 
 function normalizeBase(base: string | undefined): string {
   const raw = base?.trim() || "/";
@@ -62,6 +62,83 @@ function isPwaInstallIconEntry(entry: PwaManifestEntry): boolean {
   );
 }
 
+const pwaManifest: Partial<ManifestOptions> = {
+  id: "./",
+  name: "Codex Vibe Monitor",
+  short_name: "Vibe Monitor",
+  description:
+    "Self-hosted observability workspace for OpenAI-compatible proxy traffic, request records, routing, and upstream account pools.",
+  theme_color: "#0ea5e9",
+  background_color: "#0ea5e9",
+  display: "standalone",
+  display_override: ["window-controls-overlay", "standalone"],
+  start_url: "./#/dashboard",
+  scope: "./",
+  orientation: "any",
+  categories: ["developer tools", "productivity", "utilities"],
+  shortcuts: [
+    {
+      name: "Dashboard",
+      short_name: "Dashboard",
+      url: "./#/dashboard",
+      icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
+    },
+    {
+      name: "Live",
+      short_name: "Live",
+      url: "./#/live",
+      icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
+    },
+    {
+      name: "Records",
+      short_name: "Records",
+      url: "./#/records",
+      icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
+    },
+  ],
+  screenshots: [
+    {
+      src: "social-preview.png",
+      sizes: "1774x887",
+      type: "image/png",
+      form_factor: "wide",
+      label: "Codex Vibe Monitor dashboard preview",
+    },
+  ],
+  icons: [
+    {
+      src: installIconAssets.icon192,
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "any",
+    },
+    {
+      src: installIconAssets.icon512,
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "any",
+    },
+    {
+      src: installIconAssets.favicon,
+      sizes: "any",
+      type: "image/svg+xml",
+      purpose: "any",
+    },
+    {
+      src: installIconAssets.maskable192,
+      sizes: "192x192",
+      type: "image/png",
+      purpose: "maskable",
+    },
+    {
+      src: installIconAssets.maskable512,
+      sizes: "512x512",
+      type: "image/png",
+      purpose: "maskable",
+    },
+  ],
+};
+
 function createPwaPlugins() {
   const pwaPlugins = VitePWA({
     injectRegister: false,
@@ -72,82 +149,7 @@ function createPwaPlugins() {
     manifestFilename: "site.webmanifest",
     includeAssets: ["brand-mark.svg", "social-preview.png"],
     includeManifestIcons: false,
-    manifest: {
-      id: "./",
-      name: "Codex Vibe Monitor",
-      short_name: "Vibe Monitor",
-      description:
-        "Self-hosted observability workspace for OpenAI-compatible proxy traffic, request records, routing, and upstream account pools.",
-      theme_color: "#0ea5e9",
-      background_color: "#0ea5e9",
-      display: "standalone",
-      display_override: ["window-controls-overlay", "standalone"],
-      start_url: "./#/dashboard",
-      scope: "./",
-      orientation: "any",
-      categories: ["developer tools", "productivity", "utilities"],
-      shortcuts: [
-        {
-          name: "Dashboard",
-          short_name: "Dashboard",
-          url: "./#/dashboard",
-          icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
-        },
-        {
-          name: "Live",
-          short_name: "Live",
-          url: "./#/live",
-          icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
-        },
-        {
-          name: "Records",
-          short_name: "Records",
-          url: "./#/records",
-          icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
-        },
-      ],
-      screenshots: [
-        {
-          src: "social-preview.png",
-          sizes: "1774x887",
-          type: "image/png",
-          form_factor: "wide",
-          label: "Codex Vibe Monitor dashboard preview",
-        },
-      ],
-      icons: [
-        {
-          src: installIconAssets.icon192,
-          sizes: "192x192",
-          type: "image/png",
-          purpose: "any",
-        },
-        {
-          src: installIconAssets.icon512,
-          sizes: "512x512",
-          type: "image/png",
-          purpose: "any",
-        },
-        {
-          src: installIconAssets.favicon,
-          sizes: "any",
-          type: "image/svg+xml",
-          purpose: "any",
-        },
-        {
-          src: installIconAssets.maskable192,
-          sizes: "192x192",
-          type: "image/png",
-          purpose: "maskable",
-        },
-        {
-          src: installIconAssets.maskable512,
-          sizes: "512x512",
-          type: "image/png",
-          purpose: "maskable",
-        },
-      ],
-    },
+    manifest: pwaManifest,
     injectManifest: {
       globPatterns: ["**/*.{js,css,html,ico,png,svg,json}"],
       globIgnores: pwaPrecacheIgnores,
