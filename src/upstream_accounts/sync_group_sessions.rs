@@ -705,106 +705,22 @@ pub(crate) async fn build_upstream_account_node_shunt_assignments(
         return Ok(UpstreamAccountNodeShuntAssignments::default());
     }
 
-    let group_names = group_metadata_map.keys().cloned().collect::<Vec<_>>();
-    let rows = load_upstream_account_rows_for_groups(&state.pool, &group_names).await?;
-    let rows_by_id = rows
-        .into_iter()
-        .map(|row| (row.id, row))
-        .collect::<HashMap<_, _>>();
-
     let mut assignments = UpstreamAccountNodeShuntAssignments::default();
-    {
-        let manager = state.forward_proxy.lock().await;
-        for (group_name, metadata) in &group_metadata_map {
-            assignments.group_slots.insert(
-                group_name.clone(),
-                GroupNodeShuntSlots {
-                    valid_proxy_keys: manager
-                        .selectable_bound_proxy_keys_in_order(&metadata.bound_proxy_keys),
-                },
-            );
-        }
-    }
+    let rows_by_id = load_node_shunt_rows_by_id(&state.pool, &group_metadata_map).await?;
+    populate_node_shunt_group_slots(state, &group_metadata_map, &mut assignments).await;
 
-    let now = Utc::now();
-    let mut group_candidates = HashMap::<String, Vec<AccountRoutingCandidateRow>>::new();
     let reservation_snapshot = pool_routing_reservation_snapshot(state);
-    let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
-    for candidate in &mut candidates {
-        candidate.in_flight_reservations = reservation_snapshot.count_for_account(candidate.id);
-    }
-    let candidate_effective_rules = load_effective_routing_rules_for_accounts(
-        &state.pool,
-        &candidates
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>(),
+    let (group_candidates, candidate_effective_rules) = collect_node_shunt_candidates(
+        state,
+        &group_metadata_map,
+        &rows_by_id,
+        Utc::now(),
+        &mut assignments,
+        &reservation_snapshot,
     )
     .await?;
-    for candidate in candidates {
-        let Some(row) = rows_by_id.get(&candidate.id) else {
-            continue;
-        };
-        let Some(group_name) = normalize_optional_text(row.group_name.clone()) else {
-            continue;
-        };
-        if !group_metadata_map
-            .get(&group_name)
-            .is_some_and(|metadata| metadata.node_shunt_enabled)
-        {
-            continue;
-        }
-        let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
-        if !account_is_node_shunt_slot_eligible(row, snapshot_exhausted, now) {
-            continue;
-        }
-        assignments.eligible_account_ids.insert(row.id);
-        group_candidates
-            .entry(group_name)
-            .or_default()
-            .push(candidate);
-    }
-
-    let mut reserved_candidates = group_candidates
-        .iter()
-        .flat_map(|(group_name, candidates)| {
-            candidates
-                .iter()
-                .filter(|candidate| candidate.in_flight_reservations > 0)
-                .cloned()
-                .map(|candidate| (group_name.clone(), candidate))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    reserved_candidates.sort_by(|(lhs_group, lhs), (rhs_group, rhs)| {
-        routing_priority_rank(candidate_effective_rules.get(&lhs.id))
-            .cmp(&routing_priority_rank(
-                candidate_effective_rules.get(&rhs.id),
-            ))
-            .then_with(|| compare_node_shunt_reserved_candidates(lhs, rhs))
-            .then_with(|| lhs_group.cmp(rhs_group))
-            .then_with(|| lhs.id.cmp(&rhs.id))
-    });
-
-    let mut fresh_candidates = group_candidates
-        .iter()
-        .flat_map(|(group_name, candidates)| {
-            candidates
-                .iter()
-                .cloned()
-                .map(|candidate| (group_name.clone(), candidate))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    fresh_candidates.sort_by(|(lhs_group, lhs), (rhs_group, rhs)| {
-        routing_priority_rank(candidate_effective_rules.get(&lhs.id))
-            .cmp(&routing_priority_rank(
-                candidate_effective_rules.get(&rhs.id),
-            ))
-            .then_with(|| compare_routing_candidates(lhs, rhs))
-            .then_with(|| lhs_group.cmp(rhs_group))
-            .then_with(|| lhs.id.cmp(&rhs.id))
-    });
+    let (reserved_candidates, fresh_candidates) =
+        sort_node_shunt_candidates(&group_candidates, &candidate_effective_rules);
 
     let mut globally_occupied_proxy_keys = HashSet::new();
     let mut assigned_account_ids = HashSet::new();
@@ -880,4 +796,127 @@ pub(crate) async fn build_upstream_account_node_shunt_assignments(
     }
 
     Ok(assignments)
+}
+
+async fn load_node_shunt_rows_by_id(
+    pool: &Pool<Sqlite>,
+    group_metadata_map: &HashMap<String, UpstreamAccountGroupMetadata>,
+) -> Result<HashMap<i64, UpstreamAccountRow>> {
+    let group_names = group_metadata_map.keys().cloned().collect::<Vec<_>>();
+    Ok(load_upstream_account_rows_for_groups(pool, &group_names)
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row))
+        .collect())
+}
+
+async fn populate_node_shunt_group_slots(
+    state: &AppState,
+    group_metadata_map: &HashMap<String, UpstreamAccountGroupMetadata>,
+    assignments: &mut UpstreamAccountNodeShuntAssignments,
+) {
+    let manager = state.forward_proxy.lock().await;
+    for (group_name, metadata) in group_metadata_map {
+        assignments.group_slots.insert(
+            group_name.clone(),
+            GroupNodeShuntSlots {
+                valid_proxy_keys: manager
+                    .selectable_bound_proxy_keys_in_order(&metadata.bound_proxy_keys),
+            },
+        );
+    }
+}
+
+async fn collect_node_shunt_candidates(
+    state: &AppState,
+    group_metadata_map: &HashMap<String, UpstreamAccountGroupMetadata>,
+    rows_by_id: &HashMap<i64, UpstreamAccountRow>,
+    now: DateTime<Utc>,
+    assignments: &mut UpstreamAccountNodeShuntAssignments,
+    reservation_snapshot: &PoolRoutingReservationSnapshot,
+) -> Result<(
+    HashMap<String, Vec<AccountRoutingCandidateRow>>,
+    HashMap<i64, EffectiveRoutingRule>,
+)> {
+    let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
+    for candidate in &mut candidates {
+        candidate.in_flight_reservations = reservation_snapshot.count_for_account(candidate.id);
+    }
+    let candidate_effective_rules = load_effective_routing_rules_for_accounts(
+        &state.pool,
+        &candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    let mut group_candidates = HashMap::<String, Vec<AccountRoutingCandidateRow>>::new();
+    for candidate in candidates {
+        let Some(row) = rows_by_id.get(&candidate.id) else {
+            continue;
+        };
+        let Some(group_name) = normalize_optional_text(row.group_name.clone()) else {
+            continue;
+        };
+        if !group_metadata_map
+            .get(&group_name)
+            .is_some_and(|metadata| metadata.node_shunt_enabled)
+            || !account_is_node_shunt_slot_eligible(
+                row,
+                routing_candidate_snapshot_is_exhausted(&candidate),
+                now,
+            )
+        {
+            continue;
+        }
+        assignments.eligible_account_ids.insert(row.id);
+        group_candidates
+            .entry(group_name)
+            .or_default()
+            .push(candidate);
+    }
+    Ok((group_candidates, candidate_effective_rules))
+}
+
+fn sort_node_shunt_candidates(
+    group_candidates: &HashMap<String, Vec<AccountRoutingCandidateRow>>,
+    effective_rules: &HashMap<i64, EffectiveRoutingRule>,
+) -> (
+    Vec<(String, AccountRoutingCandidateRow)>,
+    Vec<(String, AccountRoutingCandidateRow)>,
+) {
+    let mut reserved = group_candidates
+        .iter()
+        .flat_map(|(group, candidates)| {
+            candidates
+                .iter()
+                .filter(|candidate| candidate.in_flight_reservations > 0)
+                .cloned()
+                .map(|candidate| (group.clone(), candidate))
+        })
+        .collect::<Vec<_>>();
+    reserved.sort_by(|(left_group, left), (right_group, right)| {
+        routing_priority_rank(effective_rules.get(&left.id))
+            .cmp(&routing_priority_rank(effective_rules.get(&right.id)))
+            .then_with(|| compare_node_shunt_reserved_candidates(left, right))
+            .then_with(|| left_group.cmp(right_group))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut fresh = group_candidates
+        .iter()
+        .flat_map(|(group, candidates)| {
+            candidates
+                .iter()
+                .cloned()
+                .map(|candidate| (group.clone(), candidate))
+        })
+        .collect::<Vec<_>>();
+    fresh.sort_by(|(left_group, left), (right_group, right)| {
+        routing_priority_rank(effective_rules.get(&left.id))
+            .cmp(&routing_priority_rank(effective_rules.get(&right.id)))
+            .then_with(|| compare_routing_candidates(left, right))
+            .then_with(|| left_group.cmp(right_group))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    (reserved, fresh)
 }
