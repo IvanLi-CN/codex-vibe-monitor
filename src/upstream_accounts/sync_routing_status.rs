@@ -335,97 +335,142 @@ pub(crate) fn apply_root_available_models(
     rule.field_sources.available_models_mode = "root".to_string();
 }
 
+pub(crate) struct RoutingPolicyOverride<'a> {
+    pub(crate) source: &'a str,
+    pub(crate) allow_cut_out: Option<i64>,
+    pub(crate) allow_cut_in: Option<i64>,
+    pub(crate) priority_tier: Option<&'a str>,
+    pub(crate) fast_mode_rewrite_mode: Option<&'a str>,
+    pub(crate) image_tool_rewrite_mode: Option<&'a str>,
+    pub(crate) codex_imagegen_rewrite_mode: Option<&'a str>,
+    pub(crate) request_compression_algorithm: Option<&'a str>,
+    pub(crate) allow_request_compression_override: bool,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) upstream_429_retry_enabled: Option<i64>,
+    pub(crate) upstream_429_max_retries: Option<i64>,
+    pub(crate) available_models_json: Option<&'a str>,
+    pub(crate) available_models_mode: Option<&'a str>,
+}
+impl<'a> RoutingPolicyOverride<'a> {
+    fn group(row: &'a GroupRoutingPolicyOverrideRow) -> Self {
+        Self {
+            source: "group",
+            allow_cut_out: row.policy_allow_cut_out,
+            allow_cut_in: row.policy_allow_cut_in,
+            priority_tier: row.policy_priority_tier.as_deref(),
+            fast_mode_rewrite_mode: row.policy_fast_mode_rewrite_mode.as_deref(),
+            image_tool_rewrite_mode: row.policy_image_tool_rewrite_mode.as_deref(),
+            codex_imagegen_rewrite_mode: row.policy_codex_imagegen_rewrite_mode.as_deref(),
+            request_compression_algorithm: row.policy_request_compression_algorithm.as_deref(),
+            allow_request_compression_override: true,
+            concurrency_limit: row.policy_concurrency_limit,
+            upstream_429_retry_enabled: row.policy_upstream_429_retry_enabled,
+            upstream_429_max_retries: row.policy_upstream_429_max_retries,
+            available_models_json: row.policy_available_models_json.as_deref(),
+            available_models_mode: row.policy_available_models_mode.as_deref(),
+        }
+    }
+
+    fn account(row: &'a RoutingPolicyOverrideRow) -> Self {
+        Self {
+            source: "account",
+            allow_cut_out: row.policy_allow_cut_out,
+            allow_cut_in: row.policy_allow_cut_in,
+            priority_tier: row.policy_priority_tier.as_deref(),
+            fast_mode_rewrite_mode: row.policy_fast_mode_rewrite_mode.as_deref(),
+            image_tool_rewrite_mode: row.policy_image_tool_rewrite_mode.as_deref(),
+            codex_imagegen_rewrite_mode: row.policy_codex_imagegen_rewrite_mode.as_deref(),
+            request_compression_algorithm: row.policy_request_compression_algorithm.as_deref(),
+            allow_request_compression_override: true,
+            concurrency_limit: row.policy_concurrency_limit,
+            upstream_429_retry_enabled: row.policy_upstream_429_retry_enabled,
+            upstream_429_max_retries: row.policy_upstream_429_max_retries,
+            available_models_json: row.policy_available_models_json.as_deref(),
+            available_models_mode: row.policy_available_models_mode.as_deref(),
+        }
+    }
+}
+
 pub(crate) fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
-    source: &str,
-    allow_cut_out: Option<i64>,
-    allow_cut_in: Option<i64>,
-    priority_tier: Option<&str>,
-    fast_mode_rewrite_mode: Option<&str>,
-    image_tool_rewrite_mode: Option<&str>,
-    codex_imagegen_rewrite_mode: Option<&str>,
-    request_compression_algorithm: Option<&str>,
-    allow_request_compression_override: bool,
-    concurrency_limit: Option<i64>,
-    upstream_429_retry_enabled: Option<i64>,
-    upstream_429_max_retries: Option<i64>,
-    available_models_json: Option<&str>,
-    available_models_mode: Option<&str>,
+    policy: RoutingPolicyOverride<'_>,
 ) {
-    if let Some(allow_cut_out) = allow_cut_out {
-        rule.field_sources.allow_cut_out = source.to_string();
+    if let Some(allow_cut_out) = policy.allow_cut_out {
+        rule.field_sources.allow_cut_out = policy.source.to_string();
         rule.allow_cut_out = allow_cut_out != 0;
     }
-    if let Some(allow_cut_in) = allow_cut_in {
-        rule.field_sources.allow_cut_in = source.to_string();
+    if let Some(allow_cut_in) = policy.allow_cut_in {
+        rule.field_sources.allow_cut_in = policy.source.to_string();
         rule.allow_cut_in = allow_cut_in != 0;
     }
-    if priority_tier.is_some()
-        && let Ok(priority_tier) = normalize_tag_priority_tier(priority_tier)
+    if policy.priority_tier.is_some()
+        && let Ok(priority_tier) = normalize_tag_priority_tier(policy.priority_tier)
     {
-        rule.field_sources.priority_tier = source.to_string();
+        rule.field_sources.priority_tier = policy.source.to_string();
         rule.priority_tier = priority_tier;
     }
-    if fast_mode_rewrite_mode.is_some()
+    if policy.fast_mode_rewrite_mode.is_some()
         && let Ok(fast_mode_rewrite_mode) =
-            normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)
+            normalize_tag_fast_mode_rewrite_mode(policy.fast_mode_rewrite_mode)
     {
-        rule.field_sources.fast_mode_rewrite_mode = source.to_string();
+        rule.field_sources.fast_mode_rewrite_mode = policy.source.to_string();
         rule.fast_mode_rewrite_mode = fast_mode_rewrite_mode;
     }
-    if image_tool_rewrite_mode.is_some()
+    if policy.image_tool_rewrite_mode.is_some()
         && let Ok(image_tool_rewrite_mode) =
-            super::normalize_upstream_image_tool_rewrite_mode(image_tool_rewrite_mode)
+            super::normalize_upstream_image_tool_rewrite_mode(policy.image_tool_rewrite_mode)
     {
-        rule.field_sources.image_tool_rewrite_mode = source.to_string();
+        rule.field_sources.image_tool_rewrite_mode = policy.source.to_string();
         rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
     }
-    if codex_imagegen_rewrite_mode.is_some()
+    if policy.codex_imagegen_rewrite_mode.is_some()
         && let Ok(codex_imagegen_rewrite_mode) =
-            super::normalize_codex_imagegen_rewrite_mode(codex_imagegen_rewrite_mode)
+            super::normalize_codex_imagegen_rewrite_mode(policy.codex_imagegen_rewrite_mode)
     {
-        rule.field_sources.codex_imagegen_rewrite_mode = source.to_string();
+        rule.field_sources.codex_imagegen_rewrite_mode = policy.source.to_string();
         rule.codex_imagegen_rewrite_mode = codex_imagegen_rewrite_mode;
     }
-    if allow_request_compression_override
-        && request_compression_algorithm.is_some()
+    if policy.allow_request_compression_override
+        && policy.request_compression_algorithm.is_some()
         && let Ok(request_compression_algorithm) =
-            normalize_request_compression_algorithm(request_compression_algorithm)
+            normalize_request_compression_algorithm(policy.request_compression_algorithm)
     {
-        rule.field_sources.request_compression_algorithm = source.to_string();
+        rule.field_sources.request_compression_algorithm = policy.source.to_string();
         rule.request_compression_algorithm = request_compression_algorithm;
     }
-    if let Some(concurrency_limit) = concurrency_limit
+    if let Some(concurrency_limit) = policy.concurrency_limit
         && let Ok(concurrency_limit) =
             normalize_concurrency_limit(Some(concurrency_limit), "concurrencyLimit")
     {
-        rule.field_sources.concurrency_limit = source.to_string();
+        rule.field_sources.concurrency_limit = policy.source.to_string();
         rule.concurrency_limit = concurrency_limit;
     }
-    if let Some(upstream_429_retry_enabled) = upstream_429_retry_enabled {
-        rule.field_sources.upstream_429_retry = source.to_string();
+    if let Some(upstream_429_retry_enabled) = policy.upstream_429_retry_enabled {
+        rule.field_sources.upstream_429_retry = policy.source.to_string();
         rule.upstream_429_retry_enabled = upstream_429_retry_enabled != 0;
         rule.upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
             rule.upstream_429_retry_enabled,
-            upstream_429_max_retries
+            policy
+                .upstream_429_max_retries
                 .map(decode_group_upstream_429_max_retries)
                 .unwrap_or_default(),
         );
     }
-    if available_models_json.is_some() || available_models_mode.is_some() {
+    if policy.available_models_json.is_some() || policy.available_models_mode.is_some() {
         let (parsed_models, invalid_models_json) =
-            parse_string_array_json_with_invalid(available_models_json);
+            parse_string_array_json_with_invalid(policy.available_models_json);
         let available_models = if invalid_models_json {
             Vec::new()
-        } else if available_models_json.is_some() {
+        } else if policy.available_models_json.is_some() {
             parsed_models
         } else {
             rule.available_models.clone()
         };
-        let mode = available_models_mode
+        let mode = policy
+            .available_models_mode
             .map(|value| AvailableModelsMode::from_str(Some(value)))
             .unwrap_or(AvailableModelsMode::Allowlist);
-        rule.field_sources.available_models = source.to_string();
+        rule.field_sources.available_models = policy.source.to_string();
         rule.available_models = available_models;
         rule.available_models_defined = true;
         rule.available_models_mode = if invalid_models_json {
@@ -433,7 +478,7 @@ pub(crate) fn apply_routing_policy_override(
         } else {
             mode
         };
-        rule.field_sources.available_models_mode = source.to_string();
+        rule.field_sources.available_models_mode = policy.source.to_string();
     }
 }
 
@@ -561,23 +606,7 @@ pub(crate) fn apply_group_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     row: &GroupRoutingPolicyOverrideRow,
 ) {
-    apply_routing_policy_override(
-        rule,
-        "group",
-        row.policy_allow_cut_out,
-        row.policy_allow_cut_in,
-        row.policy_priority_tier.as_deref(),
-        row.policy_fast_mode_rewrite_mode.as_deref(),
-        row.policy_image_tool_rewrite_mode.as_deref(),
-        row.policy_codex_imagegen_rewrite_mode.as_deref(),
-        row.policy_request_compression_algorithm.as_deref(),
-        true,
-        row.policy_concurrency_limit,
-        row.policy_upstream_429_retry_enabled,
-        row.policy_upstream_429_max_retries,
-        row.policy_available_models_json.as_deref(),
-        row.policy_available_models_mode.as_deref(),
-    );
+    apply_routing_policy_override(rule, RoutingPolicyOverride::group(row));
     if row.policy_concurrency_limit.is_none() && row.concurrency_limit > 0 {
         rule.field_sources.concurrency_limit = "group".to_string();
         rule.concurrency_limit = row.concurrency_limit;
@@ -799,23 +828,7 @@ pub(crate) fn apply_account_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     row: &RoutingPolicyOverrideRow,
 ) {
-    apply_routing_policy_override(
-        rule,
-        "account",
-        row.policy_allow_cut_out,
-        row.policy_allow_cut_in,
-        row.policy_priority_tier.as_deref(),
-        row.policy_fast_mode_rewrite_mode.as_deref(),
-        row.policy_image_tool_rewrite_mode.as_deref(),
-        row.policy_codex_imagegen_rewrite_mode.as_deref(),
-        row.policy_request_compression_algorithm.as_deref(),
-        true,
-        row.policy_concurrency_limit,
-        row.policy_upstream_429_retry_enabled,
-        row.policy_upstream_429_max_retries,
-        row.policy_available_models_json.as_deref(),
-        row.policy_available_models_mode.as_deref(),
-    );
+    apply_routing_policy_override(rule, RoutingPolicyOverride::account(row));
     apply_status_change_reason_override(
         rule,
         "account",

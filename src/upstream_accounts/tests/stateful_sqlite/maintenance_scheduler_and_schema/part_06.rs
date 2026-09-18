@@ -146,20 +146,22 @@ pub(crate) fn root_and_lower_model_policies_fail_closed_on_blank_entries() {
     let mut lower_rule = test_effective_routing_rule(0);
     apply_routing_policy_override(
         &mut lower_rule,
-        "group",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-        None,
-        Some(r#"[" "]"#),
-        Some("denylist"),
+        RoutingPolicyOverride {
+            source: "group",
+            allow_cut_out: None,
+            allow_cut_in: None,
+            priority_tier: None,
+            fast_mode_rewrite_mode: None,
+            image_tool_rewrite_mode: None,
+            codex_imagegen_rewrite_mode: None,
+            request_compression_algorithm: None,
+            allow_request_compression_override: false,
+            concurrency_limit: None,
+            upstream_429_retry_enabled: None,
+            upstream_429_max_retries: None,
+            available_models_json: Some(r#"[" "]"#),
+            available_models_mode: Some("denylist"),
+        },
     );
     assert!(lower_rule.available_models_defined);
     assert!(lower_rule.available_models.is_empty());
