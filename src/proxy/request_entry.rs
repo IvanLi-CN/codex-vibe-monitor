@@ -1812,7 +1812,7 @@ fn normalize_codex_imagegen_namespace(namespace: &mut Value, replacement: &Value
 }
 
 fn normalize_codex_imagegen_tool_list(
-    tools: &mut Vec<Value>,
+    tools: &mut [Value],
     replacement: &Value,
     target_namespace_index: usize,
 ) {
@@ -2187,7 +2187,7 @@ fn rewrite_lite_codex_imagegen_tools(
     let Some((input, input_normalized)) = normalise_lite_input_tools(value) else {
         return (false, None, "invalid_input");
     };
-    let existing = find_lite_codex_imagegen_function(&input, &top_level_developer_tools);
+    let existing = find_lite_codex_imagegen_function(input, &top_level_developer_tools);
     let first_developer_tools_position = ensure_lite_developer_tools_position(
         input,
         &top_level_developer_tools,

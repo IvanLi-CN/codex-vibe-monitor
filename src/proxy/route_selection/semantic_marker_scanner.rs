@@ -118,9 +118,9 @@ impl SemanticMarkerScanner {
     }
 
     fn record_tool_type_marker(&mut self, captured: &([u8; 32], usize)) {
-        if !self
+        if self
             .value_key
-            .is_some_and(|(key, len)| &key[..len] == b"type")
+            .is_none_or(|(key, len)| &key[..len] != b"type")
         {
             return;
         }

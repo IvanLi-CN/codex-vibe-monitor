@@ -143,9 +143,9 @@ async fn record_pool_request_prepare_failure_attempt(
         Some(account.routing_source),
         account.routing_selection_audit.as_ref(),
         PoolAttemptStartIndexes {
-            attempt_index: attempt_index,
-            distinct_account_index: distinct_account_index,
-            same_account_retry_index: same_account_retry_index,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
         },
         &started_at,
     )

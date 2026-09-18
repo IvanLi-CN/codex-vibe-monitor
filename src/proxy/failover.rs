@@ -1311,9 +1311,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 Some(account.routing_source),
                                 account.routing_selection_audit.as_ref(),
                                 PoolAttemptStartIndexes {
-                                    attempt_index: attempt_index,
-                                    distinct_account_index: distinct_account_index,
-                                    same_account_retry_index: same_account_retry_index,
+                                    attempt_index,
+                                    distinct_account_index,
+                                    same_account_retry_index,
                                 },
                                 attempt_started_at.as_str(),
                             )
@@ -2173,9 +2173,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 Some(account.routing_source),
                                 account.routing_selection_audit.as_ref(),
                                 PoolAttemptStartIndexes {
-                                    attempt_index: attempt_index,
-                                    distinct_account_index: distinct_account_index,
-                                    same_account_retry_index: same_account_retry_index,
+                                    attempt_index,
+                                    distinct_account_index,
+                                    same_account_retry_index,
                                 },
                                 attempt_started_at.as_str(),
                             )
