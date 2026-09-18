@@ -1714,6 +1714,122 @@ fn codex_imagegen_schema_diff_paths(
     }
 }
 
+fn remove_codex_imagegen_from_tool_list(tools: &mut Vec<Value>) -> bool {
+    let mut removed = false;
+    for namespace in tools
+        .iter_mut()
+        .filter(|tool| is_codex_imagegen_namespace(tool))
+    {
+        if let Some(namespace_tools) = namespace.get_mut("tools").and_then(Value::as_array_mut) {
+            let original_len = namespace_tools.len();
+            namespace_tools.retain(|tool| !is_codex_imagegen_function(tool));
+            removed |= namespace_tools.len() != original_len;
+        }
+    }
+    let original_len = tools.len();
+    tools.retain(|tool| {
+        if is_legacy_codex_imagegen_tool(tool) {
+            return false;
+        }
+        !is_codex_imagegen_namespace(tool)
+            || tool
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+    });
+    removed || tools.len() != original_len
+}
+
+fn inject_missing_codex_imagegen_tool(tools: &mut Vec<Value>) {
+    let replacement = codex_imagegen_function();
+    if let Some(namespace) = tools
+        .iter_mut()
+        .find(|tool| is_codex_imagegen_namespace(tool))
+    {
+        let Some(namespace_tools) = namespace.get_mut("tools").and_then(Value::as_array_mut) else {
+            *namespace = codex_imagegen_namespace();
+            return;
+        };
+        namespace_tools.push(replacement);
+    } else {
+        tools.push(codex_imagegen_namespace());
+    }
+}
+
+fn find_codex_imagegen_target_namespace(
+    tools: &[Value],
+    replacement: &Value,
+) -> (Option<usize>, bool) {
+    let mut first_function_namespace = None;
+    let mut first_function = None;
+    let mut function_count = 0;
+    for (namespace_index, namespace) in tools.iter().enumerate() {
+        if !is_codex_imagegen_namespace(namespace) {
+            continue;
+        }
+        for function in namespace
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|tool| is_codex_imagegen_function(tool))
+        {
+            if first_function.is_none() {
+                first_function_namespace = Some(namespace_index);
+                first_function = Some(function);
+            }
+            function_count += 1;
+        }
+    }
+    let target_namespace_index =
+        first_function_namespace.or_else(|| tools.iter().position(is_codex_imagegen_namespace));
+    let already_canonical =
+        function_count == 1 && first_function.is_some_and(|function| function == replacement);
+    (target_namespace_index, already_canonical)
+}
+
+fn normalize_codex_imagegen_namespace(namespace: &mut Value, replacement: &Value) {
+    let Some(namespace_tools) = namespace.get_mut("tools").and_then(Value::as_array_mut) else {
+        *namespace = codex_imagegen_namespace();
+        return;
+    };
+    let mut canonical_inserted = false;
+    let mut normalized_tools = Vec::with_capacity(namespace_tools.len() + 1);
+    for tool in namespace_tools.drain(..) {
+        if is_codex_imagegen_function(&tool) {
+            if !canonical_inserted {
+                normalized_tools.push(replacement.clone());
+                canonical_inserted = true;
+            }
+        } else {
+            normalized_tools.push(tool);
+        }
+    }
+    if !canonical_inserted {
+        normalized_tools.push(replacement.clone());
+    }
+    *namespace_tools = normalized_tools;
+}
+
+fn normalize_codex_imagegen_tool_list(
+    tools: &mut Vec<Value>,
+    replacement: &Value,
+    target_namespace_index: usize,
+) {
+    for (namespace_index, namespace) in tools.iter_mut().enumerate() {
+        if !is_codex_imagegen_namespace(namespace) {
+            continue;
+        }
+        if namespace_index == target_namespace_index {
+            normalize_codex_imagegen_namespace(namespace, replacement);
+        } else if let Some(namespace_tools) =
+            namespace.get_mut("tools").and_then(Value::as_array_mut)
+        {
+            namespace_tools.retain(|tool| !is_codex_imagegen_function(tool));
+        }
+    }
+}
+
 fn replace_codex_imagegen_in_tool_list(
     tools: &mut Vec<Value>,
     mode: crate::CodexImagegenRewriteMode,
@@ -1724,51 +1840,13 @@ fn replace_codex_imagegen_in_tool_list(
     match mode {
         KeepOriginal => (false, existing, "no_change"),
         ForceRemove => {
-            let mut removed = false;
-            for namespace in tools
-                .iter_mut()
-                .filter(|tool| is_codex_imagegen_namespace(tool))
-            {
-                if let Some(namespace_tools) =
-                    namespace.get_mut("tools").and_then(Value::as_array_mut)
-                {
-                    let original_len = namespace_tools.len();
-                    namespace_tools.retain(|tool| !is_codex_imagegen_function(tool));
-                    removed |= namespace_tools.len() != original_len;
-                }
-            }
-            let original_len = tools.len();
-            tools.retain(|tool| {
-                if is_legacy_codex_imagegen_tool(tool) {
-                    return false;
-                }
-                !is_codex_imagegen_namespace(tool)
-                    || tool
-                        .get("tools")
-                        .and_then(Value::as_array)
-                        .is_some_and(|items| !items.is_empty())
-            });
-            removed |= tools.len() != original_len;
+            let removed = remove_codex_imagegen_from_tool_list(tools);
             let outcome = if removed { "removed" } else { "no_change" };
             (removed, existing, outcome)
         }
         FillMissing if existing.is_some() => (false, existing, "no_change"),
         FillMissing => {
-            let replacement = codex_imagegen_function();
-            if let Some(namespace) = tools
-                .iter_mut()
-                .find(|tool| is_codex_imagegen_namespace(tool))
-            {
-                let Some(namespace_tools) =
-                    namespace.get_mut("tools").and_then(Value::as_array_mut)
-                else {
-                    *namespace = codex_imagegen_namespace();
-                    return (true, existing, "injected");
-                };
-                namespace_tools.push(replacement);
-            } else {
-                tools.push(codex_imagegen_namespace());
-            }
+            inject_missing_codex_imagegen_tool(tools);
             (true, existing, "injected")
         }
         ForceAdd => {
@@ -1776,69 +1854,11 @@ fn replace_codex_imagegen_in_tool_list(
             let original_len = tools.len();
             tools.retain(|tool| !is_legacy_codex_imagegen_tool(tool));
             let mut updated = tools.len() != original_len;
-
-            let mut first_function_namespace = None;
-            let mut first_function = None;
-            let mut function_count = 0;
-            for (namespace_index, namespace) in tools.iter().enumerate() {
-                if !is_codex_imagegen_namespace(namespace) {
-                    continue;
-                }
-                for function in namespace
-                    .get("tools")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|tool| is_codex_imagegen_function(tool))
-                {
-                    if first_function.is_none() {
-                        first_function_namespace = Some(namespace_index);
-                        first_function = Some(function);
-                    }
-                    function_count += 1;
-                }
-            }
-            let target_namespace_index = first_function_namespace
-                .or_else(|| tools.iter().position(is_codex_imagegen_namespace));
-            let already_canonical = function_count == 1
-                && first_function.is_some_and(|function| function == &replacement);
-
+            let (target_namespace_index, already_canonical) =
+                find_codex_imagegen_target_namespace(tools, &replacement);
             if let Some(target_namespace_index) = target_namespace_index {
                 if !already_canonical {
-                    for (namespace_index, namespace) in tools.iter_mut().enumerate() {
-                        if !is_codex_imagegen_namespace(namespace) {
-                            continue;
-                        }
-                        let Some(namespace_tools) =
-                            namespace.get_mut("tools").and_then(Value::as_array_mut)
-                        else {
-                            if namespace_index == target_namespace_index {
-                                *namespace = codex_imagegen_namespace();
-                            }
-                            continue;
-                        };
-                        if namespace_index == target_namespace_index {
-                            let mut canonical_inserted = false;
-                            let mut normalized_tools =
-                                Vec::with_capacity(namespace_tools.len() + 1);
-                            for tool in namespace_tools.drain(..) {
-                                if is_codex_imagegen_function(&tool) {
-                                    if !canonical_inserted {
-                                        normalized_tools.push(replacement.clone());
-                                        canonical_inserted = true;
-                                    }
-                                } else {
-                                    normalized_tools.push(tool);
-                                }
-                            }
-                            if !canonical_inserted {
-                                normalized_tools.push(replacement.clone());
-                            }
-                            *namespace_tools = normalized_tools;
-                        } else {
-                            namespace_tools.retain(|tool| !is_codex_imagegen_function(tool));
-                        }
-                    }
+                    normalize_codex_imagegen_tool_list(tools, &replacement, target_namespace_index);
                     updated = true;
                 }
             } else {
