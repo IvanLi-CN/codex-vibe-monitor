@@ -53,6 +53,52 @@ function WorkflowPageSurface({ children }: { children: ReactNode }) {
   );
 }
 
+function jsonResponse(payload: unknown) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function workflowRequestBody(payload?: Record<string, unknown>) {
+  return {
+    available: true,
+    bodyText: failedWorkflowRequestBodyText,
+    headers: {
+      userAgent: "monitor-ui/1.0",
+      xForwardedFor: "203.0.113.10",
+      forwarded: "for=203.0.113.10;proto=https",
+    },
+    routing: {
+      routeMode: "pool",
+      stickyKey: "sk-route-77",
+      promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+      proxyDisplayName: "tokyo-edge-01",
+    },
+    bodySize: failedWorkflowRequestBodySize,
+    detailLevel: "full",
+    captureSource: "raw_file",
+    ...payload,
+  };
+}
+
+function workflowResponseBody(payload?: Record<string, unknown>, attempt = false) {
+  return {
+    available: true,
+    bodyText: failedWorkflowResponseBodyText,
+    headers: {
+      contentEncoding: "gzip",
+      upstreamRequestId: "req_77",
+      cvmInvokeId: "invoke-workflow-77",
+    },
+    ...(attempt ? {} : { routing: { forwardedChunkCount: 12, downstreamClosePhase: "streaming" } }),
+    bodySize: failedWorkflowResponseBodySize,
+    detailLevel: "full",
+    captureSource: attempt ? "attempt_raw_file" : "raw_file",
+    ...payload,
+  };
+}
+
 function WorkflowFetchMock({
   recordId,
   response,
@@ -70,94 +116,19 @@ function WorkflowFetchMock({
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.includes(`/api/invocations/${recordId}/workflow-detail`)) {
-        return new Response(JSON.stringify(response), {
-          status: 200,
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
+        return jsonResponse(response);
       }
       if (url.includes(`/api/invocations/${recordId}/request-body`)) {
-        return new Response(
-          JSON.stringify({
-            available: true,
-            bodyText: failedWorkflowRequestBodyText,
-            headers: {
-              userAgent: "monitor-ui/1.0",
-              xForwardedFor: "203.0.113.10",
-              forwarded: "for=203.0.113.10;proto=https",
-            },
-            routing: {
-              routeMode: "pool",
-              stickyKey: "sk-route-77",
-              promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
-              proxyDisplayName: "tokyo-edge-01",
-            },
-            bodySize: failedWorkflowRequestBodySize,
-            detailLevel: "full",
-            captureSource: "raw_file",
-            ...requestBodyPayload,
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
+        return jsonResponse(workflowRequestBody(requestBodyPayload));
       }
       if (url.includes(`/api/invocations/${recordId}/response-body`)) {
-        return new Response(
-          JSON.stringify({
-            available: true,
-            bodyText: failedWorkflowResponseBodyText,
-            headers: {
-              contentEncoding: "gzip",
-              upstreamRequestId: "req_77",
-              cvmInvokeId: "invoke-workflow-77",
-            },
-            routing: {
-              forwardedChunkCount: 12,
-              downstreamClosePhase: "streaming",
-            },
-            bodySize: failedWorkflowResponseBodySize,
-            detailLevel: "full",
-            captureSource: "raw_file",
-            ...responseBodyPayload,
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
+        return jsonResponse(workflowResponseBody(responseBodyPayload));
       }
       if (
         url.includes(`/api/invocations/${recordId}/attempts/`) &&
         url.endsWith("/response-body")
       ) {
-        return new Response(
-          JSON.stringify({
-            available: true,
-            bodyText: failedWorkflowResponseBodyText,
-            headers: {
-              contentEncoding: "gzip",
-              upstreamRequestId: "req_77",
-              cvmInvokeId: "invoke-workflow-77",
-            },
-            bodySize: failedWorkflowResponseBodySize,
-            detailLevel: "full",
-            captureSource: "attempt_raw_file",
-            ...responseBodyPayload,
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
+        return jsonResponse(workflowResponseBody(responseBodyPayload, true));
       }
       return originalFetch(input, init);
     };
@@ -412,6 +383,28 @@ const failedWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
   partialReason: null,
 };
 
+function buildRetriedWorkflowResponse({
+  finalAttempt,
+  finalFailureEntry,
+  firstAttempt,
+}: {
+  finalAttempt: ApiInvocationWorkflowTimelineEntry;
+  finalFailureEntry: ApiInvocationWorkflowTimelineEntry;
+  firstAttempt: ApiInvocationWorkflowTimelineEntry;
+}): ApiInvocationWorkflowDetailResponse {
+  return {
+    ...failedWorkflowResponse,
+    hero: {
+      ...failedWorkflowResponse.hero,
+      timelineAttemptCount: 2,
+      poolAttemptCount: 2,
+      upstreamAccountId: 43,
+      upstreamAccountName: "pool-beta@example.com",
+    },
+    timeline: [failedWorkflowResponse.timeline[0], firstAttempt, finalAttempt, finalFailureEntry],
+  };
+}
+
 function createRetriedWorkflowResponse(): ApiInvocationWorkflowDetailResponse {
   const firstAttemptEntry = failedWorkflowResponse.timeline.find(
     (entry) => entry.kind === "attempt",
@@ -505,17 +498,7 @@ function createRetriedWorkflowResponse(): ApiInvocationWorkflowDetailResponse {
     },
   };
 
-  return {
-    ...failedWorkflowResponse,
-    hero: {
-      ...failedWorkflowResponse.hero,
-      timelineAttemptCount: 2,
-      poolAttemptCount: 2,
-      upstreamAccountId: 43,
-      upstreamAccountName: "pool-beta@example.com",
-    },
-    timeline: [failedWorkflowResponse.timeline[0], firstAttempt, finalAttempt, finalFailureEntry],
-  };
+  return buildRetriedWorkflowResponse({ firstAttempt, finalAttempt, finalFailureEntry });
 }
 
 const retriedWorkflowResponse = createRetriedWorkflowResponse();
