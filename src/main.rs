@@ -109,18 +109,10 @@ mod http_stream_tracking;
 mod long_term_stats;
 mod maintenance;
 mod memory_diagnostics;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "OAuth bridge adapters preserve upstream request contracts."
-)]
 mod oauth_bridge;
 mod pricing;
 mod proxy;
 mod proxy_sqlite_write_coordinator;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Runtime shutdown coordination preserves established task handles."
-)]
 mod runtime;
 mod runtime_mutation_bus;
 mod schema;
