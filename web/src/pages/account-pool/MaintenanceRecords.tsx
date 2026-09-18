@@ -69,6 +69,134 @@ function humanizeAction(value: string) {
     .join(" ");
 }
 
+type MaintenanceEventRowsProps = {
+  eventId: number;
+  occurredAt: ReturnType<typeof formatOccurredAt>;
+  eventActionLabel: string;
+  eventResultLabel: string;
+  accountLabel: string;
+  groupLabel: string;
+  proxyLabel: string;
+  ipLabel: string;
+  eventDescriptionLabel: string;
+  actionTone: ChipTone;
+  resultTone: Exclude<ChipTone, "info">;
+};
+
+function MaintenanceEventPrimaryRow({
+  occurredAt,
+  eventActionLabel,
+  eventResultLabel,
+  accountLabel,
+  proxyLabel,
+  actionTone,
+  resultTone,
+}: MaintenanceEventRowsProps) {
+  return (
+    <tr className="border-t border-base-300/60 align-baseline first:border-t-0">
+      <td className="whitespace-nowrap px-3 pb-0.5 pt-3 align-baseline text-xs tabular-nums text-base-content/72">
+        {renderTruncatedValue(
+          occurredAt.time,
+          occurredAt.time,
+          "font-mono text-[12px] font-semibold leading-4 text-base-content",
+        )}
+      </td>
+      <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
+        {renderTruncatedValue(
+          accountLabel,
+          accountLabel,
+          "font-medium leading-4 text-base-content",
+        )}
+      </td>
+      <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
+        {renderTruncatedValue(proxyLabel, proxyLabel, "font-medium leading-4 text-base-content")}
+      </td>
+      <td className="max-w-[18rem] px-3 pb-0.5 pt-3 align-baseline">
+        <Tooltip
+          content={eventActionLabel}
+          side="top"
+          contentClassName="max-w-[28rem] break-words leading-5"
+          className="max-w-full whitespace-nowrap align-baseline"
+          triggerProps={{ className: "max-w-full whitespace-nowrap" }}
+        >
+          <Chip
+            data-maintenance-event-badge="true"
+            tone={actionTone}
+            className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
+          >
+            {eventActionLabel}
+          </Chip>
+        </Tooltip>
+      </td>
+      <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
+        <Tooltip
+          content={eventResultLabel}
+          side="top"
+          contentClassName="max-w-[28rem] break-words leading-5"
+          className="max-w-full whitespace-nowrap align-baseline"
+          triggerProps={{ className: "max-w-full whitespace-nowrap" }}
+        >
+          <Chip
+            data-maintenance-event-badge="true"
+            tone={resultTone}
+            className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
+          >
+            {eventResultLabel}
+          </Chip>
+        </Tooltip>
+      </td>
+    </tr>
+  );
+}
+
+function MaintenanceEventDetailsRow({
+  occurredAt,
+  groupLabel,
+  ipLabel,
+  eventDescriptionLabel,
+}: MaintenanceEventRowsProps) {
+  return (
+    <tr>
+      <td className="whitespace-nowrap px-3 pb-3 pt-0 align-baseline font-mono text-[11px] leading-4 tabular-nums text-base-content/55">
+        {renderTruncatedValue(
+          occurredAt.date,
+          occurredAt.date,
+          "font-mono text-[11px] leading-4 tabular-nums text-base-content/55",
+        )}
+      </td>
+      <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
+        {renderTruncatedValue(groupLabel, groupLabel, "text-xs leading-4 text-base-content/60")}
+      </td>
+      <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
+        {renderTruncatedValue(
+          ipLabel,
+          ipLabel,
+          "font-mono text-xs leading-4 tabular-nums text-base-content/60",
+        )}
+      </td>
+      <td
+        className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65"
+        colSpan={2}
+      >
+        {renderTruncatedValue(
+          eventDescriptionLabel,
+          eventDescriptionLabel,
+          "text-xs leading-4 text-base-content/65",
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function MaintenanceEventRows(props: MaintenanceEventRowsProps) {
+  return (
+    <Fragment key={props.eventId}>
+      <MaintenanceEventPrimaryRow {...props} />
+      <MaintenanceEventDetailsRow {...props} />
+    </Fragment>
+  );
+}
+
 export default function MaintenanceRecordsPage() {
   const { t } = useTranslation();
   const [accountFilter, setAccountFilter] = useState("");
@@ -570,101 +698,21 @@ export default function MaintenanceRecordsPage() {
                       event.forwardProxyDisplayName ??
                       event.forwardProxyKey ??
                       t("accountPool.upstreamAccounts.maintenanceEvents.unknownProxy");
-                    const ipLabel = egressIpLabel(event);
-                    const eventDescriptionLabel = descriptionLabel(event);
                     return (
-                      <Fragment key={event.id}>
-                        <tr className="border-t border-base-300/60 align-baseline first:border-t-0">
-                          <td className="whitespace-nowrap px-3 pb-0.5 pt-3 align-baseline text-xs tabular-nums text-base-content/72">
-                            {renderTruncatedValue(
-                              occurredAt.time,
-                              occurredAt.time,
-                              "font-mono text-[12px] font-semibold leading-4 text-base-content",
-                            )}
-                          </td>
-                          <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
-                            {renderTruncatedValue(
-                              accountLabel,
-                              accountLabel,
-                              "font-medium leading-4 text-base-content",
-                            )}
-                          </td>
-                          <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
-                            {renderTruncatedValue(
-                              proxyLabel,
-                              proxyLabel,
-                              "font-medium leading-4 text-base-content",
-                            )}
-                          </td>
-                          <td className="max-w-[18rem] px-3 pb-0.5 pt-3 align-baseline">
-                            <Tooltip
-                              content={eventActionLabel}
-                              side="top"
-                              contentClassName="max-w-[28rem] break-words leading-5"
-                              className="max-w-full whitespace-nowrap align-baseline"
-                              triggerProps={{ className: "max-w-full whitespace-nowrap" }}
-                            >
-                              <Chip
-                                data-maintenance-event-badge="true"
-                                tone={actionVariant(event.action)}
-                                className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
-                              >
-                                {eventActionLabel}
-                              </Chip>
-                            </Tooltip>
-                          </td>
-                          <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
-                            <Tooltip
-                              content={eventResultLabel}
-                              side="top"
-                              contentClassName="max-w-[28rem] break-words leading-5"
-                              className="max-w-full whitespace-nowrap align-baseline"
-                              triggerProps={{ className: "max-w-full whitespace-nowrap" }}
-                            >
-                              <Chip
-                                data-maintenance-event-badge="true"
-                                tone={resultVariant(event.result)}
-                                className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
-                              >
-                                {eventResultLabel}
-                              </Chip>
-                            </Tooltip>
-                          </td>
-                        </tr>
-                        <tr>
-                          <td className="whitespace-nowrap px-3 pb-3 pt-0 align-baseline font-mono text-[11px] leading-4 tabular-nums text-base-content/55">
-                            {renderTruncatedValue(
-                              occurredAt.date,
-                              occurredAt.date,
-                              "font-mono text-[11px] leading-4 tabular-nums text-base-content/55",
-                            )}
-                          </td>
-                          <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
-                            {renderTruncatedValue(
-                              groupLabel,
-                              groupLabel,
-                              "text-xs leading-4 text-base-content/60",
-                            )}
-                          </td>
-                          <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
-                            {renderTruncatedValue(
-                              ipLabel,
-                              ipLabel,
-                              "font-mono text-xs leading-4 tabular-nums text-base-content/60",
-                            )}
-                          </td>
-                          <td
-                            className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65"
-                            colSpan={2}
-                          >
-                            {renderTruncatedValue(
-                              eventDescriptionLabel,
-                              eventDescriptionLabel,
-                              "text-xs leading-4 text-base-content/65",
-                            )}
-                          </td>
-                        </tr>
-                      </Fragment>
+                      <MaintenanceEventRows
+                        key={event.id}
+                        eventId={event.id}
+                        occurredAt={occurredAt}
+                        eventActionLabel={eventActionLabel}
+                        eventResultLabel={eventResultLabel}
+                        accountLabel={accountLabel}
+                        groupLabel={groupLabel}
+                        proxyLabel={proxyLabel}
+                        ipLabel={egressIpLabel(event)}
+                        eventDescriptionLabel={descriptionLabel(event)}
+                        actionTone={actionVariant(event.action)}
+                        resultTone={resultVariant(event.result)}
+                      />
                     );
                   })
                 )}
