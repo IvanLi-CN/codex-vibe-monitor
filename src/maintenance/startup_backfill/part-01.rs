@@ -1,0 +1,426 @@
+pub(crate) async fn load_startup_backfill_progress(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+) -> Result<StartupBackfillProgress> {
+    Ok(sqlx::query_as::<_, StartupBackfillProgressRow>(
+        r#"
+        SELECT
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
+        FROM startup_backfill_progress
+        WHERE task_name = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(task_name)
+    .fetch_optional(pool)
+    .await?
+    .map(Into::into)
+    .unwrap_or_else(|| StartupBackfillProgress::pending(task_name.to_string())))
+}
+
+pub(crate) async fn mark_startup_backfill_running(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    cursor_id: i64,
+) -> Result<()> {
+    let now = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
+        )
+        VALUES (?1, ?2, NULL, 0, ?3, NULL, 0, 0, ?4, NULL, NULL, 0)
+        ON CONFLICT(task_name) DO UPDATE SET
+            next_run_after = NULL,
+            last_started_at = excluded.last_started_at,
+            last_status = excluded.last_status,
+            suspension_reason = NULL,
+            next_probe_at = NULL
+        "#,
+    )
+    .bind(task_name)
+    .bind(cursor_id)
+    .bind(&now)
+    .bind(STARTUP_BACKFILL_STATUS_RUNNING)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) struct StartupBackfillProgressUpdate<'a> {
+    pub(crate) cursor_id: i64,
+    pub(crate) scanned: u64,
+    pub(crate) updated: u64,
+    pub(crate) zero_update_streak: u32,
+    pub(crate) next_run_after: &'a str,
+    pub(crate) status: &'a str,
+    pub(crate) suspension_reason: Option<&'a str>,
+}
+
+pub(crate) async fn save_startup_backfill_progress(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    update: StartupBackfillProgressUpdate<'_>,
+) -> Result<()> {
+    let finished_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+        ON CONFLICT(task_name) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            next_run_after = excluded.next_run_after,
+            zero_update_streak = excluded.zero_update_streak,
+            last_finished_at = excluded.last_finished_at,
+            last_scanned = excluded.last_scanned,
+            last_updated = excluded.last_updated,
+            last_status = excluded.last_status,
+            suspension_reason = excluded.suspension_reason,
+            next_probe_at = excluded.next_probe_at
+        "#,
+    )
+    .bind(task_name)
+    .bind(update.cursor_id)
+    .bind(update.next_run_after)
+    .bind(i64::from(update.zero_update_streak))
+    .bind(&finished_at)
+    .bind(update.scanned as i64)
+    .bind(update.updated as i64)
+    .bind(update.status)
+    .bind(update.suspension_reason)
+    .bind(if update.suspension_reason.is_some() {
+        Some(update.next_run_after)
+    } else {
+        None
+    })
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn wake_startup_backfill_tasks(
+    pool: &Pool<Sqlite>,
+    tasks: &[StartupBackfillTask],
+    wake_reason: &'static str,
+) -> Result<u64> {
+    wake_startup_backfill_tasks_with_pricing_catalog(pool, tasks, None, wake_reason).await
+}
+
+pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
+    pool: &Pool<Sqlite>,
+    tasks: &[StartupBackfillTask],
+    pricing_catalog: Option<&PricingCatalog>,
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let mut woken = 0;
+    let mut proxy_cost_catalog_missing = false;
+    for task in tasks {
+        let task_name = match task {
+            StartupBackfillTask::ProxyCost => {
+                let Some(catalog) = pricing_catalog else {
+                    proxy_cost_catalog_missing = true;
+                    continue;
+                };
+                startup_backfill_task_progress_key_for_catalog(*task, catalog)
+            }
+            _ => task.name().to_string(),
+        };
+        let outcome = sqlx::query(
+            r#"
+            INSERT INTO startup_backfill_progress (
+                task_name,
+                cursor_id,
+                next_run_after,
+                zero_update_streak,
+                last_started_at,
+                last_finished_at,
+                last_scanned,
+                last_updated,
+                last_status,
+                suspension_reason,
+                next_probe_at,
+                wake_generation
+            )
+            VALUES (?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1)
+            ON CONFLICT(task_name) DO UPDATE SET
+                next_run_after = NULL,
+                next_probe_at = NULL,
+                suspension_reason = NULL,
+                wake_generation = startup_backfill_progress.wake_generation + 1,
+                last_status = ?2
+            "#,
+        )
+        .bind(&task_name)
+        .bind(STARTUP_BACKFILL_STATUS_IDLE)
+        .execute(pool)
+        .await
+        .with_context(|| {
+            format!(
+                "wake startup backfill task={} progress_key={} wake_reason={wake_reason}",
+                task.name(),
+                task_name
+            )
+        })?;
+        woken += outcome.rows_affected();
+        STARTUP_BACKFILL_SCHEDULER.wake(*task);
+    }
+    if !tasks.is_empty() {
+        info!(
+            wake_reason,
+            woken,
+            task_count = tasks.len(),
+            "woke affected startup backfill tasks"
+        );
+    }
+    if proxy_cost_catalog_missing {
+        return Err(anyhow!(
+            "wake startup backfill task={} requires the runtime pricing catalog",
+            StartupBackfillTask::ProxyCost.name()
+        ));
+    }
+    Ok(woken)
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct StartupBackfillMaintenancePass {
+    pub(crate) ran_actionable_task: bool,
+    pub(crate) had_failure: bool,
+}
+
+pub(crate) async fn defer_startup_backfill_task(
+    state: &AppState,
+    task: StartupBackfillTask,
+    delay: Duration,
+    wake_reason: &'static str,
+) -> Result<()> {
+    let task_name = startup_backfill_task_progress_key(state, task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    let retry_after = Utc::now() + ChronoDuration::from_std(delay).unwrap_or_default();
+    let retry_after = format_utc_iso(retry_after);
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: &progress.last_status,
+            suspension_reason: progress.suspension_reason.as_deref(),
+        },
+    )
+    .await?;
+    let retry_at = parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now);
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    info!(
+        task = task.log_label(),
+        next_retry_after = %retry_after,
+        wake_reason,
+        "startup backfill task retry scheduled"
+    );
+    Ok(())
+}
+
+pub(crate) fn coverage_repair_retry_delay(retry_generation: u32) -> Duration {
+    let index = retry_generation.saturating_sub(1) as usize;
+    Duration::from_secs(
+        COVERAGE_REPAIR_RETRY_DELAYS_SECS[index.min(COVERAGE_REPAIR_RETRY_DELAYS_SECS.len() - 1)],
+    )
+}
+
+pub(crate) async fn defer_startup_backfill_coverage_repair(
+    state: &AppState,
+) -> Result<DateTime<Utc>> {
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let task_name = startup_backfill_task_progress_key(state, task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    let retry_generation = progress.zero_update_streak.saturating_add(1);
+    let delay = coverage_repair_retry_delay(retry_generation);
+    let retry_after = Utc::now() + ChronoDuration::from_std(delay).unwrap_or_default();
+    let retry_after = format_utc_iso(retry_after);
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: retry_generation,
+            next_run_after: &retry_after,
+            status: &progress.last_status,
+            suspension_reason: progress.suspension_reason.as_deref(),
+        },
+    )
+    .await?;
+    let retry_at = parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now);
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    let backoff_stage = match delay.as_secs() {
+        0..=15 => "15s",
+        16..=60 => "1m",
+        61..=300 => "5m",
+        _ => "15m",
+    };
+    info!(
+        task = task.log_label(),
+        next_retry_after = %retry_after,
+        retry_generation,
+        backoff_stage,
+        wake_reason = "coverage_repair_retry",
+        "startup backfill coverage repair retry scheduled"
+    );
+    Ok(retry_at)
+}
+
+pub(crate) async fn record_startup_backfill_coverage_repair_progress(
+    state: &AppState,
+    outcome: ActiveAccountActivityV2RepairOutcome,
+) -> Result<DateTime<Utc>> {
+    if outcome.repaired_bucket_count == 0 {
+        return Ok(Utc::now());
+    }
+
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let task_name = startup_backfill_task_progress_key(state, task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    let retry_after = format_utc_iso(
+        Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+    );
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: 0,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_OK,
+            suspension_reason: None,
+        },
+    )
+    .await?;
+    let retry_at = parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now);
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    info!(
+        task = task.log_label(),
+        coverage_priority_bucket_count = outcome.priority_bucket_count,
+        repaired_bucket_count = outcome.repaired_bucket_count,
+        next_retry_after = %retry_after,
+        retry_generation = 0_u32,
+        backoff_stage = "15s",
+        wake_reason = "coverage_repair_progress",
+        "startup backfill coverage repair progress reset its retry backoff"
+    );
+    Ok(retry_at)
+}
+
+pub(crate) async fn wake_startup_backfill_coverage_repair(
+    pool: &Pool<Sqlite>,
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let task_name = task.name();
+    let progress = load_startup_backfill_progress(pool, task_name).await?;
+    let deadline_preserved = !progress.is_due(Utc::now())
+        && (progress.zero_update_streak > 0 || progress.last_status == STARTUP_BACKFILL_STATUS_OK);
+    if deadline_preserved {
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, startup_backfill_progress_due(&progress));
+        info!(
+            task = task.log_label(),
+            wake_reason,
+            deadline_preserved,
+            retry_generation = progress.zero_update_streak,
+            "kept account activity v2 coverage repair on its active follow-up deadline"
+        );
+        return Ok(progress.wake_generation);
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
+        )
+        VALUES (?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1)
+        ON CONFLICT(task_name) DO UPDATE SET
+            next_run_after = CASE
+                WHEN startup_backfill_progress.zero_update_streak > 0
+                    THEN startup_backfill_progress.next_run_after
+                ELSE NULL
+            END,
+            last_status = CASE
+                WHEN startup_backfill_progress.zero_update_streak > 0
+                    THEN startup_backfill_progress.last_status
+                ELSE ?2
+            END,
+            wake_generation = startup_backfill_progress.wake_generation + 1
+        "#,
+    )
+    .bind(task_name)
+    .bind(STARTUP_BACKFILL_STATUS_IDLE)
+    .execute(pool)
+    .await?;
+
+    let progress = load_startup_backfill_progress(pool, task_name).await?;
+    STARTUP_BACKFILL_SCHEDULER.wake(task);
+    info!(
+        task = task.log_label(),
+        wake_reason,
+        deadline_preserved,
+        retry_generation = progress.zero_update_streak,
+        "woke account activity v2 coverage repair"
+    );
+    Ok(progress.wake_generation)
+}
+
+fn startup_backfill_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
+    // The dedicated coverage task owns the active-window planner and its retry
+    // deadline. Generic backfill refreshes must never re-enter that planner.
+    HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
+}

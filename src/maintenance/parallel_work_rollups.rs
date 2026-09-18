@@ -270,102 +270,13 @@ async fn materialize_parallel_work_hour_tx(
         (PARALLEL_WORK_SCOPE_ALL, None),
         (PARALLEL_WORK_SCOPE_PROXY_ONLY, Some(SOURCE_PROXY)),
     ] {
-        let global_sql = if source_filter.is_some() {
-            r#"
-            INSERT INTO parallel_work_hourly_rollup (
-                hour_start_epoch, source_scope, active_minute_count, parallel_count_sum
-            )
-            SELECT ?1, ?2, COUNT(*), SUM(parallel_count)
-            FROM (
-                SELECT minute_start_epoch, COUNT(DISTINCT prompt_cache_key) AS parallel_count
-                FROM parallel_work_minute_key_rollup
-                WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4 AND source = ?5
-                GROUP BY minute_start_epoch
-            )
-            HAVING COUNT(*) > 0
-            "#
-        } else {
-            r#"
-            INSERT INTO parallel_work_hourly_rollup (
-                hour_start_epoch, source_scope, active_minute_count, parallel_count_sum
-            )
-            SELECT ?1, ?2, COUNT(*), SUM(parallel_count)
-            FROM (
-                SELECT minute_start_epoch, COUNT(DISTINCT prompt_cache_key) AS parallel_count
-                FROM parallel_work_minute_key_rollup
-                WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4
-                GROUP BY minute_start_epoch
-            )
-            HAVING COUNT(*) > 0
-            "#
-        };
-        let mut global = sqlx::query(global_sql)
-            .bind(hour_start_epoch)
-            .bind(source_scope)
-            .bind(hour_start_epoch)
-            .bind(hour_end_epoch);
-        if let Some(source) = source_filter {
-            global = global.bind(source);
-        }
-        global.execute(&mut *tx).await?;
-
-        let account_sql = if source_filter.is_some() {
-            r#"
-            INSERT INTO parallel_work_upstream_account_hourly_rollup (
-                hour_start_epoch, source_scope, upstream_account_id,
-                active_minute_count, parallel_count_sum
-            )
-            SELECT ?1, ?2, upstream_account_id, COUNT(*), SUM(parallel_count)
-            FROM (
-                SELECT minute_start_epoch, upstream_account_id,
-                    COUNT(DISTINCT prompt_cache_key) AS parallel_count
-                FROM parallel_work_upstream_account_minute_key_rollup
-                WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4 AND source = ?5
-                GROUP BY minute_start_epoch, upstream_account_id
-            )
-            GROUP BY upstream_account_id
-            "#
-        } else {
-            r#"
-            INSERT INTO parallel_work_upstream_account_hourly_rollup (
-                hour_start_epoch, source_scope, upstream_account_id,
-                active_minute_count, parallel_count_sum
-            )
-            SELECT ?1, ?2, upstream_account_id, COUNT(*), SUM(parallel_count)
-            FROM (
-                SELECT minute_start_epoch, upstream_account_id,
-                    COUNT(DISTINCT prompt_cache_key) AS parallel_count
-                FROM parallel_work_upstream_account_minute_key_rollup
-                WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4
-                GROUP BY minute_start_epoch, upstream_account_id
-            )
-            GROUP BY upstream_account_id
-            "#
-        };
-        let mut account = sqlx::query(account_sql)
-            .bind(hour_start_epoch)
-            .bind(source_scope)
-            .bind(hour_start_epoch)
-            .bind(hour_end_epoch);
-        if let Some(source) = source_filter {
-            account = account.bind(source);
-        }
-        account.execute(&mut *tx).await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO parallel_work_hourly_coverage (
-                hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
-            )
-            VALUES (?1, ?2, 1, 1)
-            ON CONFLICT(hour_start_epoch, source_scope) DO UPDATE SET
-                minute_keys_complete = 1,
-                hourly_scalar_complete = 1
-            "#,
+        materialize_parallel_work_scope_hour_tx(
+            tx,
+            hour_start_epoch,
+            hour_end_epoch,
+            source_scope,
+            source_filter,
         )
-        .bind(hour_start_epoch)
-        .bind(source_scope)
-        .execute(&mut *tx)
         .await?;
     }
 
@@ -381,6 +292,147 @@ async fn materialize_parallel_work_hour_tx(
         .execute(&mut *tx)
         .await?;
     }
+    Ok(())
+}
+
+async fn materialize_parallel_work_scope_hour_tx(
+    tx: &mut SqliteConnection,
+    hour_start_epoch: i64,
+    hour_end_epoch: i64,
+    source_scope: &str,
+    source_filter: Option<&str>,
+) -> Result<()> {
+    insert_parallel_work_global_hour_tx(
+        tx,
+        hour_start_epoch,
+        hour_end_epoch,
+        source_scope,
+        source_filter,
+    )
+    .await?;
+    insert_parallel_work_account_hour_tx(
+        tx,
+        hour_start_epoch,
+        hour_end_epoch,
+        source_scope,
+        source_filter,
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO parallel_work_hourly_coverage (
+            hour_start_epoch, source_scope, minute_keys_complete, hourly_scalar_complete
+        )
+        VALUES (?1, ?2, 1, 1)
+        ON CONFLICT(hour_start_epoch, source_scope) DO UPDATE SET
+            minute_keys_complete = 1,
+            hourly_scalar_complete = 1
+        "#,
+    )
+    .bind(hour_start_epoch)
+    .bind(source_scope)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_parallel_work_global_hour_tx(
+    tx: &mut SqliteConnection,
+    hour_start_epoch: i64,
+    hour_end_epoch: i64,
+    source_scope: &str,
+    source_filter: Option<&str>,
+) -> Result<()> {
+    let global_sql = if source_filter.is_some() {
+        r#"
+        INSERT INTO parallel_work_hourly_rollup (
+            hour_start_epoch, source_scope, active_minute_count, parallel_count_sum
+        )
+        SELECT ?1, ?2, COUNT(*), SUM(parallel_count)
+        FROM (
+            SELECT minute_start_epoch, COUNT(DISTINCT prompt_cache_key) AS parallel_count
+            FROM parallel_work_minute_key_rollup
+            WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4 AND source = ?5
+            GROUP BY minute_start_epoch
+        )
+        HAVING COUNT(*) > 0
+        "#
+    } else {
+        r#"
+        INSERT INTO parallel_work_hourly_rollup (
+            hour_start_epoch, source_scope, active_minute_count, parallel_count_sum
+        )
+        SELECT ?1, ?2, COUNT(*), SUM(parallel_count)
+        FROM (
+            SELECT minute_start_epoch, COUNT(DISTINCT prompt_cache_key) AS parallel_count
+            FROM parallel_work_minute_key_rollup
+            WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4
+            GROUP BY minute_start_epoch
+        )
+        HAVING COUNT(*) > 0
+        "#
+    };
+    let mut query = sqlx::query(global_sql)
+        .bind(hour_start_epoch)
+        .bind(source_scope)
+        .bind(hour_start_epoch)
+        .bind(hour_end_epoch);
+    if let Some(source) = source_filter {
+        query = query.bind(source);
+    }
+    query.execute(&mut *tx).await?;
+    Ok(())
+}
+
+async fn insert_parallel_work_account_hour_tx(
+    tx: &mut SqliteConnection,
+    hour_start_epoch: i64,
+    hour_end_epoch: i64,
+    source_scope: &str,
+    source_filter: Option<&str>,
+) -> Result<()> {
+    let account_sql = if source_filter.is_some() {
+        r#"
+        INSERT INTO parallel_work_upstream_account_hourly_rollup (
+            hour_start_epoch, source_scope, upstream_account_id,
+            active_minute_count, parallel_count_sum
+        )
+        SELECT ?1, ?2, upstream_account_id, COUNT(*), SUM(parallel_count)
+        FROM (
+            SELECT minute_start_epoch, upstream_account_id,
+                COUNT(DISTINCT prompt_cache_key) AS parallel_count
+            FROM parallel_work_upstream_account_minute_key_rollup
+            WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4 AND source = ?5
+            GROUP BY minute_start_epoch, upstream_account_id
+        )
+        GROUP BY upstream_account_id
+        "#
+    } else {
+        r#"
+        INSERT INTO parallel_work_upstream_account_hourly_rollup (
+            hour_start_epoch, source_scope, upstream_account_id,
+            active_minute_count, parallel_count_sum
+        )
+        SELECT ?1, ?2, upstream_account_id, COUNT(*), SUM(parallel_count)
+        FROM (
+            SELECT minute_start_epoch, upstream_account_id,
+                COUNT(DISTINCT prompt_cache_key) AS parallel_count
+            FROM parallel_work_upstream_account_minute_key_rollup
+            WHERE minute_start_epoch >= ?3 AND minute_start_epoch < ?4
+            GROUP BY minute_start_epoch, upstream_account_id
+        )
+        GROUP BY upstream_account_id
+        "#
+    };
+    let mut query = sqlx::query(account_sql)
+        .bind(hour_start_epoch)
+        .bind(source_scope)
+        .bind(hour_start_epoch)
+        .bind(hour_end_epoch);
+    if let Some(source) = source_filter {
+        query = query.bind(source);
+    }
+    query.execute(&mut *tx).await?;
     Ok(())
 }
 

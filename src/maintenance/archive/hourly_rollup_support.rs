@@ -247,96 +247,112 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
                 ..InvocationHourlyRollupDelta::default()
             });
         overall_entry.total_count += 1;
-        let classification = resolve_failure_classification(
-            row.status.as_deref(),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            row.is_actionable,
+        let (has_terminal_status, is_success_like) =
+            accumulate_invocation_overall_usage(overall_entry, row);
+        accumulate_invocation_overall_timing(
+            overall_entry,
+            row,
+            has_terminal_status,
+            is_success_like,
         );
-        let has_terminal_status =
-            invocation_status_counts_toward_terminal_totals(row.status.as_deref());
-        let total_tokens = row.total_tokens.unwrap_or_default();
-        let cost = row.cost.unwrap_or_default();
-        let terminal_cost = row
-            .cost
-            .filter(|value| value.is_finite())
-            .unwrap_or_default();
-        if has_terminal_status {
-            // Long-term usage intentionally excludes active invocations, so retain a matching
-            // terminal-only proof alongside the all-status operational rollup.
-            overall_entry.terminal_count += 1;
-            overall_entry.terminal_tokens += total_tokens.max(0);
-            overall_entry.terminal_cost += terminal_cost;
-        }
-        let is_success_like = archive_invocation_status_is_success_like(
-            row.status.as_deref(),
-            row.error_message.as_deref(),
-        ) && classification.failure_class == FailureClass::None;
-        if is_success_like {
-            overall_entry.success_count += 1;
-        } else if has_terminal_status && classification.failure_class != FailureClass::None {
-            overall_entry.failure_count += 1;
-        }
-        overall_entry.total_tokens += total_tokens;
-        overall_entry.input_tokens += row.input_tokens.unwrap_or_default();
-        overall_entry.output_tokens += row.output_tokens.unwrap_or_default();
-        overall_entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
-        overall_entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
-        overall_entry.total_cost += cost;
-        if invocation_counts_toward_non_success_usage(
-            row.status.as_deref(),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            row.is_actionable,
-        ) {
-            overall_entry.non_success_cost += cost;
-        }
-        if has_terminal_status
-            && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
-        {
-            overall_entry.total_latency_sample_count += 1;
-            overall_entry.total_latency_sum_ms += total_ms;
-        }
-        if is_success_like
-            && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
-            && ttfb_ms.is_finite()
-            && ttfb_ms > 0.0
-        {
-            overall_entry.first_byte_sample_count += 1;
-            overall_entry.first_byte_sum_ms += ttfb_ms;
-            overall_entry.first_byte_max_ms = overall_entry.first_byte_max_ms.max(ttfb_ms);
-            add_approx_histogram_sample(&mut overall_entry.first_byte_histogram, ttfb_ms);
-        }
-        if let Some(first_response_byte_total_ms) = resolve_first_response_byte_total_ms(
-            row.t_req_read_ms,
-            row.t_req_parse_ms,
-            row.t_upstream_connect_ms,
-            row.t_upstream_ttfb_ms,
-        ) {
-            overall_entry.first_response_byte_total_sample_count += 1;
-            overall_entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
-            overall_entry.first_response_byte_total_max_ms = overall_entry
-                .first_response_byte_total_max_ms
-                .max(first_response_byte_total_ms);
-            add_approx_histogram_sample(
-                &mut overall_entry.first_response_byte_total_histogram,
-                first_response_byte_total_ms,
-            );
-        }
-        if let Some(first_token_ms) = row
-            .first_token_ms
-            .filter(|value| value.is_finite() && *value >= 0.0)
-        {
-            overall_entry.first_token_sample_count += 1;
-            overall_entry.first_token_sum_ms += first_token_ms;
-            overall_entry.first_token_max_ms = overall_entry.first_token_max_ms.max(first_token_ms);
-            add_approx_histogram_sample(&mut overall_entry.first_token_histogram, first_token_ms);
-        }
     }
 
     Ok(())
+}
+
+fn accumulate_invocation_overall_usage(
+    entry: &mut InvocationHourlyRollupDelta,
+    row: &InvocationHourlySourceRecord,
+) -> (bool, bool) {
+    let classification = resolve_failure_classification(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let has_terminal_status =
+        invocation_status_counts_toward_terminal_totals(row.status.as_deref());
+    let total_tokens = row.total_tokens.unwrap_or_default();
+    let cost = row.cost.unwrap_or_default();
+    if has_terminal_status {
+        entry.terminal_count += 1;
+        entry.terminal_tokens += total_tokens.max(0);
+        entry.terminal_cost += row
+            .cost
+            .filter(|value| value.is_finite())
+            .unwrap_or_default();
+    }
+    let is_success_like = archive_invocation_status_is_success_like(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+    ) && classification.failure_class == FailureClass::None;
+    if is_success_like {
+        entry.success_count += 1;
+    } else if has_terminal_status && classification.failure_class != FailureClass::None {
+        entry.failure_count += 1;
+    }
+    entry.total_tokens += total_tokens;
+    entry.input_tokens += row.input_tokens.unwrap_or_default();
+    entry.output_tokens += row.output_tokens.unwrap_or_default();
+    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
+    entry.total_cost += cost;
+    if invocation_counts_toward_non_success_usage(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    ) {
+        entry.non_success_cost += cost;
+    }
+    (has_terminal_status, is_success_like)
+}
+
+fn accumulate_invocation_overall_timing(
+    entry: &mut InvocationHourlyRollupDelta,
+    row: &InvocationHourlySourceRecord,
+    has_terminal_status: bool,
+    is_success_like: bool,
+) {
+    if has_terminal_status
+        && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
+    {
+        entry.total_latency_sample_count += 1;
+        entry.total_latency_sum_ms += total_ms;
+    }
+    if is_success_like
+        && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
+        && ttfb_ms.is_finite()
+        && ttfb_ms > 0.0
+    {
+        entry.first_byte_sample_count += 1;
+        entry.first_byte_sum_ms += ttfb_ms;
+        entry.first_byte_max_ms = entry.first_byte_max_ms.max(ttfb_ms);
+        add_approx_histogram_sample(&mut entry.first_byte_histogram, ttfb_ms);
+    }
+    if let Some(total_ms) = resolve_first_response_byte_total_ms(
+        row.t_req_read_ms,
+        row.t_req_parse_ms,
+        row.t_upstream_connect_ms,
+        row.t_upstream_ttfb_ms,
+    ) {
+        entry.first_response_byte_total_sample_count += 1;
+        entry.first_response_byte_total_sum_ms += total_ms;
+        entry.first_response_byte_total_max_ms =
+            entry.first_response_byte_total_max_ms.max(total_ms);
+        add_approx_histogram_sample(&mut entry.first_response_byte_total_histogram, total_ms);
+    }
+    if let Some(first_token_ms) = row
+        .first_token_ms
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        entry.first_token_sample_count += 1;
+        entry.first_token_sum_ms += first_token_ms;
+        entry.first_token_max_ms = entry.first_token_max_ms.max(first_token_ms);
+        add_approx_histogram_sample(&mut entry.first_token_histogram, first_token_ms);
+    }
 }
 
 pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
@@ -372,6 +388,16 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
         .or_default();
     entry.request_count += 1;
 
+    let is_success_like = accumulate_usage_breakdown_counts_and_cost(entry, row);
+    accumulate_usage_breakdown_performance(entry, row, is_success_like);
+
+    Ok(())
+}
+
+fn accumulate_usage_breakdown_counts_and_cost(
+    entry: &mut UpstreamAccountUsageBreakdownHourlyDelta,
+    row: &InvocationHourlySourceRecord,
+) -> bool {
     let classification = resolve_failure_classification(
         row.status.as_deref(),
         row.error_message.as_deref(),
@@ -390,57 +416,52 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
     } else if has_terminal_status && classification.failure_class != FailureClass::None {
         entry.failure_count += 1;
     }
-
     let input_tokens = row.input_tokens.unwrap_or_default().max(0);
     let cache_read_tokens = row.cache_input_tokens.unwrap_or_default().max(0);
     entry.cache_write_tokens += input_tokens.saturating_sub(cache_read_tokens);
     entry.cache_read_tokens += cache_read_tokens;
     entry.output_tokens += row.output_tokens.unwrap_or_default().max(0);
-
     if let Some(total_cost) = row.cost {
         entry.has_cost += 1;
-        if let (
-            Some(cost_input),
-            Some(cost_cache_write),
-            Some(cost_cache_read),
-            Some(cost_output),
-            Some(cost_reasoning),
-        ) = (
+        let costs = [
             row.cost_input,
             row.cost_cache_write,
             row.cost_cache_read,
             row.cost_output,
             row.cost_reasoning,
-        ) {
-            entry.cost_input += cost_input;
-            entry.cost_cache_write += cost_cache_write;
-            entry.cost_cache_read += cost_cache_read;
-            entry.cost_output += cost_output;
-            entry.cost_reasoning += cost_reasoning;
+        ];
+        if costs.iter().all(Option::is_some) {
+            entry.cost_input += row.cost_input.unwrap_or_default();
+            entry.cost_cache_write += row.cost_cache_write.unwrap_or_default();
+            entry.cost_cache_read += row.cost_cache_read.unwrap_or_default();
+            entry.cost_output += row.cost_output.unwrap_or_default();
+            entry.cost_reasoning += row.cost_reasoning.unwrap_or_default();
         } else {
             entry.cost_unknown += total_cost;
         }
     }
+    is_success_like
+}
 
-    let success_billed = is_success_like && row.cost.is_some();
+fn accumulate_usage_breakdown_performance(
+    entry: &mut UpstreamAccountUsageBreakdownHourlyDelta,
+    row: &InvocationHourlySourceRecord,
+    is_success_like: bool,
+) {
     if let Some(first_token_ms) = normalize_non_negative_timing_value(row.first_token_ms) {
         entry.performance_first_token_sample_count += 1;
         entry.performance_first_token_sum_ms += first_token_ms;
     }
-    if is_success_like
-        && let Some(stream_duration_ms) = row
-            .t_upstream_stream_ms
-            .filter(|value| is_valid_perf_stage_sample("upstreamStream", *value))
-    {
+    let stream_duration_ms = row
+        .t_upstream_stream_ms
+        .filter(|value| is_valid_perf_stage_sample("upstreamStream", *value));
+    if is_success_like && let Some(stream_duration_ms) = stream_duration_ms {
         entry.performance_response_sample_count += 1;
         entry.performance_response_sum_ms += stream_duration_ms;
     }
-    if success_billed {
+    if is_success_like && row.cost.is_some() {
         entry.performance_total_tokens += row.total_tokens.unwrap_or_default().max(0);
-        if let Some(stream_duration_ms) = row
-            .t_upstream_stream_ms
-            .filter(|value| is_valid_perf_stage_sample("upstreamStream", *value))
-        {
+        if let Some(stream_duration_ms) = stream_duration_ms {
             entry.performance_stream_output_tokens += row.output_tokens.unwrap_or_default().max(0);
             entry.performance_stream_duration_ms += stream_duration_ms;
         }
@@ -461,8 +482,6 @@ pub(crate) fn accumulate_upstream_account_usage_breakdown_rollup(
             entry.performance_usage_duration_sum_ms += total_duration_ms;
         }
     }
-
-    Ok(())
 }
 
 pub(crate) fn invocation_archive_has_pruned_success_details(
@@ -504,7 +523,24 @@ fn accumulate_upstream_account_stats_delta_with_mode(
     row: &InvocationHourlySourceRecord,
     terminal_activity_only: bool,
 ) {
-    let classification = resolve_failure_classification(
+    let classification = classify_upstream_account_stats_row(row);
+    accumulate_upstream_account_stats_usage(entry, row, &classification);
+    accumulate_upstream_account_stats_timing(entry, row, &classification, terminal_activity_only);
+}
+
+struct UpstreamAccountStatsRowClassification {
+    has_terminal_status: bool,
+    is_success_like: bool,
+    is_failure: bool,
+    is_non_success: bool,
+    total_tokens: i64,
+    cost: f64,
+}
+
+fn classify_upstream_account_stats_row(
+    row: &InvocationHourlySourceRecord,
+) -> UpstreamAccountStatsRowClassification {
+    let failure_classification = resolve_failure_classification(
         row.status.as_deref(),
         row.error_message.as_deref(),
         row.failure_kind.as_deref(),
@@ -516,41 +552,51 @@ fn accumulate_upstream_account_stats_delta_with_mode(
     let is_success_like = archive_invocation_status_is_success_like(
         row.status.as_deref(),
         row.error_message.as_deref(),
-    ) && classification.failure_class == FailureClass::None;
+    ) && failure_classification.failure_class == FailureClass::None;
+    UpstreamAccountStatsRowClassification {
+        has_terminal_status,
+        is_success_like,
+        is_failure: has_terminal_status
+            && failure_classification.failure_class != FailureClass::None,
+        is_non_success: invocation_counts_toward_non_success_usage(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        ),
+        total_tokens: row.total_tokens.unwrap_or_default(),
+        cost: row.cost.unwrap_or_default(),
+    }
+}
 
+fn accumulate_upstream_account_stats_usage(
+    entry: &mut UpstreamAccountStatsDelta,
+    row: &InvocationHourlySourceRecord,
+    classification: &UpstreamAccountStatsRowClassification,
+) {
     entry.total_count += 1;
-    let is_failure = has_terminal_status && classification.failure_class != FailureClass::None;
-    let is_non_success = invocation_counts_toward_non_success_usage(
-        row.status.as_deref(),
-        row.error_message.as_deref(),
-        row.failure_kind.as_deref(),
-        row.failure_class.as_deref(),
-        row.is_actionable,
-    );
-    let total_tokens = row.total_tokens.unwrap_or_default();
-    let cost = row.cost.unwrap_or_default();
-
-    if is_success_like {
+    if classification.is_success_like {
         entry.success_count += 1;
-        entry.success_tokens += total_tokens;
-    } else if is_failure {
+        entry.success_tokens += classification.total_tokens;
+    } else if classification.is_failure {
         entry.failure_count += 1;
-        entry.failure_tokens += total_tokens;
-        entry.failure_cost += cost;
+        entry.failure_tokens += classification.total_tokens;
+        entry.failure_cost += classification.cost;
     } else {
         entry.in_flight_count += 1;
     }
-    if is_non_success {
+    if classification.is_non_success {
         entry.non_success_count += 1;
-        entry.non_success_tokens += total_tokens;
-        entry.non_success_cost += cost;
+        entry.non_success_tokens += classification.total_tokens;
+        entry.non_success_cost += classification.cost;
     }
-    entry.total_tokens += total_tokens;
+    entry.total_tokens += classification.total_tokens;
     entry.input_tokens += row.input_tokens.unwrap_or_default();
     entry.output_tokens += row.output_tokens.unwrap_or_default();
     entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
     entry.reasoning_tokens += row.reasoning_tokens.unwrap_or_default();
-    entry.total_cost += cost;
+    entry.total_cost += classification.cost;
     if entry
         .last_invocation_at
         .as_deref()
@@ -558,14 +604,23 @@ fn accumulate_upstream_account_stats_delta_with_mode(
     {
         entry.last_invocation_at = Some(row.occurred_at.clone());
     }
-    if (!terminal_activity_only && has_terminal_status || is_success_like)
+}
+
+fn accumulate_upstream_account_stats_timing(
+    entry: &mut UpstreamAccountStatsDelta,
+    row: &InvocationHourlySourceRecord,
+    classification: &UpstreamAccountStatsRowClassification,
+    terminal_activity_only: bool,
+) {
+    if ((!terminal_activity_only && classification.has_terminal_status)
+        || classification.is_success_like)
         && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
     {
         entry.total_latency_sample_count += 1;
         entry.total_latency_sum_ms += total_ms;
     }
 
-    if is_success_like
+    if classification.is_success_like
         && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
         && ttfb_ms.is_finite()
         && ttfb_ms > 0.0
@@ -596,7 +651,7 @@ fn accumulate_upstream_account_stats_delta_with_mode(
             row.t_upstream_ttfb_ms,
         )
     };
-    if (!terminal_activity_only || is_success_like)
+    if (!terminal_activity_only || classification.is_success_like)
         && let Some(first_response_byte_total_ms) = first_response_byte_total_ms
     {
         if entry.first_response_byte_total_histogram.is_empty() {
@@ -632,7 +687,7 @@ fn accumulate_upstream_account_stats_delta_with_mode(
         entry.first_token_max_ms = entry.first_token_max_ms.max(first_token_ms);
         add_approx_histogram_sample(&mut entry.first_token_histogram, first_token_ms);
     }
-    if is_success_like
+    if classification.is_success_like
         && let Some(total_ms) = normalize_non_negative_timing_value(row.t_total_ms)
         && entry
             .latest_total_latency_at
