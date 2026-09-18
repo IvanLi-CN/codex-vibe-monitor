@@ -1144,16 +1144,14 @@ pub(crate) async fn import_validated_oauth_accounts(
         }
 
         let cached_validation = cached_validation_results.get(&item.source_id).cloned();
-        let normalized = match cached_validation.as_ref() {
-            Some(cached) => cached.normalized.clone(),
-            None => match normalize_imported_oauth_credentials(&item) {
+        let normalized =
+            match normalize_imported_oauth_for_import(cached_validation.as_ref(), &item) {
                 Ok(value) => value,
                 Err(message) => {
                     batch.record_failure(invalid_imported_oauth_import_result(item, message));
                     continue;
                 }
-            },
-        };
+            };
 
         let match_key = imported_match_key(
             normalized.chatgpt_user_id.as_deref(),

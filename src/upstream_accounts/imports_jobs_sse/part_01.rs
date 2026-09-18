@@ -231,6 +231,15 @@ fn imported_oauth_import_success_result(
     }
 }
 
+fn normalize_imported_oauth_for_import(
+    cached_validation: Option<&ImportedOauthValidatedImportData>,
+    item: &ImportOauthCredentialFileRequest,
+) -> Result<NormalizedImportedOauthCredentials, String> {
+    cached_validation
+        .map(|cached| Ok(cached.normalized.clone()))
+        .unwrap_or_else(|| normalize_imported_oauth_credentials(item))
+}
+
 impl ImportBatch {
     fn new(input_files: usize, selected_files: usize) -> Self {
         Self {
