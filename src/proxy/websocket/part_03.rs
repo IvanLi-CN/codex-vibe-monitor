@@ -607,6 +607,26 @@ async fn accept_connected_websocket(
     })
 }
 
+async fn connect_websocket_with_timeout(
+    request: TungsteniteRequest<()>,
+    upstream_url: &Url,
+    forward_proxy_url: Option<&Url>,
+    socket_meter: UpstreamSocketByteMeter,
+    runtime_timeout: Duration,
+) -> Result<
+    std::result::Result<
+        (UpstreamWsStream, tungstenite::handshake::client::Response),
+        tungstenite::Error,
+    >,
+    tokio::time::error::Elapsed,
+> {
+    timeout(
+        runtime_timeout,
+        connect_upstream_websocket(request, upstream_url, forward_proxy_url, socket_meter),
+    )
+    .await
+}
+
 async fn connect_websocket_attempt(
     request: WebSocketConnectAttemptRequest<'_>,
 ) -> Result<ConnectedWebSocket, WsAttemptFailure> {
@@ -632,16 +652,13 @@ async fn connect_websocket_attempt(
         Some(account.account_id),
         upstream_url.host_str(),
     );
-    let connect_started = Instant::now();
-    let connect_started_at_utc = Utc::now();
-    let connect_result = timeout(
+    let (connect_started, connect_started_at_utc) = (Instant::now(), Utc::now());
+    let connect_result = connect_websocket_with_timeout(
+        request,
+        upstream_url,
+        selected_proxy.endpoint_url.as_ref(),
+        socket_meter.clone(),
         runtime_timeout,
-        connect_upstream_websocket(
-            request,
-            upstream_url,
-            selected_proxy.endpoint_url.as_ref(),
-            socket_meter.clone(),
-        ),
     )
     .await;
     match connect_result {
