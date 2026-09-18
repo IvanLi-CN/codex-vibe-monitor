@@ -1134,14 +1134,9 @@ pub(crate) async fn import_validated_oauth_accounts(
         assignments,
         refresh_scope,
     } = prepared;
-    let input_files = items.len();
-    let selected_files = selected_source_ids.len();
-    let mut created = 0usize;
-    let mut updated_existing = 0usize;
-    let mut failed = 0usize;
+    let mut batch = ImportBatch::new(items.len(), selected_source_ids.len());
     let mut seen_keys = HashSet::new();
     let mut consumed_proxy_keys = HashSet::new();
-    let mut results = Vec::new();
 
     for item in items {
         if !selected_source_ids.contains(&item.source_id) {
@@ -1154,8 +1149,7 @@ pub(crate) async fn import_validated_oauth_accounts(
             None => match normalize_imported_oauth_credentials(&item) {
                 Ok(value) => value,
                 Err(message) => {
-                    failed += 1;
-                    results.push(invalid_imported_oauth_import_result(item, message));
+                    batch.record_failure(invalid_imported_oauth_import_result(item, message));
                     continue;
                 }
             },
@@ -1167,8 +1161,7 @@ pub(crate) async fn import_validated_oauth_accounts(
             &normalized.chatgpt_account_id,
         );
         if !seen_keys.insert(match_key) {
-            failed += 1;
-            results.push(failed_imported_oauth_import_result(
+            batch.record_failure(failed_imported_oauth_import_result(
                 normalized,
                 None,
                 None,
@@ -1187,8 +1180,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         {
             Ok(value) => value,
             Err(err) => {
-                failed += 1;
-                results.push(failed_imported_oauth_import_result(
+                batch.record_failure(failed_imported_oauth_import_result(
                     normalized,
                     None,
                     None,
@@ -1209,8 +1201,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         {
             Ok(scope) => scope,
             Err(err) => {
-                failed += 1;
-                results.push(failed_imported_oauth_import_result(
+                batch.record_failure(failed_imported_oauth_import_result(
                     normalized,
                     existing_match.as_ref().map(|row| row.id),
                     matched_account,
@@ -1240,8 +1231,7 @@ pub(crate) async fn import_validated_oauth_accounts(
                 match probe_result {
                     Ok(value) => value,
                     Err(err) => {
-                        failed += 1;
-                        results.push(failed_imported_oauth_import_result(
+                        batch.record_failure(failed_imported_oauth_import_result(
                             normalized,
                             existing_match.as_ref().map(|row| row.id),
                             matched_account,
@@ -1263,38 +1253,27 @@ pub(crate) async fn import_validated_oauth_accounts(
         )
         .await?;
 
-        if existing_match.is_some() {
-            updated_existing += 1;
-        } else {
-            created += 1;
-        }
         if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
             consumed_proxy_keys.insert(proxy_key.clone());
         }
-        results.push(ImportedOauthImportResult {
-            source_id: normalized.source_id,
-            file_name: normalized.file_name,
-            email: Some(normalized.email),
-            chatgpt_account_id: Some(normalized.chatgpt_account_id),
-            account_id: Some(persisted_account_id),
-            status: if existing_match.is_some() {
-                IMPORT_RESULT_STATUS_UPDATED_EXISTING.to_string()
-            } else {
-                IMPORT_RESULT_STATUS_CREATED.to_string()
+        batch.record_success(
+            existing_match.is_some(),
+            ImportedOauthImportResult {
+                source_id: normalized.source_id,
+                file_name: normalized.file_name,
+                email: Some(normalized.email),
+                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                account_id: Some(persisted_account_id),
+                status: if existing_match.is_some() {
+                    IMPORT_RESULT_STATUS_UPDATED_EXISTING.to_string()
+                } else {
+                    IMPORT_RESULT_STATUS_CREATED.to_string()
+                },
+                detail: import_warning,
+                matched_account,
             },
-            detail: import_warning,
-            matched_account,
-        });
+        );
     }
 
-    Ok(Json(ImportedOauthImportResponse {
-        summary: ImportedOauthImportSummary {
-            input_files,
-            selected_files,
-            created,
-            updated_existing,
-            failed,
-        },
-        results,
-    }))
+    Ok(Json(batch.into_response()))
 }

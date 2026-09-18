@@ -195,6 +195,55 @@ struct ImportedOauthCreatePlan {
     requested_group_metadata_changes: RequestedGroupMetadataChanges,
 }
 
+struct ImportBatch {
+    input_files: usize,
+    selected_files: usize,
+    created: usize,
+    updated_existing: usize,
+    failed: usize,
+    results: Vec<ImportedOauthImportResult>,
+}
+
+impl ImportBatch {
+    fn new(input_files: usize, selected_files: usize) -> Self {
+        Self {
+            input_files,
+            selected_files,
+            created: 0,
+            updated_existing: 0,
+            failed: 0,
+            results: Vec::new(),
+        }
+    }
+
+    fn record_failure(&mut self, result: ImportedOauthImportResult) {
+        self.failed += 1;
+        self.results.push(result);
+    }
+
+    fn record_success(&mut self, existing: bool, result: ImportedOauthImportResult) {
+        if existing {
+            self.updated_existing += 1;
+        } else {
+            self.created += 1;
+        }
+        self.results.push(result);
+    }
+
+    fn into_response(self) -> ImportedOauthImportResponse {
+        ImportedOauthImportResponse {
+            summary: ImportedOauthImportSummary {
+                input_files: self.input_files,
+                selected_files: self.selected_files,
+                created: self.created,
+                updated_existing: self.updated_existing,
+                failed: self.failed,
+            },
+            results: self.results,
+        }
+    }
+}
+
 struct PreparedImportedOauthImport {
     crypto_key: [u8; 32],
     items: Vec<ImportOauthCredentialFileRequest>,
