@@ -228,7 +228,7 @@ fn build_forward_proxy_live_stats_result(
 struct ForwardProxyLiveStatsMaps<'a> {
     window_maps: &'a [HashMap<String, ForwardProxyAttemptWindowStats>],
     hourly_map: &'a HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>,
-    weight_hourly_map: &'a HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsRow>>,
+    weight_hourly_map: &'a HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsPoint>>,
     weight_carry_map: &'a HashMap<String, f64>,
     range_start_epoch: i64,
     bucket_seconds: i64,
@@ -289,7 +289,7 @@ fn forward_proxy_live_node_stats(
     window_maps: &[HashMap<String, ForwardProxyAttemptWindowStats>],
     health_key: &str,
 ) -> ForwardProxyStatsResponse {
-    let stats_for = |index| {
+    let stats_for = |index: usize| {
         window_maps[index]
             .get(health_key)
             .cloned()
@@ -306,7 +306,7 @@ fn forward_proxy_live_node_stats(
 }
 
 fn build_forward_proxy_weight_hourly_buckets(
-    hourly: Option<&HashMap<i64, ForwardProxyWeightHourlyStatsRow>>,
+    hourly: Option<&HashMap<i64, ForwardProxyWeightHourlyStatsPoint>>,
     mut carry_weight: f64,
     range_start_epoch: i64,
     bucket_seconds: i64,
@@ -340,7 +340,7 @@ fn build_forward_proxy_weight_hourly_buckets(
 }
 
 fn forward_proxy_weight_bucket_values(
-    point: Option<&ForwardProxyWeightHourlyStatsRow>,
+    point: Option<&ForwardProxyWeightHourlyStatsPoint>,
     carry_weight: &mut f64,
 ) -> (i64, f64, f64, f64, f64) {
     if let Some(point) = point {
@@ -469,7 +469,7 @@ struct ForwardProxyTimeseriesMaps<'a> {
     metadata_map: &'a HashMap<String, ForwardProxyMetadataHistoryRow>,
     health_key_by_proxy_key: &'a HashMap<String, String>,
     hourly_map: &'a HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>,
-    weight_hourly_map: &'a HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsRow>>,
+    weight_hourly_map: &'a HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsPoint>>,
     weight_carry_map: &'a HashMap<String, f64>,
     fill_start_epoch: i64,
     fill_end_epoch: i64,
@@ -524,7 +524,7 @@ fn build_forward_proxy_timeseries_node(
 fn forward_proxy_timeseries_fallback_weight(
     proxy_key: &str,
     runtime: Option<&ForwardProxyRuntimeState>,
-    weight_points: Option<&HashMap<i64, ForwardProxyWeightHourlyStatsRow>>,
+    weight_points: Option<&HashMap<i64, ForwardProxyWeightHourlyStatsPoint>>,
     weight_carry_map: &HashMap<String, f64>,
 ) -> f64 {
     weight_carry_map

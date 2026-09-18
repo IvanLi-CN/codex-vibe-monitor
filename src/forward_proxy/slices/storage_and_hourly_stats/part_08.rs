@@ -408,20 +408,10 @@ async fn run_forward_proxy_latency_probes(
     let started = Instant::now();
     let egress_ip =
         timed_forward_proxy_egress_ip_probe(state, selected_proxy, client, round_timeout).await;
-    let oauth_upstream = forward_proxy_latency_probe_with_remaining(
-        client,
-        round_timeout,
-        started,
-        timed_forward_proxy_oauth_upstream_probe,
-    )
-    .await;
-    let codex_responses = forward_proxy_latency_probe_with_remaining(
-        client,
-        round_timeout,
-        started,
-        timed_forward_proxy_codex_responses_probe,
-    )
-    .await;
+    let oauth_upstream =
+        forward_proxy_oauth_probe_with_remaining(client, round_timeout, started).await;
+    let codex_responses =
+        forward_proxy_codex_responses_probe_with_remaining(client, round_timeout, started).await;
     ForwardProxyLatencyRoundResults {
         egress_ip,
         oauth_upstream,
@@ -430,22 +420,30 @@ async fn run_forward_proxy_latency_probes(
     }
 }
 
-async fn forward_proxy_latency_probe_with_remaining<F, Fut>(
+async fn forward_proxy_oauth_probe_with_remaining(
     client: &Client,
     round_timeout: Duration,
     started: Instant,
-    probe: F,
-) -> ForwardProxyLatencyProbeTargetResult
-where
-    F: FnOnce(&Client, Duration) -> Fut,
-    Fut: std::future::Future<Output = ForwardProxyLatencyProbeTargetResult>,
-{
-    match remaining_timeout_budget(round_timeout, started.elapsed())
+) -> ForwardProxyLatencyProbeTargetResult {
+    let Some(remaining) = remaining_timeout_budget(round_timeout, started.elapsed())
         .filter(|remaining| !remaining.is_zero())
-    {
-        Some(remaining) => probe(client, remaining).await,
-        None => forward_proxy_latency_round_budget_exhausted_result(),
-    }
+    else {
+        return forward_proxy_latency_round_budget_exhausted_result();
+    };
+    timed_forward_proxy_oauth_upstream_probe(client, remaining).await
+}
+
+async fn forward_proxy_codex_responses_probe_with_remaining(
+    client: &Client,
+    round_timeout: Duration,
+    started: Instant,
+) -> ForwardProxyLatencyProbeTargetResult {
+    let Some(remaining) = remaining_timeout_budget(round_timeout, started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+    else {
+        return forward_proxy_latency_round_budget_exhausted_result();
+    };
+    timed_forward_proxy_codex_responses_probe(client, remaining).await
 }
 
 fn forward_proxy_latency_round_budget_exhausted_result() -> ForwardProxyLatencyProbeTargetResult {
