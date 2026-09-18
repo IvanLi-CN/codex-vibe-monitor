@@ -92,34 +92,14 @@ export function ForwardProxyBindingSelector({
 
   return (
     <div className={cn("grid gap-3", className)}>
-      {showAutomaticNotice && canonicalSelectedKeys.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
-          {labels?.automatic ?? "No nodes bound. This group uses automatic routing."}
-        </div>
-      ) : null}
-
-      {showUnavailableSelectionWarning ? (
-        <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
-          {labels?.unavailableSelectionWarning ??
-            "Select at least one available proxy node or clear bindings before saving."}
-        </div>
-      ) : null}
-
-      {loading ? (
-        <div
-          className="flex items-center gap-2 rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65"
-          data-testid="proxy-binding-options-loading"
-        >
-          <AppIcon name="loading" className="h-4 w-4 animate-spin" aria-hidden />
-          <span>{labels?.loading ?? "Loading proxy nodes..."}</span>
-        </div>
-      ) : null}
-
-      {showEmpty ? (
-        <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
-          {labels?.empty ?? "No proxy nodes available."}
-        </div>
-      ) : null}
+      <ForwardProxyBindingSelectorStatus
+        showAutomaticNotice={showAutomaticNotice}
+        showAutomatic={canonicalSelectedKeys.length === 0}
+        showUnavailableSelectionWarning={showUnavailableSelectionWarning}
+        loading={loading}
+        showEmpty={showEmpty}
+        labels={labels}
+      />
 
       {options.length > 0 ? (
         <div
@@ -146,6 +126,52 @@ export function ForwardProxyBindingSelector({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ForwardProxyBindingSelectorStatus({
+  showAutomaticNotice,
+  showAutomatic,
+  showUnavailableSelectionWarning,
+  loading,
+  showEmpty,
+  labels,
+}: {
+  showAutomaticNotice: boolean;
+  showAutomatic: boolean;
+  showUnavailableSelectionWarning: boolean;
+  loading: boolean;
+  showEmpty: boolean;
+  labels?: ForwardProxyBindingSelectorLabels;
+}) {
+  return (
+    <>
+      {showAutomaticNotice && showAutomatic ? (
+        <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
+          {labels?.automatic ?? "No nodes bound. This group uses automatic routing."}
+        </div>
+      ) : null}
+      {showUnavailableSelectionWarning ? (
+        <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+          {labels?.unavailableSelectionWarning ??
+            "Select at least one available proxy node or clear bindings before saving."}
+        </div>
+      ) : null}
+      {loading ? (
+        <div
+          className="flex items-center gap-2 rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65"
+          data-testid="proxy-binding-options-loading"
+        >
+          <AppIcon name="loading" className="h-4 w-4 animate-spin" aria-hidden />
+          <span>{labels?.loading ?? "Loading proxy nodes..."}</span>
+        </div>
+      ) : null}
+      {showEmpty ? (
+        <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
+          {labels?.empty ?? "No proxy nodes available."}
+        </div>
+      ) : null}
+    </>
   );
 }
 
