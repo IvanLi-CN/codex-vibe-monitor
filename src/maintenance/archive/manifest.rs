@@ -97,24 +97,56 @@ pub(crate) async fn replace_archive_batch_upstream_activity_in_micro_batches(
     let write_batch_limit =
         super::super::retention::retention_micro_batch_limit(config, "archive_manifest_refresh");
 
+    if clear_archive_batch_upstream_activity(
+        pool,
+        archive_batch_id,
+        clear_batch_limit,
+        candidate_remaining_hint,
+    )
+    .await?
+    .is_none()
+    {
+        return Ok(None);
+    }
+
+    let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
+    if deduped_values.is_empty() {
+        return mark_archive_batch_upstream_activity_refreshed(
+            pool,
+            archive_batch_id,
+            candidate_remaining_hint,
+        )
+        .await
+        .map(|completed| completed.then_some(0));
+    }
+
+    write_archive_batch_upstream_activity_in_chunks(
+        pool,
+        archive_batch_id,
+        &deduped_values,
+        write_batch_limit,
+        candidate_remaining_hint,
+    )
+    .await
+}
+
+async fn clear_archive_batch_upstream_activity(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    clear_batch_limit: usize,
+    candidate_remaining_hint: usize,
+) -> Result<Option<()>> {
     loop {
         let staged_rowids = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT rowid
-            FROM archive_batch_upstream_activity
-            WHERE archive_batch_id = ?1
-            ORDER BY rowid ASC
-            LIMIT ?2
-            "#,
+            "SELECT rowid FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1 ORDER BY rowid ASC LIMIT ?2",
         )
         .bind(archive_batch_id)
         .bind(clear_batch_limit as i64)
         .fetch_all(pool)
         .await?;
         if staged_rowids.is_empty() {
-            break;
+            return Ok(Some(()));
         }
-
         let Some(admission) =
             super::super::retention::acquire_retention_write_admission("archive_manifest_clear")
                 .await
@@ -149,20 +181,17 @@ pub(crate) async fn replace_archive_batch_upstream_activity_in_micro_batches(
             candidate_remaining_hint,
         );
     }
+}
 
-    let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
-    if deduped_values.is_empty() {
-        return mark_archive_batch_upstream_activity_refreshed(
-            pool,
-            archive_batch_id,
-            candidate_remaining_hint,
-        )
-        .await
-        .map(|completed| completed.then_some(0));
-    }
-
-    let chunk_count = deduped_values.chunks(write_batch_limit).len();
-    for (index, chunk) in deduped_values.chunks(write_batch_limit).enumerate() {
+async fn write_archive_batch_upstream_activity_in_chunks(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    values: &[(i64, String)],
+    write_batch_limit: usize,
+    candidate_remaining_hint: usize,
+) -> Result<Option<usize>> {
+    let chunk_count = values.chunks(write_batch_limit).len();
+    for (index, chunk) in values.chunks(write_batch_limit).enumerate() {
         let Some(admission) =
             super::super::retention::acquire_retention_write_admission("archive_manifest_refresh")
                 .await
@@ -208,8 +237,7 @@ pub(crate) async fn replace_archive_batch_upstream_activity_in_micro_batches(
             candidate_remaining_hint,
         );
     }
-
-    Ok(Some(deduped_values.len()))
+    Ok(Some(values.len()))
 }
 
 async fn mark_archive_batch_upstream_activity_refreshed(
@@ -332,32 +360,73 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_archives(
     .fetch_all(pool)
     .await?;
 
+    let Some(scanned_batches) = archive_backfill_source_batch_count(pool).await? else {
+        return Ok(ArchiveBackfillSummary {
+            waiting_for_manifest_backfill: true,
+            ..ArchiveBackfillSummary::default()
+        });
+    };
+    if scanned_batches == 0 {
+        return Ok(ArchiveBackfillSummary::default());
+    }
+
+    let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
+    let pending_chunks = pending_account_ids_chunks(&pending);
+    let started_at = Instant::now();
+    let (recovered, processed_account_ids, hit_budget) = scan_archive_activity_backfill_accounts(
+        pool,
+        &pending_chunks,
+        started_at,
+        max_elapsed,
+        total_pending_accounts > pending.len() as u64,
+    )
+    .await?;
+
+    if recovered.is_empty() {
+        let processed = processed_account_ids.iter().copied().collect::<Vec<_>>();
+        if !processed.is_empty() {
+            mark_archive_backfill_completed_for_accounts(pool, &processed).await?;
+        }
+        return Ok(ArchiveBackfillSummary {
+            scanned_batches: processed_account_ids.len() as u64,
+            updated_accounts: 0,
+            hit_budget,
+            waiting_for_manifest_backfill: false,
+        });
+    }
+
+    let unresolved: Vec<i64> = processed_account_ids
+        .iter()
+        .copied()
+        .filter(|account_id| !recovered.contains_key(account_id))
+        .collect();
+    let updated_accounts = recovered.len() as u64;
+    persist_archive_activity_backfill_accounts(pool, recovered, &unresolved).await?;
+
+    Ok(ArchiveBackfillSummary {
+        scanned_batches: processed_account_ids.len() as u64,
+        updated_accounts,
+        hit_budget,
+        waiting_for_manifest_backfill: false,
+    })
+}
+
+async fn archive_backfill_source_batch_count(pool: &Pool<Sqlite>) -> Result<Option<u64>> {
     let pending_manifest_batches = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status = ?1
-          AND upstream_activity_manifest_refreshed_at IS NULL
-        "#,
+        "SELECT COUNT(*) FROM archive_batches
+         WHERE dataset = 'codex_invocations'
+           AND status = ?1
+           AND upstream_activity_manifest_refreshed_at IS NULL",
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_one(pool)
     .await?;
     if pending_manifest_batches > 0 {
-        return Ok(ArchiveBackfillSummary {
-            waiting_for_manifest_backfill: true,
-            ..ArchiveBackfillSummary::default()
-        });
+        return Ok(None);
     }
-
     let scanned_batches = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status = ?1
-        "#,
+        "SELECT COUNT(*) FROM archive_batches
+         WHERE dataset = 'codex_invocations' AND status = ?1",
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_one(pool)
@@ -365,25 +434,26 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_archives(
     .max(0) as u64;
     if scanned_batches == 0 {
         sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_activity_archive_backfill_completed = 1
-            WHERE last_activity_at IS NULL
-              AND last_activity_archive_backfill_completed = 0
-            "#,
+            "UPDATE pool_upstream_accounts
+             SET last_activity_archive_backfill_completed = 1
+             WHERE last_activity_at IS NULL
+               AND last_activity_archive_backfill_completed = 0",
         )
         .execute(pool)
         .await?;
-        return Ok(ArchiveBackfillSummary::default());
     }
+    Ok(Some(scanned_batches))
+}
 
-    let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
+async fn scan_archive_activity_backfill_accounts(
+    pool: &Pool<Sqlite>,
+    pending_chunks: &[Vec<i64>],
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+    mut hit_budget: bool,
+) -> Result<(HashMap<i64, String>, HashSet<i64>, bool)> {
     let mut recovered = HashMap::<i64, String>::new();
-    let pending_chunks = pending_account_ids_chunks(&pending);
-    let started_at = Instant::now();
     let mut processed_account_ids = HashSet::new();
-    let mut hit_budget = total_pending_accounts > pending.len() as u64;
-
     for (chunk_idx, account_ids) in pending_chunks.iter().enumerate() {
         if startup_backfill_budget_reached(
             started_at,
@@ -394,9 +464,7 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_archives(
             hit_budget = true;
             break;
         }
-        for account_id in account_ids {
-            processed_account_ids.insert(*account_id);
-        }
+        processed_account_ids.extend(account_ids.iter().copied());
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT account_id, MAX(last_activity_at) AS last_activity_at FROM archive_batch_upstream_activity WHERE account_id IN (",
         );
@@ -421,7 +489,6 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_archives(
                 })
                 .or_insert(row.last_activity_at);
         }
-
         if chunk_idx + 1 < pending_chunks.len()
             && startup_backfill_budget_reached(
                 started_at,
@@ -434,38 +501,24 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_archives(
             break;
         }
     }
+    Ok((recovered, processed_account_ids, hit_budget))
+}
 
-    if recovered.is_empty() {
-        let processed = processed_account_ids.iter().copied().collect::<Vec<_>>();
-        if !processed.is_empty() {
-            mark_archive_backfill_completed_for_accounts(pool, &processed).await?;
-        }
-        return Ok(ArchiveBackfillSummary {
-            scanned_batches: processed_account_ids.len() as u64,
-            updated_accounts: 0,
-            hit_budget,
-            waiting_for_manifest_backfill: false,
-        });
-    }
-
-    let unresolved: Vec<i64> = processed_account_ids
-        .iter()
-        .copied()
-        .filter(|account_id| !recovered.contains_key(account_id))
-        .collect();
-    let updated_accounts = recovered.len() as u64;
+async fn persist_archive_activity_backfill_accounts(
+    pool: &Pool<Sqlite>,
+    recovered: HashMap<i64, String>,
+    unresolved: &[i64],
+) -> Result<()> {
     let mut tx = pool.begin().await?;
     for (account_id, occurred_at) in recovered {
         sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_activity_at = CASE
-                    WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
-                    ELSE last_activity_at
-                END,
-                last_activity_archive_backfill_completed = 1
-            WHERE id = ?2
-            "#,
+            "UPDATE pool_upstream_accounts
+             SET last_activity_at = CASE
+                     WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                     ELSE last_activity_at
+                 END,
+                 last_activity_archive_backfill_completed = 1
+             WHERE id = ?2",
         )
         .bind(occurred_at)
         .bind(account_id)
@@ -473,16 +526,10 @@ pub(crate) async fn backfill_upstream_account_last_activity_from_archives(
         .await?;
     }
     if !unresolved.is_empty() {
-        mark_archive_backfill_completed_for_accounts_tx(tx.as_mut(), &unresolved).await?;
+        mark_archive_backfill_completed_for_accounts_tx(tx.as_mut(), unresolved).await?;
     }
     tx.commit().await?;
-
-    Ok(ArchiveBackfillSummary {
-        scanned_batches: processed_account_ids.len() as u64,
-        updated_accounts,
-        hit_budget,
-        waiting_for_manifest_backfill: false,
-    })
+    Ok(())
 }
 
 pub(crate) fn pending_account_ids_chunks(pending: &HashSet<i64>) -> Vec<Vec<i64>> {
