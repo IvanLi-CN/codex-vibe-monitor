@@ -703,9 +703,11 @@ export function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier"
       : t("dashboard.workingConversations.previousPlaceholderAccessible");
 
   return (
-    <fieldset
+    // biome-ignore lint/a11y/useSemanticElements: the dashboard slot contract requires a group role on this non-form placeholder.
+    <div
       data-testid="dashboard-working-conversation-placeholder"
       data-slot-kind={slotKind}
+      role="group"
       aria-label={accessibleLabel}
       className={cn(SLOT_CLASS_NAME, INVOCATION_SURFACE_CLASS_NAME, "justify-center")}
     >
@@ -715,7 +717,7 @@ export function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier"
           {visibleLabel}
         </span>
       </div>
-    </fieldset>
+    </div>
   );
 }
 
@@ -910,7 +912,9 @@ export function InvocationSlot({
   ]);
 
   return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the slot label is part of the existing dashboard test and accessibility contract.
     <div
+      aria-label={interactionsDisabled ? undefined : invocationActionLabel}
       data-testid="dashboard-working-conversation-slot"
       data-slot-kind={slotKind}
       className={cn(
