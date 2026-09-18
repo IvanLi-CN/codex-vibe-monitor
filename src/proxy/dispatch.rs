@@ -3701,15 +3701,17 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
             ));
         }
 
-        let next_chunk = match timeout(remaining, stream.next()).await {
+        let next_chunk = match next_request_body_chunk(
+            &mut stream,
+            remaining,
+            proxy_request_id,
+            request_read_timeout,
+            data_len,
+        )
+        .await
+        {
             Ok(chunk) => chunk,
-            Err(_) => {
-                warn!(
-                    proxy_request_id,
-                    timeout_ms = request_read_timeout.as_millis(),
-                    read_bytes = data_len,
-                    "openai proxy request body read timed out"
-                );
+            Err(()) => {
                 return Err(request_body_read_timeout_error(
                     request_read_timeout,
                     partial_body,

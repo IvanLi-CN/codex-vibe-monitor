@@ -27,6 +27,30 @@ pub(crate) struct PreAttemptProxyCaptureError<'a> {
     pub(crate) response_envelope_override: Option<ProxyErrorResponseEnvelope>,
 }
 
+async fn next_request_body_chunk<S>(
+    stream: &mut S,
+    remaining: Duration,
+    proxy_request_id: u64,
+    request_read_timeout: Duration,
+    data_len: usize,
+) -> Result<Option<S::Item>, ()>
+where
+    S: futures_util::Stream + Unpin,
+{
+    match timeout(remaining, stream.next()).await {
+        Ok(chunk) => Ok(chunk),
+        Err(_) => {
+            warn!(
+                proxy_request_id,
+                timeout_ms = request_read_timeout.as_millis(),
+                read_bytes = data_len,
+                "openai proxy request body read timed out"
+            );
+            Err(())
+        }
+    }
+}
+
 fn build_pre_attempt_proxy_capture_payload<'a>(
     request: &'a PreAttemptProxyCaptureError<'a>,
 ) -> ProxyPayloadSummary<'a> {
