@@ -1039,94 +1039,7 @@ pub(crate) async fn load_account_routing_candidates(
     let active_sticky_cutoff = format_utc_iso(
         Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES),
     );
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            account.id,
-            (
-                SELECT sample.plan_type
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS plan_type,
-            (
-                SELECT sample.secondary_used_percent
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS secondary_used_percent,
-            (
-                SELECT sample.secondary_window_minutes
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS secondary_window_minutes,
-            (
-                SELECT sample.secondary_resets_at
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS secondary_resets_at,
-            (
-                SELECT sample.primary_used_percent
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS primary_used_percent,
-            (
-                SELECT sample.primary_window_minutes
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS primary_window_minutes,
-            (
-                SELECT sample.primary_resets_at
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS primary_resets_at,
-            account.local_primary_limit,
-            account.local_secondary_limit,
-            (
-                SELECT sample.credits_has_credits
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS credits_has_credits,
-            (
-                SELECT sample.credits_unlimited
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS credits_unlimited,
-            (
-                SELECT sample.credits_balance
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS credits_balance,
-            account.last_selected_at,
-            (
-                SELECT COUNT(DISTINCT route.sticky_key)
-                FROM (
-                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_routes
-                    UNION ALL
-                    SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_model_routes
-                ) route
-                WHERE route.account_id = account.id
-                  AND route.last_seen_at >=
-        "#,
-    );
+    let mut query = QueryBuilder::<Sqlite>::new(account_routing_candidate_query_prefix());
     query.push_bind(&active_sticky_cutoff).push(
         r#"
             ) AS active_sticky_conversations
@@ -1156,7 +1069,7 @@ pub(crate) async fn load_account_routing_candidates(
         .map_err(Into::into)
 }
 
-fn account_routing_candidate_query() -> &'static str {
+fn account_routing_candidate_query_prefix() -> &'static str {
     r#"
         SELECT
             account.id,
@@ -1241,22 +1154,29 @@ fn account_routing_candidate_query() -> &'static str {
                     SELECT sticky_key, account_id, last_seen_at FROM pool_sticky_model_routes
                 ) route
                 WHERE route.account_id = account.id
-                  AND route.last_seen_at >= ?2
-            ) AS active_sticky_conversations
-        FROM pool_upstream_accounts account
-        WHERE account.id = ?1
-          AND COALESCE(account.deleted_at, '') = ''
+                  AND route.last_seen_at >=
         "#
 }
 pub(crate) async fn load_account_routing_candidate(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<Option<AccountRoutingCandidateRow>> {
-    sqlx::query_as::<_, AccountRoutingCandidateRow>(account_routing_candidate_query())
-        .bind(account_id)
-        .bind(format_utc_iso(
+    let mut query = QueryBuilder::<Sqlite>::new(account_routing_candidate_query_prefix());
+    query
+        .push_bind(format_utc_iso(
             Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES),
         ))
+        .push(
+            r#"
+            ) AS active_sticky_conversations
+        FROM pool_upstream_accounts account
+        WHERE account.id =
+        "#,
+        )
+        .push_bind(account_id)
+        .push(" AND COALESCE(account.deleted_at, '') = ''");
+    query
+        .build_query_as::<AccountRoutingCandidateRow>()
         .fetch_optional(pool)
         .await
         .map_err(Into::into)
