@@ -627,6 +627,118 @@ async fn connect_websocket_with_timeout(
     .await
 }
 
+struct WebSocketConnectResultContext<'a> {
+    state: &'a AppState,
+    account: &'a PoolResolvedAccount,
+    trace: &'a PoolUpstreamAttemptTraceContext,
+    pending_attempt_record: Option<&'a PendingPoolAttemptRecord>,
+    deferred_cleanup_guard: &'a mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    reservation_guard: &'a mut PoolRoutingReservationGuard,
+    forward_proxy_scope: &'a ForwardProxyRouteScope,
+    selected_proxy: &'a SelectedForwardProxy,
+    traffic_reporter: &'a UpstreamTrafficReporter,
+    socket_meter: &'a UpstreamSocketByteMeter,
+    connect_started: Instant,
+    connect_started_at_utc: chrono::DateTime<Utc>,
+    required_subprotocol: Option<&'a str>,
+    runtime_timeout: Duration,
+}
+
+async fn process_websocket_connect_result(
+    context: WebSocketConnectResultContext<'_>,
+    connect_result: Result<
+        std::result::Result<
+            (UpstreamWsStream, tungstenite::handshake::client::Response),
+            tungstenite::Error,
+        >,
+        tokio::time::error::Elapsed,
+    >,
+) -> Result<ConnectedWebSocket, WsAttemptFailure> {
+    let WebSocketConnectResultContext {
+        state,
+        account,
+        trace,
+        pending_attempt_record,
+        deferred_cleanup_guard,
+        reservation_guard,
+        forward_proxy_scope,
+        selected_proxy,
+        traffic_reporter,
+        socket_meter,
+        connect_started,
+        connect_started_at_utc,
+        required_subprotocol,
+        runtime_timeout,
+    } = context;
+    match connect_result {
+        Ok(Ok((upstream, response))) => {
+            accept_connected_websocket(WebSocketConnectedAttemptRequest {
+                state,
+                account,
+                trace,
+                pending_attempt_record,
+                deferred_cleanup_guard,
+                reservation_guard,
+                traffic_reporter,
+                socket_meter,
+                connect_started,
+                connect_started_at_utc,
+                upstream,
+                response,
+                required_subprotocol,
+            })
+            .await
+        }
+        Ok(Err(err)) => {
+            let message = format!("failed to contact websocket upstream: {err}");
+            let mark_ws_unsupported = websocket_upstream_error_marks_account_ws_unsupported(&err);
+            Err(
+                fail_websocket_connect_attempt(WebSocketConnectFailureRequest {
+                    state,
+                    account,
+                    trace,
+                    pending_attempt_record,
+                    deferred_cleanup_guard,
+                    reservation_guard,
+                    forward_proxy_scope,
+                    selected_proxy,
+                    traffic_reporter,
+                    socket_meter,
+                    connect_started,
+                    message,
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    retryable: true,
+                    mark_ws_unsupported,
+                })
+                .await,
+            )
+        }
+        Err(_) => {
+            let message = proxy_request_send_timeout_message(None, runtime_timeout);
+            Err(
+                fail_websocket_connect_attempt(WebSocketConnectFailureRequest {
+                    state,
+                    account,
+                    trace,
+                    pending_attempt_record,
+                    deferred_cleanup_guard,
+                    reservation_guard,
+                    forward_proxy_scope,
+                    selected_proxy,
+                    traffic_reporter,
+                    socket_meter,
+                    connect_started,
+                    message,
+                    failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                    retryable: true,
+                    mark_ws_unsupported: false,
+                })
+                .await,
+            )
+        }
+    }
+}
+
 async fn connect_websocket_attempt(
     request: WebSocketConnectAttemptRequest<'_>,
 ) -> Result<ConnectedWebSocket, WsAttemptFailure> {
@@ -661,73 +773,26 @@ async fn connect_websocket_attempt(
         runtime_timeout,
     )
     .await;
-    match connect_result {
-        Ok(Ok((upstream, response))) => {
-            accept_connected_websocket(WebSocketConnectedAttemptRequest {
-                state: state.as_ref(),
-                account,
-                trace,
-                pending_attempt_record,
-                deferred_cleanup_guard,
-                reservation_guard,
-                traffic_reporter: &traffic_reporter,
-                socket_meter: &socket_meter,
-                connect_started,
-                connect_started_at_utc,
-                upstream,
-                response,
-                required_subprotocol,
-            })
-            .await
-        }
-        Ok(Err(err)) => {
-            let message = format!("failed to contact websocket upstream: {err}");
-            let mark_ws_unsupported = websocket_upstream_error_marks_account_ws_unsupported(&err);
-            Err(
-                fail_websocket_connect_attempt(WebSocketConnectFailureRequest {
-                    state: state.as_ref(),
-                    account,
-                    trace,
-                    pending_attempt_record,
-                    deferred_cleanup_guard,
-                    reservation_guard,
-                    forward_proxy_scope,
-                    selected_proxy,
-                    traffic_reporter: &traffic_reporter,
-                    socket_meter: &socket_meter,
-                    connect_started,
-                    message,
-                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                    retryable: true,
-                    mark_ws_unsupported,
-                })
-                .await,
-            )
-        }
-        Err(_) => {
-            let message = proxy_request_send_timeout_message(None, runtime_timeout);
-            Err(
-                fail_websocket_connect_attempt(WebSocketConnectFailureRequest {
-                    state: state.as_ref(),
-                    account,
-                    trace,
-                    pending_attempt_record,
-                    deferred_cleanup_guard,
-                    reservation_guard,
-                    forward_proxy_scope,
-                    selected_proxy,
-                    traffic_reporter: &traffic_reporter,
-                    socket_meter: &socket_meter,
-                    connect_started,
-                    message,
-                    failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                    retryable: true,
-                    mark_ws_unsupported: false,
-                })
-                .await,
-            )
-        }
-    }
+    process_websocket_connect_result(
+        WebSocketConnectResultContext {
+            state: state.as_ref(),
+            account,
+            trace,
+            pending_attempt_record,
+            deferred_cleanup_guard,
+            reservation_guard,
+            forward_proxy_scope,
+            selected_proxy,
+            traffic_reporter: &traffic_reporter,
+            socket_meter: &socket_meter,
+            connect_started,
+            connect_started_at_utc,
+            required_subprotocol,
+            runtime_timeout,
+        },
+        connect_result,
+    )
+    .await
 }
 
 async fn record_websocket_attempt_success(request: WebSocketAttemptSuccessRequest<'_>) {
