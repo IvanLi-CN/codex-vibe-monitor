@@ -695,19 +695,12 @@ pub(crate) fn apply_tag_layer_routing_policy(
 ) {
     let has_editable_tag_policy = tag_rule.field_sources.allow_cut_out == "tag";
     let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
-    let inherited_image_tool_rewrite_mode_source =
-        rule.field_sources.image_tool_rewrite_mode.clone();
     let inherited_codex_imagegen_rewrite_mode = rule.codex_imagegen_rewrite_mode;
-    let inherited_codex_imagegen_rewrite_mode_source =
-        rule.field_sources.codex_imagegen_rewrite_mode.clone();
     let inherited_request_compression_algorithm = rule.request_compression_algorithm;
-    let inherited_request_compression_algorithm_source =
-        rule.field_sources.request_compression_algorithm.clone();
+    let inherited_field_sources = rule.field_sources.clone();
     let inherited_available_models = rule.available_models.clone();
     let inherited_available_models_mode = rule.available_models_mode;
     let inherited_available_models_defined = rule.available_models_defined;
-    let inherited_available_models_source = rule.field_sources.available_models.clone();
-    let inherited_available_models_mode_source = rule.field_sources.available_models_mode.clone();
     let inherited_status_change_reasons = rule.status_change_reasons.clone();
     let inherited_status_change_reason_field_sources =
         rule.status_change_reason_field_sources.clone();
@@ -760,21 +753,26 @@ pub(crate) fn apply_tag_layer_routing_policy(
     }
     rule.status_change_reasons = inherited_status_change_reasons;
     rule.status_change_reason_field_sources = inherited_status_change_reason_field_sources;
-    rule.timeouts = tag_rule.timeouts.clone();
-    rule.timeout_field_sources = tag_rule.timeout_field_sources.clone();
+    apply_tag_routing_timeouts(
+        rule,
+        tag_rule,
+        inherited_timeouts,
+        inherited_timeout_field_sources,
+    );
     rule.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode;
-    rule.field_sources.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode_source;
+    rule.field_sources.image_tool_rewrite_mode = inherited_field_sources.image_tool_rewrite_mode;
     rule.codex_imagegen_rewrite_mode = inherited_codex_imagegen_rewrite_mode;
-    rule.field_sources.codex_imagegen_rewrite_mode = inherited_codex_imagegen_rewrite_mode_source;
+    rule.field_sources.codex_imagegen_rewrite_mode =
+        inherited_field_sources.codex_imagegen_rewrite_mode;
     rule.request_compression_algorithm = inherited_request_compression_algorithm;
     rule.field_sources.request_compression_algorithm =
-        inherited_request_compression_algorithm_source;
+        inherited_field_sources.request_compression_algorithm;
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
         rule.available_models_mode = inherited_available_models_mode;
         rule.available_models_defined = inherited_available_models_defined;
-        rule.field_sources.available_models = inherited_available_models_source;
-        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
+        rule.field_sources.available_models = inherited_field_sources.available_models;
+        rule.field_sources.available_models_mode = inherited_field_sources.available_models_mode;
     } else if tag_rule.available_models_defined
         && !(inherited_available_models_mode == AvailableModelsMode::Denylist
             && inherited_available_models_defined)
@@ -782,46 +780,38 @@ pub(crate) fn apply_tag_layer_routing_policy(
         rule.available_models_mode = tag_rule.available_models_mode;
         rule.field_sources.available_models_mode = "tag".to_string();
     } else if tag_rule.available_models_defined {
-        rule.field_sources.available_models = inherited_available_models_source;
+        rule.field_sources.available_models = inherited_field_sources.available_models;
         rule.available_models_mode = inherited_available_models_mode;
-        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
+        rule.field_sources.available_models_mode = inherited_field_sources.available_models_mode;
     } else if !tag_rule.available_models_defined && inherited_available_models_defined {
-        rule.field_sources.available_models = inherited_available_models_source;
-        rule.field_sources.available_models_mode = inherited_available_models_mode_source;
+        rule.field_sources.available_models = inherited_field_sources.available_models;
+        rule.field_sources.available_models_mode = inherited_field_sources.available_models_mode;
     }
-    if tag_rule
-        .timeouts
-        .responses_first_byte_timeout_secs
-        .is_none()
-    {
-        rule.timeouts.responses_first_byte_timeout_secs =
-            inherited_timeouts.responses_first_byte_timeout_secs;
-        rule.timeout_field_sources.responses_first_byte_timeout_secs =
-            inherited_timeout_field_sources.responses_first_byte_timeout_secs;
+}
+
+fn apply_tag_routing_timeouts(
+    rule: &mut EffectiveRoutingRule,
+    tag_rule: &EffectiveRoutingRule,
+    inherited_timeouts: RoutingTimeoutSettings,
+    inherited_timeout_field_sources: RoutingTimeoutFieldSources,
+) {
+    rule.timeouts = tag_rule.timeouts.clone();
+    rule.timeout_field_sources = tag_rule.timeout_field_sources.clone();
+
+    macro_rules! restore_missing_timeout {
+        ($field:ident) => {
+            if tag_rule.timeouts.$field.is_none() {
+                rule.timeouts.$field = inherited_timeouts.$field;
+                rule.timeout_field_sources.$field = inherited_timeout_field_sources.$field;
+            }
+        };
     }
-    if tag_rule.timeouts.compact_first_byte_timeout_secs.is_none() {
-        rule.timeouts.compact_first_byte_timeout_secs =
-            inherited_timeouts.compact_first_byte_timeout_secs;
-        rule.timeout_field_sources.compact_first_byte_timeout_secs =
-            inherited_timeout_field_sources.compact_first_byte_timeout_secs;
-    }
-    if tag_rule.timeouts.image_first_byte_timeout_secs.is_none() {
-        rule.timeouts.image_first_byte_timeout_secs =
-            inherited_timeouts.image_first_byte_timeout_secs;
-        rule.timeout_field_sources.image_first_byte_timeout_secs =
-            inherited_timeout_field_sources.image_first_byte_timeout_secs;
-    }
-    if tag_rule.timeouts.responses_stream_timeout_secs.is_none() {
-        rule.timeouts.responses_stream_timeout_secs =
-            inherited_timeouts.responses_stream_timeout_secs;
-        rule.timeout_field_sources.responses_stream_timeout_secs =
-            inherited_timeout_field_sources.responses_stream_timeout_secs;
-    }
-    if tag_rule.timeouts.compact_stream_timeout_secs.is_none() {
-        rule.timeouts.compact_stream_timeout_secs = inherited_timeouts.compact_stream_timeout_secs;
-        rule.timeout_field_sources.compact_stream_timeout_secs =
-            inherited_timeout_field_sources.compact_stream_timeout_secs;
-    }
+
+    restore_missing_timeout!(responses_first_byte_timeout_secs);
+    restore_missing_timeout!(compact_first_byte_timeout_secs);
+    restore_missing_timeout!(image_first_byte_timeout_secs);
+    restore_missing_timeout!(responses_stream_timeout_secs);
+    restore_missing_timeout!(compact_stream_timeout_secs);
 }
 
 pub(crate) fn apply_account_routing_policy_override(
