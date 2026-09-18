@@ -1,52 +1,30 @@
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { createContext, type ReactNode, useContext } from "react";
+import { Outlet } from "react-router-dom";
 import { Button } from "../../components/ui/button";
-import { Chip } from "../../components/ui/chip";
-import { SegmentedControl } from "../../components/ui/segmented-control";
-import { segmentedControlItemVariants } from "../../components/ui/segmented-control.variants";
 import { useAppVersion } from "../../hooks/useAppVersion";
 import usePwaRuntime from "../../hooks/usePwaRuntime";
 import useSseDiagnostics from "../../hooks/useSseDiagnostics";
 import useSseStatus from "../../hooks/useSseStatus";
 import useUpdateAvailable from "../../hooks/useUpdateAvailable";
-import { type Locale, supportedLocales, useTranslation } from "../../i18n";
+import { useTranslation } from "../../i18n";
 import {
   requestImmediateReconnect,
   type SseDiagnostics,
   type SseReconnectReason,
   type SseStatus,
   type SseTerminalOutcome,
-  subscribeToSseActivity,
 } from "../../lib/sse";
-import { frontendVersion, normalizeVersion } from "../../lib/version";
-import { useTheme } from "../../theme";
 import { AppIcon } from "../shared/AppIcon";
-import { HeaderBrandMark, type HeaderBrandMarkState } from "./HeaderBrandMark";
-import { LanguageFlag } from "./LanguageFlag";
 import {
-  desktopNavItems,
-  matchesNavigationPath,
-  mobileNavigationGroups,
-  resolveAppNavigation,
-} from "./navigation";
-import { PwaInstallControl } from "./PwaInstallControl";
-import { PwaInstallTrigger } from "./PwaInstallTrigger";
-import { UpdateAvailableBanner } from "./UpdateAvailableBanner";
+  AppFooter,
+  AppHeader,
+  AppInstallDialog,
+  AppPwaOfflineBanner,
+  AppUpdateBanners,
+  useHeaderBrandMarkState,
+  usePwaInstallDialog,
+} from "./AppLayoutSections";
 
-const repositoryUrl = "https://github.com/IvanLi-CN/codex-vibe-monitor";
-const LOCALE_FLAG: Record<Locale, string> = {
-  zh: "🇨🇳",
-  en: "🇺🇸",
-};
 const OFFLINE_NOTICE_THRESHOLD_MS = 2 * 60 * 1000;
 export const HEADER_BRAND_ACTIVITY_HOLD_MS = 3200;
 
@@ -70,11 +48,6 @@ export function SseOfflineBannerStoryStateProvider({
     </SseOfflineBannerStoryStateContext.Provider>
   );
 }
-
-type InstallPromptMode = Extract<
-  ReturnType<typeof usePwaRuntime>["installMode"],
-  "prompt" | "manual-ios"
->;
 
 function formatDiagnosticsAgeLabel(
   timestamp: number | null,
@@ -241,635 +214,41 @@ function SseOfflineBanner({ topClassName }: { topClassName: string }) {
 }
 
 export function AppLayout() {
-  const location = useLocation();
-  const { t, locale, setLocale } = useTranslation();
-  const { themeMode, toggleTheme } = useTheme();
-  const [hasRecentActivity, setHasRecentActivity] = useState(false);
-  const activityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { versionInfo, isLoading: backendLoading } = useAppVersion();
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const update = useUpdateAvailable();
   const pwaRuntime = usePwaRuntime();
   const sseStatus = useSseStatus();
-
-  const isReconnecting = sseStatus.phase === "connecting" || sseStatus.phase === "reconnecting";
-  const isSseDisabled = sseStatus.phase === "disabled";
-
-  useEffect(() => {
-    const clearActivityWindow = () => {
-      if (activityTimeoutRef.current) {
-        clearTimeout(activityTimeoutRef.current);
-        activityTimeoutRef.current = null;
-      }
-    };
-
-    const unsubscribe = subscribeToSseActivity(() => {
-      if (sseStatus.phase !== "connected") return;
-      setHasRecentActivity(true);
-      clearActivityWindow();
-      activityTimeoutRef.current = setTimeout(() => {
-        activityTimeoutRef.current = null;
-        setHasRecentActivity(false);
-      }, HEADER_BRAND_ACTIVITY_HOLD_MS);
-    });
-    return () => {
-      clearActivityWindow();
-      unsubscribe();
-    };
-  }, [sseStatus.phase]);
-
-  useEffect(() => {
-    if (sseStatus.phase === "connected") return;
-    if (activityTimeoutRef.current) {
-      clearTimeout(activityTimeoutRef.current);
-      activityTimeoutRef.current = null;
-    }
-    setHasRecentActivity(false);
-  }, [sseStatus.phase]);
-
-  const handleLocaleChange = (next: Locale) => {
-    if (next !== locale) {
-      setLocale(next);
-    }
-  };
-
-  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
-  const languageMenuRef = useRef<HTMLDivElement | null>(null);
-
-  const localeChoices = useMemo(
-    () =>
-      supportedLocales.map((code) => ({
-        code,
-        flag: LOCALE_FLAG[code],
-        label: t(code === "zh" ? "app.language.option.zh" : "app.language.option.en"),
-      })),
-    [t],
-  );
-
-  const activeChoice = localeChoices.find((choice) => choice.code === locale) ?? localeChoices[0];
-  const resolvedNavigation = useMemo(
-    () => resolveAppNavigation(location.pathname),
-    [location.pathname],
-  );
-  const mobileContextLabel = t(
-    resolvedNavigation.nestedItem?.labelKey ?? resolvedNavigation.topLevelItem.labelKey,
-  );
-  const mobileContextEyebrow = resolvedNavigation.nestedItem
-    ? t(resolvedNavigation.topLevelItem.labelKey)
-    : null;
-
-  const toggleLanguageMenu = () => {
-    setLanguageMenuOpen((open) => !open);
-  };
-
-  const closeLanguageMenu = useCallback(() => {
-    setLanguageMenuOpen(false);
-  }, []);
-
-  useEffect(() => {
-    if (!languageMenuOpen) return;
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!languageMenuRef.current?.contains(event.target as Node)) {
-        closeLanguageMenu();
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        closeLanguageMenu();
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [languageMenuOpen, closeLanguageMenu]);
-
-  useEffect(() => {
-    setMobileNavOpen(false);
-  }, []);
-
-  useEffect(() => {
-    if (!mobileNavOpen || typeof document === "undefined") return undefined;
-
-    const previousOverflow = document.body.style.overflow;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMobileNavOpen(false);
-      }
-    };
-
-    document.body.style.overflow = "hidden";
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [mobileNavOpen]);
-
-  const normalizedFrontendVersion = normalizeVersion(frontendVersion);
-  const normalizedBackendVersion = versionInfo?.backend
-    ? normalizeVersion(versionInfo.backend)
-    : null;
-  const releaseLink = normalizedBackendVersion
-    ? `${repositoryUrl}/releases/tag/${normalizedBackendVersion}`
-    : null;
-
-  const sameVersion =
-    !!normalizedBackendVersion && normalizedBackendVersion === normalizedFrontendVersion;
-
-  function renderDiffVersion(oldV: string, newV: string) {
-    // Simple, clear style: strike the whole old version (grey), arrow, then new version.
-    return (
-      <>
-        <span>{t("app.footer.newVersionAvailable")} </span>
-        <span className="font-mono text-base-content/60">
-          <del style={{ textDecorationColor: "currentColor" }}>{oldV}</del>
-        </span>
-        <span aria-hidden> → </span>
-        <a
-          className="app-link font-mono"
-          href={releaseLink ?? undefined}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {newV}
-        </a>
-      </>
-    );
-  }
-
-  const isDarkTheme = themeMode === "dark";
-  const themeLabel = t(isDarkTheme ? "app.theme.currentDark" : "app.theme.currentLight");
-  const themeSwitcherLabel = t(isDarkTheme ? "app.theme.switchToLight" : "app.theme.switchToDark");
-  const headerBrandMarkState: HeaderBrandMarkState = isSseDisabled
-    ? "disabled"
-    : isReconnecting
-      ? "reconnecting"
-      : hasRecentActivity
-        ? "active"
-        : "idle";
-  const installDialogMode: InstallPromptMode | null =
-    pwaRuntime.installMode === "prompt" || pwaRuntime.installMode === "manual-ios"
-      ? pwaRuntime.installMode
-      : null;
-  const [installDialogOpen, setInstallDialogOpen] = useState(false);
-  const suppressInstallDeferRef = useRef(false);
-  useEffect(() => {
-    if (pwaRuntime.shouldAutoOpenInstallDialog && installDialogMode) {
-      setInstallDialogOpen(true);
-    }
-  }, [installDialogMode, pwaRuntime.shouldAutoOpenInstallDialog]);
-  const handleInstallDialogOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        setInstallDialogOpen(true);
-        return;
-      }
-      if (installDialogMode && !suppressInstallDeferRef.current) {
-        pwaRuntime.deferInstallPrompt();
-      }
-      suppressInstallDeferRef.current = false;
-      setInstallDialogOpen(false);
-    },
-    [installDialogMode, pwaRuntime.deferInstallPrompt],
-  );
-  const openInstallDialog = useCallback(() => {
-    setInstallDialogOpen(true);
-  }, []);
-  const handleInstallPrompt = useCallback(async () => {
-    suppressInstallDeferRef.current = true;
-    try {
-      await pwaRuntime.promptInstall();
-    } finally {
-      setInstallDialogOpen(false);
-    }
-  }, [pwaRuntime.promptInstall]);
+  const headerBrandMarkState = useHeaderBrandMarkState(sseStatus.phase);
+  const installDialog = usePwaInstallDialog(pwaRuntime);
   const showVersionUpdateBanner = pwaRuntime.update.visible || update.visible;
   const stackedStatusBannerTopClass = showVersionUpdateBanner ? "top-[146px]" : "top-[78px]";
 
   return (
     <div className="app-shell min-h-screen flex flex-col text-base-content">
-      {installDialogMode ? (
-        <PwaInstallControl
-          open={installDialogOpen}
-          onOpenChange={handleInstallDialogOpenChange}
-          mode={installDialogMode}
-          shellReady={pwaRuntime.shellReady}
-          isOffline={pwaRuntime.isOffline}
-          onPromptInstall={handleInstallPrompt}
-          canPromptInstall={pwaRuntime.installPromptAvailable}
-          labels={{
-            promptButton: t("app.pwa.install.promptButton"),
-            laterButton: t("app.pwa.install.laterButton"),
-            manualButton: t("app.pwa.install.manualButton"),
-            installedButton: t("app.pwa.install.installedButton"),
-            switcherAria: t("app.pwa.install.switcherAria"),
-            closeButton: t("app.pwa.install.close"),
-            closeAria: t("app.pwa.install.closeAria"),
-            shellReady: t("app.pwa.install.shellReady"),
-            shellPending: t("app.pwa.install.shellPending"),
-            offlineChip: t("app.pwa.install.offlineChip"),
-            promptTitle: t("app.pwa.install.promptTitle"),
-            promptDescription: t("app.pwa.install.promptDescription"),
-            promptHint: t("app.pwa.install.promptHint"),
-            manualTitle: t("app.pwa.install.manualTitle"),
-            manualDescription: t("app.pwa.install.manualDescription"),
-            manualStepOpenShare: t("app.pwa.install.manualStepOpenShare"),
-            manualStepAdd: t("app.pwa.install.manualStepAdd"),
-            manualStepConfirm: t("app.pwa.install.manualStepConfirm"),
-            installedTitle: t("app.pwa.install.installedTitle"),
-            installedDescription: t("app.pwa.install.installedDescription"),
-            installedHint: t("app.pwa.install.installedHint"),
-          }}
-        />
-      ) : null}
-      <header className="sticky top-0 z-50 border-b border-base-300/75 bg-base-100/80 backdrop-blur-md">
-        <div
-          className="app-shell-boundary flex items-center gap-2 px-3 py-2 sm:px-4"
-          data-testid="app-header-inner"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3">
-            <button
-              type="button"
-              className="control-pill desktop:!hidden"
-              onClick={() => setMobileNavOpen(true)}
-              aria-label={t("app.nav.openMenu")}
-              aria-expanded={mobileNavOpen}
-              aria-controls="app-mobile-navigation"
-            >
-              <AppIcon name="menu" className="h-[18px] w-[18px] text-primary" aria-hidden />
-              <span className="sr-only">{t("app.nav.openMenu")}</span>
-            </button>
-            <HeaderBrandMark
-              alt={t("app.logoAlt")}
-              state={headerBrandMarkState}
-              className="h-9 w-9 desktop:h-10 desktop:w-10"
-              markClassName="h-9 w-9 desktop:h-10 desktop:w-10"
-              data-testid="app-header-logo-mark"
-            />
-            <div className="min-w-0">
-              <span className="hidden truncate text-lg font-semibold tracking-tight desktop:block desktop:text-xl">
-                {t("app.brand")}
-              </span>
-              <div className="desktop:hidden">
-                {mobileContextEyebrow ? (
-                  <p className="truncate text-[10px] font-semibold uppercase tracking-[0.18em] text-primary/72">
-                    {mobileContextEyebrow}
-                  </p>
-                ) : null}
-                <p className="truncate text-sm font-semibold tracking-tight">
-                  {mobileContextLabel}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
-            {installDialogMode ? (
-              <>
-                <div className="hidden desktop:block">
-                  <PwaInstallTrigger
-                    mode={installDialogMode}
-                    label={t("app.pwa.install.promptButton")}
-                    ariaLabel={t("app.pwa.install.switcherAria")}
-                    onClick={openInstallDialog}
-                  />
-                </div>
-                <div className="desktop:hidden">
-                  <PwaInstallTrigger
-                    mode={installDialogMode}
-                    label={t("app.pwa.install.promptButton")}
-                    ariaLabel={t("app.pwa.install.switcherAria")}
-                    compact
-                    onClick={openInstallDialog}
-                  />
-                </div>
-              </>
-            ) : null}
-            <div className="hidden overflow-x-auto no-scrollbar desktop:block">
-              <SegmentedControl size="nav" className="min-w-max" aria-label={t("app.brand")}>
-                {desktopNavItems.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    aria-current={
-                      matchesNavigationPath(location.pathname, item) ? "page" : undefined
-                    }
-                    className={segmentedControlItemVariants({
-                      size: "nav",
-                      active: matchesNavigationPath(location.pathname, item),
-                    })}
-                  >
-                    {t(item.labelKey)}
-                  </NavLink>
-                ))}
-              </SegmentedControl>
-            </div>
-
-            <button
-              type="button"
-              className="control-pill"
-              onClick={toggleTheme}
-              aria-label={t("app.theme.switcherAria")}
-              title={themeSwitcherLabel}
-            >
-              <AppIcon
-                name={isDarkTheme ? "weather-night" : "white-balance-sunny"}
-                className="h-[18px] w-[18px] text-primary"
-                aria-hidden
-              />
-              <span className="hidden md:inline">{themeLabel}</span>
-            </button>
-
-            <div className="desktop:hidden">
-              <button
-                type="button"
-                className="control-pill"
-                aria-label={t("app.language.switcherAria")}
-                onClick={() => handleLocaleChange(locale === "zh" ? "en" : "zh")}
-                data-testid="mobile-language-toggle"
-              >
-                <LanguageFlag locale={locale} />
-              </button>
-            </div>
-            <div ref={languageMenuRef} className="relative hidden desktop:block">
-              <button
-                type="button"
-                className="control-pill min-w-0 justify-between sm:min-w-[6.75rem]"
-                aria-haspopup="listbox"
-                aria-expanded={languageMenuOpen}
-                aria-label={t("app.language.switcherAria")}
-                onClick={toggleLanguageMenu}
-              >
-                <AppIcon
-                  name="earth"
-                  className="h-[18px] w-[18px] text-base-content/75"
-                  aria-hidden
-                />
-                <span className="hidden sm:inline">{activeChoice?.label}</span>
-                <AppIcon name="chevron-down" className="h-4 w-4 text-base-content/60" aria-hidden />
-              </button>
-              <ul
-                className={`absolute right-0 top-[calc(100%+0.4rem)] z-50 mt-2 min-w-[10.5rem] rounded-xl border border-base-300 bg-base-100/95 p-2 shadow-lg backdrop-blur ${
-                  languageMenuOpen ? "block" : "hidden"
-                }`}
-                aria-label={t("app.language.switcherAria")}
-              >
-                {localeChoices.map((choice) => (
-                  <li key={choice.code} role="presentation">
-                    <button
-                      type="button"
-                      className={`flex items-center gap-2 rounded-md px-2 py-1 ${
-                        choice.code === locale
-                          ? "bg-primary/15 font-medium text-primary"
-                          : "hover:bg-base-200"
-                      }`}
-                      onClick={() => {
-                        handleLocaleChange(choice.code);
-                        closeLanguageMenu();
-                      }}
-                      role="option"
-                      aria-selected={choice.code === locale}
-                    >
-                      <span aria-hidden>{choice.flag}</span>
-                      <span>{choice.label}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </nav>
-        </div>
-      </header>
-      {mobileNavOpen ? (
-        <div className="fixed inset-0 z-[85] desktop:hidden">
-          <button
-            type="button"
-            aria-label={t("app.nav.closeMenu")}
-            className="absolute inset-0 bg-neutral/56 backdrop-blur-sm"
-            onClick={() => setMobileNavOpen(false)}
-          />
-          <aside
-            id="app-mobile-navigation"
-            className="absolute inset-y-0 left-0 flex w-[min(22rem,calc(100vw-1rem))] max-w-full flex-col border-r border-base-300/75 bg-base-100/96 px-4 pb-[max(env(safe-area-inset-bottom),1rem)] pt-[max(env(safe-area-inset-top),1rem)] shadow-[0_24px_72px_rgba(15,23,42,0.2)] backdrop-blur-xl"
-          >
-            <div className="flex items-start justify-between gap-3 border-b border-base-300/70 pb-4">
-              <div className="flex min-w-0 items-center gap-3">
-                <HeaderBrandMark
-                  alt={t("app.logoAlt")}
-                  state={headerBrandMarkState}
-                  className="h-9 w-9"
-                  markClassName="h-9 w-9"
-                />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold tracking-tight">{t("app.brand")}</p>
-                  <p className="truncate text-xs text-base-content/62">{mobileContextLabel}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="control-pill"
-                onClick={() => setMobileNavOpen(false)}
-                aria-label={t("app.nav.closeMenu")}
-              >
-                <AppIcon
-                  name="close"
-                  className="h-[18px] w-[18px] text-base-content/78"
-                  aria-hidden
-                />
-                <span className="sr-only">{t("app.nav.closeMenu")}</span>
-              </button>
-            </div>
-
-            <nav className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto py-4 pr-1">
-              <div className="flex flex-col gap-1.5">
-                {mobileNavigationGroups
-                  .filter((group) => group.items.length === 0)
-                  .map((item) => (
-                    <NavLink
-                      key={item.to}
-                      to={item.to}
-                      className={[
-                        "flex items-center justify-between rounded-2xl border px-4 py-3 text-left text-sm font-medium transition-colors",
-                        matchesNavigationPath(location.pathname, item)
-                          ? "border-primary/45 bg-primary/12 text-primary"
-                          : "border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content",
-                      ].join(" ")}
-                    >
-                      <span>{t(item.labelKey)}</span>
-                      <AppIcon name="chevron-right" className="h-4 w-4" aria-hidden />
-                    </NavLink>
-                  ))}
-              </div>
-
-              {mobileNavigationGroups
-                .filter((group) => group.items.length > 0)
-                .map((group) => (
-                  <section key={group.to} className="space-y-2">
-                    <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-base-content/52">
-                      {t(group.labelKey)}
-                    </p>
-                    <div className="flex flex-col gap-1.5">
-                      {group.items.map((item) => (
-                        <NavLink
-                          key={item.to}
-                          to={item.to}
-                          className={[
-                            "rounded-2xl border px-4 py-3 text-sm font-medium transition-colors",
-                            matchesNavigationPath(location.pathname, item)
-                              ? "border-primary/45 bg-primary/12 text-primary"
-                              : "border-base-300/70 bg-base-100/72 text-base-content/78 hover:border-primary/30 hover:text-base-content",
-                          ].join(" ")}
-                        >
-                          {t(item.labelKey)}
-                        </NavLink>
-                      ))}
-                    </div>
-                  </section>
-                ))}
-            </nav>
-          </aside>
-        </div>
-      ) : null}
-      {pwaRuntime.isOffline ? (
-        <div
-          className={`fixed left-1/2 z-[62] w-full max-w-3xl -translate-x-1/2 px-4 ${stackedStatusBannerTopClass}`}
-        >
-          <div
-            className="flex w-full flex-col gap-3 rounded-xl border border-warning/45 bg-base-100/95 p-4 text-base-content shadow-lg backdrop-blur sm:flex-row sm:items-center"
-            role="status"
-            aria-live="assertive"
-            data-testid="pwa-offline-banner"
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-3">
-              <AppIcon
-                name="link-variant-off"
-                className="h-6 w-6 flex-shrink-0 text-warning"
-                aria-hidden
-              />
-              <div className="min-w-0 space-y-1">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="font-semibold">{t("app.pwa.offline.title")}</span>
-                  <Chip
-                    size="compact"
-                    tone={pwaRuntime.shellReady ? "success" : "warning"}
-                    className="px-2 text-xs font-medium"
-                  >
-                    {pwaRuntime.shellReady
-                      ? t("app.pwa.install.shellReady")
-                      : t("app.pwa.install.shellPending")}
-                  </Chip>
-                </div>
-                <p className="text-sm text-base-content/78">
-                  {pwaRuntime.shellReady
-                    ? t("app.pwa.offline.descriptionReady")
-                    : t("app.pwa.offline.descriptionPending")}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AppInstallDialog state={installDialog} pwaRuntime={pwaRuntime} />
+      <AppHeader
+        brandMarkState={headerBrandMarkState}
+        installDialogMode={installDialog.mode}
+        onOpenInstallDialog={installDialog.open}
+      />
+      <AppPwaOfflineBanner
+        isOffline={pwaRuntime.isOffline}
+        shellReady={pwaRuntime.shellReady}
+        topClassName={stackedStatusBannerTopClass}
+      />
       <SseOfflineBanner topClassName={stackedStatusBannerTopClass} />
-      {pwaRuntime.update.visible && (
-        <UpdateAvailableBanner
-          currentVersion={pwaRuntime.update.currentVersion}
-          availableVersion={pwaRuntime.update.availableVersion ?? pwaRuntime.update.currentVersion}
-          onReload={pwaRuntime.applyUpdate}
-          onDismiss={pwaRuntime.dismissUpdate}
-          labels={{
-            available: t("app.pwa.update.available"),
-            refresh: t("app.pwa.update.refresh"),
-            later: t("app.pwa.update.later"),
-          }}
-        />
-      )}
-      {!pwaRuntime.update.visible && update.visible && update.availableVersion && (
-        <UpdateAvailableBanner
-          currentVersion={versionInfo?.backend ?? t("app.update.current")}
-          availableVersion={update.availableVersion}
-          onReload={update.reload}
-          onDismiss={update.dismiss}
-          labels={{
-            available: t("app.update.available"),
-            refresh: t("app.update.refresh"),
-            later: t("app.update.later"),
-          }}
-        />
-      )}
+      <AppUpdateBanners
+        pwaRuntime={pwaRuntime}
+        update={update}
+        backendVersion={versionInfo?.backend}
+      />
       <main
         className="app-shell-boundary flex-1 min-h-0 px-3 py-5 pb-8 sm:px-4 sm:py-6"
         data-testid="app-main"
       >
         <Outlet />
       </main>
-      <footer
-        className="border-t border-base-300/75 bg-base-100/80 text-sm text-base-content/70 backdrop-blur"
-        data-testid="app-footer"
-      >
-        <div
-          className="app-shell-boundary flex flex-wrap items-center justify-between gap-3 px-4 py-3"
-          data-testid="app-footer-inner"
-        >
-          <span>{t("app.footer.copyright")}</span>
-          <div className="flex flex-wrap items-center gap-4">
-            <a
-              className="app-link flex items-center gap-1"
-              href={repositoryUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={t("app.footer.githubAria")}
-            >
-              <AppIcon name="github" className="h-4 w-4" aria-hidden />
-              <span>GitHub</span>
-            </a>
-            <div className="flex items-center gap-2">
-              {sameVersion && normalizedBackendVersion ? (
-                releaseLink ? (
-                  <a
-                    className="app-link font-mono"
-                    href={releaseLink}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {normalizedBackendVersion}
-                  </a>
-                ) : (
-                  <span className="font-mono">{normalizedFrontendVersion}</span>
-                )
-              ) : normalizedBackendVersion ? (
-                <span className="inline-flex items-center gap-2">
-                  {renderDiffVersion(normalizedFrontendVersion, normalizedBackendVersion)}
-                  {backendLoading && (
-                    <span
-                      className="flex items-center gap-1 text-base-content/60"
-                      aria-live="polite"
-                    >
-                      <AppIcon name="loading" className="h-3 w-3 animate-spin" aria-hidden />
-                      <span className="sr-only">{t("app.footer.loadingVersion")}</span>
-                    </span>
-                  )}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-2">
-                  <span className="font-mono">{normalizedFrontendVersion}</span>
-                  {backendLoading && (
-                    <span
-                      className="flex items-center gap-1 text-base-content/60"
-                      aria-live="polite"
-                    >
-                      <AppIcon name="loading" className="h-3 w-3 animate-spin" aria-hidden />
-                      <span className="sr-only">{t("app.footer.loadingVersion")}</span>
-                    </span>
-                  )}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      </footer>
+      <AppFooter backendVersion={versionInfo?.backend} isBackendLoading={backendLoading} />
     </div>
   );
 }
