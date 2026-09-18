@@ -266,6 +266,69 @@ export async function runCalendarSummaryRefresh(
   );
 }
 
+function useHttpSummaryFallback(
+  window: string,
+  options: UseSummaryOptions | undefined,
+  enabled: boolean,
+) {
+  const cached = readSummaryRemountCache(
+    window,
+    options?.limit,
+    Date.now(),
+    SUMMARY_REMOUNT_CACHE_TTL_MS,
+    options?.upstreamAccountId,
+  );
+  const [summary, setSummary] = useState<StatsResponse | null>(() => cached?.stats ?? null);
+  const [isLoading, setIsLoading] = useState(() => cached == null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const value = await fetchSummary(window, {
+        limit: options?.limit,
+        upstreamAccountId: options?.upstreamAccountId,
+      });
+      setSummary(value);
+      writeSummaryRemountCache(
+        window,
+        options?.limit,
+        value,
+        Date.now(),
+        options?.upstreamAccountId,
+      );
+      setError(null);
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [options?.limit, options?.upstreamAccountId, window]);
+  useEffect(() => {
+    if (enabled) void refresh();
+  }, [enabled, refresh]);
+  useEffect(() => {
+    let cancelled = false;
+    let timerId: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const schedule = () => {
+      const epoch = getCalendarSummaryDayRolloverRefreshEpoch(window);
+      if (epoch == null || cancelled) return;
+      timerId = globalThis.setTimeout(
+        async () => {
+          await refresh();
+          if (!cancelled) schedule();
+        },
+        Math.max(0, epoch * 1000 - Date.now()),
+      );
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timerId != null) globalThis.clearTimeout(timerId);
+    };
+  }, [refresh, window]);
+  return { summary, isLoading, error, refresh };
+}
+
 export function useSummary(window: string, options?: UseSummaryOptions) {
   const initialCachedSummary = readSummaryRemountCache(
     window,
@@ -284,72 +347,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       })
     : null;
   const sse = useSubscriptionTopic<StatsResponse>(topic, supportsPureSse);
-  const [httpSummary, setHttpSummary] = useState<StatsResponse | null>(
-    () => initialCachedSummary?.stats ?? null,
-  );
-  const [httpLoading, setHttpLoading] = useState(
-    () => !supportsPureSse && initialCachedSummary == null,
-  );
-  const [httpError, setHttpError] = useState<string | null>(null);
-
-  const loadHttpSummary = useCallback(async () => {
-    setHttpLoading(true);
-    try {
-      const response = await fetchSummary(window, {
-        limit: options?.limit,
-        upstreamAccountId: options?.upstreamAccountId,
-      });
-      setHttpSummary(response);
-      writeSummaryRemountCache(
-        window,
-        options?.limit,
-        response,
-        Date.now(),
-        options?.upstreamAccountId,
-      );
-      setHttpError(null);
-    } catch (error) {
-      setHttpError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setHttpLoading(false);
-    }
-  }, [options?.limit, options?.upstreamAccountId, window]);
-
-  useEffect(() => {
-    if (!supportsPureSse) {
-      void loadHttpSummary();
-    }
-  }, [loadHttpSummary, supportsPureSse]);
-
-  useEffect(() => {
-    if (supportsPureSse) {
-      return undefined;
-    }
-    let cancelled = false;
-    let timerId: ReturnType<typeof globalThis.setTimeout> | null = null;
-
-    const scheduleNextRefresh = () => {
-      const refreshEpoch = getCalendarSummaryDayRolloverRefreshEpoch(window);
-      if (refreshEpoch == null || cancelled) {
-        return;
-      }
-      const delayMs = Math.max(0, refreshEpoch * 1000 - Date.now());
-      timerId = globalThis.setTimeout(async () => {
-        await loadHttpSummary();
-        if (!cancelled) {
-          scheduleNextRefresh();
-        }
-      }, delayMs);
-    };
-
-    scheduleNextRefresh();
-    return () => {
-      cancelled = true;
-      if (timerId != null) {
-        globalThis.clearTimeout(timerId);
-      }
-    };
-  }, [loadHttpSummary, supportsPureSse, window]);
+  const http = useHttpSummaryFallback(window, options, !supportsPureSse);
 
   useEffect(() => {
     if (supportsPureSse && sse.data) {
@@ -363,10 +361,12 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     }
   }, [options?.limit, options?.upstreamAccountId, sse.data, supportsPureSse, window]);
 
-  const summary = supportsPureSse ? (sse.data ?? initialCachedSummary?.stats ?? null) : httpSummary;
-  const isLoading = supportsPureSse ? sse.isLoading && summary == null : httpLoading;
-  const error = supportsPureSse ? sse.error : httpError;
-  const refresh = supportsPureSse ? sse.refresh : loadHttpSummary;
+  const summary = supportsPureSse
+    ? (sse.data ?? initialCachedSummary?.stats ?? null)
+    : http.summary;
+  const isLoading = supportsPureSse ? sse.isLoading && summary == null : http.isLoading;
+  const error = supportsPureSse ? sse.error : http.error;
+  const refresh = supportsPureSse ? sse.refresh : http.refresh;
 
   return {
     summary,
