@@ -1039,39 +1039,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let upstream_body_snapshot = semantic_projection.upstream_snapshot.clone();
-    let initial_running_record = build_running_proxy_capture_record(
-        &invoke_id,
-        &occurred_at,
+    emit_initial_proxy_capture_snapshot(InitialProxyCaptureSnapshotRequest {
+        state: state.as_ref(),
+        invoke_id: &invoke_id,
+        occurred_at: &occurred_at,
         capture_target,
-        &request_info,
-        requester_ip.as_deref(),
-        sticky_key.as_deref(),
-        prompt_cache_key.as_deref(),
+        request_info: &request_info,
+        requester_ip: requester_ip.as_deref(),
+        sticky_key: sticky_key.as_deref(),
+        prompt_cache_key: prompt_cache_key.as_deref(),
         pool_route_active,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
         t_req_read_ms,
         t_req_parse_ms,
-        0.0,
-        0.0,
-    );
-    if let Err(err) =
-        persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), initial_running_record)
-            .await
-    {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast initial running proxy capture snapshot"
-        );
-    }
+    })
+    .await;
     let mut upstream_headers = headers.clone();
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);

@@ -80,6 +80,68 @@ async fn emit_admitted_proxy_capture_snapshot(request: AdmittedProxyCaptureSnaps
     }
 }
 
+struct InitialProxyCaptureSnapshotRequest<'a> {
+    state: &'a AppState,
+    invoke_id: &'a str,
+    occurred_at: &'a str,
+    capture_target: ProxyCaptureTarget,
+    request_info: &'a RequestCaptureInfo,
+    requester_ip: Option<&'a str>,
+    sticky_key: Option<&'a str>,
+    prompt_cache_key: Option<&'a str>,
+    pool_route_active: bool,
+    t_req_read_ms: f64,
+    t_req_parse_ms: f64,
+}
+
+async fn emit_initial_proxy_capture_snapshot(request: InitialProxyCaptureSnapshotRequest<'_>) {
+    let InitialProxyCaptureSnapshotRequest {
+        state,
+        invoke_id,
+        occurred_at,
+        capture_target,
+        request_info,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+        pool_route_active,
+        t_req_read_ms,
+        t_req_parse_ms,
+    } = request;
+    let initial_running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        capture_target,
+        request_info,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+        pool_route_active,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        t_req_read_ms,
+        t_req_parse_ms,
+        0.0,
+        0.0,
+    );
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state, initial_running_record).await
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast initial running proxy capture snapshot"
+        );
+    }
+}
+
 async fn next_request_body_chunk<S>(
     stream: &mut S,
     remaining: Duration,
