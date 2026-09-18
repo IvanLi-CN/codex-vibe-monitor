@@ -1498,103 +1498,118 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_tx(
 
     let mut recovered = Vec::new();
     for chunk in candidate_ids.chunks(POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE) {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            r#"
-            UPDATE pool_upstream_request_attempts
-            SET
-                finished_at = COALESCE(finished_at, "#,
-        );
-        query.push_bind(finished_at);
-        query.push(
-            r#"),
-                status = "#,
-        );
-        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
-        query.push(
-            r#",
-                phase = "#,
-        );
-        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED);
-        query.push(
-            r#",
-                failure_kind = COALESCE(failure_kind, "#,
-        );
-        query.push_bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED);
-        query.push(
-            r#"),
-                error_message = COALESCE(error_message, "#,
-        );
-        query.push_bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE);
-        query.push(
-            r#")
-            WHERE id IN ("#,
-        );
-        let mut separated = query.separated(", ");
-        for id in chunk {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(")");
-        query.push(
-            r#"
-              AND status = "#,
-        );
-        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
-        query.push(
-            r#"
-              AND finished_at IS NULL
-              AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
-              AND COALESCE(first_byte_latency_ms, 0) <= 0
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM codex_invocations inv
-                    WHERE inv.source = "#,
-        );
-        query.push_bind(SOURCE_PROXY);
-        query.push(
-            r#"
-                      AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
-                      AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
-                      AND COALESCE(inv.t_upstream_ttfb_ms, 0) > 0
-              )
-              AND (
-                    started_at IS NULL
-                    OR (
-                        endpoint = '/v1/responses'
-                        AND started_at <= "#,
-        );
-        query.push_bind(responses_started_before);
-        query.push(
-            r#"
-                    )
-                    OR (
-                        endpoint = '/v1/responses/compact'
-                        AND started_at <= "#,
-        );
-        query.push_bind(compact_started_before);
-        query.push(
-            r#"
-                    )
-                    OR (
-                        COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact')
-                        AND started_at <= "#,
-        );
-        query.push_bind(default_started_before);
-        query.push(
-            r#"
-                    )
-              )
-            RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
-            "#,
-        );
         recovered.extend(
-            query
-                .build_query_as::<RecoveredPoolAttemptRow>()
-                .fetch_all(&mut *tx)
-                .await?,
+            recover_stale_pool_upstream_request_attempt_chunk_tx(
+                tx,
+                chunk,
+                finished_at,
+                responses_started_before,
+                compact_started_before,
+                default_started_before,
+            )
+            .await?,
         );
     }
 
     Ok(recovered)
+}
+
+async fn recover_stale_pool_upstream_request_attempt_chunk_tx(
+    tx: &mut SqliteConnection,
+    chunk: &[i64],
+    finished_at: &str,
+    responses_started_before: &str,
+    compact_started_before: &str,
+    default_started_before: &str,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            finished_at = COALESCE(finished_at, "#,
+    );
+    query.push_bind(finished_at);
+    query.push(
+        r#"),
+            status = "#,
+    );
+    query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+    query.push(
+        r#",
+            phase = "#,
+    );
+    query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED);
+    query.push(
+        r#",
+            failure_kind = COALESCE(failure_kind, "#,
+    );
+    query.push_bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED);
+    query.push(
+        r#"),
+            error_message = COALESCE(error_message, "#,
+    );
+    query.push_bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE);
+    query.push(
+        r#")
+        WHERE id IN ("#,
+    );
+    let mut separated = query.separated(", ");
+    for id in chunk {
+        separated.push_bind(id);
+    }
+    separated.push_unseparated(")");
+    query.push(
+        r#"
+          AND status = "#,
+    );
+    query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+    query.push(
+        r#" AND finished_at IS NULL AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+          AND COALESCE(first_byte_latency_ms, 0) <= 0
+          AND NOT EXISTS (
+                SELECT 1
+                FROM codex_invocations inv
+                WHERE inv.source = "#,
+    );
+    query.push_bind(SOURCE_PROXY);
+    query.push(
+        r#" AND inv.invoke_id = pool_upstream_request_attempts.invoke_id AND inv.occurred_at = pool_upstream_request_attempts.occurred_at AND COALESCE(inv.t_upstream_ttfb_ms, 0) > 0
+          )
+          AND (
+                started_at IS NULL
+                OR (
+                    endpoint = '/v1/responses'
+                    AND started_at <= "#,
+    );
+    query.push_bind(responses_started_before);
+    query.push(
+        r#"
+                )
+                OR (
+                    endpoint = '/v1/responses/compact'
+                    AND started_at <= "#,
+    );
+    query.push_bind(compact_started_before);
+    query.push(
+        r#"
+                )
+                OR (
+                    COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact')
+                    AND started_at <= "#,
+    );
+    query.push_bind(default_started_before);
+    query.push(
+        r#"
+                )
+          )
+        RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
+        "#,
+    );
+    query
+        .build_query_as::<RecoveredPoolAttemptRow>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
