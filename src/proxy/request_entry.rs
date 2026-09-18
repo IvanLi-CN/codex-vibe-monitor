@@ -2543,21 +2543,7 @@ pub(crate) struct PoolRequestBodyPreparationRequest<'a> {
 pub(crate) async fn prepare_pool_request_body_for_account(
     request: PoolRequestBodyPreparationRequest<'_>,
 ) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
-    let PoolRequestBodyPreparationRequest {
-        proxy_request_id,
-        body,
-        original_uri,
-        method,
-        content_encoding,
-        fast_mode_rewrite_mode,
-        image_tool_rewrite_mode,
-        codex_imagegen_rewrite_mode,
-        codex_imagegen_protocol,
-        projected_request_info,
-        projected_hosted_image_intent,
-        model_mapping,
-    } = request;
-    let capture_target = capture_target_for_request(original_uri.path(), method);
+    let capture_target = capture_target_for_request(request.original_uri.path(), request.method);
     let default_image_intent = match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
             ImageIntent::DirectImage
@@ -2566,28 +2552,28 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     };
     let fast_mode_rewrite_required = capture_target
         .is_some_and(|target| target.allows_fast_mode_rewrite())
-        && fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
+        && request.fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
     let codex_imagegen_rewrite_required = capture_target.is_some_and(|target| {
         matches!(
             target,
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
-    }) && codex_imagegen_protocol.is_some()
-        && codex_imagegen_rewrite_mode != crate::CodexImagegenRewriteMode::KeepOriginal;
+    }) && request.codex_imagegen_protocol.is_some()
+        && request.codex_imagegen_rewrite_mode != crate::CodexImagegenRewriteMode::KeepOriginal;
     let image_tool_rewrite_required = capture_target.is_some_and(|target| {
         matches!(
             target,
             ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
         )
-    }) && codex_imagegen_protocol.is_none()
-        && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
-    let model_mapping_required = model_mapping.is_some();
+    }) && request.codex_imagegen_protocol.is_none()
+        && request.image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
+    let model_mapping_required = request.model_mapping.is_some();
     let rewrite_required = model_mapping_required
         || fast_mode_rewrite_required
         || image_tool_rewrite_required
         || codex_imagegen_rewrite_required;
 
-    let Some(snapshot) = body.cloned() else {
+    let Some(snapshot) = request.body.cloned() else {
         if model_mapping_required {
             return Err(PoolRequestBodyPreparationError::bad_request(
                 "model mapping requires a JSON request body with a top-level model field",
@@ -2599,9 +2585,11 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             requested_service_tier: None,
             requested_image_intent: default_image_intent,
             requested_hosted_image_intent: default_image_intent,
-            codex_imagegen_rewrite: codex_imagegen_protocol
+            codex_imagegen_rewrite: request
+                .codex_imagegen_protocol
                 .filter(|_| {
-                    codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
+                    request.codex_imagegen_rewrite_mode
+                        == crate::CodexImagegenRewriteMode::KeepOriginal
                 })
                 .map(codex_imagegen_keep_original_audit),
             snapshot_is_decoded: false,
@@ -2613,20 +2601,38 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot,
             capture_target,
             default_image_intent,
-            projected_request_info,
-            projected_hosted_image_intent,
-            codex_imagegen_protocol,
-            codex_imagegen_rewrite_mode,
+            &request,
         ));
     }
 
+    prepare_rewritten_pool_request_body(&request, snapshot, capture_target, default_image_intent)
+        .await
+}
+
+enum PoolRequestBodyRewritePreparation {
+    Original(PreparedPoolRequestBody),
+    Json {
+        snapshot: PoolReplayBodySnapshot,
+        original_bytes: Bytes,
+        target: ProxyCaptureTarget,
+        value: Value,
+    },
+}
+
+async fn prepare_pool_request_body_rewrite_input(
+    request: &PoolRequestBodyPreparationRequest<'_>,
+    snapshot: PoolReplayBodySnapshot,
+    capture_target: Option<ProxyCaptureTarget>,
+    default_image_intent: ImageIntent,
+) -> Result<PoolRequestBodyRewritePreparation, PoolRequestBodyPreparationError> {
+    let model_mapping_required = request.model_mapping.is_some();
     let original_bytes = snapshot.to_bytes().await.map_err(|err| {
         PoolRequestBodyPreparationError::bad_gateway(format!(
             "failed to materialize pool request body for rewrite: {err}"
         ))
     })?;
     info!(
-        proxy_request_id,
+        proxy_request_id = request.proxy_request_id,
         json_parse_count = 1_u8,
         whole_body_materialization_count = 1_u8,
         materialization_bytes = original_bytes.len(),
@@ -2634,7 +2640,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         "pool request preparation materialized account-specific rewrite body"
     );
     let downstream_encoding =
-        resolve_request_body_content_encoding(&snapshot, content_encoding).await?;
+        resolve_request_body_content_encoding(&snapshot, request.content_encoding).await?;
     let decoded_original_bytes =
         decode_request_payload_bytes(&original_bytes, downstream_encoding)?;
     let Some(target) = capture_target else {
@@ -2643,25 +2649,8 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 "model mapping is not supported for this request endpoint",
             ));
         }
-        return Ok(PreparedPoolRequestBody {
-            snapshot,
-            request_body_for_capture: Some(original_bytes),
-            requested_service_tier: None,
-            requested_image_intent: default_image_intent,
-            requested_hosted_image_intent: default_image_intent,
-            codex_imagegen_rewrite: None,
-            snapshot_is_decoded: false,
-        });
-    };
-    let mut value = match serde_json::from_slice::<Value>(&decoded_original_bytes) {
-        Ok(value) => value,
-        Err(_) if model_mapping_required => {
-            return Err(PoolRequestBodyPreparationError::bad_request(
-                "model mapping requires a valid JSON request body",
-            ));
-        }
-        Err(_) => {
-            return Ok(PreparedPoolRequestBody {
+        return Ok(PoolRequestBodyRewritePreparation::Original(
+            PreparedPoolRequestBody {
                 snapshot,
                 request_body_for_capture: Some(original_bytes),
                 requested_service_tier: None,
@@ -2669,11 +2658,134 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 requested_hosted_image_intent: default_image_intent,
                 codex_imagegen_rewrite: None,
                 snapshot_is_decoded: false,
-            });
+            },
+        ));
+    };
+    let value = match serde_json::from_slice::<Value>(&decoded_original_bytes) {
+        Ok(value) => value,
+        Err(_) if model_mapping_required => {
+            return Err(PoolRequestBodyPreparationError::bad_request(
+                "model mapping requires a valid JSON request body",
+            ));
+        }
+        Err(_) => {
+            return Ok(PoolRequestBodyRewritePreparation::Original(
+                PreparedPoolRequestBody {
+                    snapshot,
+                    request_body_for_capture: Some(original_bytes),
+                    requested_service_tier: None,
+                    requested_image_intent: default_image_intent,
+                    requested_hosted_image_intent: default_image_intent,
+                    codex_imagegen_rewrite: None,
+                    snapshot_is_decoded: false,
+                },
+            ));
         }
     };
+    Ok(PoolRequestBodyRewritePreparation::Json {
+        snapshot,
+        original_bytes,
+        target,
+        value,
+    })
+}
 
-    let model_mapping_rewritten = if let Some(mapping) = model_mapping {
+async fn prepare_rewritten_pool_request_body(
+    request: &PoolRequestBodyPreparationRequest<'_>,
+    snapshot: PoolReplayBodySnapshot,
+    capture_target: Option<ProxyCaptureTarget>,
+    default_image_intent: ImageIntent,
+) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
+    let (snapshot, original_bytes, target, mut value) =
+        match prepare_pool_request_body_rewrite_input(
+            request,
+            snapshot,
+            capture_target,
+            default_image_intent,
+        )
+        .await?
+        {
+            PoolRequestBodyRewritePreparation::Original(prepared) => return Ok(prepared),
+            PoolRequestBodyRewritePreparation::Json {
+                snapshot,
+                original_bytes,
+                target,
+                value,
+            } => (snapshot, original_bytes, target, value),
+        };
+    let rewrite = rewrite_pool_request_body_value(request, target, &mut value)?;
+    if !rewrite.content_rewritten && !rewrite.image_rewritten && !rewrite.codex_image_rewritten {
+        return Ok(PreparedPoolRequestBody {
+            snapshot,
+            request_body_for_capture: Some(original_bytes),
+            requested_service_tier: rewrite.requested_service_tier,
+            requested_image_intent: rewrite.upstream_image_intent,
+            requested_hosted_image_intent: rewrite.upstream_hosted_image_intent,
+            codex_imagegen_rewrite: rewrite.codex_imagegen_rewrite,
+            snapshot_is_decoded: false,
+        });
+    }
+
+    let rewritten_bytes = serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
+        PoolRequestBodyPreparationError::bad_gateway(format!(
+            "failed to serialize rewritten pool request body: {err}"
+        ))
+    })?;
+    let rewritten_snapshot =
+        pool_replay_snapshot_from_bytes(request.proxy_request_id, rewritten_bytes.clone())
+            .await
+            .map_err(|err| {
+                PoolRequestBodyPreparationError::bad_gateway(format!(
+                    "failed to persist rewritten pool request body: {err}"
+                ))
+            })?;
+    Ok(PreparedPoolRequestBody {
+        snapshot: rewritten_snapshot,
+        request_body_for_capture: Some(rewritten_bytes.clone()),
+        requested_service_tier: rewrite.requested_service_tier,
+        requested_image_intent: rewrite.upstream_image_intent,
+        requested_hosted_image_intent: rewrite.upstream_hosted_image_intent,
+        codex_imagegen_rewrite: rewrite.codex_imagegen_rewrite,
+        snapshot_is_decoded: true,
+    })
+}
+
+struct PoolRequestBodyRewriteMetadata {
+    content_rewritten: bool,
+    image_rewritten: bool,
+    codex_image_rewritten: bool,
+    codex_imagegen_rewrite: Option<Value>,
+    requested_service_tier: Option<String>,
+    upstream_image_intent: ImageIntent,
+    upstream_hosted_image_intent: ImageIntent,
+}
+
+fn rewrite_pool_request_body_value(
+    request: &PoolRequestBodyPreparationRequest<'_>,
+    target: ProxyCaptureTarget,
+    value: &mut Value,
+) -> Result<PoolRequestBodyRewriteMetadata, PoolRequestBodyPreparationError> {
+    let content_rewritten = rewrite_pool_request_model_and_service_tier(request, target, value)?;
+    let original_image_intent = infer_image_intent_from_request_body(target, value);
+    let (codex_image_rewritten, image_rewritten, codex_imagegen_rewrite) =
+        rewrite_pool_request_image_tools(request, target, value, original_image_intent);
+    Ok(PoolRequestBodyRewriteMetadata {
+        content_rewritten,
+        image_rewritten,
+        codex_image_rewritten,
+        codex_imagegen_rewrite,
+        requested_service_tier: extract_requested_service_tier_from_request_body(value),
+        upstream_image_intent: infer_image_intent_from_request_body(target, value),
+        upstream_hosted_image_intent: infer_hosted_image_intent_from_request_body(target, value),
+    })
+}
+
+fn rewrite_pool_request_model_and_service_tier(
+    request: &PoolRequestBodyPreparationRequest<'_>,
+    target: ProxyCaptureTarget,
+    value: &mut Value,
+) -> Result<bool, PoolRequestBodyPreparationError> {
+    let model_mapping_rewritten = if let Some(mapping) = request.model_mapping {
         let Some(object) = value.as_object_mut() else {
             return Err(PoolRequestBodyPreparationError::bad_request(
                 "model mapping requires a JSON object with a top-level model field",
@@ -2692,89 +2804,48 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     } else {
         false
     };
-    let rewritten = model_mapping_rewritten
-        || (if target.allows_fast_mode_rewrite() {
-            rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
-        } else {
-            false
-        });
-    let original_image_intent = infer_image_intent_from_request_body(target, &value);
-    let (codex_image_rewritten, codex_imagegen_rewrite) = if let Some(protocol) =
-        codex_imagegen_protocol
-        && matches!(
-            target,
-            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
-        ) {
+    Ok(model_mapping_rewritten
+        || (target.allows_fast_mode_rewrite()
+            && rewrite_request_service_tier_for_fast_mode(value, request.fast_mode_rewrite_mode)))
+}
+
+fn rewrite_pool_request_image_tools(
+    request: &PoolRequestBodyPreparationRequest<'_>,
+    target: ProxyCaptureTarget,
+    value: &mut Value,
+    original_image_intent: ImageIntent,
+) -> (bool, bool, Option<Value>) {
+    if !matches!(
+        target,
+        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+    ) {
+        return (false, false, None);
+    }
+    if let Some(protocol) = request.codex_imagegen_protocol {
         let (rewritten, audit) = rewrite_codex_imagegen_tools(
-            &mut value,
+            value,
             protocol,
-            codex_imagegen_rewrite_mode,
+            request.codex_imagegen_rewrite_mode,
             original_image_intent,
         );
-        (rewritten, Some(audit))
-    } else {
-        (false, None)
-    };
-    let image_rewritten = if codex_imagegen_protocol.is_none()
-        && matches!(
-            target,
-            ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
-        ) {
-        rewrite_openai_responses_image_tools(
-            &mut value,
-            image_tool_rewrite_mode,
-            original_image_intent,
-        )
-    } else {
-        false
-    };
-    let requested_service_tier = extract_requested_service_tier_from_request_body(&value);
-    let upstream_image_intent = infer_image_intent_from_request_body(target, &value);
-    let upstream_hosted_image_intent = infer_hosted_image_intent_from_request_body(target, &value);
-    if !rewritten && !image_rewritten && !codex_image_rewritten {
-        return Ok(PreparedPoolRequestBody {
-            snapshot,
-            request_body_for_capture: Some(original_bytes),
-            requested_service_tier,
-            requested_image_intent: upstream_image_intent,
-            requested_hosted_image_intent: upstream_hosted_image_intent,
-            codex_imagegen_rewrite,
-            snapshot_is_decoded: false,
-        });
+        return (rewritten, false, Some(audit));
     }
-
-    let rewritten_bytes = serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
-        PoolRequestBodyPreparationError::bad_gateway(format!(
-            "failed to serialize rewritten pool request body: {err}"
-        ))
-    })?;
-    let rewritten_snapshot =
-        pool_replay_snapshot_from_bytes(proxy_request_id, rewritten_bytes.clone())
-            .await
-            .map_err(|err| {
-                PoolRequestBodyPreparationError::bad_gateway(format!(
-                    "failed to persist rewritten pool request body: {err}"
-                ))
-            })?;
-    Ok(PreparedPoolRequestBody {
-        snapshot: rewritten_snapshot,
-        request_body_for_capture: Some(rewritten_bytes.clone()),
-        requested_service_tier,
-        requested_image_intent: upstream_image_intent,
-        requested_hosted_image_intent: upstream_hosted_image_intent,
-        codex_imagegen_rewrite,
-        snapshot_is_decoded: true,
-    })
+    (
+        false,
+        rewrite_openai_responses_image_tools(
+            value,
+            request.image_tool_rewrite_mode,
+            original_image_intent,
+        ),
+        None,
+    )
 }
 
 fn prepare_pool_request_body_without_rewrite(
     snapshot: PoolReplayBodySnapshot,
     capture_target: Option<ProxyCaptureTarget>,
     default_image_intent: ImageIntent,
-    projected_request_info: Option<&RequestCaptureInfo>,
-    projected_hosted_image_intent: Option<ImageIntent>,
-    codex_imagegen_protocol: Option<CodexImagegenProtocol>,
-    codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
+    request: &PoolRequestBodyPreparationRequest<'_>,
 ) -> PreparedPoolRequestBody {
     let (
         request_body_for_capture,
@@ -2800,8 +2871,9 @@ fn prepare_pool_request_body_without_rewrite(
                         .unwrap_or(ImageIntent::Unknown),
                 )
             });
-            let projected = projected_request_info
-                .zip(projected_hosted_image_intent)
+            let projected = request
+                .projected_request_info
+                .zip(request.projected_hosted_image_intent)
                 .map(|(info, hosted)| {
                     (
                         info.requested_service_tier.clone(),
@@ -2821,12 +2893,17 @@ fn prepare_pool_request_body_without_rewrite(
         }
         PoolReplayBodySnapshot::File { .. } => (
             None,
-            projected_request_info.and_then(|info| info.requested_service_tier.clone()),
-            projected_request_info
+            request
+                .projected_request_info
+                .and_then(|info| info.requested_service_tier.clone()),
+            request
+                .projected_request_info
                 .and_then(|info| info.image_intent.as_deref())
                 .map(ImageIntent::from_str)
                 .unwrap_or(default_image_intent),
-            projected_hosted_image_intent.unwrap_or(default_image_intent),
+            request
+                .projected_hosted_image_intent
+                .unwrap_or(default_image_intent),
         ),
     };
     PreparedPoolRequestBody {
@@ -2835,9 +2912,10 @@ fn prepare_pool_request_body_without_rewrite(
         requested_service_tier,
         requested_image_intent,
         requested_hosted_image_intent,
-        codex_imagegen_rewrite: codex_imagegen_protocol
+        codex_imagegen_rewrite: request
+            .codex_imagegen_protocol
             .filter(|_| {
-                codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
+                request.codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
             })
             .map(codex_imagegen_keep_original_audit),
         snapshot_is_decoded: false,
@@ -4217,20 +4295,20 @@ mod tests {
         let uri: Uri = "/v1/responses".parse().expect("responses uri");
         let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(request_bytes.clone()));
 
-        let prepared = prepare_pool_request_body_for_account(
-            79,
-            Some(&snapshot),
-            &uri,
-            &Method::POST,
-            Some("unsupported-encoding"),
-            TagFastModeRewriteMode::KeepOriginal,
-            crate::ImageToolRewriteMode::KeepOriginal,
-            crate::CodexImagegenRewriteMode::KeepOriginal,
-            Some(CodexImagegenProtocol::Full),
-            None,
-            None,
-            None,
-        )
+        let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+            proxy_request_id: 79,
+            body: Some(&snapshot),
+            original_uri: &uri,
+            method: &Method::POST,
+            content_encoding: Some("unsupported-encoding"),
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: Some(CodexImagegenProtocol::Full),
+            projected_request_info: None,
+            projected_hosted_image_intent: None,
+            model_mapping: None,
+        })
         .await
         .expect("prepare keep-original Codex snapshot");
 
@@ -4278,20 +4356,20 @@ mod tests {
         let uri: Uri = "/v1/responses".parse().expect("responses uri");
         let compressed_snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(compressed));
 
-        let prepared = prepare_pool_request_body_for_account(
-            77,
-            Some(&compressed_snapshot),
-            &uri,
-            &Method::POST,
-            Some("gzip"),
-            TagFastModeRewriteMode::KeepOriginal,
-            crate::ImageToolRewriteMode::KeepOriginal,
-            crate::CodexImagegenRewriteMode::ForceAdd,
-            Some(CodexImagegenProtocol::Full),
-            None,
-            None,
-            None,
-        )
+        let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+            proxy_request_id: 77,
+            body: Some(&compressed_snapshot),
+            original_uri: &uri,
+            method: &Method::POST,
+            content_encoding: Some("gzip"),
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::ForceAdd,
+            codex_imagegen_protocol: Some(CodexImagegenProtocol::Full),
+            projected_request_info: None,
+            projected_hosted_image_intent: None,
+            model_mapping: None,
+        })
         .await
         .expect("rewrite gzip snapshot");
         assert!(prepared.snapshot_is_decoded);
@@ -4326,20 +4404,20 @@ mod tests {
             temp_file: Arc::new(PoolReplayTempFile { path: file_path }),
             size: request.to_string().len(),
         };
-        let prepared = prepare_pool_request_body_for_account(
-            78,
-            Some(&file_snapshot),
-            &uri,
-            &Method::POST,
-            None,
-            TagFastModeRewriteMode::KeepOriginal,
-            crate::ImageToolRewriteMode::KeepOriginal,
-            crate::CodexImagegenRewriteMode::ForceAdd,
-            Some(CodexImagegenProtocol::Full),
-            None,
-            None,
-            None,
-        )
+        let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+            proxy_request_id: 78,
+            body: Some(&file_snapshot),
+            original_uri: &uri,
+            method: &Method::POST,
+            content_encoding: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::ForceAdd,
+            codex_imagegen_protocol: Some(CodexImagegenProtocol::Full),
+            projected_request_info: None,
+            projected_hosted_image_intent: None,
+            model_mapping: None,
+        })
         .await
         .expect("rewrite file replay snapshot");
         assert!(prepared.snapshot_is_decoded);
@@ -4582,20 +4660,20 @@ mod tests {
 
         assert_eq!(projection.request_info.image_intent.as_deref(), Some("yes"));
         assert_eq!(projection.hosted_image_intent, ImageIntent::No);
-        let prepared = prepare_pool_request_body_for_account(
-            90_007,
-            Some(&projection.upstream_snapshot),
-            &"/v1/responses".parse().expect("valid responses uri"),
-            &Method::POST,
-            None,
-            TagFastModeRewriteMode::KeepOriginal,
-            crate::ImageToolRewriteMode::KeepOriginal,
-            crate::CodexImagegenRewriteMode::KeepOriginal,
-            None,
-            Some(&projection.request_info),
-            Some(projection.hosted_image_intent),
-            None,
-        )
+        let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+            proxy_request_id: 90_007,
+            body: Some(&projection.upstream_snapshot),
+            original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+            method: &Method::POST,
+            content_encoding: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            projected_request_info: Some(&projection.request_info),
+            projected_hosted_image_intent: Some(projection.hosted_image_intent),
+            model_mapping: None,
+        })
         .await
         .expect("prepare projected Codex image request");
         assert_eq!(prepared.requested_image_intent, ImageIntent::Yes);
