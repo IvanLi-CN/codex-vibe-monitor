@@ -2,6 +2,60 @@ include!("failover/part_01.rs");
 include!("failover/part_02.rs");
 include!("failover/part_03.rs");
 
+struct PoolFailoverTerminalGuards<'a> {
+    state: &'a AppState,
+    trace_context: Option<&'a PoolUpstreamAttemptTraceContext>,
+    binding_constraint: Option<&'a PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+    prompt_cache_key: Option<&'a str>,
+    preserve_sticky_owner_terminal_error: bool,
+    last_error: &'a mut Option<PoolUpstreamError>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+}
+
+async fn take_pool_failover_terminal_guard_error(
+    guards: PoolFailoverTerminalGuards<'_>,
+) -> Option<PoolUpstreamError> {
+    let PoolFailoverTerminalGuards {
+        state,
+        trace_context,
+        binding_constraint,
+        owner_auto_guard_active,
+        prompt_cache_key,
+        preserve_sticky_owner_terminal_error,
+        last_error,
+        attempt_count,
+        distinct_account_count,
+    } = guards;
+    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
+        PoolSingleAccountBindingTerminalRequest {
+            state,
+            trace_context,
+            binding_constraint,
+            owner_auto_guard_active,
+            prompt_cache_key,
+            account: None,
+            message: None,
+            attempt_count,
+            distinct_account_count,
+        },
+    )
+    .await
+    {
+        return Some(err);
+    }
+    take_and_record_sticky_owner_terminal_error(
+        state,
+        trace_context,
+        preserve_sticky_owner_terminal_error,
+        last_error,
+        attempt_count,
+        distinct_account_count,
+    )
+    .await
+}
+
 async fn send_pool_request_with_failover_and_binding_constraint_inner(
     request: PoolFailoverBindingRequest<'_>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
@@ -341,32 +395,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::RateLimited,
                 )) => {
-                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
-                        PoolSingleAccountBindingTerminalRequest {
+                    if let Some(err) =
+                        take_pool_failover_terminal_guard_error(PoolFailoverTerminalGuards {
                             state: state.as_ref(),
                             trace_context: trace_context.as_ref(),
                             binding_constraint: binding_constraint.as_ref(),
                             owner_auto_guard_active: encrypted_session_owner_guard_active,
                             prompt_cache_key,
-                            account: None,
-                            message: None,
+                            preserve_sticky_owner_terminal_error,
+                            last_error: &mut last_error,
                             attempt_count,
                             distinct_account_count,
-                        },
-                    )
-                    .await
-                    {
-                        return Err(err);
-                    }
-                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
-                        state.as_ref(),
-                        trace_context.as_ref(),
-                        preserve_sticky_owner_terminal_error,
-                        &mut last_error,
-                        attempt_count,
-                        distinct_account_count,
-                    )
-                    .await
+                        })
+                        .await
                     {
                         return Err(err);
                     }
@@ -379,32 +420,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::DegradedOnly,
                 )) => {
-                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
-                        PoolSingleAccountBindingTerminalRequest {
+                    if let Some(err) =
+                        take_pool_failover_terminal_guard_error(PoolFailoverTerminalGuards {
                             state: state.as_ref(),
                             trace_context: trace_context.as_ref(),
                             binding_constraint: binding_constraint.as_ref(),
                             owner_auto_guard_active: encrypted_session_owner_guard_active,
                             prompt_cache_key,
-                            account: None,
-                            message: None,
+                            preserve_sticky_owner_terminal_error,
+                            last_error: &mut last_error,
                             attempt_count,
                             distinct_account_count,
-                        },
-                    )
-                    .await
-                    {
-                        return Err(err);
-                    }
-                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
-                        state.as_ref(),
-                        trace_context.as_ref(),
-                        preserve_sticky_owner_terminal_error,
-                        &mut last_error,
-                        attempt_count,
-                        distinct_account_count,
-                    )
-                    .await
+                        })
+                        .await
                     {
                         return Err(err);
                     }
