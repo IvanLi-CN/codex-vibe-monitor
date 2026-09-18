@@ -2261,18 +2261,8 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     state.sqlite_batch_writer.flush_now(&state.pool).await?;
 
     let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
-    let responses_started_before = stale_started_before_string(
-        timeouts.responses_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let compact_started_before = stale_started_before_string(
-        timeouts.compact_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let default_started_before = stale_started_before_string(
-        timeouts.default_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
+    let (responses_started_before, compact_started_before, default_started_before) =
+        stale_pool_early_phase_cutoffs(&timeouts);
     let active_attempt_ids = state
         .pool_live_attempt_ids
         .lock()
@@ -2329,7 +2319,6 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     let Some((recovered_attempts, recovered_invocations)) = recovery else {
         return Ok(PoolOrphanRecoveryOutcome::default());
     };
-
     clean_up_recovered_pool_routes(
         state,
         &recovered_attempts,
@@ -2365,6 +2354,25 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     );
 
     Ok(outcome)
+}
+
+fn stale_pool_early_phase_cutoffs(
+    timeouts: &PoolRoutingTimeoutSettingsResolved,
+) -> (String, String, String) {
+    (
+        stale_started_before_string(
+            timeouts.responses_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        ),
+        stale_started_before_string(
+            timeouts.compact_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        ),
+        stale_started_before_string(
+            timeouts.default_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        ),
+    )
 }
 
 pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
