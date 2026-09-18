@@ -341,20 +341,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrit
     });
     let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize compact request body"));
 
-    let prepared = prepare_pool_request_body_for_account(
-        450450,
-        Some(&PoolReplayBodySnapshot::Memory(body)),
-        &"/v1/responses/compact".parse().expect("valid compact uri"),
-        &Method::POST,
-        None,
-        TagFastModeRewriteMode::ForceAdd,
-        crate::ImageToolRewriteMode::KeepOriginal,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        None,
-        None,
-        None,
-        None,
-    )
+    let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 450450,
+        body: Some(&PoolReplayBodySnapshot::Memory(body)),
+        original_uri: &"/v1/responses/compact".parse().expect("valid compact uri"),
+        method: &Method::POST,
+        content_encoding: None,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::ForceAdd,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: None,
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare compact pool request body");
 
@@ -382,20 +382,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_preserves_file_snapsho
         .expect("build replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
 
-    let prepared = prepare_pool_request_body_for_account(
-        450451,
-        Some(&snapshot),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        None,
-        TagFastModeRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::ForceRemove,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        None,
-        None,
-        None,
-        None,
-    )
+    let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 450451,
+        body: Some(&snapshot),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: None,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::ForceRemove,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: None,
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare compact pool request body");
 
@@ -429,20 +429,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_reports_rewritten_imag
         .expect("serialize responses request body"),
     );
 
-    let prepared = prepare_pool_request_body_for_account(
-        488488,
-        Some(&PoolReplayBodySnapshot::Memory(body)),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        None,
-        TagFastModeRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::ForceRemove,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        None,
-        None,
-        None,
-        None,
-    )
+    let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 488488,
+        body: Some(&PoolReplayBodySnapshot::Memory(body)),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: None,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::ForceRemove,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: None,
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare responses pool request body");
 
@@ -480,20 +480,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_keeps_large_rewrite_fi
         .expect("serialize large responses request body"),
     );
 
-    let prepared = prepare_pool_request_body_for_account(
-        488489,
-        Some(&PoolReplayBodySnapshot::Memory(body)),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        None,
-        TagFastModeRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::ForceRemove,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        None,
-        None,
-        None,
-        None,
-    )
+    let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 488489,
+        body: Some(&PoolReplayBodySnapshot::Memory(body)),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: None,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::ForceRemove,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: None,
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare responses pool request body");
 
@@ -529,20 +529,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_keeps_responses_lite_b
     });
     let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize Lite request body"));
 
-    let prepared = prepare_pool_request_body_for_account(
-        488490,
-        Some(&PoolReplayBodySnapshot::Memory(body.clone())),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        None,
-        TagFastModeRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::KeepOriginal,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        Some(CodexImagegenProtocol::Lite),
-        None,
-        None,
-        None,
-    )
+    let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 488490,
+        body: Some(&PoolReplayBodySnapshot::Memory(body.clone())),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: None,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: Some(CodexImagegenProtocol::Lite),
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare Lite pool request body");
 
@@ -569,20 +569,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_keeps_compressed_and_f
         .expect("build replay snapshot");
     assert_eq!(pool_request_snapshot_kind(&snapshot), "file");
 
-    let file_prepared = prepare_pool_request_body_for_account(
-        488491,
-        Some(&snapshot),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        None,
-        TagFastModeRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::ForceRemove,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        Some(CodexImagegenProtocol::Lite),
-        None,
-        None,
-        None,
-    )
+    let file_prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 488491,
+        body: Some(&snapshot),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: None,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::ForceRemove,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: Some(CodexImagegenProtocol::Lite),
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare file-backed Lite request body");
     assert_eq!(pool_request_snapshot_kind(&file_prepared.snapshot), "file");
@@ -604,20 +604,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_keeps_compressed_and_f
             .finish()
             .expect("finish compressed Lite request body"),
     );
-    let gzip_prepared = prepare_pool_request_body_for_account(
-        488492,
-        Some(&PoolReplayBodySnapshot::Memory(compressed.clone())),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        Some("gzip"),
-        TagFastModeRewriteMode::KeepOriginal,
-        crate::ImageToolRewriteMode::ForceAdd,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        Some(CodexImagegenProtocol::Lite),
-        None,
-        None,
-        None,
-    )
+    let gzip_prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 488492,
+        body: Some(&PoolReplayBodySnapshot::Memory(compressed.clone())),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: Some("gzip"),
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::ForceAdd,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: Some(CodexImagegenProtocol::Lite),
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare compressed Lite request body");
     assert!(!gzip_prepared.snapshot_is_decoded);
@@ -646,20 +646,20 @@ pub(crate) async fn prepare_pool_request_body_for_account_decodes_gzip_before_re
         .expect("write compressed request body");
     let compressed = encoder.finish().expect("finish compressed request body");
 
-    let prepared = prepare_pool_request_body_for_account(
-        490001,
-        Some(&PoolReplayBodySnapshot::Memory(Bytes::from(compressed))),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        Some("gzip"),
-        TagFastModeRewriteMode::ForceAdd,
-        crate::ImageToolRewriteMode::KeepOriginal,
-        crate::CodexImagegenRewriteMode::KeepOriginal,
-        None,
-        None,
-        None,
-        None,
-    )
+    let prepared = prepare_pool_request_body_for_account(PoolRequestBodyPreparationRequest {
+        proxy_request_id: 490001,
+        body: Some(&PoolReplayBodySnapshot::Memory(Bytes::from(compressed))),
+        original_uri: &"/v1/responses".parse().expect("valid responses uri"),
+        method: &Method::POST,
+        content_encoding: Some("gzip"),
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::ForceAdd,
+        image_tool_rewrite_mode: crate::ImageToolRewriteMode::KeepOriginal,
+        codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode::KeepOriginal,
+        codex_imagegen_protocol: None,
+        projected_request_info: None,
+        projected_hosted_image_intent: None,
+        model_mapping: None,
+    })
     .await
     .expect("prepare gzip-compressed pool request body");
 
