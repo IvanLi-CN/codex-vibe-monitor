@@ -675,34 +675,9 @@ function handlePoolRequest(pathname: string, url: URL, request: Request): DemoRo
   return undefined;
 }
 
-export async function handleDemoRequest(request: Request) {
-  const url = new URL(request.url);
-  const pathname = apiPathname(url.pathname);
-  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
-
-  const coreStatsResponse = await handleCoreStatsRequest(pathname, url);
-  if (coreStatsResponse) return coreStatsResponse;
-  const forwardProxyResponse = handleForwardProxyRequest(pathname);
-  if (forwardProxyResponse) return forwardProxyResponse;
-  const invocationListResponse = handleInvocationListRequest(pathname, url);
-  if (invocationListResponse) return invocationListResponse;
-  const invocationDetailResponse = handleInvocationDetailRequest(pathname);
-  if (invocationDetailResponse) return invocationDetailResponse;
-  const invocationAttemptResponse = handleInvocationAttemptResponseRequest(pathname);
-  if (invocationAttemptResponse) return invocationAttemptResponse;
-  const invocationResponse = handleInvocationResponseRequest(pathname);
-  if (invocationResponse) return invocationResponse;
-  const invocationAttemptsResponse = handleInvocationAttemptsRequest(pathname, url, request);
-  if (invocationAttemptsResponse) return invocationAttemptsResponse;
-  const promptCacheResponse = handlePromptCacheRequest(pathname, url);
-  if (promptCacheResponse) return promptCacheResponse;
-  const settingsResponse = handleSettingsAndSystemRequest(pathname, url, request);
-  if (settingsResponse) return settingsResponse;
-  const poolResponse = handlePoolRequest(pathname, url, request);
-  if (poolResponse) return poolResponse;
-
+function handlePoolMigrationRequest(pathname: string): DemoRouteResult {
   if (pathname === "/api/pool/upstream-accounts/api-keys/migration/preflight") {
-    const legacyApiKeyCount = demoAccounts().filter(
+    const apiKeyCount = demoAccounts().filter(
       (account) =>
         account.kind === "api_key_codex" &&
         ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
@@ -710,7 +685,7 @@ export async function handleDemoRequest(request: Request) {
     ).length;
     return json({
       confirmationHash: "demo-migration-confirmation-hash",
-      apiKeyCount: legacyApiKeyCount,
+      apiKeyCount,
       portableFields: [
         "account-level routing policy",
         "bound proxy keys",
@@ -722,13 +697,18 @@ export async function handleDemoRequest(request: Request) {
     });
   }
   if (pathname === "/api/pool/upstream-accounts/api-keys/migration/confirm") {
-    const migratedCount = demoModel.migrateLegacyApiKeyAccounts();
     return json({
-      migratedCount,
+      migratedCount: demoModel.migrateLegacyApiKeyAccounts(),
       confirmationHash: "demo-migration-confirmation-hash",
       auditAction: "api_key_transit_proxy_binding_migrated",
     });
   }
+  return undefined;
+}
+
+function handlePoolAdminRequest(pathname: string, url: URL, request: Request): DemoRouteResult {
+  const migrationResponse = handlePoolMigrationRequest(pathname);
+  if (migrationResponse) return migrationResponse;
   if (pathname === "/api/pool/upstream-account-events") {
     let items = accountEvents();
     const kind = url.searchParams.get("kind");
@@ -744,8 +724,8 @@ export async function handleDemoRequest(request: Request) {
     if (kind) {
       const accountIds = new Set(
         demoAccounts()
-          .filter((account) => account.kind === kind)
-          .map((account) => account.id),
+          .filter((item) => item.kind === kind)
+          .map((item) => item.id),
       );
       items = items.filter((item) => accountIds.has(item.upstreamAccountId));
     }
@@ -758,7 +738,7 @@ export async function handleDemoRequest(request: Request) {
       items: items.slice((page - 1) * pageSize, page * pageSize),
     });
   }
-  if (pathname === "/api/pool/tags" && request.method === "GET")
+  if (pathname === "/api/pool/tags" && request.method === "GET") {
     return json({
       writesEnabled: true,
       items: [
@@ -804,48 +784,33 @@ export async function handleDemoRequest(request: Request) {
         },
       ],
     });
-  if (pathname === "/api/pool/routing-settings")
-    return json({
-      writesEnabled: true,
-      apiKeyConfigured: true,
-      maskedApiKey: "cvm_pool••••••",
-      maintenance: {
-        primarySyncIntervalSecs: 300,
-        secondarySyncIntervalSecs: 1800,
-        priorityAvailableAccountCap: 100,
-      },
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
-      },
-      priorityHandoffAdmissionEnabled: true,
-    });
-  if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
-    return json(
-      demoModelRoutingLive({
-        window: url.searchParams.get("window"),
-        model: url.searchParams.get("model"),
-        state: url.searchParams.get("state"),
-        limit: url.searchParams.get("limit"),
-      }),
-    );
   }
-  if (pathname.includes("/sticky-keys"))
-    return json({
-      rangeStart: "2026-07-10T00:00:00Z",
-      rangeEnd: demoNow(),
-      selectionMode: "count",
-      selectedLimit: 50,
-      selectedActivityHours: null,
-      implicitFilter: { kind: null, filteredCount: 0 },
-      totalMatched: 3,
-      conversations: promptCacheConversations().conversations.slice(0, 3),
-      hasMore: false,
-      nextCursor: null,
-    });
+  if (pathname !== "/api/pool/routing-settings") return undefined;
+  return json({
+    writesEnabled: true,
+    apiKeyConfigured: true,
+    maskedApiKey: "cvm_pool••••••",
+    maintenance: {
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    },
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 30,
+      compactFirstByteTimeoutSecs: 45,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 420,
+    },
+    priorityHandoffAdmissionEnabled: true,
+  });
+}
+
+function handlePoolRoutingDetailRequest(
+  pathname: string,
+  url: URL,
+  request: Request,
+): DemoRouteResult {
   if (
     /^\/api\/pool\/upstream-accounts\/\d+\/model-routing$/.test(pathname) &&
     request.method === "GET"
@@ -861,48 +826,74 @@ export async function handleDemoRequest(request: Request) {
     const accountId = Number(pathname.split("/").at(-2));
     const account = demoAccounts().find((item) => item.id === accountId);
     const model = url.searchParams.get("model")?.trim();
-    if (account?.kind !== "api_key_codex" || !model) {
+    if (account?.kind !== "api_key_codex" || !model)
       return json(
         { error: "Model routing history is unavailable for this account." },
         { status: 404 },
       );
-    }
-
     const items = demoModelRoutingTimeline(accountId, model).map(publicModelRoutingRecord);
-    const cursor = url.searchParams.get("cursor");
-    if (cursor === "demo-model-routing-page-2") {
-      return json({ items: items.slice(2), nextCursor: null });
-    }
-    return json({
-      items: items.slice(0, 2),
-      nextCursor: items.length > 2 ? "demo-model-routing-page-2" : null,
-    });
+    return url.searchParams.get("cursor") === "demo-model-routing-page-2"
+      ? json({ items: items.slice(2), nextCursor: null })
+      : json({
+          items: items.slice(0, 2),
+          nextCursor: items.length > 2 ? "demo-model-routing-page-2" : null,
+        });
   }
-  if (/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) && request.method === "GET") {
-    const accountId = Number(pathname.split("/").at(-1));
-    const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
-    return json({
-      ...account,
-      note: `Demo fixture for ${account.displayName}.`,
-      upstreamBaseUrl: "https://api.openai.com",
-      chatgptUserId: account.chatgptAccountId ? `user-${account.id}` : null,
-      verifiedEmail: account.email,
-      lastRefreshedAt: account.lastSyncedAt,
-      history: Array.from({ length: 8 }, (_, index) => ({
-        capturedAt: `2026-07-${String(index + 3).padStart(2, "0")}T08:00:00Z`,
-        primaryUsedPercent: Math.min(94, (account.primaryWindow?.usedPercent ?? 0) + index * 3),
-        secondaryUsedPercent: account.secondaryWindow
-          ? Math.min(94, account.secondaryWindow.usedPercent + index * 2)
-          : null,
-        creditsBalance: account.credits?.balance ?? null,
-      })),
-      recentActions: accountEvents()
-        .filter((event) => event.accountDisplayName === account.displayName)
-        .slice(0, 4),
-      modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : [],
-    });
-  }
+  if (!/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) || request.method !== "GET")
+    return undefined;
+  const accountId = Number(pathname.split("/").at(-1));
+  const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
+  return json({
+    ...account,
+    note: `Demo fixture for ${account.displayName}.`,
+    upstreamBaseUrl: "https://api.openai.com",
+    chatgptUserId: account.chatgptAccountId ? `user-${account.id}` : null,
+    verifiedEmail: account.email,
+    lastRefreshedAt: account.lastSyncedAt,
+    history: Array.from({ length: 8 }, (_, index) => ({
+      capturedAt: `2026-07-${String(index + 3).padStart(2, "0")}T08:00:00Z`,
+      primaryUsedPercent: Math.min(94, (account.primaryWindow?.usedPercent ?? 0) + index * 3),
+      secondaryUsedPercent: account.secondaryWindow
+        ? Math.min(94, account.secondaryWindow.usedPercent + index * 2)
+        : null,
+      creditsBalance: account.credits?.balance ?? null,
+    })),
+    recentActions: accountEvents()
+      .filter((event) => event.accountDisplayName === account.displayName)
+      .slice(0, 4),
+    modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : [],
+  });
+}
 
+export async function handleDemoRequest(request: Request) {
+  const url = new URL(request.url);
+  const pathname = apiPathname(url.pathname);
+  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
+
+  const coreStatsResponse = await handleCoreStatsRequest(pathname, url);
+  if (coreStatsResponse) return coreStatsResponse;
+  const forwardProxyResponse = handleForwardProxyRequest(pathname);
+  if (forwardProxyResponse) return forwardProxyResponse;
+  const invocationListResponse = handleInvocationListRequest(pathname, url);
+  if (invocationListResponse) return invocationListResponse;
+  const invocationDetailResponse = handleInvocationDetailRequest(pathname);
+  if (invocationDetailResponse) return invocationDetailResponse;
+  const invocationAttemptResponse = handleInvocationAttemptResponseRequest(pathname);
+  if (invocationAttemptResponse) return invocationAttemptResponse;
+  const invocationResponse = handleInvocationResponseRequest(pathname);
+  if (invocationResponse) return invocationResponse;
+  const invocationAttemptsResponse = handleInvocationAttemptsRequest(pathname, url, request);
+  if (invocationAttemptsResponse) return invocationAttemptsResponse;
+  const promptCacheResponse = handlePromptCacheRequest(pathname, url);
+  if (promptCacheResponse) return promptCacheResponse;
+  const settingsResponse = handleSettingsAndSystemRequest(pathname, url, request);
+  if (settingsResponse) return settingsResponse;
+  const poolResponse = handlePoolRequest(pathname, url, request);
+  if (poolResponse) return poolResponse;
+  const poolAdminResponse = handlePoolAdminRequest(pathname, url, request);
+  if (poolAdminResponse) return poolAdminResponse;
+  const poolRoutingResponse = handlePoolRoutingDetailRequest(pathname, url, request);
+  if (poolRoutingResponse) return poolRoutingResponse;
   if (request.method !== "GET" && request.method !== "HEAD") {
     let body: unknown = null;
     try {
