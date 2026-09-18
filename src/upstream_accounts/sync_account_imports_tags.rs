@@ -1,6 +1,8 @@
 use super::*;
 use sqlx::Transaction;
 
+include!("sync_account_imports_tags/part_01.rs");
+
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
 pub(crate) const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_transport:websocket";
@@ -2626,38 +2628,10 @@ pub(crate) async fn load_upstream_account_groups(
             upstream_429_retry_enabled,
             decode_group_upstream_429_max_retries(row.upstream_429_max_retries.unwrap_or_default()),
         );
-        let routing_rule = group_routing_rule_from_columns(
-            row.concurrency_limit.unwrap_or_default(),
+        let routing_rule = group_routing_rule_from_group_list_row(
+            &row,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
-            row.policy_allow_cut_out,
-            row.policy_allow_cut_in,
-            row.policy_priority_tier.as_deref(),
-            row.policy_fast_mode_rewrite_mode.as_deref(),
-            row.policy_image_tool_rewrite_mode.as_deref(),
-            row.policy_codex_imagegen_rewrite_mode.as_deref(),
-            row.policy_request_compression_algorithm.as_deref(),
-            row.policy_concurrency_limit,
-            row.policy_upstream_429_retry_enabled,
-            row.policy_upstream_429_max_retries,
-            row.policy_available_models_json.as_deref(),
-            row.policy_available_models_mode.as_deref(),
-            row.policy_status_change_upstream_http_401,
-            row.policy_status_change_upstream_http_402,
-            row.policy_status_change_upstream_http_403,
-            row.policy_status_change_reauth_required,
-            row.policy_status_change_upstream_http_429_rate_limit,
-            row.policy_status_change_upstream_http_429_quota_exhausted,
-            row.policy_status_change_usage_snapshot_exhausted,
-            row.policy_status_change_quota_still_exhausted,
-            row.policy_status_change_transport_failure,
-            row.policy_status_change_upstream_server_overloaded,
-            row.policy_status_change_upstream_http_5xx,
-            row.policy_responses_first_byte_timeout_secs,
-            row.policy_compact_first_byte_timeout_secs,
-            row.policy_image_first_byte_timeout_secs,
-            row.policy_responses_stream_timeout_secs,
-            row.policy_compact_stream_timeout_secs,
         );
         let (effective_timeouts, timeout_field_sources, _) =
             load_effective_request_path_timeouts_for_group(

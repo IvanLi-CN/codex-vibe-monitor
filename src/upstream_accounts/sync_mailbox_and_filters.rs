@@ -1,4 +1,5 @@
 include!("sync_mailbox_and_filters/part_01.rs");
+include!("sync_mailbox_and_filters/part_02.rs");
 pub(crate) enum KaisouMailAttachReadState<T> {
     Readable(T),
     NotReadable,
@@ -987,105 +988,6 @@ pub(crate) fn status_change_reasons_from_columns(
     reasons
 }
 
-pub(crate) fn group_routing_rule_from_columns(
-    legacy_concurrency_limit: i64,
-    legacy_upstream_429_retry_enabled: bool,
-    legacy_upstream_429_max_retries: u8,
-    policy_allow_cut_out: Option<i64>,
-    policy_allow_cut_in: Option<i64>,
-    policy_priority_tier: Option<&str>,
-    policy_fast_mode_rewrite_mode: Option<&str>,
-    policy_image_tool_rewrite_mode: Option<&str>,
-    policy_codex_imagegen_rewrite_mode: Option<&str>,
-    policy_request_compression_algorithm: Option<&str>,
-    policy_concurrency_limit: Option<i64>,
-    policy_upstream_429_retry_enabled: Option<i64>,
-    policy_upstream_429_max_retries: Option<i64>,
-    policy_available_models_json: Option<&str>,
-    policy_available_models_mode: Option<&str>,
-    policy_status_change_upstream_http_401: Option<i64>,
-    policy_status_change_upstream_http_402: Option<i64>,
-    policy_status_change_upstream_http_403: Option<i64>,
-    policy_status_change_reauth_required: Option<i64>,
-    policy_status_change_upstream_http_429_rate_limit: Option<i64>,
-    policy_status_change_upstream_http_429_quota_exhausted: Option<i64>,
-    policy_status_change_usage_snapshot_exhausted: Option<i64>,
-    policy_status_change_quota_still_exhausted: Option<i64>,
-    policy_status_change_transport_failure: Option<i64>,
-    policy_status_change_upstream_server_overloaded: Option<i64>,
-    policy_status_change_upstream_http_5xx: Option<i64>,
-    policy_responses_first_byte_timeout_secs: Option<i64>,
-    policy_compact_first_byte_timeout_secs: Option<i64>,
-    policy_image_first_byte_timeout_secs: Option<i64>,
-    policy_responses_stream_timeout_secs: Option<i64>,
-    policy_compact_stream_timeout_secs: Option<i64>,
-) -> GroupAccountRoutingRule {
-    let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
-        .map(|value| value != 0)
-        .unwrap_or(legacy_upstream_429_retry_enabled);
-    GroupAccountRoutingRule {
-        allow_cut_out: policy_allow_cut_out.map(|value| value != 0).unwrap_or(true),
-        allow_cut_in: policy_allow_cut_in.map(|value| value != 0).unwrap_or(true),
-        priority_tier: decode_tag_priority_tier(policy_priority_tier.unwrap_or("normal")),
-        fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(
-            policy_fast_mode_rewrite_mode.unwrap_or("keep_original"),
-        ),
-        image_tool_rewrite_mode: decode_image_tool_rewrite_mode(
-            policy_image_tool_rewrite_mode.unwrap_or("keep_original"),
-        ),
-        codex_imagegen_rewrite_mode: policy_codex_imagegen_rewrite_mode
-            .map(decode_codex_imagegen_rewrite_mode),
-        request_compression_algorithm: policy_request_compression_algorithm
-            .map(decode_request_compression_algorithm),
-        concurrency_limit: policy_concurrency_limit.unwrap_or(legacy_concurrency_limit),
-        upstream_429_retry_enabled,
-        upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
-            upstream_429_retry_enabled,
-            policy_upstream_429_max_retries
-                .map(decode_group_upstream_429_max_retries)
-                .unwrap_or(legacy_upstream_429_max_retries),
-        ),
-        available_models: if policy_available_models_json
-            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
-        {
-            Vec::new()
-        } else {
-            parse_string_array_json(policy_available_models_json)
-        },
-        available_models_mode: if policy_available_models_json
-            .is_some_and(|raw| serde_json::from_str::<Vec<String>>(raw).is_err())
-        {
-            Some(AvailableModelsMode::Allowlist)
-        } else {
-            policy_available_models_mode
-                .map(|value| AvailableModelsMode::from_str(Some(value)))
-                .or_else(|| policy_available_models_json.map(|_| AvailableModelsMode::Allowlist))
-        },
-        available_models_defined: policy_available_models_json.is_some()
-            || policy_available_models_mode.is_some(),
-        status_change_reasons: status_change_reasons_from_columns(
-            policy_status_change_upstream_http_401,
-            policy_status_change_upstream_http_402,
-            policy_status_change_upstream_http_403,
-            policy_status_change_reauth_required,
-            policy_status_change_upstream_http_429_rate_limit,
-            policy_status_change_upstream_http_429_quota_exhausted,
-            policy_status_change_usage_snapshot_exhausted,
-            policy_status_change_quota_still_exhausted,
-            policy_status_change_transport_failure,
-            policy_status_change_upstream_server_overloaded,
-            policy_status_change_upstream_http_5xx,
-        ),
-        timeouts: routing_timeout_settings_from_columns(
-            policy_responses_first_byte_timeout_secs,
-            policy_compact_first_byte_timeout_secs,
-            policy_image_first_byte_timeout_secs,
-            policy_responses_stream_timeout_secs,
-            policy_compact_stream_timeout_secs,
-        ),
-    }
-}
-
 pub(crate) async fn load_group_routing_rule(
     pool: &Pool<Sqlite>,
     group_name: &str,
@@ -1169,48 +1071,48 @@ pub(crate) async fn load_group_routing_rule(
     .await?;
     let Some(row) = row else {
         return Ok(group_routing_rule_from_columns(
-            0, false, 0, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-            None, None,
+            empty_group_routing_rule_columns(),
         ));
     };
-    let upstream_429_retry_enabled =
-        decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled.unwrap_or_default());
-    let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
-        upstream_429_retry_enabled,
-        decode_group_upstream_429_max_retries(row.upstream_429_max_retries.unwrap_or_default()),
+    let (upstream_429_retry_enabled, upstream_429_max_retries) = decode_group_legacy_routing_state(
+        row.upstream_429_retry_enabled,
+        row.upstream_429_max_retries,
     );
-    Ok(group_routing_rule_from_columns(
-        row.concurrency_limit.unwrap_or_default(),
-        upstream_429_retry_enabled,
-        upstream_429_max_retries,
-        row.policy_allow_cut_out,
-        row.policy_allow_cut_in,
-        row.policy_priority_tier.as_deref(),
-        row.policy_fast_mode_rewrite_mode.as_deref(),
-        row.policy_image_tool_rewrite_mode.as_deref(),
-        row.policy_codex_imagegen_rewrite_mode.as_deref(),
-        row.policy_request_compression_algorithm.as_deref(),
-        row.policy_concurrency_limit,
-        row.policy_upstream_429_retry_enabled,
-        row.policy_upstream_429_max_retries,
-        row.policy_available_models_json.as_deref(),
-        row.policy_available_models_mode.as_deref(),
-        row.policy_status_change_upstream_http_401,
-        row.policy_status_change_upstream_http_402,
-        row.policy_status_change_upstream_http_403,
-        row.policy_status_change_reauth_required,
-        row.policy_status_change_upstream_http_429_rate_limit,
-        row.policy_status_change_upstream_http_429_quota_exhausted,
-        row.policy_status_change_usage_snapshot_exhausted,
-        row.policy_status_change_quota_still_exhausted,
-        row.policy_status_change_transport_failure,
-        row.policy_status_change_upstream_server_overloaded,
-        row.policy_status_change_upstream_http_5xx,
-        row.policy_responses_first_byte_timeout_secs,
-        row.policy_compact_first_byte_timeout_secs,
-        row.policy_image_first_byte_timeout_secs,
-        row.policy_responses_stream_timeout_secs,
-        row.policy_compact_stream_timeout_secs,
-    ))
+    Ok(group_routing_rule_from_columns(GroupRoutingRuleColumns {
+        legacy_concurrency_limit: row.concurrency_limit.unwrap_or_default(),
+        legacy_upstream_429_retry_enabled: upstream_429_retry_enabled,
+        legacy_upstream_429_max_retries: upstream_429_max_retries,
+        policy_allow_cut_out: row.policy_allow_cut_out,
+        policy_allow_cut_in: row.policy_allow_cut_in,
+        policy_priority_tier: row.policy_priority_tier.as_deref(),
+        policy_fast_mode_rewrite_mode: row.policy_fast_mode_rewrite_mode.as_deref(),
+        policy_image_tool_rewrite_mode: row.policy_image_tool_rewrite_mode.as_deref(),
+        policy_codex_imagegen_rewrite_mode: row.policy_codex_imagegen_rewrite_mode.as_deref(),
+        policy_request_compression_algorithm: row.policy_request_compression_algorithm.as_deref(),
+        policy_concurrency_limit: row.policy_concurrency_limit,
+        policy_upstream_429_retry_enabled: row.policy_upstream_429_retry_enabled,
+        policy_upstream_429_max_retries: row.policy_upstream_429_max_retries,
+        policy_available_models_json: row.policy_available_models_json.as_deref(),
+        policy_available_models_mode: row.policy_available_models_mode.as_deref(),
+        policy_status_change_upstream_http_401: row.policy_status_change_upstream_http_401,
+        policy_status_change_upstream_http_402: row.policy_status_change_upstream_http_402,
+        policy_status_change_upstream_http_403: row.policy_status_change_upstream_http_403,
+        policy_status_change_reauth_required: row.policy_status_change_reauth_required,
+        policy_status_change_upstream_http_429_rate_limit: row
+            .policy_status_change_upstream_http_429_rate_limit,
+        policy_status_change_upstream_http_429_quota_exhausted: row
+            .policy_status_change_upstream_http_429_quota_exhausted,
+        policy_status_change_usage_snapshot_exhausted: row
+            .policy_status_change_usage_snapshot_exhausted,
+        policy_status_change_quota_still_exhausted: row.policy_status_change_quota_still_exhausted,
+        policy_status_change_transport_failure: row.policy_status_change_transport_failure,
+        policy_status_change_upstream_server_overloaded: row
+            .policy_status_change_upstream_server_overloaded,
+        policy_status_change_upstream_http_5xx: row.policy_status_change_upstream_http_5xx,
+        policy_responses_first_byte_timeout_secs: row.policy_responses_first_byte_timeout_secs,
+        policy_compact_first_byte_timeout_secs: row.policy_compact_first_byte_timeout_secs,
+        policy_image_first_byte_timeout_secs: row.policy_image_first_byte_timeout_secs,
+        policy_responses_stream_timeout_secs: row.policy_responses_stream_timeout_secs,
+        policy_compact_stream_timeout_secs: row.policy_compact_stream_timeout_secs,
+    }))
 }
