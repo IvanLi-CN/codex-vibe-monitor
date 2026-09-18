@@ -833,15 +833,15 @@ impl TerminalJournal {
     }
 }
 
-fn load_terminal_journal_segments(
-    directory: &Path,
-) -> Result<(
+type LoadedTerminalJournalSegments = (
     BTreeMap<u64, JournalSegment>,
     Vec<(u64, Vec<JournalEntryMetadata>)>,
     HashSet<u64>,
     u64,
     u64,
-)> {
+);
+
+fn load_terminal_journal_segments(directory: &Path) -> Result<LoadedTerminalJournalSegments> {
     let mut paths = fs::read_dir(directory)
         .with_context(|| {
             format!(

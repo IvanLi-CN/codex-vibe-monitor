@@ -534,7 +534,7 @@ fn prepare_counted_oauth_responses_request(
     chatgpt_account_id: Option<&str>,
     installation_seed: Option<&[u8; 32]>,
     crypto_key: Option<&[u8; 32]>,
-) -> Result<(HeaderMap, Body, OauthRequestDebugInfo, bool), OauthUpstreamResponse> {
+) -> Result<(HeaderMap, Body, OauthRequestDebugInfo, bool), Box<OauthUpstreamResponse>> {
     let (mut outbound_headers, forwarded_headers) =
         collect_forwardable_headers(headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES, crypto_key);
     let prepared = match body {
@@ -543,14 +543,14 @@ fn prepare_counted_oauth_responses_request(
             {
                 Ok(value) => value,
                 Err(err) => {
-                    return Err(OauthUpstreamResponse {
+                    return Err(Box::new(OauthUpstreamResponse {
                         response: error_response(
                             StatusCode::BAD_REQUEST,
                             &err.to_string(),
                             "invalid_request_error",
                         ),
                         request_debug: None,
-                    });
+                    }));
                 }
             };
             let request_debug = build_oauth_request_debug(
@@ -573,14 +573,14 @@ fn prepare_counted_oauth_responses_request(
                 match prepare_responses_request_body(&bytes, account_id, installation_seed) {
                     Ok(value) => value,
                     Err(err) => {
-                        return Err(OauthUpstreamResponse {
+                        return Err(Box::new(OauthUpstreamResponse {
                             response: error_response(
                                 StatusCode::BAD_REQUEST,
                                 &err.to_string(),
                                 "invalid_request_error",
                             ),
                             request_debug: None,
-                        });
+                        }));
                     }
                 };
             let request_debug = build_oauth_request_debug(
@@ -688,7 +688,7 @@ async fn counted_oauth_responses(
             crypto_key,
         ) {
             Ok(prepared) => prepared,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
     let upstream = match send_counted_oauth_http_request(
         Method::POST,

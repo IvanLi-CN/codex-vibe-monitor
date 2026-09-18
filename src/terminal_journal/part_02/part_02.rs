@@ -35,7 +35,7 @@ impl TerminalJournal {
                 &mut scanned_lines,
             );
             match result {
-                ReplaySegmentResult::Write(write) => writes.push(write),
+                ReplaySegmentResult::Write(write) => writes.push(*write),
                 ReplaySegmentResult::ReachedEnd => {
                     self.replay_segments.pop_front();
                 }
@@ -51,7 +51,7 @@ impl TerminalJournal {
 }
 
 enum ReplaySegmentResult {
-    Write(BatchedTerminalInvocationWrite),
+    Write(Box<BatchedTerminalInvocationWrite>),
     ReachedEnd,
     Blocked,
     Stopped,
@@ -151,6 +151,6 @@ fn read_replay_segment(
             return ReplaySegmentResult::Stopped;
         }
         *estimated_bytes = estimated_bytes.saturating_add(write_bytes);
-        return ReplaySegmentResult::Write(write);
+        return ReplaySegmentResult::Write(Box::new(write));
     }
 }

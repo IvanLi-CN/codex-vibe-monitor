@@ -236,26 +236,26 @@ fn prepare_oauth_responses_request(
     account_id: Option<i64>,
     installation_seed: Option<&[u8; 32]>,
     crypto_key: Option<&[u8; 32]>,
-) -> Result<(reqwest::RequestBuilder, OauthRequestDebugInfo, bool), OauthUpstreamResponse> {
+) -> Result<(reqwest::RequestBuilder, OauthRequestDebugInfo, bool), Box<OauthUpstreamResponse>> {
     let prepared = match body {
         OauthUpstreamRequestBody::Empty => {
             let prepared = match prepare_responses_request_body(&[], account_id, installation_seed)
             {
                 Ok(value) => value,
                 Err(err) => {
-                    return Err(OauthUpstreamResponse {
+                    return Err(Box::new(OauthUpstreamResponse {
                         response: error_response(
                             StatusCode::BAD_REQUEST,
                             &err.to_string(),
                             "invalid_request_error",
                         ),
                         request_debug: None,
-                    });
+                    }));
                 }
             };
             let request_debug = build_oauth_request_debug(
                 "/v1/responses",
-                &forwarded_headers,
+                forwarded_headers,
                 Some(prepared.body.as_slice()),
                 prepared.rewrite.clone(),
                 Some("empty"),
@@ -273,19 +273,19 @@ fn prepare_oauth_responses_request(
                 match prepare_responses_request_body(&bytes, account_id, installation_seed) {
                     Ok(value) => value,
                     Err(err) => {
-                        return Err(OauthUpstreamResponse {
+                        return Err(Box::new(OauthUpstreamResponse {
                             response: error_response(
                                 StatusCode::BAD_REQUEST,
                                 &err.to_string(),
                                 "invalid_request_error",
                             ),
                             request_debug: None,
-                        });
+                        }));
                     }
                 };
             let request_debug = build_oauth_request_debug(
                 "/v1/responses",
-                &forwarded_headers,
+                forwarded_headers,
                 Some(prepared.body.as_slice()),
                 prepared.rewrite.clone(),
                 Some("memory"),
@@ -306,7 +306,7 @@ fn prepare_oauth_responses_request(
         } => {
             let request_debug = build_oauth_request_debug_with_prefix(
                 "/v1/responses",
-                &forwarded_headers,
+                forwarded_headers,
                 debug_body_prefix.as_deref(),
                 OauthResponsesRewriteSummary::default(),
                 snapshot_kind.or(Some("stream")),
@@ -453,7 +453,7 @@ async fn oauth_responses(
         crypto_key,
     ) {
         Ok(prepared) => prepared,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let (upstream, request_debug, request_started) = match send_oauth_responses_request(
         request,

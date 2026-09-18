@@ -120,7 +120,7 @@ async fn refresh_forward_proxy_subscriptions_at_startup(
         if let Some(run) = startup_run.as_ref() {
             let _ = finish_system_task_run_reliably(
                 state.as_ref(),
-                Some(&cancel),
+                Some(cancel),
                 run,
                 SystemTaskStatus::Failed,
                 Some("forward proxy startup refresh failed".to_string()),
@@ -132,7 +132,7 @@ async fn refresh_forward_proxy_subscriptions_at_startup(
     } else if let Some(run) = startup_run.as_ref() {
         let _ = finish_system_task_run_reliably(
             state.as_ref(),
-            Some(&cancel),
+            Some(cancel),
             run,
             SystemTaskStatus::Success,
             Some("forward proxy startup refresh completed".to_string()),

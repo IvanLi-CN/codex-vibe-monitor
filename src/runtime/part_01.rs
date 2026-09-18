@@ -233,8 +233,8 @@ async fn initialize_runtime_database(config: &AppConfig, cli: &CliArgs) -> Resul
     // it in bounded transactions. This happens before the HTTP listener is created.
     mark_timeseries_minute_projection_startup_recovery(&pool).await?;
     log_startup_phase("schema", schema_started_at);
-    recover_raw_overflow_spools(&config).await;
-    if should_recover_pending_pool_attempts_on_startup(&cli) {
+    recover_raw_overflow_spools(config).await;
+    if should_recover_pending_pool_attempts_on_startup(cli) {
         let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
         if recovered_running_invocations > 0 {
             warn!(
@@ -251,8 +251,8 @@ async fn initialize_runtime_database(config: &AppConfig, cli: &CliArgs) -> Resul
             );
         }
     }
-    if should_run_blocking_startup_persistent_prep(&cli) {
-        let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
+    if should_run_blocking_startup_persistent_prep(cli) {
+        let prep_summary = run_startup_persistent_prep(&pool, config, cli).await?;
         info!(
             stale_archive_temp_files_removed = prep_summary.stale_archive_temp_files_removed,
             refreshed_manifest_batches = prep_summary.refreshed_manifest_batches,
@@ -305,12 +305,12 @@ async fn load_runtime_forward_proxy(
     Arc<Mutex<ForwardProxyManager>>,
     [u8; 32],
 )> {
-    ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config).await?;
-    ensure_proxy_websocket_settings_initialized(&pool, &config).await?;
-    let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
-    let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
-    let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
-    let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(&pool).await?;
+    ensure_proxy_encrypted_session_owner_routing_setting_initialized(pool, config).await?;
+    ensure_proxy_websocket_settings_initialized(pool, config).await?;
+    let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(pool).await?));
+    let forward_proxy_settings = load_forward_proxy_settings(pool).await?;
+    let forward_proxy_runtime = load_forward_proxy_runtime_states(pool).await?;
+    let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(pool).await?;
     let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::with_algo(
         forward_proxy_settings,
         forward_proxy_runtime,

@@ -385,7 +385,7 @@ async fn commit_external_api_key_rotation(
     )
     .bind(existing.id)
     .bind(EXTERNAL_API_KEY_STATUS_ROTATED)
-    .bind(&now_iso)
+    .bind(now_iso)
     .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple_local)?;
@@ -406,10 +406,10 @@ async fn commit_external_api_key_rotation(
     )
     .bind(&existing.client_id)
     .bind(&existing.name)
-    .bind(&secret_hash)
-    .bind(&secret_prefix)
+    .bind(secret_hash)
+    .bind(secret_prefix)
     .bind(EXTERNAL_API_KEY_STATUS_ACTIVE)
-    .bind(&now_iso)
+    .bind(now_iso)
     .bind(existing.id)
     .fetch_one(tx.as_mut())
     .await
@@ -424,7 +424,7 @@ async fn commit_external_api_key_rotation(
         }
     })?;
     tx.commit().await.map_err(internal_error_tuple_local)?;
-    Ok(load_external_api_key_row(pool, inserted_id)
+    load_external_api_key_row(pool, inserted_id)
         .await
         .map_err(internal_error_tuple_local)?
         .ok_or_else(|| {
@@ -432,7 +432,7 @@ async fn commit_external_api_key_rotation(
                 StatusCode::NOT_FOUND,
                 "external API key not found after rotation".to_string(),
             )
-        })?)
+        })
 }
 
 pub(crate) async fn rotate_external_api_key_inner(
