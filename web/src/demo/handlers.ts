@@ -37,13 +37,9 @@ import {
 } from "./handlers-support";
 import { demoModel, demoNow } from "./model";
 
-export async function handleDemoRequest(request: Request) {
-  const url = new URL(request.url);
-  const pathname = apiPathname(url.pathname);
-  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
+type DemoRouteResult = Response | undefined;
 
-  // Keep the simulated shell on the same stable release value as the checked-in frontend.
-  // A literal "demo" version leaks into the user-facing footer and is not meaningful evidence.
+async function handleCoreStatsRequest(pathname: string, url: URL): Promise<DemoRouteResult> {
   if (pathname === "/api/version") return json({ backend: "0.2.0", frontend: "0.2.0" });
   if (pathname === "/api/stats" || pathname === "/api/stats/summary") return json(demoSummary());
   if (pathname === "/api/stats/long-term/overview") {
@@ -134,174 +130,129 @@ export async function handleDemoRequest(request: Request) {
       actionableFailureCount: 31,
       actionableFailureRate: 0.88,
     });
+  return undefined;
+}
+
+function handleForwardProxyRequest(pathname: string): DemoRouteResult {
   if (pathname === "/api/stats/forward-proxy") return json(forwardProxyLive());
-  if (pathname === "/api/stats/forward-proxy/timeseries") {
-    const live = forwardProxyLive();
-    return json({
-      rangeStart: live.rangeStart,
-      rangeEnd: live.rangeEnd,
-      bucketSeconds: 3600,
-      effectiveBucket: "1h",
-      availableBuckets: ["1h", "6h", "1d"],
-      nodes: live.nodes.map((node) => ({
-        key: node.key,
-        source: node.source,
-        displayName: node.displayName,
-        endpointUrl: node.endpointUrl,
-        weight: node.weight,
-        penalized: node.penalized,
-        buckets: node.last24h,
-        weightBuckets: node.weight24h,
-      })),
-    });
-  }
-  if (pathname === "/api/stats/prompt-cache-conversations") return json(promptCacheConversations());
-  if (pathname.startsWith("/api/stats/prompt-cache-conversation-binding-events/")) {
-    const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
-    const items = [
-      {
-        id: 9303,
-        promptCacheKey,
-        action: "stickyMutationSuppressed",
-        origin: "systemAuto",
-        infoTypes: ["routing"],
-        occurredAt: "2026-08-02T09:41:08.000Z",
-        headline: "Sticky mutation suppressed",
-        changedFields: [],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        invokeId: "demo-concurrent-late",
-        routingContext: {
-          reasonCode: "staleConcurrentCompletion",
-          routingSource: "freshAssignment",
-          routingSelectionAudit: {
-            selectedAccountId: 102,
-            selectedAccountName: simulatedAccountDisplayName(102),
-            eligibleCandidateCount: 1,
-            winnerReasonCode: "onlyEligibleCandidate",
-            comparedAccountId: null,
-            comparedAccountName: null,
-            excludedCandidates: [
-              {
-                accountId: 115,
-                accountName: simulatedAccountDisplayName(115),
-                reasonCode: "modelNotAllowed",
-              },
-            ],
-          },
-          httpStatus: null,
-          triggerAttemptId: "DEMO-LATE-2",
-          causingAttemptId: null,
-          causingHttpStatus: null,
-        },
-      },
-      {
-        id: 9302,
-        promptCacheKey,
-        action: "stickyTargetChanged",
-        origin: "systemAuto",
-        infoTypes: ["routing"],
-        occurredAt: "2026-08-02T09:41:05.000Z",
-        headline: "Sticky target changed",
-        changedFields: ["stickyTarget"],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: null,
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        invokeId: "demo-fresh-success",
-        routingContext: {
-          reasonCode: "freshAssignmentAfterFailure",
-          routingSource: "freshAssignment",
-          routingSelectionAudit: {
-            selectedAccountId: 102,
-            selectedAccountName: simulatedAccountDisplayName(102),
-            eligibleCandidateCount: 1,
-            winnerReasonCode: "onlyEligibleCandidate",
-            comparedAccountId: null,
-            comparedAccountName: null,
-            excludedCandidates: [
-              {
-                accountId: 115,
-                accountName: simulatedAccountDisplayName(115),
-                reasonCode: "modelNotAllowed",
-              },
-            ],
-          },
-          httpStatus: null,
-          triggerAttemptId: "DEMO-SUCCESS-1",
-          causingAttemptId: "DEMO-FAILED-0",
-          causingHttpStatus: 429,
-        },
-      },
-      {
-        id: 9301,
-        promptCacheKey,
-        action: "stickyTargetCleared",
-        origin: "systemAuto",
-        infoTypes: ["routing"],
-        occurredAt: "2026-08-02T09:41:01.000Z",
-        headline: "Sticky target cleared",
-        changedFields: ["stickyTarget"],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
-        stickyAfter: null,
-        invokeId: null,
-      },
-    ];
-    const infoType = url.searchParams.get("infoType");
-    const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
-    return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
-  }
-  if (pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) {
-    const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
-    const conversation = promptCacheConversations().conversations.find(
-      (item) => item.promptCacheKey === promptCacheKey,
-    );
-    const owner = conversation?.encryptedOwnerAccountId ?? null;
-    const account = owner == null ? null : demoAccounts().find((item) => item.id === owner);
-    return json({
+  if (pathname !== "/api/stats/forward-proxy/timeseries") return undefined;
+  const live = forwardProxyLive();
+  return json({
+    rangeStart: live.rangeStart,
+    rangeEnd: live.rangeEnd,
+    bucketSeconds: 3600,
+    effectiveBucket: "1h",
+    availableBuckets: ["1h", "6h", "1d"],
+    nodes: live.nodes.map((node) => ({
+      key: node.key,
+      source: node.source,
+      displayName: node.displayName,
+      endpointUrl: node.endpointUrl,
+      weight: node.weight,
+      penalized: node.penalized,
+      buckets: node.last24h,
+      weightBuckets: node.weight24h,
+    })),
+  });
+}
+
+function promptCacheBindingEvents(promptCacheKey: string) {
+  return [
+    {
+      id: 9303,
       promptCacheKey,
-      bindingKind: account ? "upstreamAccount" : "none",
-      groupName: account?.groupName ?? null,
-      upstreamAccountId: owner,
-      upstreamAccountName: account?.displayName ?? null,
-      hasEncryptedSessionOwner: account != null,
-      encryptedOwnerAccountId: owner,
-      encryptedOwnerAccountName: account?.displayName ?? null,
-      encryptedOwnerGroupName: account?.groupName ?? null,
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
+      action: "stickyMutationSuppressed",
+      origin: "systemAuto",
+      infoTypes: ["routing"],
+      occurredAt: "2026-08-02T09:41:08.000Z",
+      headline: "Sticky mutation suppressed",
+      changedFields: [],
+      bindingBefore: null,
+      bindingAfter: null,
+      stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+      stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+      invokeId: "demo-concurrent-late",
+      routingContext: {
+        reasonCode: "staleConcurrentCompletion",
+        routingSource: "freshAssignment",
+        routingSelectionAudit: {
+          selectedAccountId: 102,
+          selectedAccountName: simulatedAccountDisplayName(102),
+          eligibleCandidateCount: 1,
+          winnerReasonCode: "onlyEligibleCandidate",
+          comparedAccountId: null,
+          comparedAccountName: null,
+          excludedCandidates: [
+            {
+              accountId: 115,
+              accountName: simulatedAccountDisplayName(115),
+              reasonCode: "modelNotAllowed",
+            },
+          ],
+        },
+        httpStatus: null,
+        triggerAttemptId: "DEMO-LATE-2",
+        causingAttemptId: null,
+        causingHttpStatus: null,
       },
-      timeoutFieldSources: {
-        responsesFirstByteTimeoutSecs: "root",
-        compactFirstByteTimeoutSecs: "root",
-        imageFirstByteTimeoutSecs: "root",
-        responsesStreamTimeoutSecs: "root",
-        compactStreamTimeoutSecs: "root",
+    },
+    {
+      id: 9302,
+      promptCacheKey,
+      action: "stickyTargetChanged",
+      origin: "systemAuto",
+      infoTypes: ["routing"],
+      occurredAt: "2026-08-02T09:41:05.000Z",
+      headline: "Sticky target changed",
+      changedFields: ["stickyTarget"],
+      bindingBefore: null,
+      bindingAfter: null,
+      stickyBefore: null,
+      stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+      invokeId: "demo-fresh-success",
+      routingContext: {
+        reasonCode: "freshAssignmentAfterFailure",
+        routingSource: "freshAssignment",
+        routingSelectionAudit: {
+          selectedAccountId: 102,
+          selectedAccountName: simulatedAccountDisplayName(102),
+          eligibleCandidateCount: 1,
+          winnerReasonCode: "onlyEligibleCandidate",
+          comparedAccountId: null,
+          comparedAccountName: null,
+          excludedCandidates: [
+            {
+              accountId: 115,
+              accountName: simulatedAccountDisplayName(115),
+              reasonCode: "modelNotAllowed",
+            },
+          ],
+        },
+        httpStatus: null,
+        triggerAttemptId: "DEMO-SUCCESS-1",
+        causingAttemptId: "DEMO-FAILED-0",
+        causingHttpStatus: 429,
       },
-      allowSwitchUpstream: true,
-      fastModeRewriteMode: "keep_original",
-      imageToolRewriteMode: "keep_original",
-      availableModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
-      forwardProxyKey: account?.currentForwardProxyKey ?? null,
-      forwardProxyKeys: account?.boundProxyKeys ?? [],
-      policyFieldSources: {
-        allowSwitchUpstream: "root",
-        fastModeRewriteMode: "root",
-        imageToolRewriteMode: "root",
-        availableModels: "root",
-        forwardProxyKey: "account",
-      },
-      updatedAt: "2026-07-10T09:20:00Z",
-    });
-  }
+    },
+    {
+      id: 9301,
+      promptCacheKey,
+      action: "stickyTargetCleared",
+      origin: "systemAuto",
+      infoTypes: ["routing"],
+      occurredAt: "2026-08-02T09:41:01.000Z",
+      headline: "Sticky target cleared",
+      changedFields: ["stickyTarget"],
+      bindingBefore: null,
+      bindingAfter: null,
+      stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
+      stickyAfter: null,
+      invokeId: null,
+    },
+  ];
+}
+
+function handleInvocationListRequest(pathname: string, url: URL): DemoRouteResult {
   if (pathname === "/api/quota/latest")
     return json({
       capturedAt: demoNow(),
@@ -312,7 +263,6 @@ export async function handleDemoRequest(request: Request) {
         secondaryWindow: account.secondaryWindow,
       })),
     });
-
   if (pathname === "/api/invocations") {
     const records = filterDemoInvocations(url);
     const pageSize = Number(
@@ -337,24 +287,26 @@ export async function handleDemoRequest(request: Request) {
   }
   if (pathname === "/api/invocations/new-count")
     return json({ snapshotId: 901, newRecordsCount: 0 });
-  if (pathname === "/api/invocations/suggestions") {
-    const bucket = (
-      selector: (record: ReturnType<typeof invocations>[number]) => string | null | undefined,
-    ) => ({
-      items: Array.from(recordsToSuggestionCounts(invocations(), selector), ([value, count]) => ({
-        value,
-        count,
-      })),
-      hasMore: false,
-    });
-    return json({
-      model: bucket((record) => record.model),
-      endpoint: bucket((record) => record.endpoint),
-      failureKind: bucket((record) => record.failureKind),
-      promptCacheKey: bucket((record) => record.promptCacheKey),
-      requesterIp: bucket((record) => record.requesterIp),
-    });
-  }
+  if (pathname !== "/api/invocations/suggestions") return undefined;
+  const bucket = (
+    selector: (record: ReturnType<typeof invocations>[number]) => string | null | undefined,
+  ) => ({
+    items: Array.from(recordsToSuggestionCounts(invocations(), selector), ([value, count]) => ({
+      value,
+      count,
+    })),
+    hasMore: false,
+  });
+  return json({
+    model: bucket((record) => record.model),
+    endpoint: bucket((record) => record.endpoint),
+    failureKind: bucket((record) => record.failureKind),
+    promptCacheKey: bucket((record) => record.promptCacheKey),
+    requesterIp: bucket((record) => record.requesterIp),
+  });
+}
+
+function handleInvocationDetailRequest(pathname: string): DemoRouteResult {
   if (pathname.endsWith("/detail")) {
     const id = Number(pathname.split("/").at(-2));
     const record = invocations().find((item) => item.id === id);
@@ -382,191 +334,251 @@ export async function handleDemoRequest(request: Request) {
     if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
     return json(buildDemoInvocationWorkflowDetail(record));
   }
-  if (pathname.endsWith("/request-body")) {
-    const id = Number(pathname.split("/").at(-2));
-    const record = invocations().find((item) => item.id === id);
-    if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
-    if (id === 9002) {
-      return json({
-        available: false,
-        unavailableReason: "missing_body",
-      });
-    }
-    return json({
-      available: true,
-      bodyText: JSON.stringify(
-        {
-          model: record.requestModel ?? record.model,
-          endpoint: record.endpoint,
-          invoke_id: record.invokeId,
-          demo: true,
-        },
-        null,
-        2,
-      ),
-      headers: {
-        userAgent: "monitor-ui/1.0",
-        xForwardedFor: record.requesterIp ?? "203.0.113.24",
+  if (!pathname.endsWith("/request-body")) return undefined;
+  const id = Number(pathname.split("/").at(-2));
+  const record = invocations().find((item) => item.id === id);
+  if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
+  if (id === 9002) return json({ available: false, unavailableReason: "missing_body" });
+  return json({
+    available: true,
+    bodyText: JSON.stringify(
+      {
+        model: record.requestModel ?? record.model,
+        endpoint: record.endpoint,
+        invoke_id: record.invokeId,
+        demo: true,
       },
-      routing: {
-        routeMode: record.routeMode ?? "pool",
-        promptCacheKey: record.promptCacheKey ?? null,
-        proxyDisplayName: record.proxyDisplayName ?? null,
-      },
-      bodySize: 412,
-      bodyTruncated: false,
-      detailLevel: "full",
-      captureSource: "raw_file",
-    });
+      null,
+      2,
+    ),
+    headers: {
+      userAgent: "monitor-ui/1.0",
+      xForwardedFor: record.requesterIp ?? "203.0.113.24",
+    },
+    routing: {
+      routeMode: record.routeMode ?? "pool",
+      promptCacheKey: record.promptCacheKey ?? null,
+      proxyDisplayName: record.proxyDisplayName ?? null,
+    },
+    bodySize: 412,
+    bodyTruncated: false,
+    detailLevel: "full",
+    captureSource: "raw_file",
+  });
+}
+
+function handleInvocationAttemptResponseRequest(pathname: string): DemoRouteResult {
+  const match = pathname.match(/^\/api\/invocations\/(\d+)\/attempts\/([^/]+)\/response-body$/);
+  if (!match) return undefined;
+  const id = Number(match[1]);
+  const attemptId = decodeURIComponent(match[2] ?? "");
+  const record = invocations().find((item) => item.id === id);
+  const attempt = record
+    ? poolAttempts(record.invokeId).find((item) => item.attemptId === attemptId)
+    : null;
+  if (!record || !attempt) {
+    return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
   }
-  const attemptResponseBodyMatch = pathname.match(
-    /^\/api\/invocations\/(\d+)\/attempts\/([^/]+)\/response-body$/,
-  );
-  if (attemptResponseBodyMatch) {
-    const id = Number(attemptResponseBodyMatch[1]);
-    const attemptId = decodeURIComponent(attemptResponseBodyMatch[2] ?? "");
-    const record = invocations().find((item) => item.id === id);
-    const attempt = record
-      ? poolAttempts(record.invokeId).find((item) => item.attemptId === attemptId)
-      : null;
-    if (!record || !attempt) {
-      return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
-    }
+  return json({
+    available: true,
+    bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
+    headers: {
+      contentEncoding: "identity",
+      upstreamRequestId: attempt.upstreamRequestId ?? `req_demo_${record.id}`,
+      cvmInvokeId: record.invokeId,
+    },
+    routing: { forwardedChunkCount: 12 },
+    bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
+    bodyTruncated: false,
+    detailLevel: "full",
+    captureSource: "attempt_raw_file",
+    availableAtAttemptLevel: true,
+  });
+}
+
+function handleInvocationResponseRequest(pathname: string): DemoRouteResult {
+  if (!pathname.endsWith("/response-body")) return undefined;
+  const id = Number(pathname.split("/").at(-2));
+  const record = invocations().find((item) => item.id === id);
+  if (id === 9002) {
     return json({
       available: true,
       bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
       headers: {
         contentEncoding: "identity",
-        upstreamRequestId: attempt.upstreamRequestId ?? `req_demo_${record.id}`,
-        cvmInvokeId: record.invokeId,
+        upstreamRequestId: `req_demo_${id}`,
+        cvmInvokeId: record?.invokeId ?? null,
       },
-      routing: {
-        forwardedChunkCount: 12,
-      },
+      routing: { forwardedChunkCount: 12 },
       bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
       bodyTruncated: false,
       detailLevel: "full",
-      captureSource: "attempt_raw_file",
-      availableAtAttemptLevel: true,
+      captureSource: "raw_file",
     });
   }
-  if (pathname.endsWith("/response-body")) {
-    const id = Number(pathname.split("/").at(-2));
-    const record = invocations().find((item) => item.id === id);
-    if (id === 9002) {
-      return json({
-        available: true,
-        bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
-        headers: {
-          contentEncoding: "identity",
-          upstreamRequestId: `req_demo_${id}`,
-          cvmInvokeId: record?.invokeId ?? null,
-        },
-        routing: {
-          forwardedChunkCount: 12,
-        },
-        bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
-        bodyTruncated: false,
-        detailLevel: "full",
-        captureSource: "raw_file",
-      });
-    }
-    const isFailure = record?.failureClass && record.failureClass !== "none";
-    return json(
-      isFailure
-        ? {
-            available: true,
-            bodyText:
-              id === 9002
-                ? [
-                    ": keepalive",
-                    "",
-                    "event: response.output_item.done",
-                    `data: ${JSON.stringify({
-                      type: "response.output_item.done",
-                      output_index: 0,
-                      item: {
-                        id: "msg_demo_9002",
-                        type: "message",
-                        content: [
-                          {
-                            type: "output_text",
-                            text: "A long streamed response remains contained inside the payload inspector without widening the invocation drawer.",
-                          },
-                        ],
-                      },
-                    })}`,
-                    "",
-                    "event: response.failed",
-                    `data: ${JSON.stringify({
-                      type: "response.failed",
-                      error: {
-                        message: record?.errorMessage,
-                        type: record?.failureKind,
-                        request_id: `req_demo_${id}`,
-                      },
-                    })}`,
-                  ].join("\n")
-                : JSON.stringify(
-                    {
-                      error: {
-                        message: record?.errorMessage,
-                        type: record?.failureKind,
-                        request_id: `req_demo_${id}`,
-                      },
+  const isFailure = record?.failureClass && record.failureClass !== "none";
+  return json(
+    isFailure
+      ? {
+          available: true,
+          bodyText:
+            id === 9002
+              ? [
+                  ": keepalive",
+                  "",
+                  "event: response.output_item.done",
+                  `data: ${JSON.stringify({
+                    type: "response.output_item.done",
+                    output_index: 0,
+                    item: {
+                      id: "msg_demo_9002",
+                      type: "message",
+                      content: [
+                        {
+                          type: "output_text",
+                          text: "A long streamed response remains contained inside the payload inspector without widening the invocation drawer.",
+                        },
+                      ],
                     },
-                    null,
-                    2,
-                  ),
-            unavailableReason: null,
-          }
-        : {
-            available: true,
-            bodyText: JSON.stringify(
-              {
-                id: `resp_demo_${id}`,
-                object: "response",
-                model: record?.model,
-                status: record?.status,
-                output: [
+                  })}`,
+                  "",
+                  "event: response.failed",
+                  `data: ${JSON.stringify({
+                    type: "response.failed",
+                    error: {
+                      message: record?.errorMessage,
+                      type: record?.failureKind,
+                      request_id: `req_demo_${id}`,
+                    },
+                  })}`,
+                ].join("\n")
+              : JSON.stringify(
                   {
-                    type: "message",
-                    content: [
-                      {
-                        type: "output_text",
-                        text: "Demo response body retained locally for visual inspection.",
-                      },
-                    ],
+                    error: {
+                      message: record?.errorMessage,
+                      type: record?.failureKind,
+                      request_id: `req_demo_${id}`,
+                    },
                   },
-                ],
-              },
-              null,
-              2,
-            ),
-            unavailableReason: null,
-          },
-    );
-  }
+                  null,
+                  2,
+                ),
+          unavailableReason: null,
+        }
+      : {
+          available: true,
+          bodyText: JSON.stringify(
+            {
+              id: `resp_demo_${id}`,
+              object: "response",
+              model: record?.model,
+              status: record?.status,
+              output: [
+                {
+                  type: "message",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: "Demo response body retained locally for visual inspection.",
+                    },
+                  ],
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+          unavailableReason: null,
+        },
+  );
+}
+
+function handleInvocationAttemptsRequest(
+  pathname: string,
+  url: URL,
+  request: Request,
+): DemoRouteResult {
   if (pathname.endsWith("/pool-attempts"))
     return json(poolAttempts(decodeURIComponent(pathname.split("/").at(-2) ?? "")));
-
-  const upstreamAccountAttemptsMatch = pathname.match(
+  const match = pathname.match(
     /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
   );
-  if (upstreamAccountAttemptsMatch && request.method === "GET") {
-    const accountId = Number(upstreamAccountAttemptsMatch[1]);
-    const response = upstreamAccountAttempts(accountId, url.searchParams);
-    const requestedAttemptId = url.searchParams.get("attemptId")?.trim();
-    if (
-      pathname.endsWith("/locate") &&
-      requestedAttemptId &&
-      !response.items.some((attempt) => attempt.attemptId === requestedAttemptId)
-    ) {
-      return json({ message: "upstream account attempt was not found" }, { status: 404 });
-    }
-    return json(response);
+  if (!match || request.method !== "GET") return undefined;
+  const accountId = Number(match[1]);
+  const response = upstreamAccountAttempts(accountId, url.searchParams);
+  const requestedAttemptId = url.searchParams.get("attemptId")?.trim();
+  if (
+    pathname.endsWith("/locate") &&
+    requestedAttemptId &&
+    !response.items.some((attempt) => attempt.attemptId === requestedAttemptId)
+  ) {
+    return json({ message: "upstream account attempt was not found" }, { status: 404 });
   }
+  return json(response);
+}
 
+function handlePromptCacheRequest(pathname: string, url: URL): DemoRouteResult {
+  if (pathname === "/api/stats/prompt-cache-conversations") return json(promptCacheConversations());
+  if (pathname.startsWith("/api/stats/prompt-cache-conversation-binding-events/")) {
+    const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
+    const items = promptCacheBindingEvents(promptCacheKey);
+    const infoType = url.searchParams.get("infoType");
+    const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
+    return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
+  }
+  if (!pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) return undefined;
+  const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
+  const conversation = promptCacheConversations().conversations.find(
+    (item) => item.promptCacheKey === promptCacheKey,
+  );
+  const owner = conversation?.encryptedOwnerAccountId ?? null;
+  const account = owner == null ? null : demoAccounts().find((item) => item.id === owner);
+  return json({
+    promptCacheKey,
+    bindingKind: account ? "upstreamAccount" : "none",
+    groupName: account?.groupName ?? null,
+    upstreamAccountId: owner,
+    upstreamAccountName: account?.displayName ?? null,
+    hasEncryptedSessionOwner: account != null,
+    encryptedOwnerAccountId: owner,
+    encryptedOwnerAccountName: account?.displayName ?? null,
+    encryptedOwnerGroupName: account?.groupName ?? null,
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 30,
+      compactFirstByteTimeoutSecs: 45,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 420,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "root",
+      compactFirstByteTimeoutSecs: "root",
+      imageFirstByteTimeoutSecs: "root",
+      responsesStreamTimeoutSecs: "root",
+      compactStreamTimeoutSecs: "root",
+    },
+    allowSwitchUpstream: true,
+    fastModeRewriteMode: "keep_original",
+    imageToolRewriteMode: "keep_original",
+    availableModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
+    forwardProxyKey: account?.currentForwardProxyKey ?? null,
+    forwardProxyKeys: account?.boundProxyKeys ?? [],
+    policyFieldSources: {
+      allowSwitchUpstream: "root",
+      fastModeRewriteMode: "root",
+      imageToolRewriteMode: "root",
+      availableModels: "root",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-07-10T09:20:00Z",
+  });
+}
+
+function handleSettingsAndSystemRequest(
+  pathname: string,
+  url: URL,
+  request: Request,
+): DemoRouteResult {
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
   if (pathname === "/api/settings/external-api-keys" && request.method === "GET")
@@ -587,84 +599,27 @@ export async function handleDemoRequest(request: Request) {
     );
   }
   if (pathname === "/api/system/status") return json(systemStatus());
-  if (pathname === "/api/system/tasks") {
-    let items = systemTasks();
-    const taskKind = url.searchParams.get("taskKind");
-    const status = url.searchParams.get("status");
-    if (taskKind) items = items.filter((item) => item.taskKind.includes(taskKind));
-    if (status) items = items.filter((item) => item.status === status);
-    const pageSize = Number(
-      url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 20,
-    );
-    const page = Number(url.searchParams.get("page") ?? 1);
-    return json({
-      total: items.length,
-      page,
-      pageSize,
-      items: items.slice((page - 1) * pageSize, page * pageSize),
-    });
-  }
+  if (pathname !== "/api/system/tasks") return undefined;
+  let items = systemTasks();
+  const taskKind = url.searchParams.get("taskKind");
+  const status = url.searchParams.get("status");
+  if (taskKind) items = items.filter((item) => item.taskKind.includes(taskKind));
+  if (status) items = items.filter((item) => item.status === status);
+  const pageSize = Number(url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 20);
+  const page = Number(url.searchParams.get("page") ?? 1);
+  return json({
+    total: items.length,
+    page,
+    pageSize,
+    items: items.slice((page - 1) * pageSize, page * pageSize),
+  });
+}
 
-  if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")
+function handlePoolRequest(pathname: string, url: URL, request: Request): DemoRouteResult {
+  if (pathname === "/api/pool/upstream-accounts" && request.method === "GET") {
     return json(accountList(url.searchParams.get("kind")));
-  if (pathname === "/api/pool/upstream-accounts/api-keys/migration/preflight") {
-    const legacyApiKeyCount = demoAccounts().filter(
-      (account) =>
-        account.kind === "api_key_codex" &&
-        ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
-          account.isMother === true),
-    ).length;
-    return json({
-      confirmationHash: "demo-migration-confirmation-hash",
-      apiKeyCount: legacyApiKeyCount,
-      portableFields: [
-        "account-level routing policy",
-        "bound proxy keys",
-        "local quota limits",
-        "note",
-      ],
-      blockedStrategies: [],
-      canMigrate: true,
-    });
   }
-  if (pathname === "/api/pool/upstream-accounts/api-keys/migration/confirm") {
-    const migratedCount = demoModel.migrateLegacyApiKeyAccounts();
-    return json({
-      migratedCount,
-      confirmationHash: "demo-migration-confirmation-hash",
-      auditAction: "api_key_transit_proxy_binding_migrated",
-    });
-  }
-  if (pathname === "/api/pool/upstream-account-events") {
-    let items = accountEvents();
-    const kind = url.searchParams.get("kind");
-    const account = url.searchParams.get("account")?.toLowerCase();
-    const group = url.searchParams.get("group")?.toLowerCase();
-    const proxyKey = url.searchParams.get("proxyKey");
-    const result = url.searchParams.get("result");
-    if (account)
-      items = items.filter((item) => item.accountDisplayName?.toLowerCase().includes(account));
-    if (group) items = items.filter((item) => item.accountGroupName?.toLowerCase().includes(group));
-    if (proxyKey) items = items.filter((item) => item.forwardProxyKey === proxyKey);
-    if (result) items = items.filter((item) => item.result === result);
-    if (kind) {
-      const accountIds = new Set(
-        demoAccounts()
-          .filter((account) => account.kind === kind)
-          .map((account) => account.id),
-      );
-      items = items.filter((item) => accountIds.has(item.upstreamAccountId));
-    }
-    const pageSize = Number(url.searchParams.get("pageSize") ?? 20);
-    const page = Number(url.searchParams.get("page") ?? 1);
-    return json({
-      total: items.length,
-      page,
-      pageSize,
-      items: items.slice((page - 1) * pageSize, page * pageSize),
-    });
-  }
-  if (pathname === "/api/pool/upstream-accounts/window-usage")
+  if (pathname === "/api/pool/upstream-accounts/window-usage") {
     return json({
       items: demoAccounts().map((account) => ({
         accountId: account.id,
@@ -688,8 +643,102 @@ export async function handleDemoRequest(request: Request) {
           : null,
       })),
     });
-  if (pathname === "/api/pool/forward-proxy-binding-nodes") return json(forwardProxyBindingNodes());
-  if (pathname === "/api/pool/tags" && request.method === "GET")
+  }
+  if (pathname === "/api/pool/forward-proxy-binding-nodes") {
+    return json(forwardProxyBindingNodes());
+  }
+  if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
+    return json(
+      demoModelRoutingLive({
+        window: url.searchParams.get("window"),
+        model: url.searchParams.get("model"),
+        state: url.searchParams.get("state"),
+        limit: url.searchParams.get("limit"),
+      }),
+    );
+  }
+  if (pathname.includes("/sticky-keys")) {
+    return json({
+      rangeStart: "2026-07-10T00:00:00Z",
+      rangeEnd: demoNow(),
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      selectedActivityMinutes: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      totalMatched: 3,
+      conversations: promptCacheConversations().conversations.slice(0, 3),
+      hasMore: false,
+      nextCursor: null,
+    });
+  }
+  return undefined;
+}
+
+function handlePoolMigrationRequest(pathname: string): DemoRouteResult {
+  if (pathname === "/api/pool/upstream-accounts/api-keys/migration/preflight") {
+    const apiKeyCount = demoAccounts().filter(
+      (account) =>
+        account.kind === "api_key_codex" &&
+        ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+          account.isMother === true),
+    ).length;
+    return json({
+      confirmationHash: "demo-migration-confirmation-hash",
+      apiKeyCount,
+      portableFields: [
+        "account-level routing policy",
+        "bound proxy keys",
+        "local quota limits",
+        "note",
+      ],
+      blockedStrategies: [],
+      canMigrate: true,
+    });
+  }
+  if (pathname === "/api/pool/upstream-accounts/api-keys/migration/confirm") {
+    return json({
+      migratedCount: demoModel.migrateLegacyApiKeyAccounts(),
+      confirmationHash: "demo-migration-confirmation-hash",
+      auditAction: "api_key_transit_proxy_binding_migrated",
+    });
+  }
+  return undefined;
+}
+
+function handlePoolAdminRequest(pathname: string, url: URL, request: Request): DemoRouteResult {
+  const migrationResponse = handlePoolMigrationRequest(pathname);
+  if (migrationResponse) return migrationResponse;
+  if (pathname === "/api/pool/upstream-account-events") {
+    let items = accountEvents();
+    const kind = url.searchParams.get("kind");
+    const account = url.searchParams.get("account")?.toLowerCase();
+    const group = url.searchParams.get("group")?.toLowerCase();
+    const proxyKey = url.searchParams.get("proxyKey");
+    const result = url.searchParams.get("result");
+    if (account)
+      items = items.filter((item) => item.accountDisplayName?.toLowerCase().includes(account));
+    if (group) items = items.filter((item) => item.accountGroupName?.toLowerCase().includes(group));
+    if (proxyKey) items = items.filter((item) => item.forwardProxyKey === proxyKey);
+    if (result) items = items.filter((item) => item.result === result);
+    if (kind) {
+      const accountIds = new Set(
+        demoAccounts()
+          .filter((item) => item.kind === kind)
+          .map((item) => item.id),
+      );
+      items = items.filter((item) => accountIds.has(item.upstreamAccountId));
+    }
+    const pageSize = Number(url.searchParams.get("pageSize") ?? 20);
+    const page = Number(url.searchParams.get("page") ?? 1);
+    return json({
+      total: items.length,
+      page,
+      pageSize,
+      items: items.slice((page - 1) * pageSize, page * pageSize),
+    });
+  }
+  if (pathname === "/api/pool/tags" && request.method === "GET") {
     return json({
       writesEnabled: true,
       items: [
@@ -735,48 +784,33 @@ export async function handleDemoRequest(request: Request) {
         },
       ],
     });
-  if (pathname === "/api/pool/routing-settings")
-    return json({
-      writesEnabled: true,
-      apiKeyConfigured: true,
-      maskedApiKey: "cvm_pool••••••",
-      maintenance: {
-        primarySyncIntervalSecs: 300,
-        secondarySyncIntervalSecs: 1800,
-        priorityAvailableAccountCap: 100,
-      },
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
-      },
-      priorityHandoffAdmissionEnabled: true,
-    });
-  if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
-    return json(
-      demoModelRoutingLive({
-        window: url.searchParams.get("window"),
-        model: url.searchParams.get("model"),
-        state: url.searchParams.get("state"),
-        limit: url.searchParams.get("limit"),
-      }),
-    );
   }
-  if (pathname.includes("/sticky-keys"))
-    return json({
-      rangeStart: "2026-07-10T00:00:00Z",
-      rangeEnd: demoNow(),
-      selectionMode: "count",
-      selectedLimit: 50,
-      selectedActivityHours: null,
-      implicitFilter: { kind: null, filteredCount: 0 },
-      totalMatched: 3,
-      conversations: promptCacheConversations().conversations.slice(0, 3),
-      hasMore: false,
-      nextCursor: null,
-    });
+  if (pathname !== "/api/pool/routing-settings") return undefined;
+  return json({
+    writesEnabled: true,
+    apiKeyConfigured: true,
+    maskedApiKey: "cvm_pool••••••",
+    maintenance: {
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    },
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 30,
+      compactFirstByteTimeoutSecs: 45,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 420,
+    },
+    priorityHandoffAdmissionEnabled: true,
+  });
+}
+
+function handlePoolRoutingDetailRequest(
+  pathname: string,
+  url: URL,
+  request: Request,
+): DemoRouteResult {
   if (
     /^\/api\/pool\/upstream-accounts\/\d+\/model-routing$/.test(pathname) &&
     request.method === "GET"
@@ -792,48 +826,74 @@ export async function handleDemoRequest(request: Request) {
     const accountId = Number(pathname.split("/").at(-2));
     const account = demoAccounts().find((item) => item.id === accountId);
     const model = url.searchParams.get("model")?.trim();
-    if (account?.kind !== "api_key_codex" || !model) {
+    if (account?.kind !== "api_key_codex" || !model)
       return json(
         { error: "Model routing history is unavailable for this account." },
         { status: 404 },
       );
-    }
-
     const items = demoModelRoutingTimeline(accountId, model).map(publicModelRoutingRecord);
-    const cursor = url.searchParams.get("cursor");
-    if (cursor === "demo-model-routing-page-2") {
-      return json({ items: items.slice(2), nextCursor: null });
-    }
-    return json({
-      items: items.slice(0, 2),
-      nextCursor: items.length > 2 ? "demo-model-routing-page-2" : null,
-    });
+    return url.searchParams.get("cursor") === "demo-model-routing-page-2"
+      ? json({ items: items.slice(2), nextCursor: null })
+      : json({
+          items: items.slice(0, 2),
+          nextCursor: items.length > 2 ? "demo-model-routing-page-2" : null,
+        });
   }
-  if (/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) && request.method === "GET") {
-    const accountId = Number(pathname.split("/").at(-1));
-    const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
-    return json({
-      ...account,
-      note: `Demo fixture for ${account.displayName}.`,
-      upstreamBaseUrl: "https://api.openai.com",
-      chatgptUserId: account.chatgptAccountId ? `user-${account.id}` : null,
-      verifiedEmail: account.email,
-      lastRefreshedAt: account.lastSyncedAt,
-      history: Array.from({ length: 8 }, (_, index) => ({
-        capturedAt: `2026-07-${String(index + 3).padStart(2, "0")}T08:00:00Z`,
-        primaryUsedPercent: Math.min(94, (account.primaryWindow?.usedPercent ?? 0) + index * 3),
-        secondaryUsedPercent: account.secondaryWindow
-          ? Math.min(94, account.secondaryWindow.usedPercent + index * 2)
-          : null,
-        creditsBalance: account.credits?.balance ?? null,
-      })),
-      recentActions: accountEvents()
-        .filter((event) => event.accountDisplayName === account.displayName)
-        .slice(0, 4),
-      modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : [],
-    });
-  }
+  if (!/^\/api\/pool\/upstream-accounts\/\d+$/.test(pathname) || request.method !== "GET")
+    return undefined;
+  const accountId = Number(pathname.split("/").at(-1));
+  const account = demoAccounts().find((item) => item.id === accountId) ?? demoAccounts()[0];
+  return json({
+    ...account,
+    note: `Demo fixture for ${account.displayName}.`,
+    upstreamBaseUrl: "https://api.openai.com",
+    chatgptUserId: account.chatgptAccountId ? `user-${account.id}` : null,
+    verifiedEmail: account.email,
+    lastRefreshedAt: account.lastSyncedAt,
+    history: Array.from({ length: 8 }, (_, index) => ({
+      capturedAt: `2026-07-${String(index + 3).padStart(2, "0")}T08:00:00Z`,
+      primaryUsedPercent: Math.min(94, (account.primaryWindow?.usedPercent ?? 0) + index * 3),
+      secondaryUsedPercent: account.secondaryWindow
+        ? Math.min(94, account.secondaryWindow.usedPercent + index * 2)
+        : null,
+      creditsBalance: account.credits?.balance ?? null,
+    })),
+    recentActions: accountEvents()
+      .filter((event) => event.accountDisplayName === account.displayName)
+      .slice(0, 4),
+    modelRoutingStates: account.kind === "api_key_codex" ? demoModelRoutingStates(accountId) : [],
+  });
+}
 
+export async function handleDemoRequest(request: Request) {
+  const url = new URL(request.url);
+  const pathname = apiPathname(url.pathname);
+  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
+
+  const coreStatsResponse = await handleCoreStatsRequest(pathname, url);
+  if (coreStatsResponse) return coreStatsResponse;
+  const forwardProxyResponse = handleForwardProxyRequest(pathname);
+  if (forwardProxyResponse) return forwardProxyResponse;
+  const invocationListResponse = handleInvocationListRequest(pathname, url);
+  if (invocationListResponse) return invocationListResponse;
+  const invocationDetailResponse = handleInvocationDetailRequest(pathname);
+  if (invocationDetailResponse) return invocationDetailResponse;
+  const invocationAttemptResponse = handleInvocationAttemptResponseRequest(pathname);
+  if (invocationAttemptResponse) return invocationAttemptResponse;
+  const invocationResponse = handleInvocationResponseRequest(pathname);
+  if (invocationResponse) return invocationResponse;
+  const invocationAttemptsResponse = handleInvocationAttemptsRequest(pathname, url, request);
+  if (invocationAttemptsResponse) return invocationAttemptsResponse;
+  const promptCacheResponse = handlePromptCacheRequest(pathname, url);
+  if (promptCacheResponse) return promptCacheResponse;
+  const settingsResponse = handleSettingsAndSystemRequest(pathname, url, request);
+  if (settingsResponse) return settingsResponse;
+  const poolResponse = handlePoolRequest(pathname, url, request);
+  if (poolResponse) return poolResponse;
+  const poolAdminResponse = handlePoolAdminRequest(pathname, url, request);
+  if (poolAdminResponse) return poolAdminResponse;
+  const poolRoutingResponse = handlePoolRoutingDetailRequest(pathname, url, request);
+  if (poolRoutingResponse) return poolRoutingResponse;
   if (request.method !== "GET" && request.method !== "HEAD") {
     let body: unknown = null;
     try {

@@ -201,6 +201,131 @@ function cacheUsageMissingReasonLabel(
   return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
 }
 
+function getModelRoutingStateSummary(
+  route: ModelRoutingState,
+  t: (key: string, values?: Record<string, number | string>) => string,
+) {
+  const protection = route.probeRequired
+    ? t("accountPool.upstreamAccounts.modelRouting.cacheProbe")
+    : route.cacheConcurrencyLimit != null
+      ? t("accountPool.upstreamAccounts.modelRouting.cacheLimitCompact", {
+          limit: route.cacheConcurrencyLimit,
+          recoveryLimit: route.cacheRecoveryLimit ?? "-",
+          streak: route.cacheLowHitStreak ?? 0,
+          cooldown: route.cacheCooldownLevel ?? 0,
+          hitRate: route.cacheLastHitRatePercent ?? "-",
+        })
+      : t("accountPool.upstreamAccounts.modelRouting.cacheNormal");
+  const failureSummary =
+    route.lastFailureKind || route.failureCount > 0
+      ? route.lastFailureKind
+        ? routeProtocolLabel([route.lastFailureKind], t)
+        : t("accountPool.upstreamAccounts.modelRouting.history.failureCount", {
+            count: route.failureCount,
+          })
+      : null;
+  return { protection, failureSummary };
+}
+
+interface ModelRoutingStateRowProps {
+  accountId?: number;
+  route: ModelRoutingState;
+  expanded: boolean;
+  resettingModel: string | null;
+  writesEnabled: boolean;
+  onToggle: () => void;
+  onReset: (model: string) => void;
+}
+
+function ModelRoutingStateRow({
+  accountId,
+  route,
+  expanded,
+  resettingModel,
+  writesEnabled,
+  onToggle,
+  onReset,
+}: ModelRoutingStateRowProps) {
+  const { t } = useTranslation();
+  const cacheUsageMissing = Boolean(route.cacheUsageMissingSince);
+  const { protection, failureSummary } = getModelRoutingStateSummary(route, t);
+
+  return (
+    <div className="bg-base-100">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          onClick={onToggle}
+          aria-expanded={expanded}
+        >
+          <ModelIdentity
+            model={route.model}
+            className="max-w-full justify-start"
+            textClassName="truncate font-mono text-sm font-semibold"
+          />
+          <span className="mt-0.5 block truncate text-xs text-base-content/65">
+            {[protection, failureSummary, formatBeijing(route.changedAt ?? route.lastSeenAt)]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          {cacheUsageMissing ? (
+            <span
+              className="mt-1 block break-words text-xs leading-4 tone-ink-warning"
+              data-testid={`model-routing-cache-usage-missing-${route.model}`}
+            >
+              {t("accountPool.upstreamAccounts.modelRouting.cacheUsageMissing", {
+                reason: cacheUsageMissingReasonLabel(route.cacheUsageMissingReason, t),
+                since: formatBeijing(route.cacheUsageMissingSince),
+              })}
+            </span>
+          ) : null}
+        </button>
+        <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
+        {route.cooldownUntil ? (
+          <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
+            {formatBeijing(route.cooldownUntil)}
+          </span>
+        ) : null}
+        {route.state !== "available" || cacheUsageMissing ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={!writesEnabled || resettingModel === route.model}
+            onClick={() => onReset(route.model)}
+            data-testid={`model-routing-reset-${route.model}`}
+            aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
+          >
+            {resettingModel === route.model
+              ? t("accountPool.upstreamAccounts.modelRouting.resetting")
+              : t("accountPool.upstreamAccounts.modelRouting.reset")}
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7"
+          aria-label={
+            expanded
+              ? t("accountPool.upstreamAccounts.modelRouting.collapse")
+              : t("accountPool.upstreamAccounts.modelRouting.expand")
+          }
+          onClick={onToggle}
+        >
+          <AppIcon
+            name={expanded ? "chevron-up" : "chevron-down"}
+            className="h-4 w-4"
+            aria-hidden
+          />
+        </Button>
+      </div>
+      {expanded ? <ModelRoutingHistory accountId={accountId} model={route.model} /> : null}
+    </div>
+  );
+}
+
 export interface ModelRoutingHealthPanelProps {
   accountId?: number;
   states: ModelRoutingState[];
@@ -252,109 +377,20 @@ export function ModelRoutingHealthPanel({
           </p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-base-300/70">
-            {states.map((route) => {
-              const expanded = expandedModel === route.model;
-              const cacheUsageMissing = Boolean(route.cacheUsageMissingSince);
-              const protection = route.probeRequired
-                ? t("accountPool.upstreamAccounts.modelRouting.cacheProbe")
-                : route.cacheConcurrencyLimit != null
-                  ? t("accountPool.upstreamAccounts.modelRouting.cacheLimitCompact", {
-                      limit: route.cacheConcurrencyLimit,
-                      recoveryLimit: route.cacheRecoveryLimit ?? "-",
-                      streak: route.cacheLowHitStreak ?? 0,
-                      cooldown: route.cacheCooldownLevel ?? 0,
-                      hitRate: route.cacheLastHitRatePercent ?? "-",
-                    })
-                  : t("accountPool.upstreamAccounts.modelRouting.cacheNormal");
-              const failureSummary =
-                route.lastFailureKind || route.failureCount > 0
-                  ? route.lastFailureKind
-                    ? routeProtocolLabel([route.lastFailureKind], t)
-                    : t("accountPool.upstreamAccounts.modelRouting.history.failureCount", {
-                        count: route.failureCount,
-                      })
-                  : null;
-              return (
-                <div key={route.model} className="bg-base-100">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 px-3 py-2">
-                    <button
-                      type="button"
-                      className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                      onClick={() => setExpandedModel(expanded ? null : route.model)}
-                      aria-expanded={expanded}
-                    >
-                      <ModelIdentity
-                        model={route.model}
-                        className="max-w-full justify-start"
-                        textClassName="truncate font-mono text-sm font-semibold"
-                      />
-                      <span className="mt-0.5 block truncate text-xs text-base-content/65">
-                        {[
-                          protection,
-                          failureSummary,
-                          formatBeijing(route.changedAt ?? route.lastSeenAt),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                      {cacheUsageMissing ? (
-                        <span
-                          className="mt-1 block break-words text-xs leading-4 tone-ink-warning"
-                          data-testid={`model-routing-cache-usage-missing-${route.model}`}
-                        >
-                          {t("accountPool.upstreamAccounts.modelRouting.cacheUsageMissing", {
-                            reason: cacheUsageMissingReasonLabel(route.cacheUsageMissingReason, t),
-                            since: formatBeijing(route.cacheUsageMissingSince),
-                          })}
-                        </span>
-                      ) : null}
-                    </button>
-                    <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
-                    {route.cooldownUntil ? (
-                      <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
-                        {formatBeijing(route.cooldownUntil)}
-                      </span>
-                    ) : null}
-                    {route.state !== "available" || cacheUsageMissing ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={!writesEnabled || resettingModel === route.model}
-                        onClick={() => onReset(route.model)}
-                        data-testid={`model-routing-reset-${route.model}`}
-                        aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
-                      >
-                        {resettingModel === route.model
-                          ? t("accountPool.upstreamAccounts.modelRouting.resetting")
-                          : t("accountPool.upstreamAccounts.modelRouting.reset")}
-                      </Button>
-                    ) : null}
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      aria-label={
-                        expanded
-                          ? t("accountPool.upstreamAccounts.modelRouting.collapse")
-                          : t("accountPool.upstreamAccounts.modelRouting.expand")
-                      }
-                      onClick={() => setExpandedModel(expanded ? null : route.model)}
-                    >
-                      <AppIcon
-                        name={expanded ? "chevron-up" : "chevron-down"}
-                        className="h-4 w-4"
-                        aria-hidden
-                      />
-                    </Button>
-                  </div>
-                  {expanded ? (
-                    <ModelRoutingHistory accountId={accountId} model={route.model} />
-                  ) : null}
-                </div>
-              );
-            })}
+            {states.map((route) => (
+              <ModelRoutingStateRow
+                key={route.model}
+                accountId={accountId}
+                route={route}
+                expanded={expandedModel === route.model}
+                resettingModel={resettingModel}
+                writesEnabled={writesEnabled}
+                onToggle={() =>
+                  setExpandedModel((current) => (current === route.model ? null : route.model))
+                }
+                onReset={onReset}
+              />
+            ))}
           </div>
         )}
       </CardContent>

@@ -128,6 +128,33 @@ function text(testId: string) {
   }
   return element.textContent ?? "";
 }
+function createPricingUpdatePayload(): PricingSettings {
+  return {
+    catalogVersion: "openai-standard-2026-07-10",
+    entries: [
+      {
+        model: "gpt-5.6-sol",
+        inputPer1m: 5,
+        outputPer1m: 30,
+        cacheInputPer1m: 0.5,
+        cacheReadPer1m: 0.5,
+        cacheWritePer1m: 6.25,
+        reasoningPer1m: null,
+        source: "official",
+      },
+      {
+        model: "gpt-5.4-mini",
+        inputPer1m: 0.6,
+        outputPer1m: 2.4,
+        cacheInputPer1m: 0.075,
+        cacheReadPer1m: 0.075,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "official",
+      },
+    ],
+  };
+}
 function Probe() {
   const {
     settings,
@@ -206,31 +233,7 @@ function Probe() {
         disabled={!settings}
         onClick={() => {
           if (!settings) return;
-          void savePricing({
-            catalogVersion: "openai-standard-2026-07-10",
-            entries: [
-              {
-                model: "gpt-5.6-sol",
-                inputPer1m: 5,
-                outputPer1m: 30,
-                cacheInputPer1m: 0.5,
-                cacheReadPer1m: 0.5,
-                cacheWritePer1m: 6.25,
-                reasoningPer1m: null,
-                source: "official",
-              },
-              {
-                model: "gpt-5.4-mini",
-                inputPer1m: 0.6,
-                outputPer1m: 2.4,
-                cacheInputPer1m: 0.075,
-                cacheReadPer1m: 0.075,
-                cacheWritePer1m: null,
-                reasoningPer1m: null,
-                source: "official",
-              },
-            ],
-          });
+          void savePricing(createPricingUpdatePayload());
         }}
       >
         save pricing

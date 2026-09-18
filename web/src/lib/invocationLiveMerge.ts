@@ -221,6 +221,97 @@ function compareInvocationRecordPreference(
   return 0;
 }
 
+const INVOCATION_STRING_FIELDS: Array<keyof ApiInvocation> = [
+  "source",
+  "status",
+  "routeMode",
+  "model",
+  "requestModel",
+  "responseModel",
+  "endpoint",
+  "upstreamAccountName",
+  "proxyDisplayName",
+  "responseContentEncoding",
+  "requestCompressionAlgorithm",
+  "requestedServiceTier",
+  "serviceTier",
+  "billingServiceTier",
+  "reasoningEffort",
+  "promptCacheKey",
+  "requesterIp",
+  "upstreamRequestId",
+];
+
+const INVOCATION_FAILURE_STRING_FIELDS: Array<keyof ApiInvocation> = [
+  "errorMessage",
+  "failureKind",
+  "failureClass",
+  "poolAttemptTerminalReason",
+  "upstreamErrorCode",
+  "upstreamErrorMessage",
+  "downstreamErrorMessage",
+];
+
+const INVOCATION_NUMBER_FIELDS: Array<keyof ApiInvocation> = [
+  "inputTokens",
+  "outputTokens",
+  "cacheInputTokens",
+  "reasoningTokens",
+  "totalTokens",
+  "cost",
+  "upstreamAccountId",
+  "downstreamStatusCode",
+  "poolAttemptCount",
+  "poolDistinctAccountCount",
+  "tReqReadMs",
+  "tReqParseMs",
+  "tUpstreamConnectMs",
+  "tUpstreamTtfbMs",
+  "firstTokenMs",
+  "tUpstreamStreamMs",
+  "tRespParseMs",
+  "tPersistMs",
+  "tTotalMs",
+];
+
+function fillInvocationStringFields(
+  merged: ApiInvocation,
+  fallback: ApiInvocation,
+  fields: Array<keyof ApiInvocation>,
+) {
+  for (const field of fields) {
+    const preferredValue = merged[field];
+    const fallbackValue = fallback[field];
+    if (
+      !hasMeaningfulString(typeof preferredValue === "string" ? preferredValue : undefined) &&
+      hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
+    ) {
+      merged[field] = fallbackValue as never;
+    }
+  }
+}
+
+function fillInvocationNumberFields(merged: ApiInvocation, fallback: ApiInvocation) {
+  for (const field of INVOCATION_NUMBER_FIELDS) {
+    const preferredValue = merged[field];
+    const fallbackValue = fallback[field];
+    const isTimingField = TIMING_FIELDS.includes(field);
+    const preferredNumber = typeof preferredValue === "number" ? preferredValue : undefined;
+    const fallbackNumber = typeof fallbackValue === "number" ? fallbackValue : undefined;
+    const preferredComparable = isTimingField
+      ? hasComparableTimingField(field, preferredNumber)
+      : hasComparableNumber(preferredNumber);
+    const fallbackComparable = isTimingField
+      ? hasComparableTimingField(field, fallbackNumber)
+      : hasComparableNumber(fallbackNumber);
+    if (!preferredComparable && fallbackComparable) {
+      merged[field] = fallbackValue as never;
+    } else if (isTimingField && typeof preferredValue === "number" && !preferredComparable) {
+      merged[field] = null as never;
+    }
+  }
+}
+
 export function choosePreferredInvocationRecord(
   current: ApiInvocation | undefined,
   next: ApiInvocation,
@@ -248,94 +339,12 @@ export function mergeInvocationRecordDetails(
     merged.id = fallback.id;
   }
 
-  const fillStringFields: Array<keyof ApiInvocation> = [
-    "source",
-    "status",
-    "routeMode",
-    "model",
-    "requestModel",
-    "responseModel",
-    "endpoint",
-    "upstreamAccountName",
-    "proxyDisplayName",
-    "responseContentEncoding",
-    "requestCompressionAlgorithm",
-    "requestedServiceTier",
-    "serviceTier",
-    "billingServiceTier",
-    "reasoningEffort",
-    "promptCacheKey",
-    "requesterIp",
-    "upstreamRequestId",
-  ];
-  const fillFailureStringFields: Array<keyof ApiInvocation> = [
-    "errorMessage",
-    "failureKind",
-    "failureClass",
-    "poolAttemptTerminalReason",
-    "upstreamErrorCode",
-    "upstreamErrorMessage",
-    "downstreamErrorMessage",
-  ];
-
-  const fillStringFieldGroup = (fields: Array<keyof ApiInvocation>) => {
-    for (const field of fields) {
-      const preferredValue = merged[field];
-      const fallbackValue = fallback[field];
-      if (
-        !hasMeaningfulString(typeof preferredValue === "string" ? preferredValue : undefined) &&
-        hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
-      ) {
-        merged[field] = fallbackValue as never;
-      }
-    }
-  };
-
-  fillStringFieldGroup(fillStringFields);
+  fillInvocationStringFields(merged, fallback, INVOCATION_STRING_FIELDS);
   if (canBackfillFailureMetadata(preferred)) {
-    fillStringFieldGroup(fillFailureStringFields);
+    fillInvocationStringFields(merged, fallback, INVOCATION_FAILURE_STRING_FIELDS);
   }
 
-  const fillNumberFields: Array<keyof ApiInvocation> = [
-    "inputTokens",
-    "outputTokens",
-    "cacheInputTokens",
-    "reasoningTokens",
-    "totalTokens",
-    "cost",
-    "upstreamAccountId",
-    "downstreamStatusCode",
-    "poolAttemptCount",
-    "poolDistinctAccountCount",
-    "tReqReadMs",
-    "tReqParseMs",
-    "tUpstreamConnectMs",
-    "tUpstreamTtfbMs",
-    "firstTokenMs",
-    "tUpstreamStreamMs",
-    "tRespParseMs",
-    "tPersistMs",
-    "tTotalMs",
-  ];
-
-  for (const field of fillNumberFields) {
-    const preferredValue = merged[field];
-    const fallbackValue = fallback[field];
-    const isTimingField = TIMING_FIELDS.includes(field);
-    const preferredNumber = typeof preferredValue === "number" ? preferredValue : undefined;
-    const fallbackNumber = typeof fallbackValue === "number" ? fallbackValue : undefined;
-    const preferredComparable = isTimingField
-      ? hasComparableTimingField(field, preferredNumber)
-      : hasComparableNumber(preferredNumber);
-    const fallbackComparable = isTimingField
-      ? hasComparableTimingField(field, fallbackNumber)
-      : hasComparableNumber(fallbackNumber);
-    if (!preferredComparable && fallbackComparable) {
-      merged[field] = fallbackValue as never;
-    } else if (isTimingField && typeof preferredValue === "number" && !preferredComparable) {
-      merged[field] = null as never;
-    }
-  }
+  fillInvocationNumberFields(merged, fallback);
 
   if (
     canBackfillFailureMetadata(preferred) &&

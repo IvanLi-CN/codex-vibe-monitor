@@ -209,18 +209,31 @@ export function isInvocationPoolAccountRoutingInProgress(
   return typeof upstreamAccountId === "number" && Number.isFinite(upstreamAccountId);
 }
 
-export function resolveInvocationAccountLabel(
-  routeMode: string | null | undefined,
-  status: string | null | undefined,
-  failureKind: string | null | undefined,
-  errorMessage: string | null | undefined,
-  upstreamAccountName: string | null | undefined,
-  upstreamAccountId: number | null | undefined,
-  reverseProxyLabel: string,
-  poolRoutingPendingLabel: string,
-  poolAccountUnknownLabel: string,
-  poolAccountUnavailableLabel: string,
-): string {
+export interface InvocationAccountLabelOptions {
+  routeMode: string | null | undefined;
+  status: string | null | undefined;
+  failureKind: string | null | undefined;
+  errorMessage: string | null | undefined;
+  upstreamAccountName: string | null | undefined;
+  upstreamAccountId: number | null | undefined;
+  reverseProxyLabel: string;
+  poolRoutingPendingLabel: string;
+  poolAccountUnknownLabel: string;
+  poolAccountUnavailableLabel: string;
+}
+
+export function resolveInvocationAccountLabel({
+  routeMode,
+  status,
+  failureKind,
+  errorMessage,
+  upstreamAccountName,
+  upstreamAccountId,
+  reverseProxyLabel,
+  poolRoutingPendingLabel,
+  poolAccountUnknownLabel,
+  poolAccountUnavailableLabel,
+}: InvocationAccountLabelOptions): string {
   if (!isPoolRouteMode(routeMode)) return reverseProxyLabel;
 
   const name = upstreamAccountName?.trim();

@@ -285,6 +285,38 @@ export function getDashboardOverviewSnapshotPrefetchOrder(
   ];
 }
 
+async function fetchTodayDashboardOverviewSnapshot(signal?: AbortSignal) {
+  const [
+    dashboardActivity,
+    timeseries,
+    comparisonSummary,
+    previous7dSummary,
+    comparisonTimeseries,
+    parallelWorkStats,
+    comparisonParallelWorkStats,
+    networkTimeseries,
+  ] = await Promise.all([
+    fetchDashboardActivity("today", { includeAccounts: false, includeRecent: false, signal }),
+    fetchTimeseries("today", { bucket: "1m", signal }),
+    fetchSummary("yesterday", { signal }),
+    fetchSummary("previous7d", { signal }),
+    fetchTimeseries("yesterday", { bucket: "1m", signal }),
+    fetchParallelWorkStats({ range: "today", bucket: "1m", signal }),
+    fetchParallelWorkStats({ range: "yesterday", bucket: "1m", signal }),
+    fetchDashboardNetworkTimeseries("today", { signal }),
+  ]);
+  return {
+    dashboardActivity,
+    timeseries,
+    comparisonSummary,
+    previous7dSummary,
+    comparisonTimeseries,
+    parallelWorkStats,
+    comparisonParallelWorkStats,
+    networkTimeseries,
+  };
+}
+
 export async function fetchDashboardOverviewSnapshotBundle(
   range: DashboardOverviewSnapshotRange,
   options?: { signal?: AbortSignal },
@@ -292,39 +324,9 @@ export async function fetchDashboardOverviewSnapshotBundle(
   const signal = options?.signal;
   switch (range) {
     case "today": {
-      const [
-        dashboardActivity,
-        timeseries,
-        comparisonSummary,
-        previous7dSummary,
-        comparisonTimeseries,
-        parallelWorkStats,
-        comparisonParallelWorkStats,
-        networkTimeseries,
-      ] = await Promise.all([
-        fetchDashboardActivity("today", {
-          includeAccounts: false,
-          includeRecent: false,
-          signal,
-        }),
-        fetchTimeseries("today", { bucket: "1m", signal }),
-        fetchSummary("yesterday", { signal }),
-        fetchSummary("previous7d", { signal }),
-        fetchTimeseries("yesterday", { bucket: "1m", signal }),
-        fetchParallelWorkStats({ range: "today", bucket: "1m", signal }),
-        fetchParallelWorkStats({ range: "yesterday", bucket: "1m", signal }),
-        fetchDashboardNetworkTimeseries("today", { signal }),
-      ]);
       return {
         range,
-        dashboardActivity,
-        timeseries,
-        comparisonSummary,
-        previous7dSummary,
-        comparisonTimeseries,
-        parallelWorkStats,
-        comparisonParallelWorkStats,
-        networkTimeseries,
+        ...(await fetchTodayDashboardOverviewSnapshot(signal)),
       };
     }
     case "yesterday": {

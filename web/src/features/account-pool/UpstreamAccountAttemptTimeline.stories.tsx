@@ -461,122 +461,112 @@ function AttemptTimelineFetchMock({
 
   useEffect(() => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url =
-        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      if (url.includes("/api/pool/forward-proxy-binding-nodes")) {
-        return new Response(
-          JSON.stringify([
-            {
-              key: "jp-edge-01",
-              source: "manual",
-              displayName: "JP Edge 01",
-              protocolLabel: "HTTP",
-              egressIp: null,
-              egressIpCheckedAt: null,
-              egressIpProvider: null,
-              egressIpError: null,
-              egressIpErrorAt: null,
-              penalized: false,
-              selectable: true,
-              last24h: [],
-            },
-          ]),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      }
-      if (url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`)) {
-        const parsedUrl = new URL(url, "http://storybook.local");
-        const locatedAttemptId = parsedUrl.searchParams.get("attemptId")?.trim();
-        const page = relocateAfterInitialLocate && locateRequestCountRef.current > 0 ? 2 : 1;
-        locateRequestCountRef.current += 1;
-        const filteredItems = locatedAttemptId
-          ? attemptItems.filter(
-              (item) => item.attemptId === locatedAttemptId || item.attemptId === "AFAIL001",
-            )
-          : filterAttemptItems(parsedUrl.searchParams);
-        const items = filteredItems.map((item) => withAccountId(item, accountId));
-        return new Response(
-          JSON.stringify({
-            items,
-            stickyKeyOptions: buildStickyKeyOptions(filteredItems),
-            total: items.length,
-            page,
-            pageSize: 50,
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      }
-      if (url.includes("/api/invocations/77/request-body")) {
-        return new Response(
-          JSON.stringify({
-            available: true,
-            bodyText: '{"model":"gpt-5.5","input":"large request"}',
-            headers: {
-              userAgent: "codex-vibe-monitor-test/1.0",
-              xForwardedFor: "192.168.31.6",
-            },
-            routing: {
-              routeMode: "pool",
-              stickyKey: "sticky-a",
-            },
-            bodySize: 217_958,
-            detailLevel: "full",
-            captureSource: "raw_file",
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      }
-      if (
-        url.includes("/api/invocations/77/attempts/ASUCC002/response-body") ||
-        url.includes("/api/invocations/77/response-body")
-      ) {
-        return new Response(
-          JSON.stringify({
-            available: true,
-            bodyText: '{"status":"success","output":"large response"}',
-            headers: {
-              contentEncoding: "identity",
-              upstreamRequestId: "req_upstream_account_workflow",
-            },
-            routing: {
-              forwardedChunkCount: 7,
-            },
-            bodySize: 79_224,
-            detailLevel: "full",
-            captureSource: "raw_file",
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        );
-      }
-      return originalFetch(input, init);
-    };
+    globalThis.fetch = createAttemptTimelineFetch(
+      accountId,
+      relocateAfterInitialLocate,
+      locateRequestCountRef,
+      originalFetch,
+    );
     return () => {
       globalThis.fetch = originalFetch;
     };
   }, [accountId, relocateAfterInitialLocate]);
 
   return null;
+}
+
+function createStoryJsonResponse(payload: unknown) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+const forwardProxyBindingNodesResponse = [
+  {
+    key: "jp-edge-01",
+    source: "manual",
+    displayName: "JP Edge 01",
+    protocolLabel: "HTTP",
+    egressIp: null,
+    egressIpCheckedAt: null,
+    egressIpProvider: null,
+    egressIpError: null,
+    egressIpErrorAt: null,
+    penalized: false,
+    selectable: true,
+    last24h: [],
+  },
+];
+
+const workflowRequestBodyResponse = {
+  available: true,
+  bodyText: '{"model":"gpt-5.5","input":"large request"}',
+  headers: {
+    userAgent: "codex-vibe-monitor-test/1.0",
+    xForwardedFor: "192.168.31.6",
+  },
+  routing: { routeMode: "pool", stickyKey: "sticky-a" },
+  bodySize: 217_958,
+  detailLevel: "full",
+  captureSource: "raw_file",
+};
+
+const workflowResponseBodyResponse = {
+  available: true,
+  bodyText: '{"status":"success","output":"large response"}',
+  headers: {
+    contentEncoding: "identity",
+    upstreamRequestId: "req_upstream_account_workflow",
+  },
+  routing: { forwardedChunkCount: 7 },
+  bodySize: 79_224,
+  detailLevel: "full",
+  captureSource: "raw_file",
+};
+
+function createAttemptTimelineFetch(
+  accountId: number,
+  relocateAfterInitialLocate: boolean,
+  locateRequestCountRef: { current: number },
+  originalFetch: typeof globalThis.fetch,
+) {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes("/api/pool/forward-proxy-binding-nodes")) {
+      return createStoryJsonResponse(forwardProxyBindingNodesResponse);
+    }
+    if (url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`)) {
+      const parsedUrl = new URL(url, "http://storybook.local");
+      const locatedAttemptId = parsedUrl.searchParams.get("attemptId")?.trim();
+      const page = relocateAfterInitialLocate && locateRequestCountRef.current > 0 ? 2 : 1;
+      locateRequestCountRef.current += 1;
+      const filteredItems = locatedAttemptId
+        ? attemptItems.filter(
+            (item) => item.attemptId === locatedAttemptId || item.attemptId === "AFAIL001",
+          )
+        : filterAttemptItems(parsedUrl.searchParams);
+      const items = filteredItems.map((item) => withAccountId(item, accountId));
+      return createStoryJsonResponse({
+        items,
+        stickyKeyOptions: buildStickyKeyOptions(filteredItems),
+        total: items.length,
+        page,
+        pageSize: 50,
+      });
+    }
+    if (url.includes("/api/invocations/77/request-body")) {
+      return createStoryJsonResponse(workflowRequestBodyResponse);
+    }
+    if (
+      url.includes("/api/invocations/77/attempts/ASUCC002/response-body") ||
+      url.includes("/api/invocations/77/response-body")
+    ) {
+      return createStoryJsonResponse(workflowResponseBodyResponse);
+    }
+    return originalFetch(input, init);
+  };
 }
 
 function AttemptTimelineSseMock({ accountId }: { accountId: number }) {

@@ -23,6 +23,44 @@ function buildForwardProxyBindingNodesQueryKey(keys: string[], groupName: string
   return JSON.stringify({ keys, groupName });
 }
 
+function buildForwardProxyCatalogState({
+  enabled,
+  currentQueryKey,
+  dataQueryKey,
+  isLoading,
+  nodes,
+}: {
+  enabled: boolean;
+  currentQueryKey: string | null;
+  dataQueryKey: string | null;
+  isLoading: boolean;
+  nodes: ForwardProxyBindingNode[] | null;
+}): ForwardProxyCatalogState {
+  const hasCurrentQueryData = currentQueryKey != null && dataQueryKey === currentQueryKey;
+  const freshness: ForwardProxyCatalogState["freshness"] = !enabled
+    ? "deferred"
+    : hasCurrentQueryData
+      ? "fresh"
+      : dataQueryKey != null
+        ? "stale"
+        : "missing";
+  const kind: ForwardProxyCatalogState["kind"] = !enabled
+    ? "deferred"
+    : isLoading && !hasCurrentQueryData
+      ? "loading"
+      : Array.isArray(nodes)
+        ? nodes.length > 0
+          ? "ready-with-data"
+          : "ready-empty"
+        : "missing";
+  return {
+    kind,
+    freshness,
+    isPending: isLoading,
+    hasNodes: Array.isArray(nodes) && nodes.length > 0,
+  };
+}
+
 export function useForwardProxyBindingNodes(
   keys?: string[],
   options?: UseForwardProxyBindingNodesOptions,
@@ -102,29 +140,13 @@ export function useForwardProxyBindingNodes(
     void refresh();
   }, [enabled, refresh]);
 
-  const hasCurrentQueryData = currentQueryKey != null && dataQueryKey === currentQueryKey;
-  const freshness: ForwardProxyCatalogState["freshness"] = !enabled
-    ? "deferred"
-    : hasCurrentQueryData
-      ? "fresh"
-      : dataQueryKey != null
-        ? "stale"
-        : "missing";
-  const kind: ForwardProxyCatalogState["kind"] = !enabled
-    ? "deferred"
-    : isLoading && !hasCurrentQueryData
-      ? "loading"
-      : Array.isArray(nodes)
-        ? nodes.length > 0
-          ? "ready-with-data"
-          : "ready-empty"
-        : "missing";
-  const catalogState: ForwardProxyCatalogState = {
-    kind,
-    freshness,
-    isPending: isLoading,
-    hasNodes: Array.isArray(nodes) && nodes.length > 0,
-  };
+  const catalogState = buildForwardProxyCatalogState({
+    enabled,
+    currentQueryKey,
+    dataQueryKey,
+    isLoading,
+    nodes,
+  });
 
   return {
     nodes: nodes ?? [],

@@ -38,6 +38,14 @@ interface StandardFormatterOptions {
   minimumFractionDigits?: number;
 }
 
+interface CompactMetricValueOptions {
+  unitLevel: number;
+  precision: number;
+  minimumFractionDigits?: number;
+  allowUnitUpgrade?: boolean;
+  useShortCurrencySymbol?: boolean;
+}
+
 function compactNumberLocale(localeTag: string) {
   return localeTag.toLowerCase().startsWith("zh") ? COMPACT_SUFFIX_LOCALE : localeTag;
 }
@@ -123,11 +131,13 @@ function createCompactMetricValue(
   value: number,
   localeTag: string,
   kind: AdaptiveMetricValueKind,
-  unitLevel: number,
-  precision: number,
-  minimumFractionDigits = 0,
-  allowUnitUpgrade = true,
-  useShortCurrencySymbol = false,
+  {
+    unitLevel,
+    precision,
+    minimumFractionDigits = 0,
+    allowUnitUpgrade = true,
+    useShortCurrencySymbol = false,
+  }: CompactMetricValueOptions,
 ) {
   const initialUnit = COMPACT_UNITS.find((candidate) => candidate.level === unitLevel);
   const initialScaledValue = initialUnit ? value / initialUnit.divisor : value;
@@ -251,16 +261,12 @@ export function buildAdaptiveMetricSpec(
     const minimumFractionDigits = Math.min(precision, preferredCompactPrecision);
     candidates.push({
       key: `compact-${primaryUnit.suffix}-${precision}`,
-      value: createCompactMetricValue(
-        value,
-        localeTag,
-        kind,
-        primaryUnit.level,
+      value: createCompactMetricValue(value, localeTag, kind, {
+        unitLevel: primaryUnit.level,
         precision,
         minimumFractionDigits,
-        true,
-        presentation === "account-stat-card",
-      ),
+        useShortCurrencySymbol: presentation === "account-stat-card",
+      }),
       compact: true,
       precisionLabel: String(precision),
       priority:
@@ -277,16 +283,11 @@ export function buildAdaptiveMetricSpec(
       for (const precision of compactPrecisionCandidates(fallbackScaledAbsValue)) {
         candidates.push({
           key: `compact-${fallbackUnit.suffix}-${precision}`,
-          value: createCompactMetricValue(
-            value,
-            localeTag,
-            kind,
-            fallbackUnit.level,
+          value: createCompactMetricValue(value, localeTag, kind, {
+            unitLevel: fallbackUnit.level,
             precision,
-            0,
-            false,
-            false,
-          ),
+            allowUnitUpgrade: false,
+          }),
           compact: true,
           precisionLabel: `${fallbackUnit.suffix}-${precision}`,
           priority: 40 + (4 - precision),

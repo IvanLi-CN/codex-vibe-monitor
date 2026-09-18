@@ -9,17 +9,46 @@ import type { FailureScope } from "../lib/api";
 import { StatsPageSections } from "./StatsPageSections";
 import { RANGE_OPTIONS, resolveStatsBucketOptions, resolveStatsBucketValue } from "./stats-options";
 
+function useStatsBucketSelection(range: (typeof RANGE_OPTIONS)[number]["value"]) {
+  const [bucket, setBucket] = useState("15m");
+  const requestedOptions = useMemo(() => resolveStatsBucketOptions(range), [range]);
+  const requestedBucket = useMemo(
+    () => resolveStatsBucketValue(bucket, requestedOptions),
+    [bucket, requestedOptions],
+  );
+  const {
+    data: timeseries,
+    isLoading,
+    error,
+  } = useTimeseries(range, { bucket: requestedBucket, preferServerAggregation: true });
+  const rawOptions = useMemo(
+    () => resolveStatsBucketOptions(range, timeseries?.availableBuckets),
+    [range, timeseries?.availableBuckets],
+  );
+  const effectiveBucket = useMemo(
+    () =>
+      rawOptions.some((option) => option.value === requestedBucket)
+        ? requestedBucket
+        : resolveStatsBucketValue(timeseries?.effectiveBucket ?? requestedBucket, rawOptions),
+    [rawOptions, requestedBucket, timeseries?.effectiveBucket],
+  );
+  useEffect(() => {
+    if (bucket !== effectiveBucket) setBucket(effectiveBucket);
+  }, [bucket, effectiveBucket]);
+  return {
+    timeseries,
+    timeseriesLoading: isLoading,
+    timeseriesError: error,
+    rawOptions,
+    effectiveBucket,
+    setBucket,
+  };
+}
+
 export default function StatsPage() {
   const { t } = useTranslation();
   const [range, setRange] = useState<(typeof RANGE_OPTIONS)[number]["value"]>("today");
   const [errorScope, setErrorScope] = useState<FailureScope>("service");
-  const [bucket, setBucket] = useState<string>("15m");
-
-  const requestedBucketOptions = useMemo(() => resolveStatsBucketOptions(range), [range]);
-  const requestedBucket = useMemo(
-    () => resolveStatsBucketValue(bucket, requestedBucketOptions),
-    [bucket, requestedBucketOptions],
-  );
 
   const rangeOptions = useMemo(
     () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -28,39 +57,12 @@ export default function StatsPage() {
 
   const { summary, isLoading: summaryLoading, error: summaryError } = useSummary(range);
 
-  const {
-    data: timeseries,
-    isLoading: timeseriesLoading,
-    error: timeseriesError,
-  } = useTimeseries(range, {
-    bucket: requestedBucket,
-    preferServerAggregation: true,
-  });
-
-  const rawBucketOptions = useMemo(
-    () => resolveStatsBucketOptions(range, timeseries?.availableBuckets),
-    [range, timeseries?.availableBuckets],
-  );
-  const effectiveBucket = useMemo(() => {
-    const serverBucket = timeseries?.effectiveBucket;
-    const requestedStillAllowed = rawBucketOptions.some(
-      (option) => option.value === requestedBucket,
-    );
-    // Keep the user's in-flight selection visible until the server explicitly narrows it.
-    if (requestedStillAllowed) {
-      return requestedBucket;
-    }
-    return resolveStatsBucketValue(serverBucket ?? requestedBucket, rawBucketOptions);
-  }, [rawBucketOptions, requestedBucket, timeseries?.effectiveBucket]);
+  const { timeseries, timeseriesLoading, timeseriesError, rawOptions, effectiveBucket, setBucket } =
+    useStatsBucketSelection(range);
   const bucketOptions = useMemo(
-    () => rawBucketOptions.map((option) => ({ ...option, label: t(option.labelKey) })),
-    [rawBucketOptions, t],
+    () => rawOptions.map((option) => ({ ...option, label: t(option.labelKey) })),
+    [rawOptions, t],
   );
-
-  // Keep internal bucket state in sync after the backend narrows unsupported options.
-  useEffect(() => {
-    if (bucket !== effectiveBucket) setBucket(effectiveBucket);
-  }, [bucket, effectiveBucket]);
 
   const {
     data: errors,

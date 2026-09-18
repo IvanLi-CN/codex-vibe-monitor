@@ -36,6 +36,33 @@ export function normalizeAccountPoolGroupName(value?: string | null) {
 
 const GROUPED_PLAN_ORDER = ["free", "k12", "pro", "team", "enterprise"];
 
+function buildGroupPlanCounts(
+  items: UpstreamAccountSummary[],
+  groupedPlanLabel: (planType?: string | null) => string | null,
+): AccountPoolGroupPlanCount[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.kind === "api_key_codex") counts.set("api", (counts.get("api") ?? 0) + 1);
+    const normalizedPlan = item.planType?.trim().toLowerCase();
+    if (!normalizedPlan || normalizedPlan === "local") continue;
+    counts.set(normalizedPlan, (counts.get(normalizedPlan) ?? 0) + 1);
+  }
+  const orderedKeys = [
+    ...GROUPED_PLAN_ORDER.filter((key) => counts.has(key)),
+    ...(counts.has("api") ? ["api"] : []),
+    ...Array.from(counts.keys())
+      .filter((key) => key !== "api" && !GROUPED_PLAN_ORDER.includes(key))
+      .sort(),
+  ];
+  return orderedKeys
+    .map((key) => ({
+      key,
+      label: key === "api" ? "API" : (groupedPlanLabel(key) ?? key),
+      count: counts.get(key) ?? 0,
+    }))
+    .filter((plan) => plan.count > 0);
+}
+
 export function buildAccountPoolGroupSummaries(options: {
   items: UpstreamAccountSummary[];
   groups: UpstreamAccountGroupSummary[];
@@ -107,36 +134,10 @@ export function buildAccountPoolGroupSummaries(options: {
     grouped.set(groupKey, current);
   }
 
-  const result = Array.from(grouped.values()).map((group) => {
-    const counts = new Map<string, number>();
-    for (const item of group.items) {
-      if (item.kind === "api_key_codex") {
-        counts.set("api", (counts.get("api") ?? 0) + 1);
-      }
-      const normalizedPlan = item.planType?.trim().toLowerCase();
-      if (!normalizedPlan || normalizedPlan === "local") continue;
-      counts.set(normalizedPlan, (counts.get(normalizedPlan) ?? 0) + 1);
-    }
-
-    const orderedKeys = [
-      ...GROUPED_PLAN_ORDER.filter((key) => counts.has(key)),
-      ...(counts.has("api") ? ["api"] : []),
-      ...Array.from(counts.keys())
-        .filter((key) => key !== "api" && !GROUPED_PLAN_ORDER.includes(key))
-        .sort(),
-    ];
-
-    return {
-      ...group,
-      planCounts: orderedKeys
-        .map((key) => ({
-          key,
-          label: key === "api" ? "API" : (groupedPlanLabel(key) ?? key),
-          count: counts.get(key) ?? 0,
-        }))
-        .filter((plan) => plan.count > 0),
-    };
-  });
+  const result = Array.from(grouped.values()).map((group) => ({
+    ...group,
+    planCounts: buildGroupPlanCounts(group.items, groupedPlanLabel),
+  }));
 
   result.sort((left, right) => {
     const leftOrder =

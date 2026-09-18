@@ -20,7 +20,7 @@ import {
   buildDefaultStatusChangeReasonFieldSources,
   buildDefaultStatusChangeReasons,
 } from "../../lib/upstreamAccountStatusChangeReasons";
-import { duplicateReasons } from "./UpstreamAccountsPage.story-data";
+import { createLiveUsageBuilder, duplicateReasons } from "./UpstreamAccountsPage.story-data";
 
 export type StoryStore = {
   writesEnabled: boolean;
@@ -995,6 +995,8 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
   });
 }
 
+const buildDynamicLiveUsage = createLiveUsageBuilder(buildOauthUsage, buildApiKeyUsage);
+
 function applyDynamicLiveStatus(detail: UpstreamAccountDetail, index: number, phase: number) {
   const seed = index + phase * 11;
   if ((index + phase) % 6 === 0) {
@@ -1016,9 +1018,7 @@ function applyDynamicLiveStatus(detail: UpstreamAccountDetail, index: number, ph
       lastSuccessfulSyncAt: atMinuteOffset(-(seed + 4)),
       lastActivityAt: atMinuteOffset(-(seed + 1)),
       note: `${detail.displayName} live fixture is re-syncing during cycle ${phase + 1}.`,
-      ...(detail.kind === "oauth_codex"
-        ? buildOauthUsage(34 + (seed % 18), 12 + (seed % 16))
-        : buildApiKeyUsage(24 + (seed % 28), 90 + (seed % 120))),
+      ...buildDynamicLiveUsage(detail.kind, seed, "syncing"),
     });
   }
 
@@ -1043,9 +1043,7 @@ function applyDynamicLiveStatus(detail: UpstreamAccountDetail, index: number, ph
       lastSuccessfulSyncAt: atMinuteOffset(-(seed + 6)),
       lastActivityAt: atMinuteOffset(-(seed + 2)),
       note: `${detail.displayName} live fixture is simulating a transient upstream timeout.`,
-      ...(detail.kind === "oauth_codex"
-        ? buildOauthUsage(76 + (seed % 12), 54 + (seed % 18))
-        : buildApiKeyUsage(98 + (seed % 18), 360 + (seed % 80))),
+      ...buildDynamicLiveUsage(detail.kind, seed, "unavailable"),
     });
   }
 
@@ -1070,9 +1068,7 @@ function applyDynamicLiveStatus(detail: UpstreamAccountDetail, index: number, ph
       lastSuccessfulSyncAt: atMinuteOffset(-(seed + 5)),
       lastActivityAt: atMinuteOffset(-(seed + 2)),
       note: `${detail.displayName} live fixture is currently throttled by the upstream window.`,
-      ...(detail.kind === "oauth_codex"
-        ? buildOauthUsage(84 + (seed % 10), 61 + (seed % 14))
-        : buildApiKeyUsage(108 + (seed % 10), 410 + (seed % 60))),
+      ...buildDynamicLiveUsage(detail.kind, seed, "rateLimited"),
     });
   }
 
@@ -1096,9 +1092,7 @@ function applyDynamicLiveStatus(detail: UpstreamAccountDetail, index: number, ph
     lastSuccessfulSyncAt: atMinuteOffset(-(seed + 1)),
     lastActivityAt: atMinuteOffset(-(seed + 1)),
     note: `${detail.displayName} live fixture was refreshed successfully in cycle ${phase + 1}.`,
-    ...(detail.kind === "oauth_codex"
-      ? buildOauthUsage(42 + (seed % 18), 18 + (seed % 14))
-      : buildApiKeyUsage(26 + (seed % 30), 120 + (seed % 140))),
+    ...buildDynamicLiveUsage(detail.kind, seed, "healthy"),
   });
 }
 

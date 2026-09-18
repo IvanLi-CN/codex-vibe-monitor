@@ -10,14 +10,15 @@ import { fetchInvocationRecords, fetchTimeseries } from "../lib/api";
 import { invocationStableKey } from "../lib/invocation";
 import { buildTopicDescriptor } from "../lib/sse";
 import { getBrowserTimeZone } from "../lib/timeZone";
+import type {
+  LiveRecordDelta,
+  TrackTimeseriesLiveRecordDeltaOptions,
+  UseTimeseriesOptions,
+  WriteTimeseriesRemountCacheOptions,
+} from "./timeseriesContracts";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
-export interface UseTimeseriesOptions {
-  bucket?: string;
-  settlementHour?: number;
-  preferServerAggregation?: boolean;
-  upstreamAccountId?: number;
-}
+export type { UseTimeseriesOptions } from "./timeseriesContracts";
 
 export type TimeseriesSyncMode = "local" | "current-day-local" | "server";
 
@@ -38,23 +39,6 @@ interface UpdateContext {
 }
 
 type LiveRecordOutcome = "success" | "failure" | "in_flight" | "neutral";
-
-interface LiveRecordDelta {
-  recordId?: number;
-  bucketStart: string;
-  bucketEnd: string;
-  bucketStartEpoch: number;
-  bucketEndEpoch: number;
-  totalCount: number;
-  successCount: number;
-  failureCount: number;
-  inFlightCount: number;
-  totalTokens: number;
-  totalCost: number;
-  totalLatencyMs: number;
-  totalLatencySampleCount: number;
-  countsOnly?: boolean;
-}
 
 export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000;
 export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000;
@@ -216,16 +200,16 @@ export function readTimeseriesRemountCache(
     : null;
 }
 
-export function writeTimeseriesRemountCache(
-  range: string,
-  options: UseTimeseriesOptions | undefined,
-  data: TimeseriesResponse,
+export function writeTimeseriesRemountCache({
+  range,
+  options,
+  data,
   cachedAt = Date.now(),
-  liveRecordDeltas?: ReadonlyMap<string, LiveRecordDelta> | null,
-  settledLiveRecordUpdatedAt?: ReadonlyMap<string, number> | null,
-  untrackedInFlightCounts?: ReadonlyMap<string, number> | null,
-  untrackedInFlightClaimSnapshotId?: number | null,
-) {
+  liveRecordDeltas,
+  settledLiveRecordUpdatedAt,
+  untrackedInFlightCounts,
+  untrackedInFlightClaimSnapshotId,
+}: WriteTimeseriesRemountCacheOptions) {
   if (!shouldEnableTimeseriesRemountCache(range)) return;
   timeseriesRemountCache.set(getTimeseriesRemountCacheKey(range, options), {
     data: cloneTimeseriesResponse(data),
@@ -682,16 +666,16 @@ export function pruneTrackedTimeseriesLiveRecordDeltas(
   }
 }
 
-export function trackTimeseriesLiveRecordDelta(
-  liveRecordDeltas: Map<string, LiveRecordDelta>,
-  settledLiveRecordUpdatedAt: Map<string, number>,
-  key: string,
-  record: ApiInvocation,
-  delta: LiveRecordDelta | null,
+export function trackTimeseriesLiveRecordDelta({
+  liveRecordDeltas,
+  settledLiveRecordUpdatedAt,
+  key,
+  record,
+  delta,
   now = Date.now(),
   ttlMs = TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
   maxEntries = MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
-) {
+}: TrackTimeseriesLiveRecordDeltaOptions) {
   pruneTrackedTimeseriesLiveRecordDeltas(
     liveRecordDeltas,
     settledLiveRecordUpdatedAt,
@@ -1089,7 +1073,12 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     try {
       const response = await fetchTimeseries(range, normalizedOptions);
       setHttpData(response);
-      writeTimeseriesRemountCache(range, normalizedOptions, response, Date.now());
+      writeTimeseriesRemountCache({
+        range,
+        options: normalizedOptions,
+        data: response,
+        cachedAt: Date.now(),
+      });
       setHttpError(null);
     } catch (error) {
       setHttpError(error instanceof Error ? error.message : String(error));
@@ -1106,7 +1095,12 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     if (supportsPureSse && sse.data) {
-      writeTimeseriesRemountCache(range, normalizedOptions, sse.data, Date.now());
+      writeTimeseriesRemountCache({
+        range,
+        options: normalizedOptions,
+        data: sse.data,
+        cachedAt: Date.now(),
+      });
     }
   }, [normalizedOptions, range, sse.data, supportsPureSse]);
 

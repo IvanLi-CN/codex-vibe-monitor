@@ -145,41 +145,116 @@ function mergeIncomingWindowRecord(current: ApiInvocation | undefined, incoming:
   return mergeInvocationRecordCollections([current], [incoming])[0] ?? current;
 }
 
+type InvocationLiveFilters = Pick<
+  InvocationRecordsQuery,
+  | "from"
+  | "to"
+  | "status"
+  | "model"
+  | "models"
+  | "modelTarget"
+  | "modelRerouted"
+  | "endpoint"
+  | "invokeId"
+  | "attemptId"
+  | "requestId"
+  | "failureClass"
+  | "failureKind"
+  | "promptCacheKey"
+  | "upstreamScope"
+  | "requesterIp"
+  | "upstreamAccountId"
+  | "proxyDisplayName"
+  | "transport"
+  | "serviceTier"
+  | "reasoningEffort"
+  | "reasoningEfforts"
+  | "keyword"
+  | "minTotalTokens"
+  | "maxTotalTokens"
+  | "minTotalMs"
+  | "maxTotalMs"
+>;
+
 export function matchesInvocationLiveFilters(
   record: ApiInvocation,
-  filters?: Pick<
-    InvocationRecordsQuery,
-    | "from"
-    | "to"
-    | "status"
-    | "model"
-    | "models"
-    | "modelTarget"
-    | "modelRerouted"
-    | "endpoint"
-    | "invokeId"
-    | "attemptId"
-    | "requestId"
-    | "failureClass"
-    | "failureKind"
-    | "promptCacheKey"
-    | "upstreamScope"
-    | "requesterIp"
-    | "upstreamAccountId"
-    | "proxyDisplayName"
-    | "transport"
-    | "serviceTier"
-    | "reasoningEffort"
-    | "reasoningEfforts"
-    | "keyword"
-    | "minTotalTokens"
-    | "maxTotalTokens"
-    | "minTotalMs"
-    | "maxTotalMs"
-  >,
+  filters?: InvocationLiveFilters,
 ) {
   if (!filters) return true;
 
+  if (!matchesInvocationPrimaryFilters(record, filters)) return false;
+
+  if (filters.endpoint && normalizeText(record.endpoint) !== normalizeText(filters.endpoint)) {
+    return false;
+  }
+  const invokeIdFilter = filters.invokeId ?? filters.requestId;
+  if (invokeIdFilter && normalizeText(record.invokeId) !== normalizeText(invokeIdFilter)) {
+    return false;
+  }
+  if (filters.attemptId) return false;
+  if (
+    filters.failureClass &&
+    normalizeText(record.failureClass) !== normalizeText(filters.failureClass)
+  )
+    return false;
+  if (
+    filters.failureKind &&
+    normalizeText(record.failureKind) !== normalizeText(filters.failureKind)
+  )
+    return false;
+  if (
+    filters.promptCacheKey &&
+    normalizeText(record.promptCacheKey) !== normalizeText(filters.promptCacheKey)
+  )
+    return false;
+  if (
+    filters.upstreamScope &&
+    resolveUpstreamScopeFilterValue(record) !== normalizeText(filters.upstreamScope)
+  )
+    return false;
+  if (
+    filters.requesterIp &&
+    normalizeText(record.requesterIp) !== normalizeText(filters.requesterIp)
+  )
+    return false;
+  if (
+    typeof filters.upstreamAccountId === "number" &&
+    normalizeNumber(record.upstreamAccountId) !== filters.upstreamAccountId
+  )
+    return false;
+  if (
+    filters.proxyDisplayName &&
+    normalizeText(record.proxyDisplayName) !== normalizeText(filters.proxyDisplayName)
+  )
+    return false;
+  if (filters.transport && normalizeText(record.transport) !== normalizeText(filters.transport))
+    return false;
+  if (
+    filters.serviceTier &&
+    normalizeText(record.serviceTier) !== normalizeText(filters.serviceTier)
+  )
+    return false;
+  const reasoningEffortFilters = normalizeTextList(filters.reasoningEfforts);
+  const reasoningEffort = normalizeText(record.reasoningEffort);
+  if (
+    reasoningEffortFilters.length > 0 &&
+    (!reasoningEffort || !reasoningEffortFilters.includes(reasoningEffort))
+  )
+    return false;
+  if (
+    reasoningEffortFilters.length === 0 &&
+    filters.reasoningEffort &&
+    normalizeText(record.reasoningEffort) !== normalizeText(filters.reasoningEffort)
+  )
+    return false;
+  if (filters.keyword) {
+    const keyword = normalizeText(filters.keyword);
+    if (keyword && !resolveKeywordHaystack(record).includes(keyword)) return false;
+  }
+  return matchesInvocationMetricFilters(record, filters);
+}
+
+function matchesInvocationPrimaryFilters(record: ApiInvocation, filters: InvocationLiveFilters) {
   const occurredAtMs = Date.parse(record.occurredAt);
   if (filters.from && Number.isFinite(occurredAtMs) && occurredAtMs < Date.parse(filters.from)) {
     return false;
@@ -215,86 +290,10 @@ export function matchesInvocationLiveFilters(
     }
   }
 
-  if (filters.endpoint && normalizeText(record.endpoint) !== normalizeText(filters.endpoint)) {
-    return false;
-  }
-  const invokeIdFilter = filters.invokeId ?? filters.requestId;
-  if (invokeIdFilter && normalizeText(record.invokeId) !== normalizeText(invokeIdFilter)) {
-    return false;
-  }
-  if (filters.attemptId) {
-    return false;
-  }
-  if (
-    filters.failureClass &&
-    normalizeText(record.failureClass) !== normalizeText(filters.failureClass)
-  ) {
-    return false;
-  }
-  if (
-    filters.failureKind &&
-    normalizeText(record.failureKind) !== normalizeText(filters.failureKind)
-  ) {
-    return false;
-  }
-  if (
-    filters.promptCacheKey &&
-    normalizeText(record.promptCacheKey) !== normalizeText(filters.promptCacheKey)
-  ) {
-    return false;
-  }
-  if (
-    filters.upstreamScope &&
-    resolveUpstreamScopeFilterValue(record) !== normalizeText(filters.upstreamScope)
-  ) {
-    return false;
-  }
-  if (
-    filters.requesterIp &&
-    normalizeText(record.requesterIp) !== normalizeText(filters.requesterIp)
-  ) {
-    return false;
-  }
-  if (
-    typeof filters.upstreamAccountId === "number" &&
-    normalizeNumber(record.upstreamAccountId) !== filters.upstreamAccountId
-  ) {
-    return false;
-  }
-  if (
-    filters.proxyDisplayName &&
-    normalizeText(record.proxyDisplayName) !== normalizeText(filters.proxyDisplayName)
-  ) {
-    return false;
-  }
-  if (filters.transport && normalizeText(record.transport) !== normalizeText(filters.transport)) {
-    return false;
-  }
-  if (
-    filters.serviceTier &&
-    normalizeText(record.serviceTier) !== normalizeText(filters.serviceTier)
-  ) {
-    return false;
-  }
-  const reasoningEffortFilters = normalizeTextList(filters.reasoningEfforts);
-  if (reasoningEffortFilters.length > 0) {
-    const reasoningEffort = normalizeText(record.reasoningEffort);
-    if (!reasoningEffort || !reasoningEffortFilters.includes(reasoningEffort)) {
-      return false;
-    }
-  } else if (
-    filters.reasoningEffort &&
-    normalizeText(record.reasoningEffort) !== normalizeText(filters.reasoningEffort)
-  ) {
-    return false;
-  }
-  if (filters.keyword) {
-    const keyword = normalizeText(filters.keyword);
-    if (keyword && !resolveKeywordHaystack(record).includes(keyword)) {
-      return false;
-    }
-  }
+  return true;
+}
 
+function matchesInvocationMetricFilters(record: ApiInvocation, filters: InvocationLiveFilters) {
   const totalTokens = normalizeNumber(record.totalTokens);
   if (
     typeof filters.minTotalTokens === "number" &&
@@ -409,6 +408,16 @@ export function compareInvocationRecordsForWindow(
     return comparison;
   }
 
+  return compareInvocationRecordTieBreak(left, right, sortBy, sortOrder);
+}
+
+function compareInvocationRecordTieBreak(
+  left: ApiInvocation,
+  right: ApiInvocation,
+  sortBy: InvocationSortBy,
+  sortOrder: InvocationSortOrder,
+) {
+  const direction = sortOrder === "asc" ? 1 : -1;
   if (sortBy === "occurredAt") {
     if (left.id !== right.id) {
       return (left.id - right.id) * direction;
