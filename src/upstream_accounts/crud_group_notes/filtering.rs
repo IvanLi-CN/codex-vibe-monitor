@@ -48,3 +48,32 @@ fn append_model_routing_attempt_timeline_filters(
         query.push("))))");
     }
 }
+
+type ApiKeyGroupMigrationRow = (
+    i64,
+    Option<String>,
+    i64,
+    Option<String>,
+    Option<f64>,
+    Option<f64>,
+    Option<String>,
+);
+
+async fn load_api_key_group_migration_rows(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<ApiKeyGroupMigrationRow>> {
+    sqlx::query_as::<_, ApiKeyGroupMigrationRow>(
+        r#"
+        SELECT id, group_name, is_mother, upstream_base_url,
+               local_primary_limit, local_secondary_limit, local_limit_unit
+        FROM pool_upstream_accounts
+        WHERE kind = ?1 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}

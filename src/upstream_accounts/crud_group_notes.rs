@@ -1491,30 +1491,7 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
 async fn load_api_key_group_migration_preflight(
     pool: &Pool<Sqlite>,
 ) -> Result<ApiKeyGroupMigrationPreflightResponse> {
-    let rows = sqlx::query_as::<
-        _,
-        (
-            i64,
-            Option<String>,
-            i64,
-            Option<String>,
-            Option<f64>,
-            Option<f64>,
-            Option<String>,
-        ),
-    >(
-        r#"
-        SELECT id, group_name, is_mother, upstream_base_url,
-               local_primary_limit, local_secondary_limit, local_limit_unit
-        FROM pool_upstream_accounts
-        WHERE kind = ?1 AND COALESCE(deleted_at, '') = ''
-          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
-        ORDER BY id ASC
-        "#,
-    )
-    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
-    .fetch_all(pool)
-    .await?;
+    let rows = load_api_key_group_migration_rows(pool).await?;
 
     let mut blocked = BTreeSet::new();
     let mut group_metadata_by_name = BTreeMap::new();
