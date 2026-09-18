@@ -49,7 +49,7 @@ async fn persist_runtime_account_capture(
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let record = build_running_proxy_capture_record(
+    let record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -71,7 +71,7 @@ async fn persist_runtime_account_capture(
         capture.first_byte_ms,
         capture.first_token_ms,
         capture.response_ms,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, record)
         .await
         .expect("store runtime account activity snapshot in memory");
@@ -219,7 +219,7 @@ pub(crate) async fn runtime_summary_phase_ignores_zero_placeholder_before_positi
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let record = build_running_proxy_capture_record(
+    let record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         "runtime-phase-zero-connect",
         &occurred_at,
         ProxyCaptureTarget::Responses,
@@ -241,7 +241,7 @@ pub(crate) async fn runtime_summary_phase_ignores_zero_placeholder_before_positi
         2.0,
         0.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
         .await
         .expect("store runtime phase snapshot in memory");

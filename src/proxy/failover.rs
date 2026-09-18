@@ -1302,15 +1302,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
                                 &state.pool,
                                 &attempt_trace,
-                                group_name_snapshot.as_deref(),
-                                proxy_binding_key_snapshot.as_deref(),
+                                PoolAttemptStartScope {
+                                    group_name_snapshot: group_name_snapshot.as_deref(),
+                                    proxy_binding_key_snapshot: proxy_binding_key_snapshot.as_deref(),
+                                    upstream_account_id: account.account_id,
+                                    upstream_route_key: upstream_route_key.as_str(),
+                                },
                                 Some(account.routing_source),
                                 account.routing_selection_audit.as_ref(),
-                                account.account_id,
-                                upstream_route_key.as_str(),
-                                attempt_index,
-                                distinct_account_index,
-                                same_account_retry_index,
+                                PoolAttemptStartIndexes {
+                                    attempt_index: attempt_index,
+                                    distinct_account_index: distinct_account_index,
+                                    same_account_retry_index: same_account_retry_index,
+                                },
                                 attempt_started_at.as_str(),
                             )
                             .await,
@@ -1554,23 +1558,26 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                     &state.pool,
                                     pending_attempt_record,
-                                    finished_at.as_str(),
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                    None,
-                                    None,
-                                    Some(failure_kind),
-                                    Some(message.as_str()),
-                                    None,
-                                    Some(elapsed_ms(connect_started)),
-                                    None,
-                                    None,
-                                    None,
-                                    compact_support_observation
-                                        .as_ref()
-                                        .map(|value| value.status),
-                                    compact_support_observation
-                                        .as_ref()
-                                        .and_then(|value| value.reason.as_deref()),
+                                    PoolAttemptFinalization {
+                                        finished_at: finished_at.as_str(),
+                                        status:
+                                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                        http_status: None,
+                                        downstream_http_status: None,
+                                        failure_kind: Some(failure_kind),
+                                        error_message: Some(message.as_str()),
+                                        downstream_error_message: None,
+                                        connect_latency_ms: Some(elapsed_ms(connect_started)),
+                                        first_byte_latency_ms: None,
+                                        stream_latency_ms: None,
+                                        upstream_request_id: None,
+                                        compact_support_status: compact_support_observation
+                                            .as_ref()
+                                            .map(|value| value.status),
+                                        compact_support_reason: compact_support_observation
+                                            .as_ref()
+                                            .and_then(|value| value.reason.as_deref()),
+                                    },
                                 )
                                 .await
                             {
@@ -1761,23 +1768,28 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                     &state.pool,
                                     pending_attempt_record,
-                                    finished_at.as_str(),
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                    None,
-                                    None,
-                                    Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
-                                    Some(message.as_str()),
-                                    None,
-                                    Some(elapsed_ms(connect_started)),
-                                    None,
-                                    None,
-                                    None,
-                                    compact_support_observation
-                                        .as_ref()
-                                        .map(|value| value.status),
-                                    compact_support_observation
-                                        .as_ref()
-                                        .and_then(|value| value.reason.as_deref()),
+                                    PoolAttemptFinalization {
+                                        finished_at: finished_at.as_str(),
+                                        status:
+                                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                        http_status: None,
+                                        downstream_http_status: None,
+                                        failure_kind: Some(
+                                            PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                        ),
+                                        error_message: Some(message.as_str()),
+                                        downstream_error_message: None,
+                                        connect_latency_ms: Some(elapsed_ms(connect_started)),
+                                        first_byte_latency_ms: None,
+                                        stream_latency_ms: None,
+                                        upstream_request_id: None,
+                                        compact_support_status: compact_support_observation
+                                            .as_ref()
+                                            .map(|value| value.status),
+                                        compact_support_reason: compact_support_observation
+                                            .as_ref()
+                                            .and_then(|value| value.reason.as_deref()),
+                                    },
                                 )
                                 .await
                             {
@@ -2152,15 +2164,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
                                 &state.pool,
                                 &attempt_trace,
-                                group_name_snapshot.as_deref(),
-                                proxy_binding_key_snapshot.as_deref(),
+                                PoolAttemptStartScope {
+                                    group_name_snapshot: group_name_snapshot.as_deref(),
+                                    proxy_binding_key_snapshot: proxy_binding_key_snapshot.as_deref(),
+                                    upstream_account_id: account.account_id,
+                                    upstream_route_key: upstream_route_key.as_str(),
+                                },
                                 Some(account.routing_source),
                                 account.routing_selection_audit.as_ref(),
-                                account.account_id,
-                                upstream_route_key.as_str(),
-                                attempt_index,
-                                distinct_account_index,
-                                same_account_retry_index,
+                                PoolAttemptStartIndexes {
+                                    attempt_index: attempt_index,
+                                    distinct_account_index: distinct_account_index,
+                                    same_account_retry_index: same_account_retry_index,
+                                },
                                 attempt_started_at.as_str(),
                             )
                             .await,
@@ -2735,23 +2751,29 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     && let Err(record_err) = finalize_pool_upstream_request_attempt(
                         &state.pool,
                         pending_attempt_record,
-                        finished_at.as_str(),
-                        normalized_failure.attempt_status,
-                        normalized_failure.upstream_http_status,
-                        normalized_failure.downstream_http_status,
-                        Some(failure_kind),
-                        Some(normalized_failure.canonical_error_message.as_str()),
-                        normalized_failure.downstream_error_message.as_deref(),
-                        Some(connect_latency_ms),
-                        None,
-                        None,
-                        upstream_request_id.as_deref(),
-                        compact_support_observation
-                            .as_ref()
-                            .map(|value| value.status),
-                        compact_support_observation
-                            .as_ref()
-                            .and_then(|value| value.reason.as_deref()),
+                        PoolAttemptFinalization {
+                            finished_at: finished_at.as_str(),
+                            status: normalized_failure.attempt_status,
+                            http_status: normalized_failure.upstream_http_status,
+                            downstream_http_status: normalized_failure.downstream_http_status,
+                            failure_kind: Some(failure_kind),
+                            error_message: Some(
+                                normalized_failure.canonical_error_message.as_str(),
+                            ),
+                            downstream_error_message: normalized_failure
+                                .downstream_error_message
+                                .as_deref(),
+                            connect_latency_ms: Some(connect_latency_ms),
+                            first_byte_latency_ms: None,
+                            stream_latency_ms: None,
+                            upstream_request_id: upstream_request_id.as_deref(),
+                            compact_support_status: compact_support_observation
+                                .as_ref()
+                                .map(|value| value.status),
+                            compact_support_reason: compact_support_observation
+                                .as_ref()
+                                .and_then(|value| value.reason.as_deref()),
+                        },
                     )
                     .await
                 {
@@ -3044,23 +3066,25 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                 &state.pool,
                                 pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                None,
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                Some(message.as_str()),
-                                None,
-                                Some(connect_latency_ms),
-                                None,
-                                None,
-                                None,
-                                compact_support_observation
-                                    .as_ref()
-                                    .map(|value| value.status),
-                                compact_support_observation
-                                    .as_ref()
-                                    .and_then(|value| value.reason.as_deref()),
+                                PoolAttemptFinalization {
+                                    finished_at: finished_at.as_str(),
+                                    status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                    http_status: None,
+                                    downstream_http_status: None,
+                                    failure_kind: Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                    error_message: Some(message.as_str()),
+                                    downstream_error_message: None,
+                                    connect_latency_ms: Some(connect_latency_ms),
+                                    first_byte_latency_ms: None,
+                                    stream_latency_ms: None,
+                                    upstream_request_id: None,
+                                    compact_support_status: compact_support_observation
+                                        .as_ref()
+                                        .map(|value| value.status),
+                                    compact_support_reason: compact_support_observation
+                                        .as_ref()
+                                        .and_then(|value| value.reason.as_deref()),
+                                },
                             )
                             .await
                         {
@@ -3295,19 +3319,21 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                 &state.pool,
                                 pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
-                                Some(status),
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
-                                Some(message.as_str()),
-                                None,
-                                Some(connect_latency_ms),
-                                Some(first_byte_latency_ms),
-                                None,
-                                upstream_request_id.as_deref(),
-                                None,
-                                None,
+                                PoolAttemptFinalization {
+                                    finished_at: finished_at.as_str(),
+                                    status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+                                    http_status: Some(status),
+                                    downstream_http_status: None,
+                                    failure_kind: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                                    error_message: Some(message.as_str()),
+                                    downstream_error_message: None,
+                                    connect_latency_ms: Some(connect_latency_ms),
+                                    first_byte_latency_ms: Some(first_byte_latency_ms),
+                                    stream_latency_ms: None,
+                                    upstream_request_id: upstream_request_id.as_deref(),
+                                    compact_support_status: None,
+                                    compact_support_reason: None,
+                                },
                             )
                             .await
                         {
@@ -3434,19 +3460,21 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                 &state.pool,
                                 pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                None,
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                Some(message.as_str()),
-                                None,
-                                Some(connect_latency_ms),
-                                Some(first_byte_latency_ms),
-                                None,
-                                None,
-                                None,
-                                None,
+                                PoolAttemptFinalization {
+                                    finished_at: finished_at.as_str(),
+                                    status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                    http_status: None,
+                                    downstream_http_status: None,
+                                    failure_kind: Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                    error_message: Some(message.as_str()),
+                                    downstream_error_message: None,
+                                    connect_latency_ms: Some(connect_latency_ms),
+                                    first_byte_latency_ms: Some(first_byte_latency_ms),
+                                    stream_latency_ms: None,
+                                    upstream_request_id: None,
+                                    compact_support_status: None,
+                                    compact_support_reason: None,
+                                },
                             )
                             .await
                         {

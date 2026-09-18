@@ -1186,7 +1186,7 @@ impl ViaPoolResolutionTerminalError {
     }
 }
 
-struct SingleAccountBindingTerminalErrorRequest<'a> {
+pub(crate) struct SingleAccountBindingTerminalErrorRequest<'a> {
     state: &'a AppState,
     trace_context: Option<&'a PoolUpstreamAttemptTraceContext>,
     binding_constraint: Option<&'a PromptCacheConversationBindingConstraint>,
@@ -1423,19 +1423,21 @@ pub(crate) async fn finalize_tracked_pool_attempt(
     if let Err(err) = finalize_pool_upstream_request_attempt(
         &finalization.state.pool,
         pending_attempt_record,
-        finished_at.as_str(),
-        finalization.status,
-        finalization.http_status,
-        finalization.downstream_http_status,
-        finalization.failure_kind,
-        finalization.error_message,
-        finalization.downstream_error_message,
-        finalization.connect_latency_ms,
-        finalization.first_byte_latency_ms,
-        finalization.stream_latency_ms,
-        finalization.upstream_request_id,
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: finished_at.as_str(),
+            status: finalization.status,
+            http_status: finalization.http_status,
+            downstream_http_status: finalization.downstream_http_status,
+            failure_kind: finalization.failure_kind,
+            error_message: finalization.error_message,
+            downstream_error_message: finalization.downstream_error_message,
+            connect_latency_ms: finalization.connect_latency_ms,
+            first_byte_latency_ms: finalization.first_byte_latency_ms,
+            stream_latency_ms: finalization.stream_latency_ms,
+            upstream_request_id: finalization.upstream_request_id,
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     {

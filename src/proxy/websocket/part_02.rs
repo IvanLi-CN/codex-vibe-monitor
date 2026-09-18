@@ -104,18 +104,22 @@ async fn encrypted_session_owner_ws_prepare_error(
     if let Some(audit) = no_candidate_audit {
         let _ = persist_pool_routing_no_candidate_invocation_with_error(
             state.clone(),
-            trace,
-            prompt_cache_key,
-            audit,
-            err.status,
-            err.failure_kind,
-            &err.message,
-            err.attempt_summary.pool_attempt_count,
-            err.attempt_summary.pool_distinct_account_count,
-            err.attempt_summary
-                .pool_attempt_terminal_reason
-                .as_deref()
-                .unwrap_or(err.failure_kind),
+            PoolNoCandidateInvocationRequest {
+                trace,
+                prompt_cache_key,
+                audit,
+                request_body_snapshot: None,
+                status: err.status,
+                failure_kind: err.failure_kind,
+                error_message: &err.message,
+                pool_attempt_count: err.attempt_summary.pool_attempt_count,
+                pool_distinct_account_count: err.attempt_summary.pool_distinct_account_count,
+                pool_attempt_terminal_reason: err
+                    .attempt_summary
+                    .pool_attempt_terminal_reason
+                    .as_deref()
+                    .unwrap_or(err.failure_kind),
+            },
         )
         .await;
     }
@@ -190,15 +194,18 @@ async fn websocket_no_candidate_prepare_error(
     if let Some(failure) = last_failure {
         let _ = persist_pool_routing_no_candidate_invocation_with_error(
             state.clone(),
-            trace,
-            prompt_cache_key,
-            &audit,
-            failure.status,
-            failure.failure_kind,
-            &failure.message,
-            retry_account_count,
-            distinct_account_count,
-            failure.failure_kind,
+            PoolNoCandidateInvocationRequest {
+                trace,
+                prompt_cache_key,
+                audit: &audit,
+                request_body_snapshot: None,
+                status: failure.status,
+                failure_kind: failure.failure_kind,
+                error_message: &failure.message,
+                pool_attempt_count: retry_account_count,
+                pool_distinct_account_count: distinct_account_count,
+                pool_attempt_terminal_reason: failure.failure_kind,
+            },
         )
         .await;
     } else {

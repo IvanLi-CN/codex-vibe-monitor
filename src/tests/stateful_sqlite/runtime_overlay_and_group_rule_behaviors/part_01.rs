@@ -337,7 +337,7 @@ fn build_runtime_overlay_record(
     request_info: &RequestCaptureInfo,
     spec: RuntimeSnapshotSpec<'_>,
 ) -> ProxyCaptureRecord {
-    build_running_proxy_capture_record(
+    build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -359,7 +359,7 @@ fn build_runtime_overlay_record(
         spec.timings[1],
         spec.timings[2],
         spec.timings[3],
-    )
+    ))
 }
 
 async fn assert_initial_runtime_broadcast(
@@ -812,7 +812,7 @@ pub(crate) async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let enriched_record = build_running_proxy_capture_record(
+    let enriched_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -834,7 +834,7 @@ pub(crate) async fn admitted_proxy_capture_snapshot_is_visible_before_body_parse
         7.0,
         0.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, enriched_record)
         .await
         .expect("body-parsed snapshot should enrich the same runtime row");

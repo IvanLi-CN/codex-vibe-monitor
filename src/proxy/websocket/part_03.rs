@@ -286,15 +286,19 @@ async fn record_websocket_attempt_start(
         begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
             &state.pool,
             &attempt_trace,
-            group_name_snapshot.as_deref(),
-            proxy_binding_key_snapshot.as_deref(),
+            PoolAttemptStartScope {
+                group_name_snapshot: group_name_snapshot.as_deref(),
+                proxy_binding_key_snapshot: proxy_binding_key_snapshot.as_deref(),
+                upstream_account_id: account.account_id,
+                upstream_route_key: account.upstream_route_key().as_str(),
+            },
             Some(account.routing_source),
             account.routing_selection_audit.as_ref(),
-            account.account_id,
-            account.upstream_route_key().as_str(),
-            attempt_index as i64,
-            attempt_index as i64,
-            0,
+            PoolAttemptStartIndexes {
+                attempt_index: attempt_index as i64,
+                distinct_account_index: attempt_index as i64,
+                same_account_retry_index: 0,
+            },
             format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local()).as_str(),
         )
         .await,

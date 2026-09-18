@@ -379,7 +379,7 @@ fn locator_runtime_record(
     } else {
         "pool-account-18"
     };
-    build_running_proxy_capture_record(
+    build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -401,7 +401,7 @@ fn locator_runtime_record(
         1.0,
         1.0,
         1.0,
-    )
+    ))
 }
 
 async fn assert_runtime_only_locator(state: &Arc<AppState>, invoke_id: &str) {

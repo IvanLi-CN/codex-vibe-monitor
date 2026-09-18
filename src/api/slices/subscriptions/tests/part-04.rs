@@ -1,4 +1,3 @@
-
 #[tokio::test]
 async fn failed_runtime_window_rebase_retains_an_isolated_last_good_frame() {
     let state = crate::tests::test_state_with_openai_base(
@@ -795,26 +794,17 @@ async fn insert_upstream_account_attempt_fixture(
             upstream_base_url_host: None,
             request_model: request_model.map(ToOwned::to_owned),
         },
-        Some(account_id),
-        Some("https://api.openai.com"),
-        1,
-        1,
-        0,
-        Some(&occurred_at),
-        Some(&occurred_at),
-        "success",
-        Some("completed"),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        crate::proxy::PoolAttemptInsertRequest {
+            upstream_account_id: Some(account_id),
+            upstream_route_key: Some("https://api.openai.com"),
+            attempt_index: 1,
+            distinct_account_index: 1,
+            started_at: Some(&occurred_at),
+            finished_at: Some(&occurred_at),
+            status: "success",
+            phase: Some("completed"),
+            ..crate::proxy::PoolAttemptInsertRequest::default()
+        },
     )
     .await
     .expect("insert upstream account attempt fixture");

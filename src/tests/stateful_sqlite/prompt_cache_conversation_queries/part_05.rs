@@ -218,7 +218,7 @@ fn interrupted_prompt_cache_runtime_row(
     occurred_at: &str,
     key: &str,
 ) -> ApiInvocation {
-    let record = build_running_proxy_capture_record(
+    let record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -244,7 +244,7 @@ fn interrupted_prompt_cache_runtime_row(
         2.0,
         3.0,
         4.0,
-    );
+    ));
     let mut invocation = api_invocation_from_runtime_record(&record);
     invocation.status = Some("interrupted".to_string());
     invocation
@@ -315,7 +315,7 @@ async fn seed_memory_overlay_rows(state: &AppState, now: DateTime<Utc>) {
         };
         let occurred_at = format_naive(runtime_started_at.with_timezone(&Shanghai).naive_local());
         let prompt_cache_key = format!("memory-overlay-running-{}", index + 1);
-        let running_record = build_running_proxy_capture_record(
+        let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
             &format!("memory-overlay-running-invoke-{}", index + 1),
             &occurred_at,
             ProxyCaptureTarget::Responses,
@@ -341,7 +341,7 @@ async fn seed_memory_overlay_rows(state: &AppState, now: DateTime<Utc>) {
             2.0,
             3.0,
             4.0,
-        );
+        ));
         state
             .proxy_runtime_invocations
             .upsert(api_invocation_from_runtime_record(&running_record));

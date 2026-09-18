@@ -166,29 +166,30 @@ async fn emit_initial_proxy_capture_snapshot(request: InitialProxyCaptureSnapsho
         t_req_read_ms,
         t_req_parse_ms,
     } = request;
-    let initial_running_record = build_running_proxy_capture_record(
-        invoke_id,
-        occurred_at,
-        capture_target,
-        request_info,
-        requester_ip,
-        sticky_key,
-        prompt_cache_key,
-        pool_route_active,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        t_req_read_ms,
-        t_req_parse_ms,
-        0.0,
-        0.0,
-    );
+    let initial_running_record =
+        build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
+            invoke_id,
+            occurred_at,
+            capture_target,
+            request_info,
+            requester_ip,
+            sticky_key,
+            prompt_cache_key,
+            pool_route_active,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            t_req_read_ms,
+            t_req_parse_ms,
+            0.0,
+            0.0,
+        ));
     if let Err(err) =
         persist_and_broadcast_proxy_capture_runtime_snapshot(state, initial_running_record).await
     {

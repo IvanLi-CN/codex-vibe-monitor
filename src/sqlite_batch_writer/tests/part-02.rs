@@ -129,19 +129,21 @@ async fn attempt_progress_batch_does_not_overwrite_terminal_finalize() {
     finalize_pool_upstream_request_attempt(
         &pool,
         &pending,
-        "2026-07-01 10:00:05",
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-        Some(StatusCode::OK),
-        None,
-        None,
-        None,
-        None,
-        Some(42.0),
-        Some(16.0),
-        Some(188.0),
-        Some("req_terminal"),
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: "2026-07-01 10:00:05",
+            status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            http_status: Some(StatusCode::OK),
+            downstream_http_status: None,
+            failure_kind: None,
+            error_message: None,
+            downstream_error_message: None,
+            connect_latency_ms: Some(42.0),
+            first_byte_latency_ms: Some(16.0),
+            stream_latency_ms: Some(188.0),
+            upstream_request_id: Some("req_terminal"),
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     .expect("finalize attempt synchronously");
@@ -578,7 +580,7 @@ async fn terminal_invocation_batch_persists_and_updates_rollups() {
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let mut record = build_running_proxy_capture_record(
+    let mut record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         "batch-terminal-invocation",
         "2026-07-01 10:00:00",
         ProxyCaptureTarget::Responses,
@@ -600,7 +602,7 @@ async fn terminal_invocation_batch_persists_and_updates_rollups() {
         4.0,
         5.0,
         6.0,
-    );
+    ));
     record.status = "success".to_string();
     record.usage.input_tokens = Some(2);
     record.usage.output_tokens = Some(3);
@@ -756,7 +758,7 @@ async fn flush_now_treats_deferred_terminal_derived_writes_as_success() {
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let mut record = build_running_proxy_capture_record(
+    let mut record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         "batch-terminal-flush-now-deferred-derived",
         "2026-07-01 10:00:00",
         ProxyCaptureTarget::Responses,
@@ -778,7 +780,7 @@ async fn flush_now_treats_deferred_terminal_derived_writes_as_success() {
         4.0,
         5.0,
         6.0,
-    );
+    ));
     record.status = "success".to_string();
     record.usage.input_tokens = Some(2);
     record.usage.output_tokens = Some(3);
@@ -955,7 +957,7 @@ async fn shutdown_drain_flushes_terminal_invocations() {
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let mut record = build_running_proxy_capture_record(
+    let mut record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         "batch-terminal-shutdown-drain",
         "2026-07-01 10:00:00",
         ProxyCaptureTarget::Responses,
@@ -977,7 +979,7 @@ async fn shutdown_drain_flushes_terminal_invocations() {
         4.0,
         5.0,
         6.0,
-    );
+    ));
     record.status = "success".to_string();
 
     let writer = SqliteBatchWriter::spawn(

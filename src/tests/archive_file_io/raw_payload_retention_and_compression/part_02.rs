@@ -828,11 +828,16 @@ pub(crate) async fn finalize_pool_upstream_request_attempt_updates_pending_row_i
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         "2026-03-23 20:49:00",
     )
     .await;
@@ -845,19 +850,21 @@ pub(crate) async fn finalize_pool_upstream_request_attempt_updates_pending_row_i
     finalize_pool_upstream_request_attempt(
         &state.pool,
         &pending,
-        "2026-03-23 20:49:05",
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-        Some(StatusCode::OK),
-        None,
-        None,
-        None,
-        None,
-        Some(42.5),
-        Some(15.0),
-        Some(188.4),
-        Some("req_pool_123"),
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: "2026-03-23 20:49:05",
+            status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            http_status: Some(StatusCode::OK),
+            downstream_http_status: None,
+            failure_kind: None,
+            error_message: None,
+            downstream_error_message: None,
+            connect_latency_ms: Some(42.5),
+            first_byte_latency_ms: Some(15.0),
+            stream_latency_ms: Some(188.4),
+            upstream_request_id: Some("req_pool_123"),
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     .expect("finalize pending attempt");
@@ -886,13 +893,17 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_persists_grou
     let pending = begin_pool_upstream_request_attempt_with_scope(
         &state.pool,
         &trace,
-        Some("prod"),
-        Some(FORWARD_PROXY_DIRECT_KEY),
-        account_id,
-        "route-scoped",
-        1,
-        1,
-        0,
+        PoolAttemptStartScope {
+            group_name_snapshot: Some("prod"),
+            proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY),
+            upstream_account_id: account_id,
+            upstream_route_key: "route-scoped",
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 0,
+        },
         "2026-03-23 20:59:00",
     )
     .await;
@@ -965,19 +976,21 @@ pub(crate) async fn finalize_pool_upstream_request_attempt_fallback_preserves_sc
     finalize_pool_upstream_request_attempt(
         &state.pool,
         &pending,
-        "2026-03-23 21:00:01",
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-        None,
-        None,
-        Some("fallback_transport_failure"),
-        Some("fallback transport failure"),
-        None,
-        Some(11.0),
-        Some(17.0),
-        None,
-        Some("req_scope_fallback"),
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: "2026-03-23 21:00:01",
+            status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            http_status: None,
+            downstream_http_status: None,
+            failure_kind: Some("fallback_transport_failure"),
+            error_message: Some("fallback transport failure"),
+            downstream_error_message: None,
+            connect_latency_ms: Some(11.0),
+            first_byte_latency_ms: Some(17.0),
+            stream_latency_ms: None,
+            upstream_request_id: Some("req_scope_fallback"),
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     .expect("finalize fallback scoped attempt");
@@ -1180,11 +1193,16 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_atte
     let _pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         "2026-03-23 20:49:02",
     )
     .await;
@@ -1240,11 +1258,16 @@ pub(crate) async fn advance_pool_upstream_request_attempt_phase_buffers_progress
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         "2026-03-23 20:49:06",
     )
     .await;
@@ -1318,14 +1341,18 @@ pub(crate) async fn fetch_invocation_pool_attempts_returns_live_pending_attempts
     let _sticky_pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source(
         &state.pool,
         &trace,
-        Some("live-fetch-group"),
-        Some(FORWARD_PROXY_DIRECT_KEY),
+        PoolAttemptStartScope {
+            group_name_snapshot: Some("live-fetch-group"),
+            proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY),
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+        },
         Some(PoolRoutingSelectionSource::StickyReuse),
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         "2026-03-23 20:49:02",
     )
     .await;
@@ -1336,14 +1363,18 @@ pub(crate) async fn fetch_invocation_pool_attempts_returns_live_pending_attempts
             requester_ip: Some("192.168.31.7".to_string()),
             ..trace.clone()
         },
-        Some("live-fetch-group"),
-        Some(FORWARD_PROXY_DIRECT_KEY),
+        PoolAttemptStartScope {
+            group_name_snapshot: Some("live-fetch-group"),
+            proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY),
+            upstream_account_id: account_id,
+            upstream_route_key: "route-fallback",
+        },
         Some(PoolRoutingSelectionSource::FreshAssignment),
-        account_id,
-        "route-fallback",
-        2,
-        2,
-        1,
+        PoolAttemptStartIndexes {
+            attempt_index: 2,
+            distinct_account_index: 2,
+            same_account_retry_index: 1,
+        },
         "2026-03-23 20:49:03",
     )
     .await;
@@ -1461,11 +1492,16 @@ pub(crate) async fn recover_orphaned_pool_upstream_request_attempts_marks_pendin
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         "2026-03-23 20:49:04",
     )
     .await;

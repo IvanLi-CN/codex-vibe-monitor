@@ -134,15 +134,19 @@ async fn record_pool_request_prepare_failure_attempt(
     let pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
         &state.pool,
         &attempt_trace,
-        group_name_snapshot.as_deref(),
-        None,
+        PoolAttemptStartScope {
+            group_name_snapshot: group_name_snapshot.as_deref(),
+            proxy_binding_key_snapshot: None,
+            upstream_account_id: account.account_id,
+            upstream_route_key: &upstream_route_key,
+        },
         Some(account.routing_source),
         account.routing_selection_audit.as_ref(),
-        account.account_id,
-        &upstream_route_key,
-        attempt_index,
-        distinct_account_index,
-        same_account_retry_index,
+        PoolAttemptStartIndexes {
+            attempt_index: attempt_index,
+            distinct_account_index: distinct_account_index,
+            same_account_retry_index: same_account_retry_index,
+        },
         &started_at,
     )
     .await;
@@ -164,19 +168,21 @@ async fn record_pool_request_prepare_failure_attempt(
     if let Err(err) = finalize_pool_upstream_request_attempt(
         &state.pool,
         &pending,
-        &finished_at,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-        Some(status),
-        None,
-        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
-        Some(message),
-        None,
-        Some(0.0),
-        None,
-        None,
-        None,
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: &finished_at,
+            status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            http_status: Some(status),
+            downstream_http_status: None,
+            failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+            error_message: Some(message),
+            downstream_error_message: None,
+            connect_latency_ms: Some(0.0),
+            first_byte_latency_ms: None,
+            stream_latency_ms: None,
+            upstream_request_id: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     {

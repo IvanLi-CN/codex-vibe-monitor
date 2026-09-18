@@ -1837,35 +1837,36 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let selected_proxy_display_name =
         resolve_invocation_proxy_display_name(selected_proxy.as_ref());
-    let mut response_running_record = build_running_proxy_capture_record(
-        &invoke_id,
-        &occurred_at,
-        capture_target,
-        &request_info,
-        requester_ip.as_deref(),
-        sticky_key.as_deref(),
-        prompt_cache_key.as_deref(),
-        pool_route_active,
-        pool_account.as_ref().map(|account| account.account_id),
-        pool_account
-            .as_ref()
-            .map(|account| account.display_name.as_str()),
-        payload_summary_upstream_account_kind(pool_account.as_ref()),
-        payload_summary_upstream_base_url_host(pool_account.as_ref()),
-        selected_proxy_display_name.as_deref(),
-        pool_account
-            .as_ref()
-            .map(|_| pending_pool_attempt_summary.pool_attempt_count),
-        pool_account
-            .as_ref()
-            .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
-        None,
-        Some(response_content_encoding.as_str()),
-        t_req_read_ms,
-        t_req_parse_ms,
-        t_upstream_connect_ms,
-        prefetched_ttfb_ms,
-    );
+    let mut response_running_record =
+        build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
+            &invoke_id,
+            &occurred_at,
+            capture_target,
+            &request_info,
+            requester_ip.as_deref(),
+            sticky_key.as_deref(),
+            prompt_cache_key.as_deref(),
+            pool_route_active,
+            pool_account.as_ref().map(|account| account.account_id),
+            pool_account
+                .as_ref()
+                .map(|account| account.display_name.as_str()),
+            payload_summary_upstream_account_kind(pool_account.as_ref()),
+            payload_summary_upstream_base_url_host(pool_account.as_ref()),
+            selected_proxy_display_name.as_deref(),
+            pool_account
+                .as_ref()
+                .map(|_| pending_pool_attempt_summary.pool_attempt_count),
+            pool_account
+                .as_ref()
+                .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
+            None,
+            Some(response_content_encoding.as_str()),
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            prefetched_ttfb_ms,
+        ));
     set_proxy_capture_record_request_compression_algorithm(
         &mut response_running_record,
         pending_pool_attempt_record
@@ -2313,37 +2314,43 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_started_at = Some(Instant::now());
                         active_stream_timeout =
                             prefetched_stream_timeout_for_task.or(stream_timeout_for_task);
-                        let mut running_record = build_running_proxy_capture_record(
-                            &invoke_id_for_task,
-                            &occurred_at_for_task,
-                            capture_target,
-                            &request_info_for_task,
-                            requester_ip_for_task.as_deref(),
-                            sticky_key_for_task.as_deref(),
-                            prompt_cache_key_for_task.as_deref(),
-                            pool_account_for_task.is_some(),
-                            pool_account_for_task
-                                .as_ref()
-                                .map(|account| account.account_id),
-                            pool_account_for_task
-                                .as_ref()
-                                .map(|account| account.display_name.as_str()),
-                            payload_summary_upstream_account_kind(pool_account_for_task.as_ref()),
-                            payload_summary_upstream_base_url_host(pool_account_for_task.as_ref()),
-                            selected_proxy_display_name_for_task.as_deref(),
-                            pool_account_for_task
-                                .as_ref()
-                                .map(|_| pending_pool_attempt_summary_for_task.pool_attempt_count),
-                            pool_account_for_task.as_ref().map(|_| {
-                                pending_pool_attempt_summary_for_task.pool_distinct_account_count
-                            }),
-                            None,
-                            Some(response_content_encoding.as_str()),
-                            t_req_read_ms,
-                            t_req_parse_ms,
-                            t_upstream_connect_ms,
-                            t_upstream_ttfb_ms,
-                        );
+                        let mut running_record =
+                            build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
+                                &invoke_id_for_task,
+                                &occurred_at_for_task,
+                                capture_target,
+                                &request_info_for_task,
+                                requester_ip_for_task.as_deref(),
+                                sticky_key_for_task.as_deref(),
+                                prompt_cache_key_for_task.as_deref(),
+                                pool_account_for_task.is_some(),
+                                pool_account_for_task
+                                    .as_ref()
+                                    .map(|account| account.account_id),
+                                pool_account_for_task
+                                    .as_ref()
+                                    .map(|account| account.display_name.as_str()),
+                                payload_summary_upstream_account_kind(
+                                    pool_account_for_task.as_ref(),
+                                ),
+                                payload_summary_upstream_base_url_host(
+                                    pool_account_for_task.as_ref(),
+                                ),
+                                selected_proxy_display_name_for_task.as_deref(),
+                                pool_account_for_task.as_ref().map(|_| {
+                                    pending_pool_attempt_summary_for_task.pool_attempt_count
+                                }),
+                                pool_account_for_task.as_ref().map(|_| {
+                                    pending_pool_attempt_summary_for_task
+                                        .pool_distinct_account_count
+                                }),
+                                None,
+                                Some(response_content_encoding.as_str()),
+                                t_req_read_ms,
+                                t_req_parse_ms,
+                                t_upstream_connect_ms,
+                                t_upstream_ttfb_ms,
+                            ));
                         set_proxy_capture_record_request_compression_algorithm(
                             &mut running_record,
                             pending_pool_attempt_record_for_task
@@ -2955,25 +2962,27 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             final_attempt_persisted = match finalize_pool_upstream_request_attempt(
                 &state_for_task.pool,
                 pending_attempt_record,
-                finished_at.as_str(),
-                attempt_status,
-                Some(upstream_status),
-                if downstream_closed {
-                    Some(upstream_status)
-                } else {
-                    None
+                PoolAttemptFinalization {
+                    finished_at: finished_at.as_str(),
+                    status: attempt_status,
+                    http_status: Some(upstream_status),
+                    downstream_http_status: if downstream_closed {
+                        Some(upstream_status)
+                    } else {
+                        None
+                    },
+                    failure_kind: attempt_failure_kind,
+                    error_message: (!pure_downstream_closed)
+                        .then_some(error_message.as_deref())
+                        .flatten(),
+                    downstream_error_message: downstream_error_message.as_deref(),
+                    connect_latency_ms: Some(t_upstream_connect_ms),
+                    first_byte_latency_ms: Some(t_upstream_ttfb_ms),
+                    stream_latency_ms: Some(t_upstream_stream_ms),
+                    upstream_request_id: response_info.upstream_request_id.as_deref(),
+                    compact_support_status: None,
+                    compact_support_reason: None,
                 },
-                attempt_failure_kind,
-                (!pure_downstream_closed)
-                    .then_some(error_message.as_deref())
-                    .flatten(),
-                downstream_error_message.as_deref(),
-                Some(t_upstream_connect_ms),
-                Some(t_upstream_ttfb_ms),
-                Some(t_upstream_stream_ms),
-                response_info.upstream_request_id.as_deref(),
-                None,
-                None,
             )
             .await
             {

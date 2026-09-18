@@ -891,7 +891,7 @@ async fn persist_summary_runtime_record(state: &Arc<AppState>, occurred_at: &str
             910.0,
         )
     };
-    let record = build_running_proxy_capture_record(
+    let record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -913,7 +913,7 @@ async fn persist_summary_runtime_record(state: &Arc<AppState>, occurred_at: &str
         if active { 3.0 } else { 2.0 },
         if active { 34.0 } else { 33.0 },
         wait_ms,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, record)
         .await
         .expect("store runtime summary snapshot");

@@ -12,7 +12,7 @@ pub(crate) fn build_admitted_proxy_capture_runtime_snapshot(
         prompt_cache_key_attribution_source: prompt_cache_key.map(|_| "request".to_string()),
         ..RequestCaptureInfo::default()
     };
-    build_running_proxy_capture_record(
+    build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         target,
@@ -34,7 +34,7 @@ pub(crate) fn build_admitted_proxy_capture_runtime_snapshot(
         0.0,
         0.0,
         0.0,
-    )
+    ))
 }
 
 pub(crate) fn resolve_invocation_proxy_display_name(

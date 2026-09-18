@@ -14,7 +14,7 @@ pub(crate) async fn seed_pool_attempt_for_recovery(
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -36,7 +36,7 @@ pub(crate) async fn seed_pool_attempt_for_recovery(
         2.0,
         0.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
         .await
         .expect("persist recovery fixture invocation");
@@ -56,11 +56,16 @@ pub(crate) async fn seed_pool_attempt_for_recovery(
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         occurred_at,
     )
     .await;
@@ -91,11 +96,16 @@ pub(crate) async fn begin_test_pool_attempt(
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         started_at,
     )
     .await;
@@ -117,7 +127,7 @@ pub(crate) async fn seed_running_proxy_invocation(
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -139,7 +149,7 @@ pub(crate) async fn seed_running_proxy_invocation(
         2.0,
         0.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
         .await
         .expect("persist running invocation");
@@ -886,11 +896,16 @@ pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan_repair
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         occurred_at,
     )
     .await;
@@ -904,19 +919,21 @@ pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan_repair
     finalize_pool_upstream_request_attempt(
         &state.pool,
         &pending,
-        shanghai_now_string().as_str(),
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-        Some(StatusCode::OK),
-        None,
-        None,
-        None,
-        None,
-        Some(10.0),
-        Some(20.0),
-        Some(30.0),
-        Some("upstream-req-1"),
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: shanghai_now_string().as_str(),
+            status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            http_status: Some(StatusCode::OK),
+            downstream_http_status: None,
+            failure_kind: None,
+            error_message: None,
+            downstream_error_message: None,
+            connect_latency_ms: Some(10.0),
+            first_byte_latency_ms: Some(20.0),
+            stream_latency_ms: Some(30.0),
+            upstream_request_id: Some("upstream-req-1"),
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     .expect("persist terminal attempt before dropped guard recovery");
@@ -946,7 +963,7 @@ pub(crate) async fn drop_guard_runtime_remove_does_not_tombstone_later_terminal_
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -968,7 +985,7 @@ pub(crate) async fn drop_guard_runtime_remove_does_not_tombstone_later_terminal_
         2.0,
         0.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record.clone())
         .await
         .expect("store running invocation in memory");
@@ -1035,11 +1052,16 @@ pub(crate) async fn pool_invocation_cleanup_guard_recovers_running_invocation_du
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         occurred_at,
     )
     .await;
@@ -1053,19 +1075,21 @@ pub(crate) async fn pool_invocation_cleanup_guard_recovers_running_invocation_du
     finalize_pool_upstream_request_attempt(
         &state.pool,
         &pending,
-        shanghai_now_string().as_str(),
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-        None,
-        None,
-        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
-        Some("failed to contact upstream: retryable backoff"),
-        None,
-        Some(10.0),
-        None,
-        None,
-        None,
-        None,
-        None,
+        PoolAttemptFinalization {
+            finished_at: shanghai_now_string().as_str(),
+            status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            http_status: None,
+            downstream_http_status: None,
+            failure_kind: Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+            error_message: Some("failed to contact upstream: retryable backoff"),
+            downstream_error_message: None,
+            connect_latency_ms: Some(10.0),
+            first_byte_latency_ms: None,
+            stream_latency_ms: None,
+            upstream_request_id: None,
+            compact_support_status: None,
+            compact_support_reason: None,
+        },
     )
     .await
     .expect("persist retryable attempt before simulated backoff drop");
@@ -1127,11 +1151,16 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan_rolls_back_att
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         occurred_at,
     )
     .await;

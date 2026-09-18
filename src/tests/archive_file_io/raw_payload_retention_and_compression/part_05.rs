@@ -216,7 +216,7 @@ async fn persist_multi_attempt_runtime(
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -238,7 +238,7 @@ async fn persist_multi_attempt_runtime(
         2.0,
         5.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
         .await
         .expect("persist running invocation");
@@ -282,33 +282,8 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
         Utc::now().with_timezone(&Shanghai).naive_local() - ChronoDuration::minutes(10),
     );
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
-
-    let running_record = build_running_proxy_capture_record(
-        invoke_id,
-        occurred_at,
-        ProxyCaptureTarget::Responses,
-        &request_info,
-        Some("198.51.100.29"),
-        Some("sticky-sweeper-race"),
-        None,
-        true,
-        Some(account_id),
-        Some("Primary"),
-        Some("api_key_codex"),
-        Some("api.openai.com"),
-        None,
-        Some(1),
-        Some(1),
-        None,
-        None,
-        10.0,
-        2.0,
-        5.0,
-        0.0,
-    );
-    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
-        .await
-        .expect("persist running invocation");
+    persist_phase_recheck_running_record(&state, account_id, invoke_id, occurred_at, &request_info)
+        .await;
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.to_string(),
@@ -322,11 +297,16 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         stale_started.as_str(),
     )
     .await;
@@ -361,6 +341,41 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
     )
     .await;
     assert_phase_recheck_untouched(&state.pool, attempt_id, &cutoff).await;
+}
+
+async fn persist_phase_recheck_running_record(
+    state: &Arc<AppState>,
+    account_id: i64,
+    invoke_id: &str,
+    occurred_at: &str,
+    request_info: &RequestCaptureInfo,
+) {
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        request_info,
+        Some("198.51.100.29"),
+        Some("sticky-sweeper-race"),
+        None,
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        5.0,
+        0.0,
+    ));
+    persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
+        .await
+        .expect("persist running invocation");
 }
 
 async fn assert_phase_recheck_untouched(pool: &SqlitePool, attempt_id: i64, cutoff: &str) {
@@ -409,7 +424,7 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
     );
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
 
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -431,7 +446,7 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
         2.0,
         5.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
@@ -448,11 +463,16 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         stale_started.as_str(),
     )
     .await;
@@ -548,7 +568,7 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
     );
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
 
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -570,7 +590,7 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
         2.0,
         5.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
@@ -591,11 +611,16 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_reche
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         stale_started.as_str(),
     )
     .await;
@@ -731,11 +756,16 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_batch
         let pending = begin_pool_upstream_request_attempt(
             &state.pool,
             &trace,
-            account_id,
-            "route-primary",
-            1,
-            1,
-            1,
+            PoolAttemptStartScope {
+                upstream_account_id: account_id,
+                upstream_route_key: "route-primary",
+                ..PoolAttemptStartScope::default()
+            },
+            PoolAttemptStartIndexes {
+                attempt_index: 1,
+                distinct_account_index: 1,
+                same_account_retry_index: 1,
+            },
             &stale_started,
         )
         .await;

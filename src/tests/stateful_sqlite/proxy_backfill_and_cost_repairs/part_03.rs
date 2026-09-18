@@ -27,7 +27,7 @@ async fn seed_runtime_prompt_cache_snapshot(state: &AppState, occurred_at: &str)
     .execute(&state.pool)
     .await
     .expect("seed upstream account for runtime snapshot activity touch");
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         "follow-up-refresh-running",
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -49,7 +49,7 @@ async fn seed_runtime_prompt_cache_snapshot(state: &AppState, occurred_at: &str)
         4.0,
         330.0,
         120.0,
-    );
+    ));
 
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
         .await

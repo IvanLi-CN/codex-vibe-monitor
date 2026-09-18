@@ -611,7 +611,7 @@ impl WsUsageTracker {
             .as_ref()
             .map(|_| "websocket_trace".to_string());
         let invoke_id = self.turn_invoke_id();
-        let mut record = build_running_proxy_capture_record(
+        let mut record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
             &invoke_id,
             occurred_at,
             ProxyCaptureTarget::Responses,
@@ -633,7 +633,7 @@ impl WsUsageTracker {
             0.0,
             0.0,
             0.0,
-        );
+        ));
         record.timings.first_token_ms = Some(first_token_ms);
         self.runtime_snapshot_invoke_id = Some(invoke_id);
         self.runtime_snapshot_published = true;

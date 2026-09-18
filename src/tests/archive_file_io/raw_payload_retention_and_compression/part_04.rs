@@ -875,7 +875,7 @@ async fn seed_orphan_recovery_case(
     request_info: &RequestCaptureInfo,
     case: OrphanRecoveryCase<'_>,
 ) {
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         case.invoke_id,
         case.occurred_at,
         ProxyCaptureTarget::Responses,
@@ -897,7 +897,7 @@ async fn seed_orphan_recovery_case(
         2.0,
         5.0,
         case.ttfb_ms,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
         .await
         .expect("persist running invocation");
@@ -917,11 +917,16 @@ async fn seed_orphan_recovery_case(
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         case.started_at,
     )
     .await;
@@ -1176,7 +1181,7 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_skips_active_
         Utc::now().with_timezone(&Shanghai).naive_local() - ChronoDuration::minutes(10),
     );
 
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -1198,7 +1203,7 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_skips_active_
         2.0,
         0.0,
         0.0,
-    );
+    ));
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("persist running invocation");
@@ -1219,11 +1224,16 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_skips_active_
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         stale_started.as_str(),
     )
     .await;
@@ -1258,41 +1268,10 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_rolls_back_at
     let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let invoke_id = "stale-sweeper-atomic-recovery-failure";
     let occurred_at = "2026-03-23 21:10:31";
-    let request_info = RequestCaptureInfo {
-        model: Some("gpt-5.4".to_string()),
-        is_stream: true,
-        ..RequestCaptureInfo::default()
-    };
     let stale_started = format_naive(
         Utc::now().with_timezone(&Shanghai).naive_local() - ChronoDuration::minutes(10),
     );
-
-    let running_record = build_running_proxy_capture_record(
-        invoke_id,
-        occurred_at,
-        ProxyCaptureTarget::Responses,
-        &request_info,
-        Some("198.51.100.31"),
-        Some("sticky-sweeper-atomic"),
-        None,
-        true,
-        Some(account_id),
-        Some("Primary"),
-        Some("api_key_codex"),
-        Some("api.openai.com"),
-        None,
-        Some(1),
-        Some(1),
-        None,
-        None,
-        10.0,
-        2.0,
-        5.0,
-        0.0,
-    );
-    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
-        .await
-        .expect("persist running invocation");
+    persist_atomic_recovery_running_record(&state, account_id, invoke_id, occurred_at).await;
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
@@ -1329,11 +1308,16 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_rolls_back_at
     let pending = begin_pool_upstream_request_attempt(
         &state.pool,
         &trace,
-        account_id,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: account_id,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         &stale_started,
     )
     .await;
@@ -1346,6 +1330,45 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime_rolls_back_at
     .expect("advance attempt into sending-request");
 
     fail_invocation_recovery_and_assert_rollback(&state, invoke_id, occurred_at).await;
+}
+
+async fn persist_atomic_recovery_running_record(
+    state: &Arc<AppState>,
+    account_id: i64,
+    invoke_id: &str,
+    occurred_at: &str,
+) {
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.31"),
+        Some("sticky-sweeper-atomic"),
+        None,
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        5.0,
+        0.0,
+    ));
+    persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record)
+        .await
+        .expect("persist running invocation");
 }
 
 async fn fail_invocation_recovery_and_assert_rollback(

@@ -478,11 +478,16 @@ async fn pending_attempt(pool: &SqlitePool, invoke_id: &str) -> PendingPoolAttem
     let pending = begin_pool_upstream_request_attempt(
         pool,
         &trace,
-        101,
-        "route-primary",
-        1,
-        1,
-        1,
+        PoolAttemptStartScope {
+            upstream_account_id: 101,
+            upstream_route_key: "route-primary",
+            ..PoolAttemptStartScope::default()
+        },
+        PoolAttemptStartIndexes {
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 1,
+        },
         "2026-07-01 10:00:00",
     )
     .await;
@@ -499,7 +504,7 @@ fn terminal_write_for_coalescing(
 ) -> BatchedTerminalInvocationWrite {
     let request_info = RequestCaptureInfo::default();
     BatchedTerminalInvocationWrite {
-        record: build_running_proxy_capture_record(
+        record: build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
             invoke_id,
             "2026-07-01 10:00:00",
             ProxyCaptureTarget::Responses,
@@ -521,7 +526,7 @@ fn terminal_write_for_coalescing(
             0.0,
             0.0,
             0.0,
-        ),
+        )),
         capture_started: None,
         raw_capture: false,
         dashboard_terminal_sequence,

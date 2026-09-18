@@ -289,7 +289,7 @@ pub(crate) async fn terminal_db_row_wins_over_stale_memory_runtime_overlay() {
     };
     let invoke_id = "invoke-terminal-db-wins";
     let occurred_at = "2026-03-17 18:13:37";
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -311,7 +311,7 @@ pub(crate) async fn terminal_db_row_wins_over_stale_memory_runtime_overlay() {
         3.0,
         99.0,
         120.0,
-    );
+    ));
 
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
@@ -476,7 +476,7 @@ pub(crate) async fn clearing_terminal_tombstone_allows_enqueue_retry_without_run
         "drop-guard cleanup must not remove a queued terminal overlay before sqlite flush"
     );
 
-    let mut delayed_running = build_running_proxy_capture_record(
+    let mut delayed_running = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -498,7 +498,7 @@ pub(crate) async fn clearing_terminal_tombstone_allows_enqueue_retry_without_run
         0.0,
         0.0,
         0.0,
-    );
+    ));
     delayed_running.status = "running".to_string();
     let running_outcome = store.upsert(api_invocation_from_runtime_record(&delayed_running));
     assert!(
@@ -559,7 +559,7 @@ pub(crate) async fn delayed_runtime_snapshot_after_terminal_does_not_reintroduce
     };
     let invoke_id = "invoke-delayed-runtime-after-terminal";
     let occurred_at = "2026-03-17 18:13:36";
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -581,7 +581,7 @@ pub(crate) async fn delayed_runtime_snapshot_after_terminal_does_not_reintroduce
         3.0,
         99.0,
         120.0,
-    );
+    ));
 
     persist_and_broadcast_proxy_capture(
         state.as_ref(),
@@ -639,7 +639,7 @@ pub(crate) async fn persist_proxy_capture_record_finalizes_existing_running_row_
     };
     let invoke_id = "invoke-runtime-broadcast";
     let occurred_at = "2026-03-17 18:13:34";
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -661,7 +661,7 @@ pub(crate) async fn persist_proxy_capture_record_finalizes_existing_running_row_
         3.0,
         99.0,
         0.0,
-    );
+    ));
 
     let running = persist_proxy_capture_runtime_record(&state.pool, running_record)
         .await
@@ -710,7 +710,7 @@ pub(crate) async fn persist_proxy_capture_record_repairs_proxy_interrupted_recov
     };
     let invoke_id = "invoke-repair-interrupted-terminal";
     let occurred_at = "2026-03-17 18:13:35";
-    let running_record = build_running_proxy_capture_record(
+    let running_record = build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -732,7 +732,7 @@ pub(crate) async fn persist_proxy_capture_record_repairs_proxy_interrupted_recov
         3.0,
         99.0,
         120.0,
-    );
+    ));
 
     let running = persist_proxy_capture_runtime_record(&state.pool, running_record)
         .await
@@ -781,7 +781,7 @@ fn timeseries_runtime_record(
     } else {
         ("pool-account-23", "jp-relay-02", 2)
     };
-    build_running_proxy_capture_record(
+    build_running_proxy_capture_record(RunningProxyCaptureRecordRequest(
         invoke_id,
         occurred_at,
         ProxyCaptureTarget::Responses,
@@ -803,7 +803,7 @@ fn timeseries_runtime_record(
         timings[1],
         timings[2],
         timings[3],
-    )
+    ))
 }
 
 async fn fetch_account_timeseries(state: &Arc<AppState>, account_id: i64) -> TimeseriesResponse {
