@@ -13,7 +13,7 @@ async fn initial_refresh_retries_after_missing_attempt_archive_recovers() {
     sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, raw_response, total_tokens, output_tokens, cost, created_at) VALUES (1, 'initial-missing-attempt-source', ?1, 'success', 'gpt-5', '{}', '{}', 100, 40, 0.1, datetime('now'))",
         )
-        .bind(occurred_at)
+        .bind(&occurred_at)
         .execute(&pool)
         .await
         .expect("insert live invocation");
