@@ -37,13 +37,9 @@ import {
 } from "./handlers-support";
 import { demoModel, demoNow } from "./model";
 
-export async function handleDemoRequest(request: Request) {
-  const url = new URL(request.url);
-  const pathname = apiPathname(url.pathname);
-  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
+type DemoRouteResult = Response | undefined;
 
-  // Keep the simulated shell on the same stable release value as the checked-in frontend.
-  // A literal "demo" version leaks into the user-facing footer and is not meaningful evidence.
+async function handleCoreStatsRequest(pathname: string, url: URL): Promise<DemoRouteResult> {
   if (pathname === "/api/version") return json({ backend: "0.2.0", frontend: "0.2.0" });
   if (pathname === "/api/stats" || pathname === "/api/stats/summary") return json(demoSummary());
   if (pathname === "/api/stats/long-term/overview") {
@@ -134,123 +130,141 @@ export async function handleDemoRequest(request: Request) {
       actionableFailureCount: 31,
       actionableFailureRate: 0.88,
     });
+  return undefined;
+}
+
+function handleForwardProxyRequest(pathname: string): DemoRouteResult {
   if (pathname === "/api/stats/forward-proxy") return json(forwardProxyLive());
-  if (pathname === "/api/stats/forward-proxy/timeseries") {
-    const live = forwardProxyLive();
-    return json({
-      rangeStart: live.rangeStart,
-      rangeEnd: live.rangeEnd,
-      bucketSeconds: 3600,
-      effectiveBucket: "1h",
-      availableBuckets: ["1h", "6h", "1d"],
-      nodes: live.nodes.map((node) => ({
-        key: node.key,
-        source: node.source,
-        displayName: node.displayName,
-        endpointUrl: node.endpointUrl,
-        weight: node.weight,
-        penalized: node.penalized,
-        buckets: node.last24h,
-        weightBuckets: node.weight24h,
-      })),
-    });
-  }
+  if (pathname !== "/api/stats/forward-proxy/timeseries") return undefined;
+  const live = forwardProxyLive();
+  return json({
+    rangeStart: live.rangeStart,
+    rangeEnd: live.rangeEnd,
+    bucketSeconds: 3600,
+    effectiveBucket: "1h",
+    availableBuckets: ["1h", "6h", "1d"],
+    nodes: live.nodes.map((node) => ({
+      key: node.key,
+      source: node.source,
+      displayName: node.displayName,
+      endpointUrl: node.endpointUrl,
+      weight: node.weight,
+      penalized: node.penalized,
+      buckets: node.last24h,
+      weightBuckets: node.weight24h,
+    })),
+  });
+}
+
+function promptCacheBindingEvents(promptCacheKey: string) {
+  return [
+    {
+      id: 9303,
+      promptCacheKey,
+      action: "stickyMutationSuppressed",
+      origin: "systemAuto",
+      infoTypes: ["routing"],
+      occurredAt: "2026-08-02T09:41:08.000Z",
+      headline: "Sticky mutation suppressed",
+      changedFields: [],
+      bindingBefore: null,
+      bindingAfter: null,
+      stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+      stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+      invokeId: "demo-concurrent-late",
+      routingContext: {
+        reasonCode: "staleConcurrentCompletion",
+        routingSource: "freshAssignment",
+        routingSelectionAudit: {
+          selectedAccountId: 102,
+          selectedAccountName: simulatedAccountDisplayName(102),
+          eligibleCandidateCount: 1,
+          winnerReasonCode: "onlyEligibleCandidate",
+          comparedAccountId: null,
+          comparedAccountName: null,
+          excludedCandidates: [
+            {
+              accountId: 115,
+              accountName: simulatedAccountDisplayName(115),
+              reasonCode: "modelNotAllowed",
+            },
+          ],
+        },
+        httpStatus: null,
+        triggerAttemptId: "DEMO-LATE-2",
+        causingAttemptId: null,
+        causingHttpStatus: null,
+      },
+    },
+    {
+      id: 9302,
+      promptCacheKey,
+      action: "stickyTargetChanged",
+      origin: "systemAuto",
+      infoTypes: ["routing"],
+      occurredAt: "2026-08-02T09:41:05.000Z",
+      headline: "Sticky target changed",
+      changedFields: ["stickyTarget"],
+      bindingBefore: null,
+      bindingAfter: null,
+      stickyBefore: null,
+      stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
+      invokeId: "demo-fresh-success",
+      routingContext: {
+        reasonCode: "freshAssignmentAfterFailure",
+        routingSource: "freshAssignment",
+        routingSelectionAudit: {
+          selectedAccountId: 102,
+          selectedAccountName: simulatedAccountDisplayName(102),
+          eligibleCandidateCount: 1,
+          winnerReasonCode: "onlyEligibleCandidate",
+          comparedAccountId: null,
+          comparedAccountName: null,
+          excludedCandidates: [
+            {
+              accountId: 115,
+              accountName: simulatedAccountDisplayName(115),
+              reasonCode: "modelNotAllowed",
+            },
+          ],
+        },
+        httpStatus: null,
+        triggerAttemptId: "DEMO-SUCCESS-1",
+        causingAttemptId: "DEMO-FAILED-0",
+        causingHttpStatus: 429,
+      },
+    },
+    {
+      id: 9301,
+      promptCacheKey,
+      action: "stickyTargetCleared",
+      origin: "systemAuto",
+      infoTypes: ["routing"],
+      occurredAt: "2026-08-02T09:41:01.000Z",
+      headline: "Sticky target cleared",
+      changedFields: ["stickyTarget"],
+      bindingBefore: null,
+      bindingAfter: null,
+      stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
+      stickyAfter: null,
+      invokeId: null,
+    },
+  ];
+}
+
+export async function handleDemoRequest(request: Request) {
+  const url = new URL(request.url);
+  const pathname = apiPathname(url.pathname);
+  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
+
+  const coreStatsResponse = await handleCoreStatsRequest(pathname, url);
+  if (coreStatsResponse) return coreStatsResponse;
+  const forwardProxyResponse = handleForwardProxyRequest(pathname);
+  if (forwardProxyResponse) return forwardProxyResponse;
   if (pathname === "/api/stats/prompt-cache-conversations") return json(promptCacheConversations());
   if (pathname.startsWith("/api/stats/prompt-cache-conversation-binding-events/")) {
     const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
-    const items = [
-      {
-        id: 9303,
-        promptCacheKey,
-        action: "stickyMutationSuppressed",
-        origin: "systemAuto",
-        infoTypes: ["routing"],
-        occurredAt: "2026-08-02T09:41:08.000Z",
-        headline: "Sticky mutation suppressed",
-        changedFields: [],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        invokeId: "demo-concurrent-late",
-        routingContext: {
-          reasonCode: "staleConcurrentCompletion",
-          routingSource: "freshAssignment",
-          routingSelectionAudit: {
-            selectedAccountId: 102,
-            selectedAccountName: simulatedAccountDisplayName(102),
-            eligibleCandidateCount: 1,
-            winnerReasonCode: "onlyEligibleCandidate",
-            comparedAccountId: null,
-            comparedAccountName: null,
-            excludedCandidates: [
-              {
-                accountId: 115,
-                accountName: simulatedAccountDisplayName(115),
-                reasonCode: "modelNotAllowed",
-              },
-            ],
-          },
-          httpStatus: null,
-          triggerAttemptId: "DEMO-LATE-2",
-          causingAttemptId: null,
-          causingHttpStatus: null,
-        },
-      },
-      {
-        id: 9302,
-        promptCacheKey,
-        action: "stickyTargetChanged",
-        origin: "systemAuto",
-        infoTypes: ["routing"],
-        occurredAt: "2026-08-02T09:41:05.000Z",
-        headline: "Sticky target changed",
-        changedFields: ["stickyTarget"],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: null,
-        stickyAfter: { upstreamAccountId: 22, upstreamAccountName: "demo-primary@monitor.test" },
-        invokeId: "demo-fresh-success",
-        routingContext: {
-          reasonCode: "freshAssignmentAfterFailure",
-          routingSource: "freshAssignment",
-          routingSelectionAudit: {
-            selectedAccountId: 102,
-            selectedAccountName: simulatedAccountDisplayName(102),
-            eligibleCandidateCount: 1,
-            winnerReasonCode: "onlyEligibleCandidate",
-            comparedAccountId: null,
-            comparedAccountName: null,
-            excludedCandidates: [
-              {
-                accountId: 115,
-                accountName: simulatedAccountDisplayName(115),
-                reasonCode: "modelNotAllowed",
-              },
-            ],
-          },
-          httpStatus: null,
-          triggerAttemptId: "DEMO-SUCCESS-1",
-          causingAttemptId: "DEMO-FAILED-0",
-          causingHttpStatus: 429,
-        },
-      },
-      {
-        id: 9301,
-        promptCacheKey,
-        action: "stickyTargetCleared",
-        origin: "systemAuto",
-        infoTypes: ["routing"],
-        occurredAt: "2026-08-02T09:41:01.000Z",
-        headline: "Sticky target cleared",
-        changedFields: ["stickyTarget"],
-        bindingBefore: null,
-        bindingAfter: null,
-        stickyBefore: { upstreamAccountId: 21, upstreamAccountName: "demo-fallback@monitor.test" },
-        stickyAfter: null,
-        invokeId: null,
-      },
-    ];
+    const items = promptCacheBindingEvents(promptCacheKey);
     const infoType = url.searchParams.get("infoType");
     const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
     return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
