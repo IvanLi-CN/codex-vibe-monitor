@@ -206,19 +206,52 @@ pub(crate) async fn build_pool_model_routing_runtime_cache(
     build_pool_model_routing_runtime_cache_with_mapping_override(pool, None).await
 }
 
-pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override(
-    pool: &Pool<Sqlite>,
-    mapping_override: Option<(i64, &[ModelMapping])>,
-) -> Result<PoolModelRoutingRuntimeCache> {
+fn collect_available_routing_models(
+    rows: &[UpstreamAccountRow],
+    effective_rules: &HashMap<i64, EffectiveRoutingRule>,
+) -> Vec<String> {
+    let mut available_models = Vec::new();
+    let mut seen_models = HashSet::new();
+    for row in rows.iter().filter(|row| is_routing_eligible_account(row)) {
+        let Some(rule) = effective_rules.get(&row.id) else {
+            continue;
+        };
+        if !rule.available_models_defined
+            || rule.available_models_mode != AvailableModelsMode::Allowlist
+        {
+            continue;
+        }
+        for model in &rule.available_models {
+            let model = model.trim();
+            if model.is_empty() || model.contains('*') {
+                continue;
+            }
+            if seen_models.insert(model.to_ascii_lowercase()) {
+                available_models.push(model.to_string());
+            }
+        }
+    }
+    available_models
+}
+
+async fn load_live_routing_account_rows(pool: &Pool<Sqlite>) -> Result<Vec<UpstreamAccountRow>> {
     let query = format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} \
          FROM pool_upstream_accounts \
          WHERE COALESCE(deleted_at, '') = '' \
          ORDER BY id ASC"
     );
-    let rows = sqlx::query_as::<_, UpstreamAccountRow>(&query)
+    sqlx::query_as::<_, UpstreamAccountRow>(&query)
         .fetch_all(pool)
-        .await?;
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override(
+    pool: &Pool<Sqlite>,
+    mapping_override: Option<(i64, &[ModelMapping])>,
+) -> Result<PoolModelRoutingRuntimeCache> {
+    let rows = load_live_routing_account_rows(pool).await?;
 
     let mappings_by_account = rows
         .iter()
@@ -241,28 +274,7 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
     let routing_account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let effective_rules =
         load_effective_routing_rules_for_accounts(pool, &routing_account_ids).await?;
-    let mut available_models = Vec::new();
-    let mut seen_models = HashSet::new();
-    for row in rows.iter().filter(|row| is_routing_eligible_account(row)) {
-        let Some(rule) = effective_rules.get(&row.id) else {
-            continue;
-        };
-        if !rule.available_models_defined
-            || rule.available_models_mode != AvailableModelsMode::Allowlist
-        {
-            continue;
-        }
-        for model in &rule.available_models {
-            let model = model.trim();
-            if model.is_empty() || model.contains('*') {
-                continue;
-            }
-            let normalized = model.to_ascii_lowercase();
-            if seen_models.insert(normalized) {
-                available_models.push(model.to_string());
-            }
-        }
-    }
+    let available_models = collect_available_routing_models(&rows, &effective_rules);
 
     let mut warmed_model_account_ids = HashMap::new();
     for model in available_models.iter().take(MAX_WARMED_ROUTING_MODELS) {
