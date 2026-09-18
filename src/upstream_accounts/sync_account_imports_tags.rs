@@ -1143,22 +1143,7 @@ pub(crate) async fn persist_imported_oauth_existing_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
-    if existing_row.enabled != 1 {
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET enabled = ?2,
-                updated_at = ?3
-            WHERE id = ?1
-            "#,
-        )
-        .bind(existing_row.id)
-        .bind(existing_row.enabled)
-        .bind(format_utc_iso(Utc::now()))
-        .execute(tx.as_mut())
-        .await
-        .map_err(internal_error_tuple)?;
-    }
+    restore_imported_oauth_account_enabled_status(&mut tx, &existing_row).await?;
     tx.commit().await.map_err(internal_error_tuple)?;
 
     let post_import_warning =
@@ -1187,6 +1172,30 @@ pub(crate) async fn persist_imported_oauth_existing_inner(
         .await;
     }
     Ok(post_import_warning)
+}
+
+async fn restore_imported_oauth_account_enabled_status(
+    tx: &mut Transaction<'_, Sqlite>,
+    account: &UpstreamAccountRow,
+) -> Result<(), (StatusCode, String)> {
+    if account.enabled == 1 {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET enabled = ?2,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account.id)
+    .bind(account.enabled)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
+    Ok(())
 }
 
 pub(crate) struct OauthAccountUpsert<'a> {
