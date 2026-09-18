@@ -4119,8 +4119,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             ));
         #[cfg(test)]
         broadcast_test_record_payload(state, &persisted_record);
-    }
-    if terminal_enqueued {
         schedule_dashboard_activity_live_snapshot(state);
         schedule_proxy_capture_follow_up_after_terminal_enqueue(
             state,
@@ -4128,7 +4126,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             "runtime_terminal",
         );
     }
-
     Ok(())
 }
 
