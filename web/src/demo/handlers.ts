@@ -615,6 +615,66 @@ function handleSettingsAndSystemRequest(
   });
 }
 
+function handlePoolRequest(pathname: string, url: URL, request: Request): DemoRouteResult {
+  if (pathname === "/api/pool/upstream-accounts" && request.method === "GET") {
+    return json(accountList(url.searchParams.get("kind")));
+  }
+  if (pathname === "/api/pool/upstream-accounts/window-usage") {
+    return json({
+      items: demoAccounts().map((account) => ({
+        accountId: account.id,
+        primaryActualUsage: {
+          requestCount: 1080 + account.id,
+          totalTokens: 842_000 + account.id * 100,
+          totalCost: 12.4,
+          inputTokens: 320_000,
+          outputTokens: 182_000,
+          cacheInputTokens: 340_000,
+        },
+        secondaryActualUsage: account.secondaryWindow
+          ? {
+              requestCount: 142,
+              totalTokens: 98_000,
+              totalCost: 1.62,
+              inputTokens: 42_000,
+              outputTokens: 21_000,
+              cacheInputTokens: 35_000,
+            }
+          : null,
+      })),
+    });
+  }
+  if (pathname === "/api/pool/forward-proxy-binding-nodes") {
+    return json(forwardProxyBindingNodes());
+  }
+  if (pathname === "/api/pool/model-routing-live" && request.method === "GET") {
+    return json(
+      demoModelRoutingLive({
+        window: url.searchParams.get("window"),
+        model: url.searchParams.get("model"),
+        state: url.searchParams.get("state"),
+        limit: url.searchParams.get("limit"),
+      }),
+    );
+  }
+  if (pathname.includes("/sticky-keys")) {
+    return json({
+      rangeStart: "2026-07-10T00:00:00Z",
+      rangeEnd: demoNow(),
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      selectedActivityMinutes: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      totalMatched: 3,
+      conversations: promptCacheConversations().conversations.slice(0, 3),
+      hasMore: false,
+      nextCursor: null,
+    });
+  }
+  return undefined;
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -638,9 +698,9 @@ export async function handleDemoRequest(request: Request) {
   if (promptCacheResponse) return promptCacheResponse;
   const settingsResponse = handleSettingsAndSystemRequest(pathname, url, request);
   if (settingsResponse) return settingsResponse;
+  const poolResponse = handlePoolRequest(pathname, url, request);
+  if (poolResponse) return poolResponse;
 
-  if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")
-    return json(accountList(url.searchParams.get("kind")));
   if (pathname === "/api/pool/upstream-accounts/api-keys/migration/preflight") {
     const legacyApiKeyCount = demoAccounts().filter(
       (account) =>
@@ -698,31 +758,6 @@ export async function handleDemoRequest(request: Request) {
       items: items.slice((page - 1) * pageSize, page * pageSize),
     });
   }
-  if (pathname === "/api/pool/upstream-accounts/window-usage")
-    return json({
-      items: demoAccounts().map((account) => ({
-        accountId: account.id,
-        primaryActualUsage: {
-          requestCount: 1080 + account.id,
-          totalTokens: 842_000 + account.id * 100,
-          totalCost: 12.4,
-          inputTokens: 320_000,
-          outputTokens: 182_000,
-          cacheInputTokens: 340_000,
-        },
-        secondaryActualUsage: account.secondaryWindow
-          ? {
-              requestCount: 142,
-              totalTokens: 98_000,
-              totalCost: 1.62,
-              inputTokens: 42_000,
-              outputTokens: 21_000,
-              cacheInputTokens: 35_000,
-            }
-          : null,
-      })),
-    });
-  if (pathname === "/api/pool/forward-proxy-binding-nodes") return json(forwardProxyBindingNodes());
   if (pathname === "/api/pool/tags" && request.method === "GET")
     return json({
       writesEnabled: true,
