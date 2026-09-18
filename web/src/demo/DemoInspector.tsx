@@ -13,6 +13,7 @@ import { Tooltip } from "../components/ui/tooltip";
 import { AppIcon } from "../features/shared/AppIcon";
 import { cn } from "../lib/utils";
 import { useTheme } from "../theme";
+import type { DemoAction } from "./model";
 import { demoModel } from "./model";
 import type { DemoScene, DemoTheme } from "./runtime";
 
@@ -34,6 +35,126 @@ function useDemoSnapshot() {
     () => demoModel.snapshot,
     () => demoModel.snapshot,
   );
+}
+
+function InspectorSceneControls({
+  scene,
+  onSceneChange,
+}: {
+  scene: DemoScene;
+  onSceneChange: (scene: DemoScene) => void;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-xs font-semibold text-base-content/70">场景</legend>
+      <div className="grid grid-cols-2 gap-2">
+        {sceneOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={scene === option.value}
+            onClick={() => onSceneChange(option.value)}
+            className={cn(
+              "h-9 rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+              scene === option.value
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-base-300 bg-base-100 text-base-content hover:bg-base-200",
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function InspectorThemeControls({
+  theme,
+  onThemeChange,
+}: {
+  theme: DemoTheme;
+  onThemeChange: (theme: DemoTheme) => void;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-xs font-semibold text-base-content/70">主题</legend>
+      <div className="grid grid-cols-2 gap-2">
+        {(["light", "dark"] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            aria-pressed={theme === option}
+            onClick={() => onThemeChange(option)}
+            className={cn(
+              "h-9 rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+              theme === option
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-base-300 bg-base-100 text-base-content hover:bg-base-200",
+            )}
+          >
+            {option === "light" ? "浅色" : "深色"}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function InspectorActions({
+  onCopyLink,
+  onClose,
+}: {
+  onCopyLink: () => void;
+  onClose?: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 border-t border-base-300 pt-3">
+      <Tooltip content="注入模拟实时事件">
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label="注入模拟实时事件"
+          onClick={() => demoModel.injectLiveEvent()}
+        >
+          <AppIcon name="lightning-bolt" className="h-4 w-4" aria-hidden />
+        </Button>
+      </Tooltip>
+      <Tooltip content="重置模拟数据">
+        <Button
+          size="icon"
+          variant="ghost"
+          aria-label="重置模拟数据"
+          onClick={() => demoModel.reset()}
+        >
+          <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
+        </Button>
+      </Tooltip>
+      <Tooltip content="复制分享链接">
+        <Button size="icon" variant="ghost" aria-label="复制分享链接" onClick={onCopyLink}>
+          <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
+        </Button>
+      </Tooltip>
+      {onClose ? (
+        <Button size="sm" variant="secondary" className="ml-auto" onClick={onClose}>
+          完成
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function InspectorActivity({ actions }: { actions: DemoAction[] }) {
+  return actions.length > 0 ? (
+    <div
+      className="space-y-1 border-t border-base-300 pt-3 text-xs text-base-content/70"
+      aria-live="polite"
+    >
+      {actions.slice(0, 3).map((action) => (
+        <p key={action.id}>{action.label}</p>
+      ))}
+    </div>
+  ) : null;
 }
 
 function InspectorControls({ onClose }: { onClose?: () => void }) {
@@ -70,95 +191,10 @@ function InspectorControls({ onClose }: { onClose?: () => void }) {
 
   return (
     <div className="space-y-4" data-testid="demo-inspector-controls">
-      <fieldset className="space-y-2">
-        <legend className="text-xs font-semibold text-base-content/70">场景</legend>
-        <div className="grid grid-cols-2 gap-2">
-          {sceneOptions.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              aria-pressed={snapshot.scene === option.value}
-              onClick={() => setScene(option.value)}
-              className={cn(
-                "h-9 rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-                snapshot.scene === option.value
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-base-300 bg-base-100 text-base-content hover:bg-base-200",
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </fieldset>
-      <fieldset className="space-y-2">
-        <legend className="text-xs font-semibold text-base-content/70">主题</legend>
-        <div className="grid grid-cols-2 gap-2">
-          {(["light", "dark"] as const).map((theme) => (
-            <button
-              key={theme}
-              type="button"
-              aria-pressed={themeMode === theme}
-              onClick={() => setTheme(theme)}
-              className={cn(
-                "h-9 rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-                themeMode === theme
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-base-300 bg-base-100 text-base-content hover:bg-base-200",
-              )}
-            >
-              {theme === "light" ? "浅色" : "深色"}
-            </button>
-          ))}
-        </div>
-      </fieldset>
-      <div className="flex items-center gap-1 border-t border-base-300 pt-3">
-        <Tooltip content="注入模拟实时事件">
-          <Button
-            size="icon"
-            variant="ghost"
-            aria-label="注入模拟实时事件"
-            onClick={() => demoModel.injectLiveEvent()}
-          >
-            <AppIcon name="lightning-bolt" className="h-4 w-4" aria-hidden />
-          </Button>
-        </Tooltip>
-        <Tooltip content="重置模拟数据">
-          <Button
-            size="icon"
-            variant="ghost"
-            aria-label="重置模拟数据"
-            onClick={() => demoModel.reset()}
-          >
-            <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
-          </Button>
-        </Tooltip>
-        <Tooltip content="复制分享链接">
-          <Button
-            size="icon"
-            variant="ghost"
-            aria-label="复制分享链接"
-            onClick={() => void copyLink()}
-          >
-            <AppIcon name="content-copy" className="h-4 w-4" aria-hidden />
-          </Button>
-        </Tooltip>
-        {onClose ? (
-          <Button size="sm" variant="secondary" className="ml-auto" onClick={onClose}>
-            完成
-          </Button>
-        ) : null}
-      </div>
-      {snapshot.actions.length > 0 ? (
-        <div
-          className="space-y-1 border-t border-base-300 pt-3 text-xs text-base-content/70"
-          aria-live="polite"
-        >
-          {snapshot.actions.slice(0, 3).map((action) => (
-            <p key={action.id}>{action.label}</p>
-          ))}
-        </div>
-      ) : null}
+      <InspectorSceneControls scene={snapshot.scene} onSceneChange={setScene} />
+      <InspectorThemeControls theme={themeMode} onThemeChange={setTheme} />
+      <InspectorActions onCopyLink={() => void copyLink()} onClose={onClose} />
+      <InspectorActivity actions={snapshot.actions} />
     </div>
   );
 }
