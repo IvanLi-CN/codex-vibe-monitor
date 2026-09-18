@@ -1894,7 +1894,6 @@ async fn record_api_key_temporary_model_failure_or_diagnostic_with_model(
     if model_failure_recorded {
         return Ok(());
     }
-
     let now_iso = format_utc_iso(Utc::now());
     record_suppressed_pool_route_status_change(
         pool,
@@ -1910,7 +1909,6 @@ async fn record_api_key_temporary_model_failure_or_diagnostic_with_model(
     )
     .await
 }
-
 pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {
     let now_iso = format_utc_iso(Utc::now());
     state
@@ -1932,7 +1930,6 @@ pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {
         );
     }
 }
-
 pub(crate) async fn record_compact_support_observation(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1942,7 +1939,6 @@ pub(crate) async fn record_compact_support_observation(
     record_compact_support_observation_with_observed_at(pool, account_id, status, reason, None)
         .await
 }
-
 pub(crate) async fn record_compact_support_observation_with_observed_at(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1962,7 +1958,6 @@ pub(crate) async fn record_compact_support_observation_with_observed_at(
     )
     .await
 }
-
 pub(crate) async fn record_compact_support_observation_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1974,7 +1969,6 @@ pub(crate) async fn record_compact_support_observation_admitted(
     )
     .await
 }
-
 pub(crate) async fn record_compact_support_observation_admitted_with_observed_at(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -2011,7 +2005,32 @@ pub(crate) async fn record_compact_support_observation_admitted_with_observed_at
     .await?;
     Ok(())
 }
-
+fn calculate_pool_route_failure_streak(
+    row: &UpstreamAccountRow,
+    now: DateTime<Utc>,
+) -> (i64, DateTime<Utc>) {
+    let continuing = row.consecutive_route_failures > 0
+        && route_failure_kind_is_temporary(row.last_route_failure_kind.as_deref());
+    let next = if continuing {
+        row.consecutive_route_failures.max(0) + 1
+    } else {
+        1
+    };
+    let started = if continuing {
+        row.temporary_route_failure_streak_started_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .or_else(|| {
+                row.last_route_failure_at
+                    .as_deref()
+                    .and_then(parse_rfc3339_utc)
+            })
+            .unwrap_or(now)
+    } else {
+        now
+    };
+    (next, started)
+}
 pub(crate) async fn apply_pool_route_cooldown_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -2046,26 +2065,7 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
         return Ok(false);
     }
     let now = Utc::now();
-    let continuing_temporary_streak = row.consecutive_route_failures > 0
-        && route_failure_kind_is_temporary(row.last_route_failure_kind.as_deref());
-    let next_failures = if continuing_temporary_streak {
-        row.consecutive_route_failures.max(0) + 1
-    } else {
-        1
-    };
-    let streak_started_at = if continuing_temporary_streak {
-        row.temporary_route_failure_streak_started_at
-            .as_deref()
-            .and_then(parse_rfc3339_utc)
-            .or_else(|| {
-                row.last_route_failure_at
-                    .as_deref()
-                    .and_then(parse_rfc3339_utc)
-            })
-            .unwrap_or(now)
-    } else {
-        now
-    };
+    let (next_failures, streak_started_at) = calculate_pool_route_failure_streak(&row, now);
     let should_start_cooldown = next_failures >= POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD
         || now.signed_duration_since(streak_started_at).num_seconds()
             >= POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS;
