@@ -1605,31 +1605,94 @@ pub(crate) async fn unwrap_via_pool_initial_account(
     Ok((initial_account, no_available_wait_deadline))
 }
 
+pub(crate) struct TrackedPoolAttemptFinalization<'a> {
+    pub(crate) state: &'a AppState,
+    pub(crate) pending_attempt_record: Option<&'a PendingPoolAttemptRecord>,
+    pub(crate) status: &'a str,
+    pub(crate) http_status: Option<StatusCode>,
+    pub(crate) downstream_http_status: Option<StatusCode>,
+    pub(crate) failure_kind: Option<&'a str>,
+    pub(crate) error_message: Option<&'a str>,
+    pub(crate) downstream_error_message: Option<&'a str>,
+    pub(crate) connect_latency_ms: Option<f64>,
+    pub(crate) first_byte_latency_ms: Option<f64>,
+    pub(crate) stream_latency_ms: Option<f64>,
+    pub(crate) upstream_request_id: Option<&'a str>,
+    pub(crate) context: &'static str,
+}
+
 pub(crate) async fn finalize_tracked_pool_attempt(
+    finalization: TrackedPoolAttemptFinalization<'_>,
+) {
+    let Some(pending_attempt_record) = finalization.pending_attempt_record else {
+        return;
+    };
+    let finished_at = shanghai_now_string();
+    if let Err(err) = finalize_pool_upstream_request_attempt(
+        &finalization.state.pool,
+        pending_attempt_record,
+        finished_at.as_str(),
+        finalization.status,
+        finalization.http_status,
+        finalization.downstream_http_status,
+        finalization.failure_kind,
+        finalization.error_message,
+        finalization.downstream_error_message,
+        finalization.connect_latency_ms,
+        finalization.first_byte_latency_ms,
+        finalization.stream_latency_ms,
+        finalization.upstream_request_id,
+        None,
+        None,
+    )
+    .await
+    {
+        warn!(
+            context = finalization.context,
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to persist tracked pool attempt"
+        );
+    }
+    if let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+        finalization.state,
+        &pending_attempt_record.invoke_id,
+    )
+    .await
+    {
+        warn!(
+            context = finalization.context,
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to broadcast tracked pool attempt snapshot"
+        );
+    }
+    finalize_priority_handoff_after_tracked_attempt(
+        finalization.state,
+        pending_attempt_record,
+        finalization.status,
+        finalization.http_status,
+        finalization.downstream_http_status,
+        finalization.failure_kind,
+    )
+    .await;
+}
+
+async fn finalize_priority_handoff_after_tracked_attempt(
     state: &AppState,
-    pending_attempt_record: Option<&PendingPoolAttemptRecord>,
+    pending: &PendingPoolAttemptRecord,
     status: &str,
     http_status: Option<StatusCode>,
     downstream_http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
-    error_message: Option<&str>,
-    downstream_error_message: Option<&str>,
-    connect_latency_ms: Option<f64>,
-    first_byte_latency_ms: Option<f64>,
-    stream_latency_ms: Option<f64>,
-    upstream_request_id: Option<&str>,
-    context: &'static str,
 ) {
-    let Some(pending_attempt_record) = pending_attempt_record else {
+    if pending.routing_source.as_deref() != Some(PRIORITY_HANDOFF_ROUTING_SOURCE) {
         return;
-    };
-    let priority_handoff =
-        pending_attempt_record.routing_source.as_deref() == Some(PRIORITY_HANDOFF_ROUTING_SOURCE);
-    let priority_handoff_client_cancelled = priority_handoff
-        && priority_handoff_client_cancellation(status, downstream_http_status, failure_kind);
-    let priority_handoff_success =
-        priority_handoff && status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
-    let priority_handoff_cooldown = !priority_handoff_success
+    }
+    let client_cancelled =
+        priority_handoff_client_cancellation(status, downstream_http_status, failure_kind);
+    let success = status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
+    let cooldown = !success
         && (http_status.is_some_and(|status| {
             status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
         }) || matches!(
@@ -1641,97 +1704,41 @@ pub(crate) async fn finalize_tracked_pool_attempt(
                     | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
             )
         ));
-    let priority_handoff_generation = priority_handoff.then(|| {
-        priority_handoff_generation_from_audit_json(
-            pending_attempt_record
-                .routing_selection_audit_json
-                .as_deref(),
-        )
-    });
-    let finished_at = shanghai_now_string();
-    if let Err(err) = finalize_pool_upstream_request_attempt(
-        &state.pool,
-        pending_attempt_record,
-        finished_at.as_str(),
-        status,
-        http_status,
-        downstream_http_status,
-        failure_kind,
-        error_message,
-        downstream_error_message,
-        connect_latency_ms,
-        first_byte_latency_ms,
-        stream_latency_ms,
-        upstream_request_id,
-        None,
-        None,
-    )
-    .await
-    {
-        warn!(
-            context,
-            invoke_id = %pending_attempt_record.invoke_id,
-            error = %err,
-            "failed to persist tracked pool attempt"
-        );
-    }
-    if let Err(err) =
-        broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
-    {
-        warn!(
-            context,
-            invoke_id = %pending_attempt_record.invoke_id,
-            error = %err,
-            "failed to broadcast tracked pool attempt snapshot"
-        );
-    }
-    if priority_handoff {
-        // A pure downstream close can leave a successful upstream status in the
-        // capture record. It is client cancellation, not handoff evidence, so it
-        // must only release the local permit through the owning guard.
-        if priority_handoff_client_cancelled {
-            forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
-            forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
-        } else if let Some(Some(generation)) = priority_handoff_generation {
-            if priority_handoff_success {
-                // The attempt row is finalized before success completion, so a
-                // complete sticky write can advance verification. If either
-                // persistence step failed, completion releases without credit.
-                complete_priority_handoff_from_attempt_or_invoke(
-                    &state.pool,
-                    pending_attempt_record.attempt_id,
-                    Some(&pending_attempt_record.invoke_id),
-                    true,
-                    false,
-                )
-                .await;
-                if let Some(model_key) = pending_attempt_record.request_model.as_deref()
-                    && !model_key.trim().is_empty()
-                {
-                    release_priority_handoff_for_key(
-                        pending_attempt_record.upstream_account_id,
-                        model_key,
-                        generation,
-                    );
-                }
-            } else {
-                defer_priority_handoff_failure_for_key(
-                    pending_attempt_record.upstream_account_id,
-                    pending_attempt_record
-                        .request_model
-                        .as_deref()
-                        .unwrap_or_default(),
+    let generation = priority_handoff_generation_from_audit_json(
+        pending.routing_selection_audit_json.as_deref(),
+    );
+    if !client_cancelled && let Some(generation) = generation {
+        if success {
+            complete_priority_handoff_from_attempt_or_invoke(
+                &state.pool,
+                pending.attempt_id,
+                Some(&pending.invoke_id),
+                true,
+                false,
+            )
+            .await;
+            if let Some(model_key) = pending
+                .request_model
+                .as_deref()
+                .filter(|key| !key.trim().is_empty())
+            {
+                release_priority_handoff_for_key(
+                    pending.upstream_account_id,
+                    model_key,
                     generation,
-                    priority_handoff_cooldown,
                 );
             }
-            forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
-            forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
         } else {
-            forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
-            forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+            defer_priority_handoff_failure_for_key(
+                pending.upstream_account_id,
+                pending.request_model.as_deref().unwrap_or_default(),
+                generation,
+                cooldown,
+            );
         }
     }
+    forget_priority_handoff_attempt(pending.attempt_id);
+    forget_priority_handoff_attempt_for_invoke(&pending.invoke_id);
 }
 
 pub(crate) async fn maybe_backfill_oauth_request_debug_from_replay_status(
@@ -2943,25 +2950,25 @@ pub(crate) fn proxy_openai_v1_via_pool(
             let pool_route_success = pool_route_response_status_is_success(upstream_status);
             let route_http_failure_message = (!pool_route_success)
                 .then(|| format!("pool upstream responded with {}", upstream_status.as_u16()));
-            finalize_tracked_pool_attempt(
-                state.as_ref(),
-                pending_pool_attempt_record.as_ref(),
-                if pool_route_success {
+            finalize_tracked_pool_attempt(TrackedPoolAttemptFinalization {
+                state: state.as_ref(),
+                pending_attempt_record: pending_pool_attempt_record.as_ref(),
+                status: if pool_route_success {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
                 } else {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
                 },
-                Some(upstream_status),
-                None,
-                None,
-                None,
-                route_http_failure_message.as_deref(),
-                Some(t_upstream_connect_ms),
-                Some(t_upstream_ttfb_ms),
-                Some(0.0),
-                upstream_request_id.as_deref(),
-                "via-pool failover empty response",
-            )
+                http_status: Some(upstream_status),
+                downstream_http_status: None,
+                failure_kind: None,
+                error_message: None,
+                downstream_error_message: route_http_failure_message.as_deref(),
+                connect_latency_ms: Some(t_upstream_connect_ms),
+                first_byte_latency_ms: Some(t_upstream_ttfb_ms),
+                stream_latency_ms: Some(0.0),
+                upstream_request_id: upstream_request_id.as_deref(),
+                context: "via-pool failover empty response",
+            })
             .await;
             complete_deferred_pool_early_phase_cleanup_guard(
                 &mut deferred_pool_early_phase_cleanup_guard,
@@ -3307,10 +3314,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
                 }
             }
-            finalize_tracked_pool_attempt(
-                state_for_record.as_ref(),
-                pending_pool_attempt_record_for_task.as_ref(),
-                if stream_error_message.is_some() {
+            finalize_tracked_pool_attempt(TrackedPoolAttemptFinalization {
+                state: state_for_record.as_ref(),
+                pending_attempt_record: pending_pool_attempt_record_for_task.as_ref(),
+                status: if stream_error_message.is_some() {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
                 } else if had_logical_stream_failure
                     || !pool_route_response_status_is_success(upstream_status)
@@ -3319,32 +3326,28 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 } else {
                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
                 },
-                Some(upstream_status),
-                if downstream_closed {
-                    Some(upstream_status)
-                } else {
-                    None
-                },
-                stream_error_message
+                http_status: Some(upstream_status),
+                downstream_http_status: downstream_closed.then_some(upstream_status),
+                failure_kind: stream_error_message
                     .as_ref()
                     .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
                     .or_else(|| {
                         had_logical_stream_failure.then_some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
                     }),
-                stream_error_message
+                error_message: stream_error_message
                     .as_deref()
                     .or(logical_stream_failure_message.as_deref())
                     .or_else(|| {
                         (!pool_route_response_status_is_success(upstream_status))
                             .then_some("upstream HTTP failure")
                     }),
-                None,
-                Some(t_upstream_connect_ms),
-                Some(t_upstream_ttfb_ms),
-                Some(stream_latency_ms),
-                upstream_request_id_for_task.as_deref(),
-                "via-pool failover streamed response",
-            )
+                downstream_error_message: None,
+                connect_latency_ms: Some(t_upstream_connect_ms),
+                first_byte_latency_ms: Some(t_upstream_ttfb_ms),
+                stream_latency_ms: Some(stream_latency_ms),
+                upstream_request_id: upstream_request_id_for_task.as_deref(),
+                context: "via-pool failover streamed response",
+            })
             .await;
             complete_deferred_pool_early_phase_cleanup_guard(
                 &mut deferred_pool_early_phase_cleanup_guard_for_task,

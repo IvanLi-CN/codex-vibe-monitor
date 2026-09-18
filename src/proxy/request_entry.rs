@@ -2184,7 +2184,7 @@ fn rewrite_lite_codex_imagegen_tools(
 ) -> (bool, Option<Value>, &'static str) {
     let (top_level_developer_tools, migrated_top_level_developer_tools) =
         take_lite_top_level_developer_tools(value);
-    let Some((mut input, input_normalized)) = normalise_lite_input_tools(value) else {
+    let Some((input, input_normalized)) = normalise_lite_input_tools(value) else {
         return (false, None, "invalid_input");
     };
     let existing = find_lite_codex_imagegen_function(&input, &top_level_developer_tools);
@@ -3248,6 +3248,229 @@ async fn rewrite_snapshot_include_usage(
     }
 }
 
+struct RequestSemanticBodyProjection {
+    request_info: RequestCaptureInfo,
+    hosted_image_intent: ImageIntent,
+    upstream_snapshot: PoolReplayBodySnapshot,
+    request_body_for_capture: Option<Bytes>,
+    body_rewritten: bool,
+    buffer_bytes: usize,
+    json_parse_count: u8,
+    fallback_reason: Option<&'static str>,
+}
+
+async fn project_legacy_request_semantics(
+    proxy_request_id: u64,
+    snapshot: PoolReplayBodySnapshot,
+    target: ProxyCaptureTarget,
+    auto_include_usage: bool,
+    started: Instant,
+) -> RequestSemanticProjection {
+    let body_len = pool_request_snapshot_body_bytes(&snapshot);
+    let Ok(original) = snapshot.to_bytes().await else {
+        return RequestSemanticProjection {
+            snapshot: snapshot.clone(),
+            request_info: RequestCaptureInfo::default(),
+            hosted_image_intent: ImageIntent::Unknown,
+            upstream_snapshot: snapshot,
+            request_body_for_capture: None,
+            body_rewritten: false,
+            parse_elapsed_ms: started.elapsed().as_millis() as u64,
+            materialization_bytes: 0,
+            buffer_bytes: 0,
+            json_parse_count: 0,
+            whole_body_materialization_count: 0,
+            peak_business_buffer_bytes: 0,
+            fallback_reason: Some("legacy_snapshot_materialization_failed"),
+        };
+    };
+    let (upstream, request_info, body_rewritten, hosted_image_intent) =
+        prepare_target_request_body_with_hosted_intent(
+            target,
+            original.to_vec(),
+            auto_include_usage,
+        );
+    let (upstream_snapshot, body_rewritten, fallback_reason) =
+        match pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(upstream)).await {
+            Ok(snapshot) => (snapshot, body_rewritten, None),
+            Err(error) => {
+                warn!(
+                    proxy_request_id,
+                    error = %error,
+                    fallback_reason = "rewritten_snapshot_persist_failed",
+                    "request semantic projection kept the original snapshot"
+                );
+                (
+                    snapshot.clone(),
+                    false,
+                    Some("rewritten_snapshot_persist_failed"),
+                )
+            }
+        };
+    RequestSemanticProjection {
+        snapshot,
+        request_info,
+        hosted_image_intent,
+        upstream_snapshot,
+        request_body_for_capture: Some(original),
+        body_rewritten,
+        parse_elapsed_ms: started.elapsed().as_millis() as u64,
+        materialization_bytes: body_len,
+        buffer_bytes: body_len,
+        json_parse_count: u8::from(body_len > 0),
+        whole_body_materialization_count: u8::from(body_len > 0),
+        peak_business_buffer_bytes: body_len,
+        fallback_reason,
+    }
+}
+
+async fn project_small_request_semantics(
+    proxy_request_id: u64,
+    snapshot: &PoolReplayBodySnapshot,
+    bytes: &Bytes,
+    target: ProxyCaptureTarget,
+    auto_include_usage: bool,
+) -> RequestSemanticBodyProjection {
+    let (upstream, request_info, rewritten, hosted_image_intent) =
+        prepare_target_request_body_with_hosted_intent(target, bytes.to_vec(), auto_include_usage);
+    let (upstream_snapshot, body_rewritten) = if rewritten {
+        match pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(upstream)).await {
+            Ok(snapshot) => (snapshot, true),
+            Err(error) => {
+                warn!(
+                    proxy_request_id,
+                    error = %error,
+                    fallback_reason = "rewritten_snapshot_persist_failed",
+                    "request semantic projection kept the original snapshot"
+                );
+                (snapshot.clone(), false)
+            }
+        }
+    } else {
+        (snapshot.clone(), false)
+    };
+    RequestSemanticBodyProjection {
+        request_info,
+        hosted_image_intent,
+        upstream_snapshot,
+        request_body_for_capture: Some(bytes.clone()),
+        body_rewritten,
+        buffer_bytes: bytes.len(),
+        json_parse_count: u8::from(!bytes.is_empty()),
+        fallback_reason: None,
+    }
+}
+
+async fn project_large_request_semantics(
+    proxy_request_id: u64,
+    snapshot: &PoolReplayBodySnapshot,
+    target: ProxyCaptureTarget,
+    auto_include_usage: bool,
+    body_len: usize,
+) -> RequestSemanticBodyProjection {
+    let analysis = analyze_replay_snapshot_for_pool_routing(
+        snapshot,
+        Some(target),
+        proxy_request_id,
+        "request_semantic_projection",
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: analysis.requested_model,
+        sticky_key: analysis.sticky_key,
+        prompt_cache_key: analysis.prompt_cache_key,
+        prompt_cache_key_attribution_source: None,
+        contains_encrypted_content: analysis.contains_encrypted_content,
+        image_intent: Some(analysis.image_intent.as_str().to_string()),
+        requested_service_tier: analysis.requested_service_tier,
+        reasoning_effort: analysis.reasoning_effort,
+        compaction_request_kind: analysis.compaction_kind,
+        is_stream: analysis.is_stream,
+        parse_error: (analysis.parse_outcome != "parsed")
+            .then(|| format!("request_json_{}", analysis.parse_outcome)),
+    };
+    let should_rewrite =
+        target.should_auto_include_usage() && auto_include_usage && request_info.is_stream;
+    let mut fallback_reason = None;
+    let rewritten_snapshot = if should_rewrite {
+        match rewrite_snapshot_include_usage(proxy_request_id, snapshot).await {
+            Ok(rewritten) => rewritten,
+            Err(error) => {
+                warn!(
+                    proxy_request_id,
+                    error = %error,
+                    fallback_reason = "include_usage_rewrite_failed",
+                    "request semantic projection kept the original snapshot"
+                );
+                fallback_reason = Some("include_usage_rewrite_failed");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let body_rewritten = rewritten_snapshot.is_some();
+    let rewrite_buffer_bytes = if should_rewrite {
+        INCLUDE_USAGE_COPY_BUFFER_BYTES.min(body_len)
+    } else {
+        0
+    };
+    RequestSemanticBodyProjection {
+        request_info,
+        hosted_image_intent: analysis.hosted_image_intent,
+        upstream_snapshot: rewritten_snapshot.unwrap_or_else(|| snapshot.clone()),
+        request_body_for_capture: None,
+        body_rewritten,
+        buffer_bytes: rewrite_buffer_bytes
+            .max(REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES.min(body_len)),
+        json_parse_count: analysis.json_parse_count,
+        fallback_reason,
+    }
+}
+
+async fn project_request_semantics_body(
+    proxy_request_id: u64,
+    snapshot: &PoolReplayBodySnapshot,
+    target: ProxyCaptureTarget,
+    auto_include_usage: bool,
+    body_len: usize,
+) -> RequestSemanticBodyProjection {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => RequestSemanticBodyProjection {
+            request_info: RequestCaptureInfo::default(),
+            hosted_image_intent: ImageIntent::Unknown,
+            upstream_snapshot: PoolReplayBodySnapshot::Empty,
+            request_body_for_capture: Some(Bytes::new()),
+            body_rewritten: false,
+            buffer_bytes: 0,
+            json_parse_count: 0,
+            fallback_reason: None,
+        },
+        PoolReplayBodySnapshot::Memory(bytes)
+            if bytes.len() <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES =>
+        {
+            project_small_request_semantics(
+                proxy_request_id,
+                snapshot,
+                bytes,
+                target,
+                auto_include_usage,
+            )
+            .await
+        }
+        _ => {
+            project_large_request_semantics(
+                proxy_request_id,
+                snapshot,
+                target,
+                auto_include_usage,
+                body_len,
+            )
+            .await
+        }
+    }
+}
+
 /// Build the semantic projection once, reusing the replay snapshot for routing,
 /// capture, and upstream preparation.
 pub(crate) async fn project_request_semantics(
@@ -3259,178 +3482,23 @@ pub(crate) async fn project_request_semantics(
     let started = Instant::now();
     let body_len = pool_request_snapshot_body_bytes(&snapshot);
     if request_semantic_pipeline_mode() == RequestSemanticPipelineMode::Legacy {
-        let Ok(original) = snapshot.to_bytes().await else {
-            return RequestSemanticProjection {
-                snapshot: snapshot.clone(),
-                request_info: RequestCaptureInfo::default(),
-                hosted_image_intent: ImageIntent::Unknown,
-                upstream_snapshot: snapshot,
-                request_body_for_capture: None,
-                body_rewritten: false,
-                parse_elapsed_ms: started.elapsed().as_millis() as u64,
-                materialization_bytes: 0,
-                buffer_bytes: 0,
-                json_parse_count: 0,
-                whole_body_materialization_count: 0,
-                peak_business_buffer_bytes: 0,
-                fallback_reason: Some("legacy_snapshot_materialization_failed"),
-            };
-        };
-        let (upstream, request_info, body_rewritten, hosted_image_intent) =
-            prepare_target_request_body_with_hosted_intent(
-                target,
-                original.to_vec(),
-                auto_include_usage,
-            );
-        let json_parse_count = u8::from(!original.is_empty());
-        let (upstream_snapshot, body_rewritten, fallback_reason) =
-            match pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(upstream)).await {
-                Ok(snapshot) => (snapshot, body_rewritten, None),
-                Err(error) => {
-                    warn!(
-                        proxy_request_id,
-                        error = %error,
-                        fallback_reason = "rewritten_snapshot_persist_failed",
-                        "request semantic projection kept the original snapshot"
-                    );
-                    (
-                        snapshot.clone(),
-                        false,
-                        Some("rewritten_snapshot_persist_failed"),
-                    )
-                }
-            };
-        return RequestSemanticProjection {
+        return project_legacy_request_semantics(
+            proxy_request_id,
             snapshot,
-            request_info,
-            hosted_image_intent,
-            upstream_snapshot,
-            request_body_for_capture: Some(original),
-            body_rewritten,
-            parse_elapsed_ms: started.elapsed().as_millis() as u64,
-            materialization_bytes: body_len,
-            buffer_bytes: body_len,
-            json_parse_count,
-            whole_body_materialization_count: u8::from(body_len > 0),
-            peak_business_buffer_bytes: body_len,
-            fallback_reason,
-        };
+            target,
+            auto_include_usage,
+            started,
+        )
+        .await;
     }
-    let mut projected_json_parse_count = u8::from(body_len > 0);
-    let mut semantic_parse_buffer_bytes = 0_usize;
-    let mut fallback_reason = None;
-    let (
-        request_info,
-        hosted_image_intent,
-        upstream_snapshot,
-        request_body_for_capture,
-        body_rewritten,
-        rewrite_buffer_bytes,
-    ) = match &snapshot {
-        PoolReplayBodySnapshot::Empty => (
-            RequestCaptureInfo::default(),
-            ImageIntent::Unknown,
-            PoolReplayBodySnapshot::Empty,
-            Some(Bytes::new()),
-            false,
-            0,
-        ),
-        PoolReplayBodySnapshot::Memory(bytes)
-            if bytes.len() <= REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES =>
-        {
-            let (upstream, info, rewritten, hosted_image_intent) =
-                prepare_target_request_body_with_hosted_intent(
-                    target,
-                    bytes.to_vec(),
-                    auto_include_usage,
-                );
-            let capture = Some(bytes.clone());
-            let (upstream_snapshot, body_rewritten) = if rewritten {
-                match pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(upstream)).await
-                {
-                    Ok(snapshot) => (snapshot, true),
-                    Err(error) => {
-                        warn!(
-                            proxy_request_id,
-                            error = %error,
-                            fallback_reason = "rewritten_snapshot_persist_failed",
-                            "request semantic projection kept the original snapshot"
-                        );
-                        (snapshot.clone(), false)
-                    }
-                }
-            } else {
-                (snapshot.clone(), false)
-            };
-            (
-                info,
-                hosted_image_intent,
-                upstream_snapshot,
-                capture,
-                body_rewritten,
-                bytes.len(),
-            )
-        }
-        _ => {
-            let analysis = analyze_replay_snapshot_for_pool_routing(
-                &snapshot,
-                Some(target),
-                proxy_request_id,
-                "request_semantic_projection",
-            )
-            .await;
-            projected_json_parse_count = analysis.json_parse_count;
-            semantic_parse_buffer_bytes = REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES.min(body_len);
-            let request_info = RequestCaptureInfo {
-                model: analysis.requested_model,
-                sticky_key: analysis.sticky_key,
-                prompt_cache_key: analysis.prompt_cache_key,
-                prompt_cache_key_attribution_source: None,
-                contains_encrypted_content: analysis.contains_encrypted_content,
-                image_intent: Some(analysis.image_intent.as_str().to_string()),
-                requested_service_tier: analysis.requested_service_tier,
-                reasoning_effort: analysis.reasoning_effort,
-                compaction_request_kind: analysis.compaction_kind,
-                is_stream: analysis.is_stream,
-                parse_error: (analysis.parse_outcome != "parsed")
-                    .then(|| format!("request_json_{}", analysis.parse_outcome)),
-            };
-            let should_rewrite =
-                target.should_auto_include_usage() && auto_include_usage && request_info.is_stream;
-            let rewritten_snapshot = if should_rewrite {
-                match rewrite_snapshot_include_usage(proxy_request_id, &snapshot).await {
-                    Ok(rewritten) => rewritten,
-                    Err(error) => {
-                        warn!(
-                            proxy_request_id,
-                            error = %error,
-                            fallback_reason = "include_usage_rewrite_failed",
-                            "request semantic projection kept the original snapshot"
-                        );
-                        fallback_reason = Some("include_usage_rewrite_failed");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            let body_rewritten = rewritten_snapshot.is_some();
-            (
-                request_info,
-                analysis.hosted_image_intent,
-                rewritten_snapshot.unwrap_or_else(|| snapshot.clone()),
-                None,
-                body_rewritten,
-                if should_rewrite {
-                    INCLUDE_USAGE_COPY_BUFFER_BYTES.min(body_len)
-                } else {
-                    0
-                },
-            )
-        }
-    };
-    let buffer_bytes = rewrite_buffer_bytes.max(semantic_parse_buffer_bytes);
-
+    let body = project_request_semantics_body(
+        proxy_request_id,
+        &snapshot,
+        target,
+        auto_include_usage,
+        body_len,
+    )
+    .await;
     let whole_body_materialization_count = u8::from(matches!(
         &snapshot,
         PoolReplayBodySnapshot::Memory(bytes)
@@ -3438,22 +3506,22 @@ pub(crate) async fn project_request_semantics(
     ));
     RequestSemanticProjection {
         snapshot,
-        request_info,
-        hosted_image_intent,
-        upstream_snapshot,
-        request_body_for_capture,
-        body_rewritten,
+        request_info: body.request_info,
+        hosted_image_intent: body.hosted_image_intent,
+        upstream_snapshot: body.upstream_snapshot,
+        request_body_for_capture: body.request_body_for_capture,
+        body_rewritten: body.body_rewritten,
         parse_elapsed_ms: started.elapsed().as_millis() as u64,
         materialization_bytes: if whole_body_materialization_count > 0 {
             body_len
         } else {
             0
         },
-        buffer_bytes,
-        json_parse_count: projected_json_parse_count,
+        buffer_bytes: body.buffer_bytes,
+        json_parse_count: body.json_parse_count,
         whole_body_materialization_count,
-        peak_business_buffer_bytes: buffer_bytes,
-        fallback_reason,
+        peak_business_buffer_bytes: body.buffer_bytes,
+        fallback_reason: body.fallback_reason,
     }
 }
 
