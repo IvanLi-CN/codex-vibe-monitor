@@ -2525,20 +2525,38 @@ pub(crate) fn rewrite_openai_responses_image_tools(
     }
 }
 
+pub(crate) struct PoolRequestBodyPreparationRequest<'a> {
+    pub(crate) proxy_request_id: u64,
+    pub(crate) body: Option<&'a PoolReplayBodySnapshot>,
+    pub(crate) original_uri: &'a Uri,
+    pub(crate) method: &'a Method,
+    pub(crate) content_encoding: Option<&'a str>,
+    pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    pub(crate) image_tool_rewrite_mode: crate::ImageToolRewriteMode,
+    pub(crate) codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
+    pub(crate) codex_imagegen_protocol: Option<CodexImagegenProtocol>,
+    pub(crate) projected_request_info: Option<&'a RequestCaptureInfo>,
+    pub(crate) projected_hosted_image_intent: Option<ImageIntent>,
+    pub(crate) model_mapping: Option<&'a ResolvedModelMapping>,
+}
+
 pub(crate) async fn prepare_pool_request_body_for_account(
-    proxy_request_id: u64,
-    body: Option<&PoolReplayBodySnapshot>,
-    original_uri: &Uri,
-    method: &Method,
-    content_encoding: Option<&str>,
-    fast_mode_rewrite_mode: TagFastModeRewriteMode,
-    image_tool_rewrite_mode: crate::ImageToolRewriteMode,
-    codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
-    codex_imagegen_protocol: Option<CodexImagegenProtocol>,
-    projected_request_info: Option<&RequestCaptureInfo>,
-    projected_hosted_image_intent: Option<ImageIntent>,
-    model_mapping: Option<&ResolvedModelMapping>,
+    request: PoolRequestBodyPreparationRequest<'_>,
 ) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
+    let PoolRequestBodyPreparationRequest {
+        proxy_request_id,
+        body,
+        original_uri,
+        method,
+        content_encoding,
+        fast_mode_rewrite_mode,
+        image_tool_rewrite_mode,
+        codex_imagegen_rewrite_mode,
+        codex_imagegen_protocol,
+        projected_request_info,
+        projected_hosted_image_intent,
+        model_mapping,
+    } = request;
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let default_image_intent = match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
@@ -2591,90 +2609,15 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     };
 
     if !rewrite_required {
-        let (
-            request_body_for_capture,
-            requested_service_tier,
-            requested_image_intent,
-            requested_hosted_image_intent,
-        ) = match &snapshot {
-            PoolReplayBodySnapshot::Empty => (
-                Some(Bytes::new()),
-                None,
-                default_image_intent,
-                default_image_intent,
-            ),
-            PoolReplayBodySnapshot::Memory(bytes) => {
-                let (requested_service_tier, requested_image_intent, requested_hosted_image_intent) =
-                    projected_request_info
-                        .zip(projected_hosted_image_intent)
-                        .map(|(info, hosted_image_intent)| {
-                            let image_intent = info
-                                .image_intent
-                                .as_deref()
-                                .map(ImageIntent::from_str)
-                                .unwrap_or(default_image_intent);
-                            (
-                                info.requested_service_tier.clone(),
-                                image_intent,
-                                hosted_image_intent,
-                            )
-                        })
-                        .or_else(|| {
-                            serde_json::from_slice::<Value>(bytes).ok().map(|value| {
-                                (
-                                    extract_requested_service_tier_from_request_body(&value),
-                                    capture_target
-                                        .map(|target| {
-                                            infer_image_intent_from_request_body(target, &value)
-                                        })
-                                        .unwrap_or(ImageIntent::Unknown),
-                                    capture_target
-                                        .map(|target| {
-                                            infer_hosted_image_intent_from_request_body(
-                                                target, &value,
-                                            )
-                                        })
-                                        .unwrap_or(ImageIntent::Unknown),
-                                )
-                            })
-                        })
-                        .unwrap_or((None, default_image_intent, default_image_intent));
-                (
-                    Some(bytes.clone()),
-                    requested_service_tier,
-                    requested_image_intent,
-                    requested_hosted_image_intent,
-                )
-            }
-            PoolReplayBodySnapshot::File { .. } => {
-                let requested_service_tier =
-                    projected_request_info.and_then(|info| info.requested_service_tier.clone());
-                let image_intent = projected_request_info
-                    .and_then(|info| info.image_intent.as_deref())
-                    .map(ImageIntent::from_str)
-                    .unwrap_or(default_image_intent);
-                (
-                    None,
-                    requested_service_tier,
-                    image_intent,
-                    projected_hosted_image_intent.unwrap_or(default_image_intent),
-                )
-            }
-        };
-        let codex_imagegen_rewrite = codex_imagegen_protocol
-            .filter(|_| {
-                codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
-            })
-            .map(codex_imagegen_keep_original_audit);
-        return Ok(PreparedPoolRequestBody {
+        return Ok(prepare_pool_request_body_without_rewrite(
             snapshot,
-            request_body_for_capture,
-            requested_service_tier,
-            requested_image_intent,
-            requested_hosted_image_intent,
-            codex_imagegen_rewrite,
-            snapshot_is_decoded: false,
-        });
+            capture_target,
+            default_image_intent,
+            projected_request_info,
+            projected_hosted_image_intent,
+            codex_imagegen_protocol,
+            codex_imagegen_rewrite_mode,
+        ));
     }
 
     let original_bytes = snapshot.to_bytes().await.map_err(|err| {
@@ -2823,6 +2766,83 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         snapshot_is_decoded: true,
     })
 }
+
+fn prepare_pool_request_body_without_rewrite(
+    snapshot: PoolReplayBodySnapshot,
+    capture_target: Option<ProxyCaptureTarget>,
+    default_image_intent: ImageIntent,
+    projected_request_info: Option<&RequestCaptureInfo>,
+    projected_hosted_image_intent: Option<ImageIntent>,
+    codex_imagegen_protocol: Option<CodexImagegenProtocol>,
+    codex_imagegen_rewrite_mode: crate::CodexImagegenRewriteMode,
+) -> PreparedPoolRequestBody {
+    let (
+        request_body_for_capture,
+        requested_service_tier,
+        requested_image_intent,
+        requested_hosted_image_intent,
+    ) = match &snapshot {
+        PoolReplayBodySnapshot::Empty => (
+            Some(Bytes::new()),
+            None,
+            default_image_intent,
+            default_image_intent,
+        ),
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            let inferred = serde_json::from_slice::<Value>(bytes).ok().map(|value| {
+                (
+                    extract_requested_service_tier_from_request_body(&value),
+                    capture_target
+                        .map(|target| infer_image_intent_from_request_body(target, &value))
+                        .unwrap_or(ImageIntent::Unknown),
+                    capture_target
+                        .map(|target| infer_hosted_image_intent_from_request_body(target, &value))
+                        .unwrap_or(ImageIntent::Unknown),
+                )
+            });
+            let projected = projected_request_info
+                .zip(projected_hosted_image_intent)
+                .map(|(info, hosted)| {
+                    (
+                        info.requested_service_tier.clone(),
+                        info.image_intent
+                            .as_deref()
+                            .map(ImageIntent::from_str)
+                            .unwrap_or(default_image_intent),
+                        hosted,
+                    )
+                });
+            let (tier, image, hosted) = projected.or(inferred).unwrap_or((
+                None,
+                default_image_intent,
+                default_image_intent,
+            ));
+            (Some(bytes.clone()), tier, image, hosted)
+        }
+        PoolReplayBodySnapshot::File { .. } => (
+            None,
+            projected_request_info.and_then(|info| info.requested_service_tier.clone()),
+            projected_request_info
+                .and_then(|info| info.image_intent.as_deref())
+                .map(ImageIntent::from_str)
+                .unwrap_or(default_image_intent),
+            projected_hosted_image_intent.unwrap_or(default_image_intent),
+        ),
+    };
+    PreparedPoolRequestBody {
+        snapshot,
+        request_body_for_capture,
+        requested_service_tier,
+        requested_image_intent,
+        requested_hosted_image_intent,
+        codex_imagegen_rewrite: codex_imagegen_protocol
+            .filter(|_| {
+                codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
+            })
+            .map(codex_imagegen_keep_original_audit),
+        snapshot_is_decoded: false,
+    }
+}
 const INCLUDE_USAGE_ROOT_INSERTION: &[u8] = br#","stream_options":{"include_usage":true}"#;
 const INCLUDE_USAGE_OBJECT_INSERTION: &[u8] = br#","include_usage":true"#;
 const INCLUDE_USAGE_EMPTY_OBJECT_INSERTION: &[u8] = br#""include_usage":true"#;
@@ -2869,207 +2889,275 @@ enum ActiveStreamOptionsValue {
     },
 }
 
-fn locate_root_field_rewrite(
-    reader: impl Read,
-    target_key: &[u8],
-) -> io::Result<Option<IncludeUsageRewritePlan>> {
-    let mut reader = std::io::BufReader::with_capacity(INCLUDE_USAGE_COPY_BUFFER_BYTES, reader);
-    let mut depth = 0_usize;
-    let mut position = 0_usize;
-    let mut root_close = None;
-    let mut expect_root_key = false;
-    let mut pending_root_key_is_stream_options = false;
-    let mut awaiting_stream_options_value = false;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut string_is_root_key = false;
-    let mut string_is_target_value = false;
-    let mut root_key = Vec::with_capacity("stream_options".len());
-    let mut active = None;
-    let mut plan = None;
-    let mut buffer = [0_u8; 1];
+struct RootFieldRewriteScanner {
+    depth: usize,
+    position: usize,
+    root_close: Option<usize>,
+    expect_root_key: bool,
+    pending_root_key_is_stream_options: bool,
+    awaiting_stream_options_value: bool,
+    in_string: bool,
+    escaped: bool,
+    string_is_root_key: bool,
+    string_is_target_value: bool,
+    root_key: Vec<u8>,
+    active: Option<ActiveStreamOptionsValue>,
+    plan: Option<IncludeUsageRewritePlan>,
+}
 
-    while reader.read(&mut buffer)? != 0 {
-        let byte = buffer[0];
-        let current = position;
-        position += 1;
-
-        if in_string {
-            if escaped {
-                if string_is_root_key {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "escaped semantic key requires fail-open rewrite",
-                    ));
-                }
-                escaped = false;
-                continue;
-            }
-            if byte == b'\\' {
-                escaped = true;
-                continue;
-            }
-            if byte == b'"' {
-                in_string = false;
-                if string_is_root_key {
-                    pending_root_key_is_stream_options = root_key == target_key;
-                    string_is_root_key = false;
-                } else if string_is_target_value {
-                    if let Some(ActiveStreamOptionsValue::String { start }) = active.take() {
-                        plan = Some(IncludeUsageRewritePlan::ReplaceValue {
-                            start,
-                            end: current + 1,
-                        });
-                    }
-                    string_is_target_value = false;
-                }
-                continue;
-            }
-            if string_is_root_key && root_key.len() <= "stream_options".len() {
-                root_key.push(byte);
-            }
-            continue;
+impl RootFieldRewriteScanner {
+    fn new() -> Self {
+        Self {
+            depth: 0,
+            position: 0,
+            root_close: None,
+            expect_root_key: false,
+            pending_root_key_is_stream_options: false,
+            awaiting_stream_options_value: false,
+            in_string: false,
+            escaped: false,
+            string_is_root_key: false,
+            string_is_target_value: false,
+            root_key: Vec::with_capacity("stream_options".len()),
+            active: None,
+            plan: None,
         }
+    }
 
-        if awaiting_stream_options_value {
-            if byte.is_ascii_whitespace() {
-                continue;
-            }
-            awaiting_stream_options_value = false;
-            active = Some(match byte {
-                b'{' => ActiveStreamOptionsValue::Object {
-                    start: current,
-                    depth: depth + 1,
-                    has_content: false,
-                },
-                b'[' => ActiveStreamOptionsValue::Composite {
-                    start: current,
-                    depth: depth + 1,
-                },
-                b'"' => {
-                    in_string = true;
-                    string_is_target_value = true;
-                    ActiveStreamOptionsValue::String { start: current }
-                }
-                _ => ActiveStreamOptionsValue::Primitive {
-                    start: current,
-                    last_non_whitespace: current,
-                },
-            });
-            if byte == b'"' {
-                continue;
-            }
+    fn consume_string_byte(
+        &mut self,
+        byte: u8,
+        current: usize,
+        target_key: &[u8],
+    ) -> io::Result<bool> {
+        if !self.in_string {
+            return Ok(false);
         }
+        if self.escaped {
+            if self.string_is_root_key {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "escaped semantic key requires fail-open rewrite",
+                ));
+            }
+            self.escaped = false;
+            return Ok(true);
+        }
+        if byte == b'\\' {
+            self.escaped = true;
+            return Ok(true);
+        }
+        if byte == b'"' {
+            self.in_string = false;
+            if self.string_is_root_key {
+                self.pending_root_key_is_stream_options = self.root_key == target_key;
+                self.string_is_root_key = false;
+            } else if self.string_is_target_value {
+                if let Some(ActiveStreamOptionsValue::String { start }) = self.active.take() {
+                    self.plan = Some(IncludeUsageRewritePlan::ReplaceValue {
+                        start,
+                        end: current + 1,
+                    });
+                }
+                self.string_is_target_value = false;
+            }
+            return Ok(true);
+        }
+        if self.string_is_root_key && self.root_key.len() <= "stream_options".len() {
+            self.root_key.push(byte);
+        }
+        Ok(true)
+    }
 
-        if let Some(ActiveStreamOptionsValue::Primitive {
+    fn consume_awaiting_value_byte(&mut self, byte: u8, current: usize) -> bool {
+        if !self.awaiting_stream_options_value {
+            return false;
+        }
+        if byte.is_ascii_whitespace() {
+            return true;
+        }
+        self.awaiting_stream_options_value = false;
+        self.active = Some(match byte {
+            b'{' => ActiveStreamOptionsValue::Object {
+                start: current,
+                depth: self.depth + 1,
+                has_content: false,
+            },
+            b'[' => ActiveStreamOptionsValue::Composite {
+                start: current,
+                depth: self.depth + 1,
+            },
+            b'"' => {
+                self.in_string = true;
+                self.string_is_target_value = true;
+                ActiveStreamOptionsValue::String { start: current }
+            }
+            _ => ActiveStreamOptionsValue::Primitive {
+                start: current,
+                last_non_whitespace: current,
+            },
+        });
+        if byte == b'"' {
+            return true;
+        }
+        false
+    }
+
+    fn observe_primitive_byte(&mut self, byte: u8, current: usize) {
+        let Some(ActiveStreamOptionsValue::Primitive {
             start,
             last_non_whitespace,
-        }) = active
-        {
-            if depth == 1 && matches!(byte, b',' | b'}') {
-                plan = Some(IncludeUsageRewritePlan::ReplaceValue {
-                    start,
-                    end: last_non_whitespace + 1,
-                });
-                active = None;
-            } else if !byte.is_ascii_whitespace() {
-                active = Some(ActiveStreamOptionsValue::Primitive {
-                    start,
-                    last_non_whitespace: current,
-                });
-            }
-        }
-
-        if byte == b'"' {
-            if let Some(ActiveStreamOptionsValue::Object {
+        }) = self.active
+        else {
+            return;
+        };
+        if self.depth == 1 && matches!(byte, b',' | b'}') {
+            self.plan = Some(IncludeUsageRewritePlan::ReplaceValue {
                 start,
-                depth: target_depth,
-                ..
-            }) = active
-                && depth >= target_depth
-            {
-                active = Some(ActiveStreamOptionsValue::Object {
-                    start,
-                    depth: target_depth,
-                    has_content: true,
-                });
-            }
-            in_string = true;
-            string_is_root_key = depth == 1 && expect_root_key;
-            if string_is_root_key {
-                root_key.clear();
-                expect_root_key = false;
-            }
-            continue;
+                end: last_non_whitespace + 1,
+            });
+            self.active = None;
+        } else if !byte.is_ascii_whitespace() {
+            self.active = Some(ActiveStreamOptionsValue::Primitive {
+                start,
+                last_non_whitespace: current,
+            });
         }
+    }
 
+    fn start_string(&mut self, byte: u8) -> bool {
+        if byte != b'"' {
+            return false;
+        }
         if let Some(ActiveStreamOptionsValue::Object {
             start,
             depth: target_depth,
-            has_content,
-        }) = active
-            && depth >= target_depth
-            && !byte.is_ascii_whitespace()
-            && !(byte == b'}' && depth == target_depth)
+            ..
+        }) = self.active
+            && self.depth >= target_depth
         {
-            active = Some(ActiveStreamOptionsValue::Object {
+            self.active = Some(ActiveStreamOptionsValue::Object {
+                start,
+                depth: target_depth,
+                has_content: true,
+            });
+        }
+        self.in_string = true;
+        self.string_is_root_key = self.depth == 1 && self.expect_root_key;
+        if self.string_is_root_key {
+            self.root_key.clear();
+            self.expect_root_key = false;
+        }
+        true
+    }
+
+    fn observe_active_object_byte(&mut self, byte: u8) {
+        let Some(ActiveStreamOptionsValue::Object {
+            start,
+            depth: target_depth,
+            has_content,
+        }) = self.active
+        else {
+            return;
+        };
+        if self.depth >= target_depth
+            && !byte.is_ascii_whitespace()
+            && !(byte == b'}' && self.depth == target_depth)
+        {
+            self.active = Some(ActiveStreamOptionsValue::Object {
                 start,
                 depth: target_depth,
                 has_content: has_content || byte != b'{',
             });
         }
+    }
 
+    fn consume_structural_byte(&mut self, byte: u8, current: usize) -> bool {
         match byte {
-            b':' if depth == 1 => {
-                awaiting_stream_options_value = pending_root_key_is_stream_options;
-                pending_root_key_is_stream_options = false;
+            b':' if self.depth == 1 => {
+                self.awaiting_stream_options_value = self.pending_root_key_is_stream_options;
+                self.pending_root_key_is_stream_options = false;
             }
             b'{' | b'[' => {
-                depth += 1;
-                if depth == 1 {
-                    expect_root_key = byte == b'{';
+                self.depth += 1;
+                if self.depth == 1 {
+                    self.expect_root_key = byte == b'{';
                 }
             }
             b'}' | b']' => {
-                match active {
+                match self.active {
                     Some(ActiveStreamOptionsValue::Object {
                         start,
                         depth: target_depth,
                         has_content,
-                    }) if byte == b'}' && depth == target_depth => {
-                        plan = Some(IncludeUsageRewritePlan::InsertObject {
+                    }) if byte == b'}' && self.depth == target_depth => {
+                        self.plan = Some(IncludeUsageRewritePlan::InsertObject {
                             start,
                             offset: current,
                             empty: !has_content,
                         });
-                        active = None;
+                        self.active = None;
                     }
                     Some(ActiveStreamOptionsValue::Composite {
                         start,
                         depth: target_depth,
-                    }) if depth == target_depth => {
-                        plan = Some(IncludeUsageRewritePlan::ReplaceValue {
+                    }) if self.depth == target_depth => {
+                        self.plan = Some(IncludeUsageRewritePlan::ReplaceValue {
                             start,
                             end: current + 1,
                         });
-                        active = None;
+                        self.active = None;
                     }
                     _ => {}
                 }
-                if depth == 0 {
-                    return Ok(None);
+                if self.depth == 0 {
+                    return true;
                 }
-                depth -= 1;
-                if depth == 0 && byte == b'}' {
-                    root_close = Some(current);
+                self.depth -= 1;
+                if self.depth == 0 && byte == b'}' {
+                    self.root_close = Some(current);
                 }
             }
-            b',' if depth == 1 => expect_root_key = true,
+            b',' if self.depth == 1 => self.expect_root_key = true,
             _ => {}
+        }
+        false
+    }
+}
+
+fn locate_root_field_rewrite(
+    reader: impl Read,
+    target_key: &[u8],
+) -> io::Result<Option<IncludeUsageRewritePlan>> {
+    let mut reader = std::io::BufReader::with_capacity(INCLUDE_USAGE_COPY_BUFFER_BYTES, reader);
+    let mut scanner = RootFieldRewriteScanner::new();
+    let mut buffer = [0_u8; 1];
+
+    while reader.read(&mut buffer)? != 0 {
+        let byte = buffer[0];
+        let current = scanner.position;
+        scanner.position += 1;
+        if scanner.consume_string_byte(byte, current, target_key)? {
+            continue;
+        }
+        if scanner.consume_awaiting_value_byte(byte, current) {
+            continue;
+        }
+        scanner.observe_primitive_byte(byte, current);
+        if scanner.start_string(byte) {
+            continue;
+        }
+        scanner.observe_active_object_byte(byte);
+        if scanner.consume_structural_byte(byte, current) {
+            return Ok(None);
         }
     }
 
-    Ok(plan.or_else(|| root_close.map(|offset| IncludeUsageRewritePlan::InsertRoot { offset })))
+    Ok(scanner.plan.or_else(|| {
+        scanner
+            .root_close
+            .map(|offset| IncludeUsageRewritePlan::InsertRoot { offset })
+    }))
 }
 
 fn locate_include_usage_rewrite<R>(mut reader: R) -> io::Result<Option<IncludeUsageRewritePlan>>
