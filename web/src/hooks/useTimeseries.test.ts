@@ -1365,16 +1365,15 @@ it("stores remount cache entries by range and options", () => {
   ]);
   const settledLiveRecordUpdatedAt = new Map([["invoke-1-2026-04-08T00:00:30Z", 12_340]]);
 
-  writeTimeseriesRemountCache(
-    "1d",
-    { bucket: "1m" },
-    response,
-    12_345,
+  writeTimeseriesRemountCache({
+    range: "1d",
+    options: { bucket: "1m" },
+    data: response,
+    cachedAt: 12_345,
     liveRecordDeltas,
     settledLiveRecordUpdatedAt,
-    undefined,
-    12_300,
-  );
+    untrackedInFlightClaimSnapshotId: 12_300,
+  });
 
   expect(getTimeseriesRemountCacheKey("1d", { bucket: "1m" })).toBe(
     JSON.stringify(["1d", "1m", null, false, null]),
@@ -1409,41 +1408,40 @@ it("disables remount caching for current, today, and yesterday timeseries", () =
   expect(shouldEnableTimeseriesRemountCache("current")).toBe(false);
   expect(shouldEnableTimeseriesRemountCache("today")).toBe(false);
   expect(shouldEnableTimeseriesRemountCache("yesterday")).toBe(false);
-  writeTimeseriesRemountCache(
-    "current",
-    undefined,
-    {
+  writeTimeseriesRemountCache({
+    range: "current",
+    data: {
       rangeStart: "2026-04-08T00:00:00Z",
       rangeEnd: "2026-04-08T00:01:00Z",
       bucketSeconds: 60,
       points: [],
     },
-    1_000,
-  );
+    cachedAt: 1_000,
+  });
   expect(readTimeseriesRemountCache("current", undefined, 1_001)).toBeNull();
-  writeTimeseriesRemountCache(
-    "today",
-    { bucket: "1m" },
-    {
+  writeTimeseriesRemountCache({
+    range: "today",
+    options: { bucket: "1m" },
+    data: {
       rangeStart: "2026-04-08T00:00:00Z",
       rangeEnd: "2026-04-08T00:01:00Z",
       bucketSeconds: 60,
       points: [],
     },
-    1_000,
-  );
+    cachedAt: 1_000,
+  });
   expect(readTimeseriesRemountCache("today", { bucket: "1m" }, 1_001)).toBeNull();
-  writeTimeseriesRemountCache(
-    "yesterday",
-    { bucket: "1m" },
-    {
+  writeTimeseriesRemountCache({
+    range: "yesterday",
+    options: { bucket: "1m" },
+    data: {
       rangeStart: "2026-04-07T00:00:00Z",
       rangeEnd: "2026-04-08T00:00:00Z",
       bucketSeconds: 60,
       points: [],
     },
-    1_000,
-  );
+    cachedAt: 1_000,
+  });
   expect(readTimeseriesRemountCache("yesterday", { bucket: "1m" }, 1_001)).toBeNull();
 });
 it("reuses remount cache only inside the ttl window", () => {
@@ -1464,7 +1462,12 @@ it("does not hydrate from stale timeseries remount cache entries", () => {
     bucketSeconds: 60,
     points: [],
   };
-  writeTimeseriesRemountCache("1d", { bucket: "1m" }, response, 2_000);
+  writeTimeseriesRemountCache({
+    range: "1d",
+    options: { bucket: "1m" },
+    data: response,
+    cachedAt: 2_000,
+  });
 
   expect(
     readTimeseriesRemountCache("1d", { bucket: "1m" }, 2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS),
@@ -1477,12 +1480,12 @@ it("preserves remount cache across the settled live-delta dedupe window", () => 
     bucketSeconds: 60,
     points: [],
   };
-  writeTimeseriesRemountCache(
-    "1d",
-    { bucket: "1m" },
-    response,
-    2_000,
-    new Map([
+  writeTimeseriesRemountCache({
+    range: "1d",
+    options: { bucket: "1m" },
+    data: response,
+    cachedAt: 2_000,
+    liveRecordDeltas: new Map([
       [
         "invoke-1",
         {
@@ -1499,8 +1502,8 @@ it("preserves remount cache across the settled live-delta dedupe window", () => 
         },
       ],
     ]),
-    new Map([["invoke-1", 2_000]]),
-  );
+    settledLiveRecordUpdatedAt: new Map([["invoke-1", 2_000]]),
+  });
 
   expect(
     readTimeseriesRemountCache(
@@ -1566,22 +1569,22 @@ it("prunes stale settled live deltas while preserving in-flight ones", () => {
   const liveRecordDeltas = new Map<string, typeof pendingDelta>();
   const settledLiveRecordUpdatedAt = new Map<string, number>();
 
-  trackTimeseriesLiveRecordDelta(
+  trackTimeseriesLiveRecordDelta({
     liveRecordDeltas,
     settledLiveRecordUpdatedAt,
-    "pending-live-2026-04-08T00:00:10Z",
-    pendingRecord,
-    pendingDelta,
-    10_000,
-  );
-  trackTimeseriesLiveRecordDelta(
+    key: "pending-live-2026-04-08T00:00:10Z",
+    record: pendingRecord,
+    delta: pendingDelta,
+    now: 10_000,
+  });
+  trackTimeseriesLiveRecordDelta({
     liveRecordDeltas,
     settledLiveRecordUpdatedAt,
-    "settled-live-2026-04-08T00:00:20Z",
-    settledRecord,
-    settledDelta,
-    10_000,
-  );
+    key: "settled-live-2026-04-08T00:00:20Z",
+    record: settledRecord,
+    delta: settledDelta,
+    now: 10_000,
+  });
 
   expect(liveRecordDeltas.get("pending-live-2026-04-08T00:00:10Z")).toEqual(pendingDelta);
   expect(liveRecordDeltas.get("settled-live-2026-04-08T00:00:20Z")).toEqual(settledDelta);
@@ -1643,16 +1646,16 @@ it("caps tracked settled live deltas to the newest bounded window", () => {
 
   for (let index = 0; index <= MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS; index += 1) {
     const key = `settled-${index}`;
-    trackTimeseriesLiveRecordDelta(
+    trackTimeseriesLiveRecordDelta({
       liveRecordDeltas,
       settledLiveRecordUpdatedAt,
       key,
-      createSettledRecord(key),
-      createDelta(index),
-      1_000 + index,
-      TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
-      MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
-    );
+      record: createSettledRecord(key),
+      delta: createDelta(index),
+      now: 1_000 + index,
+      ttlMs: TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+      maxEntries: MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
+    });
   }
 
   expect(settledLiveRecordUpdatedAt.size).toBe(MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS);
