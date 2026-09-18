@@ -1156,12 +1156,8 @@ pub(crate) async fn load_account_routing_candidates(
         .map_err(Into::into)
 }
 
-pub(crate) async fn load_account_routing_candidate(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-) -> Result<Option<AccountRoutingCandidateRow>> {
-    sqlx::query_as::<_, AccountRoutingCandidateRow>(
-        r#"
+fn account_routing_candidate_query() -> &'static str {
+    r#"
         SELECT
             account.id,
             (
@@ -1250,15 +1246,20 @@ pub(crate) async fn load_account_routing_candidate(
         FROM pool_upstream_accounts account
         WHERE account.id = ?1
           AND COALESCE(account.deleted_at, '') = ''
-        "#,
-    )
-    .bind(account_id)
-    .bind(format_utc_iso(
-        Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES),
-    ))
-    .fetch_optional(pool)
-    .await
-    .map_err(Into::into)
+        "#
+}
+pub(crate) async fn load_account_routing_candidate(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Option<AccountRoutingCandidateRow>> {
+    sqlx::query_as::<_, AccountRoutingCandidateRow>(account_routing_candidate_query())
+        .bind(account_id)
+        .bind(format_utc_iso(
+            Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES),
+        ))
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
