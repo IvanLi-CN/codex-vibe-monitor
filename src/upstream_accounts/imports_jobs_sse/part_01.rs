@@ -195,6 +195,116 @@ struct ImportedOauthCreatePlan {
     requested_group_metadata_changes: RequestedGroupMetadataChanges,
 }
 
+struct PreparedImportedOauthImport {
+    crypto_key: [u8; 32],
+    items: Vec<ImportOauthCredentialFileRequest>,
+    selected_source_ids: HashSet<String>,
+    cached_validation_results: HashMap<String, ImportedOauthValidatedImportData>,
+    resolved_group_binding: ResolvedRequiredGroupProxyBinding,
+    create_plan: ImportedOauthCreatePlan,
+    assignments: UpstreamAccountNodeShuntAssignments,
+    refresh_scope: ForwardProxyRouteScope,
+}
+
+async fn prepare_imported_oauth_import(
+    state: &AppState,
+    payload: ImportValidatedOauthAccountsRequest,
+) -> Result<PreparedImportedOauthImport, (StatusCode, String)> {
+    let ImportValidatedOauthAccountsRequest {
+        items,
+        selected_source_ids,
+        validation_job_id,
+        group_name,
+        group_bound_proxy_keys,
+        group_node_shunt_enabled,
+        group_single_account_rotation_enabled,
+        group_note,
+        concurrency_limit,
+        tag_ids,
+    } = payload;
+    let crypto_key = *state.upstream_accounts.require_crypto_key()?;
+    let selected_source_ids = selected_source_ids
+        .into_iter()
+        .filter_map(|value| normalize_optional_text(Some(value)))
+        .collect::<HashSet<_>>();
+    if selected_source_ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "selectedSourceIds must not be empty".to_string(),
+        ));
+    }
+    let group_name = normalize_optional_text(group_name);
+    let group_note = normalize_optional_text(group_note);
+    let group_concurrency_limit =
+        normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
+    validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
+    let requested_group_metadata_changes =
+        build_requested_group_metadata_changes(RequestedGroupMetadataInput::from_import_values(
+            group_note,
+            group_bound_proxy_keys.clone(),
+            group_concurrency_limit,
+            concurrency_limit.is_some(),
+            group_node_shunt_enabled,
+            group_single_account_rotation_enabled,
+        ));
+    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
+        state,
+        group_name,
+        group_bound_proxy_keys,
+        group_node_shunt_enabled,
+    )
+    .await?;
+    reject_manual_tag_ids(&tag_ids)?;
+    let cached_validation_results = load_cached_imported_oauth_validation_results(
+        state,
+        validation_job_id,
+        &resolved_group_binding,
+    )
+    .await;
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .map_err(internal_error_tuple)?;
+    let refresh_scope = required_account_forward_proxy_scope(
+        Some(&resolved_group_binding.group_name),
+        resolved_group_binding.bound_proxy_keys.clone(),
+    )
+    .map_err(internal_error_tuple)?;
+    Ok(PreparedImportedOauthImport {
+        crypto_key,
+        items,
+        selected_source_ids,
+        cached_validation_results,
+        create_plan: ImportedOauthCreatePlan {
+            group_name: Some(resolved_group_binding.group_name.clone()),
+            tag_ids: Vec::new(),
+            requested_group_metadata_changes,
+        },
+        resolved_group_binding,
+        assignments,
+        refresh_scope,
+    })
+}
+
+async fn load_cached_imported_oauth_validation_results(
+    state: &AppState,
+    validation_job_id: Option<String>,
+    binding: &ResolvedRequiredGroupProxyBinding,
+) -> HashMap<String, ImportedOauthValidatedImportData> {
+    let Some(job_id) = normalize_optional_text(validation_job_id) else {
+        return HashMap::new();
+    };
+    let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await else {
+        return HashMap::new();
+    };
+    if job.target_group_name != binding.group_name
+        || job.target_bound_proxy_keys != binding.bound_proxy_keys
+        || job.target_node_shunt_enabled != binding.node_shunt_enabled
+    {
+        return HashMap::new();
+    }
+    job.validated_imports.lock().await.clone()
+}
+
 async fn persist_imported_oauth_account(
     state: Arc<AppState>,
     crypto_key: &[u8; 32],

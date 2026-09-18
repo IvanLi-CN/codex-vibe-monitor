@@ -1123,85 +1123,19 @@ pub(crate) async fn import_validated_oauth_accounts(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
-    let ImportValidatedOauthAccountsRequest {
+    let prepared = prepare_imported_oauth_import(state.as_ref(), payload).await?;
+    let PreparedImportedOauthImport {
+        crypto_key,
         items,
         selected_source_ids,
-        validation_job_id,
-        group_name,
-        group_bound_proxy_keys,
-        group_node_shunt_enabled,
-        group_single_account_rotation_enabled,
-        group_note,
-        concurrency_limit,
-        tag_ids,
-    } = payload;
-    let crypto_key = state.upstream_accounts.require_crypto_key()?;
-    let selected_source_ids = selected_source_ids
-        .into_iter()
-        .filter_map(|value| normalize_optional_text(Some(value)))
-        .collect::<HashSet<_>>();
-    if selected_source_ids.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "selectedSourceIds must not be empty".to_string(),
-        ));
-    }
-    let group_name = normalize_optional_text(group_name);
-    let group_note = normalize_optional_text(group_note);
-    let group_concurrency_limit =
-        normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
-    validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
-    let requested_group_metadata_changes =
-        build_requested_group_metadata_changes(RequestedGroupMetadataInput::from_import_values(
-            group_note.clone(),
-            group_bound_proxy_keys.clone(),
-            group_concurrency_limit,
-            concurrency_limit.is_some(),
-            group_node_shunt_enabled,
-            group_single_account_rotation_enabled,
-        ));
-    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
-        state.as_ref(),
-        group_name.clone(),
-        group_bound_proxy_keys.clone(),
-        group_node_shunt_enabled,
-    )
-    .await?;
-    let group_name = Some(resolved_group_binding.group_name.clone());
-    reject_manual_tag_ids(&tag_ids)?;
-    let create_plan = ImportedOauthCreatePlan {
-        group_name,
-        tag_ids: Vec::new(),
-        requested_group_metadata_changes,
-    };
-    let cached_validation_results = if let Some(job_id) = normalize_optional_text(validation_job_id)
-    {
-        if let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await {
-            if job.target_group_name == resolved_group_binding.group_name
-                && job.target_bound_proxy_keys == resolved_group_binding.bound_proxy_keys
-                && job.target_node_shunt_enabled == resolved_group_binding.node_shunt_enabled
-            {
-                job.validated_imports.lock().await.clone()
-            } else {
-                HashMap::new()
-            }
-        } else {
-            HashMap::new()
-        }
-    } else {
-        HashMap::new()
-    };
+        cached_validation_results,
+        resolved_group_binding,
+        create_plan,
+        assignments,
+        refresh_scope,
+    } = prepared;
     let input_files = items.len();
     let selected_files = selected_source_ids.len();
-    let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
-    let refresh_scope = required_account_forward_proxy_scope(
-        Some(&resolved_group_binding.group_name),
-        resolved_group_binding.bound_proxy_keys.clone(),
-    )
-    .map_err(internal_error_tuple)?;
-
     let mut created = 0usize;
     let mut updated_existing = 0usize;
     let mut failed = 0usize;
@@ -1321,7 +1255,7 @@ pub(crate) async fn import_validated_oauth_accounts(
 
         let (persisted_account_id, import_warning) = persist_imported_oauth_account(
             state.clone(),
-            crypto_key,
+            &crypto_key,
             existing_match.as_ref(),
             &normalized,
             &probe,
