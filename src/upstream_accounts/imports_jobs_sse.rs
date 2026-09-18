@@ -1,5 +1,7 @@
 use super::*;
 
+include!("imports_jobs_sse/part_01.rs");
+
 pub(crate) async fn build_imported_oauth_validation_response(
     state: &AppState,
     items: &[ImportOauthCredentialFileRequest],
@@ -18,47 +20,26 @@ pub(crate) async fn build_imported_oauth_validation_response(
         binding.bound_proxy_keys.clone(),
     )
     .expect("validated group binding should always resolve refresh scope");
-
     for item in items {
         let normalized = match normalize_imported_oauth_credentials(item) {
             Ok(value) => value,
             Err(message) => {
-                rows.push(ImportedOauthValidationRow {
-                    source_id: item.source_id.clone(),
-                    file_name: item.file_name.clone(),
-                    email: None,
-                    chatgpt_account_id: None,
-                    chatgpt_user_id: None,
-                    display_name: None,
-                    token_expires_at: None,
-                    matched_account: None,
-                    status: IMPORT_VALIDATION_STATUS_INVALID.to_string(),
-                    detail: Some(message),
-                    attempts: 0,
-                });
+                rows.push(invalid_imported_oauth_validation_row(item, message));
                 continue;
             }
         };
-
         let match_key = imported_match_key(
             normalized.chatgpt_user_id.as_deref(),
             &normalized.email,
             &normalized.chatgpt_account_id,
         );
         if !seen_keys.insert(match_key) {
-            rows.push(ImportedOauthValidationRow {
-                source_id: normalized.source_id,
-                file_name: normalized.file_name,
-                email: Some(normalized.email),
-                chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                chatgpt_user_id: normalized.chatgpt_user_id,
-                display_name: Some(normalized.display_name),
-                token_expires_at: Some(normalized.token_expires_at),
-                matched_account: None,
-                status: IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT.to_string(),
-                detail: Some("duplicate credential in current import selection".to_string()),
-                attempts: 0,
-            });
+            rows.push(imported_oauth_validation_row(
+                normalized,
+                None,
+                IMPORT_VALIDATION_STATUS_DUPLICATE_IN_INPUT,
+                Some("duplicate credential in current import selection".to_string()),
+            ));
             continue;
         }
         let existing_match = match find_existing_import_match(
@@ -71,19 +52,12 @@ pub(crate) async fn build_imported_oauth_validation_response(
         {
             Ok(value) => value,
             Err(err) => {
-                rows.push(ImportedOauthValidationRow {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    chatgpt_user_id: normalized.chatgpt_user_id,
-                    display_name: Some(normalized.display_name),
-                    token_expires_at: Some(normalized.token_expires_at),
-                    matched_account: None,
-                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
-                    detail: Some(err.to_string()),
-                    attempts: 0,
-                });
+                rows.push(imported_oauth_validation_row(
+                    normalized,
+                    None,
+                    IMPORT_VALIDATION_STATUS_ERROR,
+                    Some(err.to_string()),
+                ));
                 continue;
             }
         };
@@ -99,37 +73,23 @@ pub(crate) async fn build_imported_oauth_validation_response(
         {
             Ok(scope) => scope,
             Err(err) => {
-                rows.push(ImportedOauthValidationRow {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    chatgpt_user_id: normalized.chatgpt_user_id,
-                    display_name: Some(normalized.display_name),
-                    token_expires_at: Some(normalized.token_expires_at),
-                    matched_account: matched_account.clone(),
-                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
-                    detail: Some(err.to_string()),
-                    attempts: 0,
-                });
+                rows.push(imported_oauth_validation_row(
+                    normalized,
+                    matched_account,
+                    IMPORT_VALIDATION_STATUS_ERROR,
+                    Some(err.to_string()),
+                ));
                 continue;
             }
         };
-        let reservation_key = reserve_imported_oauth_node_shunt_scope(
-            state,
-            &normalized.source_id,
-            existing_match.as_ref().map(|row| row.id),
-            &usage_scope,
-        )?;
-        let (row, validated_import) = build_imported_oauth_validation_result(
+        let (row, validated_import) = build_imported_oauth_validation_result_with_reservation(
             state,
             normalized,
             matched_account,
             &refresh_scope,
             &usage_scope,
         )
-        .await;
-        release_imported_oauth_node_shunt_scope(state, reservation_key);
+        .await?;
         if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope
             && validated_import.is_some()
         {
@@ -137,7 +97,6 @@ pub(crate) async fn build_imported_oauth_validation_response(
         }
         rows.push(row);
     }
-
     Ok(build_imported_oauth_validation_response_from_rows(
         items.len(),
         rows,

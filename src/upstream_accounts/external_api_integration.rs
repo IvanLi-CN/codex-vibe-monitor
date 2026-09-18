@@ -632,7 +632,7 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
             .upstream_accounts
             .account_ops
             .run_external_oauth_upsert(
-                state,
+                state.clone(),
                 account_id,
                 prepared.identity,
                 prepared.metadata,
