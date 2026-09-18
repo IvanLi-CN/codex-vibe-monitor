@@ -854,12 +854,12 @@ pub(crate) fn proxy_capture_invocation_failure_kind(
         Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
     } else if pure_downstream_closed {
         Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
-    } else if status == StatusCode::TOO_MANY_REQUESTS {
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
-    } else if status.is_server_error() {
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
     } else {
-        None
+        match status {
+            StatusCode::TOO_MANY_REQUESTS => Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429),
+            status if status.is_server_error() => Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX),
+            _ => None,
+        }
     }
 }
 #[derive(Debug, Clone)]
@@ -3345,73 +3345,77 @@ async fn rewrite_snapshot_include_usage(
     match snapshot {
         PoolReplayBodySnapshot::Empty => Ok(None),
         PoolReplayBodySnapshot::Memory(bytes) => {
-            if bytes.len() > REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES {
-                let temp_file = Arc::new(PoolReplayTempFile {
-                    path: build_pool_replay_temp_path(proxy_request_id),
-                });
-                tokio::fs::write(&temp_file.path, bytes).await?;
-                let file_snapshot = PoolReplayBodySnapshot::File {
-                    temp_file,
-                    size: bytes.len(),
-                };
-                return Box::pin(rewrite_snapshot_include_usage(
-                    proxy_request_id,
-                    &file_snapshot,
-                ))
-                .await;
-            }
-            let Some(plan) = locate_include_usage_rewrite(std::io::Cursor::new(bytes.as_ref()))?
-            else {
-                return Ok(None);
-            };
-            let (prefix_bytes, skipped_bytes, insertion) = include_usage_rewrite_segments(plan);
-            let mut rewritten = Vec::with_capacity(
-                bytes
-                    .len()
-                    .saturating_sub(skipped_bytes)
-                    .saturating_add(insertion.len()),
-            );
-            rewritten.extend_from_slice(&bytes[..prefix_bytes]);
-            rewritten.extend_from_slice(insertion);
-            rewritten.extend_from_slice(&bytes[prefix_bytes + skipped_bytes..]);
-            Ok(Some(
-                pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(rewritten)).await?,
-            ))
+            rewrite_memory_snapshot_include_usage(proxy_request_id, bytes).await
         }
         PoolReplayBodySnapshot::File { temp_file, size } => {
-            let source = temp_file.path.clone();
-            let destination = Arc::new(PoolReplayTempFile {
-                path: build_pool_replay_temp_path(proxy_request_id),
-            });
-            let destination_for_worker = destination.clone();
-            let source_size = *size;
-            let rewritten_size =
-                tokio::task::spawn_blocking(move || -> io::Result<Option<usize>> {
-                    let plan = locate_include_usage_rewrite(std::fs::File::open(&source)?)?;
-                    let Some(plan) = plan else {
-                        return Ok(None);
-                    };
-                    let mut reader = std::fs::File::open(source)?;
-                    let mut writer = std::fs::File::create(&destination_for_worker.path)?;
-                    let (prefix_bytes, skipped_bytes, insertion) =
-                        include_usage_rewrite_segments(plan);
-                    copy_exact_bounded(&mut reader, &mut writer, prefix_bytes)?;
-                    if skipped_bytes > 0 {
-                        reader.seek(SeekFrom::Current(skipped_bytes as i64))?;
-                    }
-                    writer.write_all(insertion)?;
-                    copy_to_end_bounded(&mut reader, &mut writer)?;
-                    writer.flush()?;
-                    Ok(Some(source_size - skipped_bytes + insertion.len()))
-                })
-                .await
-                .map_err(|err| io::Error::other(err.to_string()))??;
-            Ok(rewritten_size.map(|size| PoolReplayBodySnapshot::File {
-                temp_file: destination,
-                size,
-            }))
+            rewrite_file_snapshot_include_usage(proxy_request_id, temp_file, *size).await
         }
     }
+}
+
+async fn rewrite_memory_snapshot_include_usage(
+    proxy_request_id: u64,
+    bytes: &Bytes,
+) -> io::Result<Option<PoolReplayBodySnapshot>> {
+    if bytes.len() > REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES {
+        let temp_file = Arc::new(PoolReplayTempFile {
+            path: build_pool_replay_temp_path(proxy_request_id),
+        });
+        tokio::fs::write(&temp_file.path, bytes).await?;
+        return rewrite_file_snapshot_include_usage(proxy_request_id, &temp_file, bytes.len())
+            .await;
+    }
+    let Some(plan) = locate_include_usage_rewrite(std::io::Cursor::new(bytes.as_ref()))? else {
+        return Ok(None);
+    };
+    let (prefix_bytes, skipped_bytes, insertion) = include_usage_rewrite_segments(plan);
+    let mut rewritten = Vec::with_capacity(
+        bytes
+            .len()
+            .saturating_sub(skipped_bytes)
+            .saturating_add(insertion.len()),
+    );
+    rewritten.extend_from_slice(&bytes[..prefix_bytes]);
+    rewritten.extend_from_slice(insertion);
+    rewritten.extend_from_slice(&bytes[prefix_bytes + skipped_bytes..]);
+    Ok(Some(
+        pool_replay_snapshot_from_bytes(proxy_request_id, Bytes::from(rewritten)).await?,
+    ))
+}
+
+async fn rewrite_file_snapshot_include_usage(
+    proxy_request_id: u64,
+    temp_file: &Arc<PoolReplayTempFile>,
+    source_size: usize,
+) -> io::Result<Option<PoolReplayBodySnapshot>> {
+    let source = temp_file.path.clone();
+    let destination = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(proxy_request_id),
+    });
+    let destination_for_worker = destination.clone();
+    let rewritten_size = tokio::task::spawn_blocking(move || -> io::Result<Option<usize>> {
+        let plan = locate_include_usage_rewrite(std::fs::File::open(&source)?)?;
+        let Some(plan) = plan else {
+            return Ok(None);
+        };
+        let mut reader = std::fs::File::open(source)?;
+        let mut writer = std::fs::File::create(&destination_for_worker.path)?;
+        let (prefix_bytes, skipped_bytes, insertion) = include_usage_rewrite_segments(plan);
+        copy_exact_bounded(&mut reader, &mut writer, prefix_bytes)?;
+        if skipped_bytes > 0 {
+            reader.seek(SeekFrom::Current(skipped_bytes as i64))?;
+        }
+        writer.write_all(insertion)?;
+        copy_to_end_bounded(&mut reader, &mut writer)?;
+        writer.flush()?;
+        Ok(Some(source_size - skipped_bytes + insertion.len()))
+    })
+    .await
+    .map_err(|err| io::Error::other(err.to_string()))??;
+    Ok(rewritten_size.map(|size| PoolReplayBodySnapshot::File {
+        temp_file: destination,
+        size,
+    }))
 }
 
 struct RequestSemanticBodyProjection {
