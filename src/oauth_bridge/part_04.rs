@@ -83,7 +83,8 @@ mod tests {
         }
 
         let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
-        let handle = start_standalone_search_oauth_upstream(search_upstream).await;
+        let app = Router::new().route("/backend-api/codex/alpha/search", post(search_upstream));
+        let handle = start_standalone_search_oauth_upstream(app).await;
 
         let headers = HeaderMap::from_iter([(
             header::CONTENT_TYPE,
@@ -156,10 +157,7 @@ mod tests {
         reset_test_oauth_codex_upstream_base_url().await;
     }
 
-    async fn start_standalone_search_oauth_upstream(
-        handler: impl axum::handler::Handler<(), ()> + Clone + Send + 'static,
-    ) -> tokio::task::JoinHandle<()> {
-        let app = Router::new().route("/backend-api/codex/alpha/search", post(handler));
+    async fn start_standalone_search_oauth_upstream(app: Router) -> tokio::task::JoinHandle<()> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind standalone search oauth upstream");
