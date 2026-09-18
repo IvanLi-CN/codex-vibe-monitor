@@ -5,7 +5,6 @@ mod failover;
 mod payload_utils;
 mod raw_capture;
 #[expect(
-    clippy::too_many_arguments,
     clippy::large_enum_variant,
     reason = "Request-entry variants and adapters preserve established runtime contracts."
 )]
@@ -17,10 +16,6 @@ mod request_entry;
 mod route_selection;
 mod stream_gate;
 mod upstream_transport;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Usage persistence adapters preserve established database call contracts."
-)]
 mod usage_persistence;
 mod websocket;
 

@@ -874,9 +874,7 @@ async fn load_pool_attempt_public_id(
     pool: &Pool<Sqlite>,
     attempt_id: Option<i64>,
 ) -> Option<String> {
-    let Some(attempt_id) = attempt_id else {
-        return None;
-    };
+    let attempt_id = attempt_id?;
     match sqlx::query_scalar::<_, Option<String>>(
         "SELECT attempt_public_id FROM pool_upstream_request_attempts WHERE id = ?1",
     )

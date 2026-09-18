@@ -884,10 +884,16 @@ fn replay_snapshot_image_intents(
                 || contains_image_generation;
             let image = hosted_image || contains_codex_image_generation;
             (
-                image.then_some(ImageIntent::Yes).unwrap_or(ImageIntent::No),
-                hosted_image
-                    .then_some(ImageIntent::Yes)
-                    .unwrap_or(ImageIntent::No),
+                if image {
+                    ImageIntent::Yes
+                } else {
+                    ImageIntent::No
+                },
+                if hosted_image {
+                    ImageIntent::Yes
+                } else {
+                    ImageIntent::No
+                },
             )
         }
         Some(ProxyCaptureTarget::ChatCompletions | ProxyCaptureTarget::StandaloneSearch) | None => {

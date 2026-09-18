@@ -635,14 +635,14 @@ async fn insert_proxy_capture_runtime_record(
         .bind(failure.failure_class.as_str())
         .bind(failure.is_actionable as i64)
         .bind(record.payload.as_deref())
-        .bind(&raw_response)
+        .bind(raw_response)
         .bind(record.req_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&record.req_raw))
         .bind(record.req_raw.size_bytes)
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
         .bind(resp_raw.path.as_deref())
-        .bind(raw_payload_meta_codec(&resp_raw))
+        .bind(raw_payload_meta_codec(resp_raw))
         .bind(resp_raw.size_bytes)
         .bind(resp_raw.truncated as i64)
         .bind(resp_raw.truncated_reason.as_deref())
@@ -698,9 +698,9 @@ async fn recover_proxy_capture_insert_race(
         &mut *tx,
         ProxyInvocationUpdateRequest {
             id: existing.id,
-            record: &record,
-            raw_response: &raw_response,
-            resp_raw: &resp_raw,
+            record,
+            raw_response,
+            resp_raw,
             failure_kind: failure_kind.as_deref(),
             failure_class: failure.failure_class.as_str(),
             is_actionable: failure.is_actionable,
@@ -759,9 +759,9 @@ async fn persist_proxy_capture_core_write(
             &mut *tx,
             ProxyInvocationUpdateRequest {
                 id: existing.id,
-                record: &record,
-                raw_response: &raw_response,
-                resp_raw: &resp_raw,
+                record,
+                raw_response,
+                resp_raw,
                 failure_kind: failure_kind.as_deref(),
                 failure_class: failure.failure_class.as_str(),
                 is_actionable: failure.is_actionable,
