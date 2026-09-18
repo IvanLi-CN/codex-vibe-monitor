@@ -8,6 +8,9 @@ struct PoolFailoverTerminalGuards<'a> {
     binding_constraint: Option<&'a PromptCacheConversationBindingConstraint>,
     owner_auto_guard_active: bool,
     prompt_cache_key: Option<&'a str>,
+    account: Option<PoolResolvedAccount>,
+    message: Option<String>,
+    apply_sticky_owner_guard: bool,
     preserve_sticky_owner_terminal_error: bool,
     last_error: &'a mut Option<PoolUpstreamError>,
     attempt_count: usize,
@@ -23,6 +26,9 @@ async fn take_pool_failover_terminal_guard_error(
         binding_constraint,
         owner_auto_guard_active,
         prompt_cache_key,
+        account,
+        message,
+        apply_sticky_owner_guard,
         preserve_sticky_owner_terminal_error,
         last_error,
         attempt_count,
@@ -35,8 +41,8 @@ async fn take_pool_failover_terminal_guard_error(
             binding_constraint,
             owner_auto_guard_active,
             prompt_cache_key,
-            account: None,
-            message: None,
+            account,
+            message,
             attempt_count,
             distinct_account_count,
         },
@@ -45,6 +51,7 @@ async fn take_pool_failover_terminal_guard_error(
     {
         return Some(err);
     }
+    apply_sticky_owner_guard.then_some(())?;
     take_and_record_sticky_owner_terminal_error(
         state,
         trace_context,
@@ -412,6 +419,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             binding_constraint: binding_constraint.as_ref(),
                             owner_auto_guard_active: encrypted_session_owner_guard_active,
                             prompt_cache_key,
+                            account: None,
+                            message: None,
+                            apply_sticky_owner_guard: true,
                             preserve_sticky_owner_terminal_error,
                             last_error: &mut last_error,
                             attempt_count,
@@ -437,6 +447,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             binding_constraint: binding_constraint.as_ref(),
                             owner_auto_guard_active: encrypted_session_owner_guard_active,
                             prompt_cache_key,
+                            account: None,
+                            message: None,
+                            apply_sticky_owner_guard: true,
                             preserve_sticky_owner_terminal_error,
                             last_error: &mut last_error,
                             attempt_count,
@@ -454,8 +467,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::Unavailable,
                 )) => {
-                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
-                        PoolSingleAccountBindingTerminalRequest {
+                    let terminal_failure_kind =
+                        if uses_timeout_route_failover && timeout_route_failover_pending {
+                            PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+                        } else {
+                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                        };
+                    if let Some(err) =
+                        take_pool_failover_terminal_guard_error(PoolFailoverTerminalGuards {
                             state: state.as_ref(),
                             trace_context: trace_context.as_ref(),
                             binding_constraint: binding_constraint.as_ref(),
@@ -463,29 +482,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             prompt_cache_key,
                             account: None,
                             message: None,
-                            attempt_count,
-                            distinct_account_count,
-                        },
-                    )
-                    .await
-                    {
-                        return Err(err);
-                    }
-                    let terminal_failure_kind =
-                        if uses_timeout_route_failover && timeout_route_failover_pending {
-                            PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        } else {
-                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        };
-                    if terminal_failure_kind == PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        && let Some(err) = take_and_record_sticky_owner_terminal_error(
-                            state.as_ref(),
-                            trace_context.as_ref(),
+                            apply_sticky_owner_guard: terminal_failure_kind
+                                == PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                             preserve_sticky_owner_terminal_error,
-                            &mut last_error,
+                            last_error: &mut last_error,
                             attempt_count,
                             distinct_account_count,
-                        )
+                        })
                         .await
                     {
                         return Err(err);
@@ -562,8 +565,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::NoCandidate(no_candidate_audit),
                 )) => {
-                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
-                        PoolSingleAccountBindingTerminalRequest {
+                    if let Some(err) =
+                        take_pool_failover_terminal_guard_error(PoolFailoverTerminalGuards {
                             state: state.as_ref(),
                             trace_context: trace_context.as_ref(),
                             binding_constraint: binding_constraint.as_ref(),
@@ -571,11 +574,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             prompt_cache_key,
                             account: None,
                             message: None,
+                            apply_sticky_owner_guard: !uses_timeout_route_failover
+                                || !timeout_route_failover_pending,
                             attempt_count,
                             distinct_account_count,
-                        },
-                    )
-                    .await
+                            preserve_sticky_owner_terminal_error,
+                            last_error: &mut last_error,
+                        })
+                        .await
                     {
                         return Err(err);
                     }
@@ -634,18 +640,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         }
                         return Err(err);
                     }
-                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
-                        state.as_ref(),
-                        trace_context.as_ref(),
-                        preserve_sticky_owner_terminal_error,
-                        &mut last_error,
-                        attempt_count,
-                        distinct_account_count,
-                    )
-                    .await
-                    {
-                        return Err(err);
-                    }
                     return Err(
                         if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
                             build_pool_rate_limited_error(
@@ -677,8 +671,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::AssignedBlocked(blocked),
                 )) => {
-                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
-                        PoolSingleAccountBindingTerminalRequest {
+                    if let Some(err) =
+                        take_pool_failover_terminal_guard_error(PoolFailoverTerminalGuards {
                             state: state.as_ref(),
                             trace_context: trace_context.as_ref(),
                             binding_constraint: binding_constraint.as_ref(),
@@ -686,23 +680,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             prompt_cache_key,
                             account: Some(blocked.account.clone()),
                             message: Some(blocked.message.clone()),
+                            apply_sticky_owner_guard: true,
+                            preserve_sticky_owner_terminal_error,
+                            last_error: &mut last_error,
                             attempt_count,
                             distinct_account_count,
-                        },
-                    )
-                    .await
-                    {
-                        return Err(err);
-                    }
-                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
-                        state.as_ref(),
-                        trace_context.as_ref(),
-                        preserve_sticky_owner_terminal_error,
-                        &mut last_error,
-                        attempt_count,
-                        distinct_account_count,
-                    )
-                    .await
+                        })
+                        .await
                     {
                         return Err(err);
                     }
@@ -737,8 +721,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
-                    if let Some(err) = maybe_build_and_record_single_account_binding_terminal_error(
-                        PoolSingleAccountBindingTerminalRequest {
+                    if let Some(err) =
+                        take_pool_failover_terminal_guard_error(PoolFailoverTerminalGuards {
                             state: state.as_ref(),
                             trace_context: trace_context.as_ref(),
                             binding_constraint: binding_constraint.as_ref(),
@@ -746,23 +730,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             prompt_cache_key,
                             account: None,
                             message: Some(message.clone()),
+                            apply_sticky_owner_guard: true,
+                            preserve_sticky_owner_terminal_error,
+                            last_error: &mut last_error,
                             attempt_count,
                             distinct_account_count,
-                        },
-                    )
-                    .await
-                    {
-                        return Err(err);
-                    }
-                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
-                        state.as_ref(),
-                        trace_context.as_ref(),
-                        preserve_sticky_owner_terminal_error,
-                        &mut last_error,
-                        attempt_count,
-                        distinct_account_count,
-                    )
-                    .await
+                        })
+                        .await
                     {
                         return Err(err);
                     }
