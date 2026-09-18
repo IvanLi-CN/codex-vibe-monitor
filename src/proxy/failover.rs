@@ -56,6 +56,34 @@ async fn take_pool_failover_terminal_guard_error(
     .await
 }
 
+async fn record_pool_total_timeout_terminal_attempt(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    final_error: &PoolUpstreamError,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) {
+    let Some(trace) = trace_context else {
+        return;
+    };
+    if let Err(err) = insert_pool_upstream_terminal_attempt(
+        &state.pool,
+        trace,
+        final_error,
+        (attempt_count + 1) as i64,
+        distinct_account_count as i64,
+        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+    )
+    .await
+    {
+        warn!(
+            invoke_id = trace.invoke_id,
+            error = %err,
+            "failed to persist pool total-timeout exhaustion attempt"
+        );
+    }
+}
+
 async fn send_pool_request_with_failover_and_binding_constraint_inner(
     request: PoolFailoverBindingRequest<'_>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
@@ -197,23 +225,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 attempt_count,
                 distinct_account_count,
             );
-            if let Some(trace) = trace_context.as_ref()
-                && let Err(err) = insert_pool_upstream_terminal_attempt(
-                    &state.pool,
-                    trace,
-                    &final_error,
-                    (attempt_count + 1) as i64,
-                    distinct_account_count as i64,
-                    PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
-                )
-                .await
-            {
-                warn!(
-                    invoke_id = trace.invoke_id,
-                    error = %err,
-                    "failed to persist pool total-timeout exhaustion attempt"
-                );
-            }
+            record_pool_total_timeout_terminal_attempt(
+                state.as_ref(),
+                trace_context.as_ref(),
+                &final_error,
+                attempt_count,
+                distinct_account_count,
+            )
+            .await;
             return Err(final_error);
         }
         if preferred_account.is_none()
@@ -373,23 +392,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         attempt_count,
                         distinct_account_count,
                     );
-                    if let Some(trace) = trace_context.as_ref()
-                        && let Err(err) = insert_pool_upstream_terminal_attempt(
-                            &state.pool,
-                            trace,
-                            &final_error,
-                            (attempt_count + 1) as i64,
-                            distinct_account_count as i64,
-                            PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
-                        )
-                        .await
-                    {
-                        warn!(
-                            invoke_id = trace.invoke_id,
-                            error = %err,
-                            "failed to persist pool total-timeout exhaustion attempt"
-                        );
-                    }
+                    record_pool_total_timeout_terminal_attempt(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        &final_error,
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await;
                     return Err(final_error);
                 }
                 Ok(PoolAccountResolutionWithWait::Resolution(
@@ -1005,23 +1015,15 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     attempt_count,
                     distinct_account_count,
                 );
-                if attempt_count > 0
-                    && let Some(trace) = trace_context.as_ref()
-                    && let Err(err) = insert_pool_upstream_terminal_attempt(
-                        &state.pool,
-                        trace,
+                if attempt_count > 0 {
+                    record_pool_total_timeout_terminal_attempt(
+                        state.as_ref(),
+                        trace_context.as_ref(),
                         &final_error,
-                        (attempt_count + 1) as i64,
-                        distinct_account_count as i64,
-                        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+                        attempt_count,
+                        distinct_account_count,
                     )
-                    .await
-                {
-                    warn!(
-                        invoke_id = trace.invoke_id,
-                        error = %err,
-                        "failed to persist pool total-timeout exhaustion attempt"
-                    );
+                    .await;
                 }
                 return Err(final_error);
             };
@@ -1036,23 +1038,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     attempt_count,
                     distinct_account_count,
                 );
-                if let Some(trace) = trace_context.as_ref()
-                    && let Err(err) = insert_pool_upstream_terminal_attempt(
-                        &state.pool,
-                        trace,
-                        &final_error,
-                        (attempt_count + 1) as i64,
-                        distinct_account_count as i64,
-                        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
-                    )
-                    .await
-                {
-                    warn!(
-                        invoke_id = trace.invoke_id,
-                        error = %err,
-                        "failed to persist pool total-timeout exhaustion attempt"
-                    );
-                }
+                record_pool_total_timeout_terminal_attempt(
+                    state.as_ref(),
+                    trace_context.as_ref(),
+                    &final_error,
+                    attempt_count,
+                    distinct_account_count,
+                )
+                .await;
                 return Err(final_error);
             };
             let same_account_retry_index = i64::from(same_account_attempt) + 1;
@@ -1862,23 +1855,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     attempt_count,
                                     distinct_account_count,
                                 );
-                                if let Some(trace) = trace_context.as_ref()
-                                    && let Err(err) = insert_pool_upstream_terminal_attempt(
-                                        &state.pool,
-                                        trace,
-                                        &final_error,
-                                        (attempt_count + 1) as i64,
-                                        distinct_account_count as i64,
-                                        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
-                                    )
-                                    .await
-                                {
-                                    warn!(
-                                        invoke_id = trace.invoke_id,
-                                        error = %err,
-                                        "failed to persist pool total-timeout exhaustion attempt"
-                                    );
-                                }
+                                record_pool_total_timeout_terminal_attempt(
+                                    state.as_ref(),
+                                    trace_context.as_ref(),
+                                    &final_error,
+                                    attempt_count,
+                                    distinct_account_count,
+                                )
+                                .await;
                                 disarm_pool_early_phase_cleanup_guard(
                                     &mut early_phase_cleanup_guard,
                                 );
@@ -3163,23 +3147,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 attempt_count,
                                 distinct_account_count,
                             );
-                            if let Some(trace) = trace_context.as_ref()
-                                && let Err(err) = insert_pool_upstream_terminal_attempt(
-                                    &state.pool,
-                                    trace,
-                                    &final_error,
-                                    (attempt_count + 1) as i64,
-                                    distinct_account_count as i64,
-                                    PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
-                                )
-                                .await
-                            {
-                                warn!(
-                                    invoke_id = trace.invoke_id,
-                                    error = %err,
-                                    "failed to persist pool total-timeout exhaustion attempt"
-                                );
-                            }
+                            record_pool_total_timeout_terminal_attempt(
+                                state.as_ref(),
+                                trace_context.as_ref(),
+                                &final_error,
+                                attempt_count,
+                                distinct_account_count,
+                            )
+                            .await;
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                             return Err(final_error);
                         }
