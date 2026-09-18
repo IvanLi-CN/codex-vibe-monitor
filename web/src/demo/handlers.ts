@@ -517,25 +517,7 @@ function handleInvocationAttemptsRequest(
   return json(response);
 }
 
-export async function handleDemoRequest(request: Request) {
-  const url = new URL(request.url);
-  const pathname = apiPathname(url.pathname);
-  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
-
-  const coreStatsResponse = await handleCoreStatsRequest(pathname, url);
-  if (coreStatsResponse) return coreStatsResponse;
-  const forwardProxyResponse = handleForwardProxyRequest(pathname);
-  if (forwardProxyResponse) return forwardProxyResponse;
-  const invocationListResponse = handleInvocationListRequest(pathname, url);
-  if (invocationListResponse) return invocationListResponse;
-  const invocationDetailResponse = handleInvocationDetailRequest(pathname);
-  if (invocationDetailResponse) return invocationDetailResponse;
-  const invocationAttemptResponse = handleInvocationAttemptResponseRequest(pathname);
-  if (invocationAttemptResponse) return invocationAttemptResponse;
-  const invocationResponse = handleInvocationResponseRequest(pathname);
-  if (invocationResponse) return invocationResponse;
-  const invocationAttemptsResponse = handleInvocationAttemptsRequest(pathname, url, request);
-  if (invocationAttemptsResponse) return invocationAttemptsResponse;
+function handlePromptCacheRequest(pathname: string, url: URL): DemoRouteResult {
   if (pathname === "/api/stats/prompt-cache-conversations") return json(promptCacheConversations());
   if (pathname.startsWith("/api/stats/prompt-cache-conversation-binding-events/")) {
     const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
@@ -544,53 +526,59 @@ export async function handleDemoRequest(request: Request) {
     const filtered = infoType ? items.filter((item) => item.infoTypes.includes(infoType)) : items;
     return json({ items: filtered, total: filtered.length, page: 1, pageSize: 20 });
   }
-  if (pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) {
-    const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
-    const conversation = promptCacheConversations().conversations.find(
-      (item) => item.promptCacheKey === promptCacheKey,
-    );
-    const owner = conversation?.encryptedOwnerAccountId ?? null;
-    const account = owner == null ? null : demoAccounts().find((item) => item.id === owner);
-    return json({
-      promptCacheKey,
-      bindingKind: account ? "upstreamAccount" : "none",
-      groupName: account?.groupName ?? null,
-      upstreamAccountId: owner,
-      upstreamAccountName: account?.displayName ?? null,
-      hasEncryptedSessionOwner: account != null,
-      encryptedOwnerAccountId: owner,
-      encryptedOwnerAccountName: account?.displayName ?? null,
-      encryptedOwnerGroupName: account?.groupName ?? null,
-      timeouts: {
-        responsesFirstByteTimeoutSecs: 30,
-        compactFirstByteTimeoutSecs: 45,
-        imageFirstByteTimeoutSecs: 300,
-        responsesStreamTimeoutSecs: 300,
-        compactStreamTimeoutSecs: 420,
-      },
-      timeoutFieldSources: {
-        responsesFirstByteTimeoutSecs: "root",
-        compactFirstByteTimeoutSecs: "root",
-        imageFirstByteTimeoutSecs: "root",
-        responsesStreamTimeoutSecs: "root",
-        compactStreamTimeoutSecs: "root",
-      },
-      allowSwitchUpstream: true,
-      fastModeRewriteMode: "keep_original",
-      imageToolRewriteMode: "keep_original",
-      availableModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
-      forwardProxyKey: account?.currentForwardProxyKey ?? null,
-      forwardProxyKeys: account?.boundProxyKeys ?? [],
-      policyFieldSources: {
-        allowSwitchUpstream: "root",
-        fastModeRewriteMode: "root",
-        imageToolRewriteMode: "root",
-        availableModels: "root",
-        forwardProxyKey: "account",
-      },
-      updatedAt: "2026-07-10T09:20:00Z",
-    });
-  }
+  if (!pathname.startsWith("/api/stats/prompt-cache-conversation-bindings/")) return undefined;
+  const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
+  const conversation = promptCacheConversations().conversations.find(
+    (item) => item.promptCacheKey === promptCacheKey,
+  );
+  const owner = conversation?.encryptedOwnerAccountId ?? null;
+  const account = owner == null ? null : demoAccounts().find((item) => item.id === owner);
+  return json({
+    promptCacheKey,
+    bindingKind: account ? "upstreamAccount" : "none",
+    groupName: account?.groupName ?? null,
+    upstreamAccountId: owner,
+    upstreamAccountName: account?.displayName ?? null,
+    hasEncryptedSessionOwner: account != null,
+    encryptedOwnerAccountId: owner,
+    encryptedOwnerAccountName: account?.displayName ?? null,
+    encryptedOwnerGroupName: account?.groupName ?? null,
+    timeouts: {
+      responsesFirstByteTimeoutSecs: 30,
+      compactFirstByteTimeoutSecs: 45,
+      imageFirstByteTimeoutSecs: 300,
+      responsesStreamTimeoutSecs: 300,
+      compactStreamTimeoutSecs: 420,
+    },
+    timeoutFieldSources: {
+      responsesFirstByteTimeoutSecs: "root",
+      compactFirstByteTimeoutSecs: "root",
+      imageFirstByteTimeoutSecs: "root",
+      responsesStreamTimeoutSecs: "root",
+      compactStreamTimeoutSecs: "root",
+    },
+    allowSwitchUpstream: true,
+    fastModeRewriteMode: "keep_original",
+    imageToolRewriteMode: "keep_original",
+    availableModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
+    forwardProxyKey: account?.currentForwardProxyKey ?? null,
+    forwardProxyKeys: account?.boundProxyKeys ?? [],
+    policyFieldSources: {
+      allowSwitchUpstream: "root",
+      fastModeRewriteMode: "root",
+      imageToolRewriteMode: "root",
+      availableModels: "root",
+      forwardProxyKey: "account",
+    },
+    updatedAt: "2026-07-10T09:20:00Z",
+  });
+}
+
+function handleSettingsAndSystemRequest(
+  pathname: string,
+  url: URL,
+  request: Request,
+): DemoRouteResult {
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
   if (pathname === "/api/settings/external-api-keys" && request.method === "GET")
@@ -611,23 +599,45 @@ export async function handleDemoRequest(request: Request) {
     );
   }
   if (pathname === "/api/system/status") return json(systemStatus());
-  if (pathname === "/api/system/tasks") {
-    let items = systemTasks();
-    const taskKind = url.searchParams.get("taskKind");
-    const status = url.searchParams.get("status");
-    if (taskKind) items = items.filter((item) => item.taskKind.includes(taskKind));
-    if (status) items = items.filter((item) => item.status === status);
-    const pageSize = Number(
-      url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 20,
-    );
-    const page = Number(url.searchParams.get("page") ?? 1);
-    return json({
-      total: items.length,
-      page,
-      pageSize,
-      items: items.slice((page - 1) * pageSize, page * pageSize),
-    });
-  }
+  if (pathname !== "/api/system/tasks") return undefined;
+  let items = systemTasks();
+  const taskKind = url.searchParams.get("taskKind");
+  const status = url.searchParams.get("status");
+  if (taskKind) items = items.filter((item) => item.taskKind.includes(taskKind));
+  if (status) items = items.filter((item) => item.status === status);
+  const pageSize = Number(url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 20);
+  const page = Number(url.searchParams.get("page") ?? 1);
+  return json({
+    total: items.length,
+    page,
+    pageSize,
+    items: items.slice((page - 1) * pageSize, page * pageSize),
+  });
+}
+
+export async function handleDemoRequest(request: Request) {
+  const url = new URL(request.url);
+  const pathname = apiPathname(url.pathname);
+  if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
+
+  const coreStatsResponse = await handleCoreStatsRequest(pathname, url);
+  if (coreStatsResponse) return coreStatsResponse;
+  const forwardProxyResponse = handleForwardProxyRequest(pathname);
+  if (forwardProxyResponse) return forwardProxyResponse;
+  const invocationListResponse = handleInvocationListRequest(pathname, url);
+  if (invocationListResponse) return invocationListResponse;
+  const invocationDetailResponse = handleInvocationDetailRequest(pathname);
+  if (invocationDetailResponse) return invocationDetailResponse;
+  const invocationAttemptResponse = handleInvocationAttemptResponseRequest(pathname);
+  if (invocationAttemptResponse) return invocationAttemptResponse;
+  const invocationResponse = handleInvocationResponseRequest(pathname);
+  if (invocationResponse) return invocationResponse;
+  const invocationAttemptsResponse = handleInvocationAttemptsRequest(pathname, url, request);
+  if (invocationAttemptsResponse) return invocationAttemptsResponse;
+  const promptCacheResponse = handlePromptCacheRequest(pathname, url);
+  if (promptCacheResponse) return promptCacheResponse;
+  const settingsResponse = handleSettingsAndSystemRequest(pathname, url, request);
+  if (settingsResponse) return settingsResponse;
 
   if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")
     return json(accountList(url.searchParams.get("kind")));
