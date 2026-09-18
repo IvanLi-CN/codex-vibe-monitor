@@ -154,18 +154,187 @@ pub(crate) fn missing_selectable_group_bound_proxy_error_message(group_name: &st
     format!("upstream account group \"{group_name}\" has no selectable bound forward proxy nodes")
 }
 
+#[derive(Default)]
+pub(crate) struct RequestedGroupMetadataInput {
+    pub(crate) note: Option<String>,
+    pub(crate) note_was_requested: bool,
+    pub(crate) bound_proxy_keys: Option<Vec<String>>,
+    pub(crate) bound_proxy_keys_was_requested: bool,
+    pub(crate) concurrency_limit: i64,
+    pub(crate) concurrency_limit_was_requested: bool,
+    pub(crate) node_shunt_enabled: Option<bool>,
+    pub(crate) node_shunt_enabled_was_requested: bool,
+    pub(crate) single_account_rotation_enabled: Option<bool>,
+    pub(crate) single_account_rotation_enabled_was_requested: bool,
+}
+
+impl RequestedGroupMetadataInput {
+    pub(crate) fn from_external_metadata(
+        metadata: &ExternalUpstreamAccountMetadataRequest,
+        concurrency_limit: i64,
+    ) -> Self {
+        Self::default()
+            .with_note(
+                normalize_optional_text(metadata.group_note.clone()),
+                metadata.group_note.is_some(),
+            )
+            .with_bound_proxy_keys(
+                metadata.group_bound_proxy_keys.clone(),
+                metadata.group_bound_proxy_keys.is_some(),
+            )
+            .with_concurrency_limit(concurrency_limit, metadata.concurrency_limit.is_some())
+            .with_node_shunt(
+                metadata.group_node_shunt_enabled,
+                metadata.group_node_shunt_enabled.is_some(),
+            )
+            .with_single_account_rotation(
+                metadata.group_single_account_rotation_enabled,
+                metadata.group_single_account_rotation_enabled.is_some(),
+            )
+    }
+
+    pub(crate) fn from_import_values(
+        note: Option<String>,
+        bound_proxy_keys: Option<Vec<String>>,
+        concurrency_limit: i64,
+        concurrency_limit_was_requested: bool,
+        node_shunt_enabled: Option<bool>,
+        single_account_rotation_enabled: Option<bool>,
+    ) -> Self {
+        Self::default()
+            .with_note(note.clone(), note.is_some())
+            .with_bound_proxy_keys(bound_proxy_keys.clone(), bound_proxy_keys.is_some())
+            .with_concurrency_limit(concurrency_limit, concurrency_limit_was_requested)
+            .with_node_shunt(node_shunt_enabled, node_shunt_enabled.is_some())
+            .with_single_account_rotation(
+                single_account_rotation_enabled,
+                single_account_rotation_enabled.is_some(),
+            )
+    }
+
+    pub(crate) fn from_update_request(
+        payload: &UpdateUpstreamAccountRequest,
+        note: Option<String>,
+        concurrency_limit: i64,
+    ) -> Self {
+        Self::default()
+            .with_note(note, payload.group_note.is_some())
+            .with_bound_proxy_keys(
+                payload.group_bound_proxy_keys.clone(),
+                payload.group_bound_proxy_keys.is_some(),
+            )
+            .with_concurrency_limit(concurrency_limit, payload.concurrency_limit.is_some())
+            .with_node_shunt(
+                payload.group_node_shunt_enabled,
+                payload.group_node_shunt_enabled.is_some(),
+            )
+            .with_single_account_rotation(
+                payload.group_single_account_rotation_enabled,
+                payload.group_single_account_rotation_enabled.is_some(),
+            )
+    }
+
+    pub(crate) fn from_oauth_login_session(session: &OauthLoginSessionRow) -> Self {
+        Self::default()
+            .with_note(session.group_note.clone(), true)
+            .with_bound_proxy_keys(
+                Some(decode_group_bound_proxy_keys_json(
+                    session.group_bound_proxy_keys_json.as_deref(),
+                )),
+                true,
+            )
+            .with_concurrency_limit(session.group_concurrency_limit, true)
+            .with_node_shunt(
+                Some(decode_group_node_shunt_enabled(
+                    session.group_node_shunt_enabled,
+                )),
+                decode_group_requested_flag(session.group_node_shunt_enabled_requested),
+            )
+            .with_single_account_rotation(
+                Some(decode_group_single_account_rotation_enabled(
+                    session.group_single_account_rotation_enabled,
+                )),
+                decode_group_requested_flag(
+                    session.group_single_account_rotation_enabled_requested,
+                ),
+            )
+    }
+
+    pub(crate) fn from_oauth_login_update_parts(
+        note: (Option<String>, bool),
+        binding: &ResolvedRequiredGroupProxyBinding,
+        bound_proxy_and_node_requested: (bool, bool),
+        concurrency: (i64, bool),
+        single_account_rotation: (Option<bool>, bool),
+    ) -> Self {
+        Self::default()
+            .with_note(note.0, note.1)
+            .with_bound_proxy_keys(
+                Some(binding.bound_proxy_keys.clone()),
+                bound_proxy_and_node_requested.0,
+            )
+            .with_concurrency_limit(concurrency.0, concurrency.1)
+            .with_node_shunt(
+                Some(binding.node_shunt_enabled),
+                bound_proxy_and_node_requested.1,
+            )
+            .with_single_account_rotation(single_account_rotation.0, single_account_rotation.1)
+    }
+
+    pub(crate) fn with_note(mut self, note: Option<String>, requested: bool) -> Self {
+        self.note = note;
+        self.note_was_requested = requested;
+        self
+    }
+
+    pub(crate) fn with_bound_proxy_keys(
+        mut self,
+        bound_proxy_keys: Option<Vec<String>>,
+        requested: bool,
+    ) -> Self {
+        self.bound_proxy_keys = bound_proxy_keys;
+        self.bound_proxy_keys_was_requested = requested;
+        self
+    }
+
+    pub(crate) fn with_concurrency_limit(mut self, limit: i64, requested: bool) -> Self {
+        self.concurrency_limit = limit;
+        self.concurrency_limit_was_requested = requested;
+        self
+    }
+
+    pub(crate) fn with_node_shunt(mut self, enabled: Option<bool>, requested: bool) -> Self {
+        self.node_shunt_enabled = enabled;
+        self.node_shunt_enabled_was_requested = requested;
+        self
+    }
+
+    pub(crate) fn with_single_account_rotation(
+        mut self,
+        enabled: Option<bool>,
+        requested: bool,
+    ) -> Self {
+        self.single_account_rotation_enabled = enabled;
+        self.single_account_rotation_enabled_was_requested = requested;
+        self
+    }
+}
+
 pub(crate) fn build_requested_group_metadata_changes(
-    note: Option<String>,
-    note_was_requested: bool,
-    bound_proxy_keys: Option<Vec<String>>,
-    bound_proxy_keys_was_requested: bool,
-    concurrency_limit: i64,
-    concurrency_limit_was_requested: bool,
-    node_shunt_enabled: Option<bool>,
-    node_shunt_enabled_was_requested: bool,
-    single_account_rotation_enabled: Option<bool>,
-    single_account_rotation_enabled_was_requested: bool,
+    input: RequestedGroupMetadataInput,
 ) -> RequestedGroupMetadataChanges {
+    let RequestedGroupMetadataInput {
+        note,
+        note_was_requested,
+        bound_proxy_keys,
+        bound_proxy_keys_was_requested,
+        concurrency_limit,
+        concurrency_limit_was_requested,
+        node_shunt_enabled,
+        node_shunt_enabled_was_requested,
+        single_account_rotation_enabled,
+        single_account_rotation_enabled_was_requested,
+    } = input;
     RequestedGroupMetadataChanges {
         note: normalize_optional_text(note),
         note_was_requested,

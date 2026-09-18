@@ -1364,18 +1364,15 @@ pub(crate) async fn import_validated_oauth_accounts(
     let group_concurrency_limit =
         normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
     validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
-    let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        group_note.clone(),
-        group_note.is_some(),
-        group_bound_proxy_keys.clone(),
-        group_bound_proxy_keys.is_some(),
-        group_concurrency_limit,
-        concurrency_limit.is_some(),
-        group_node_shunt_enabled,
-        group_node_shunt_enabled.is_some(),
-        group_single_account_rotation_enabled,
-        group_single_account_rotation_enabled.is_some(),
-    );
+    let requested_group_metadata_changes =
+        build_requested_group_metadata_changes(RequestedGroupMetadataInput::from_import_values(
+            group_note.clone(),
+            group_bound_proxy_keys.clone(),
+            group_concurrency_limit,
+            concurrency_limit.is_some(),
+            group_node_shunt_enabled,
+            group_single_account_rotation_enabled,
+        ));
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),
         group_name.clone(),

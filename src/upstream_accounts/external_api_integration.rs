@@ -318,20 +318,10 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         .map(normalize_required_display_name)
         .transpose()?;
     let target_group_name = normalize_external_group_name(metadata, Some(&existing_row));
-    let normalized_group_note = normalize_optional_text(metadata.group_note.clone());
     let group_concurrency_limit =
         normalize_concurrency_limit(metadata.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        normalized_group_note,
-        metadata.group_note.is_some(),
-        metadata.group_bound_proxy_keys.clone(),
-        metadata.group_bound_proxy_keys.is_some(),
-        group_concurrency_limit,
-        metadata.concurrency_limit.is_some(),
-        metadata.group_node_shunt_enabled,
-        metadata.group_node_shunt_enabled.is_some(),
-        metadata.group_single_account_rotation_enabled,
-        metadata.group_single_account_rotation_enabled.is_some(),
+        RequestedGroupMetadataInput::from_external_metadata(metadata, group_concurrency_limit),
     );
     validate_group_note_target(target_group_name.as_deref(), metadata.group_note.is_some())?;
     let resolved_group_binding =
@@ -589,23 +579,13 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
     }
 
     let target_group_name = normalize_external_group_name(&payload.metadata, None);
-    let normalized_group_note = normalize_optional_text(payload.metadata.group_note.clone());
     let group_concurrency_limit =
         normalize_concurrency_limit(payload.metadata.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        normalized_group_note,
-        payload.metadata.group_note.is_some(),
-        payload.metadata.group_bound_proxy_keys.clone(),
-        payload.metadata.group_bound_proxy_keys.is_some(),
-        group_concurrency_limit,
-        payload.metadata.concurrency_limit.is_some(),
-        payload.metadata.group_node_shunt_enabled,
-        payload.metadata.group_node_shunt_enabled.is_some(),
-        payload.metadata.group_single_account_rotation_enabled,
-        payload
-            .metadata
-            .group_single_account_rotation_enabled
-            .is_some(),
+        RequestedGroupMetadataInput::from_external_metadata(
+            &payload.metadata,
+            group_concurrency_limit,
+        ),
     );
     validate_group_note_target(
         target_group_name.as_deref(),

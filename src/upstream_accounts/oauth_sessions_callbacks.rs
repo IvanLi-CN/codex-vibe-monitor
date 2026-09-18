@@ -751,6 +751,59 @@ pub(crate) async fn get_oauth_login_session(
     Ok(Json(login_session_to_response(&session)))
 }
 
+fn requested_group_metadata_changes_from_oauth_login_update(
+    note: (Option<String>, bool),
+    binding: &ResolvedRequiredGroupProxyBinding,
+    binding_flags: (bool, bool),
+    concurrency: (i64, bool),
+    rotation: (Option<bool>, bool),
+) -> RequestedGroupMetadataChanges {
+    build_requested_group_metadata_changes(
+        RequestedGroupMetadataInput::from_oauth_login_update_parts(
+            note,
+            binding,
+            binding_flags,
+            concurrency,
+            rotation,
+        ),
+    )
+}
+
+fn normalize_oauth_login_group_metadata(
+    requested_note: OptionalField<String>,
+    existing_note: Option<String>,
+    requested_limit: OptionalField<i64>,
+    existing_limit: i64,
+) -> Result<(bool, Option<String>, bool, i64), (StatusCode, String)> {
+    let note_missing = matches!(requested_note, OptionalField::Missing);
+    let note = match requested_note {
+        OptionalField::Missing => existing_note,
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let limit_missing = matches!(requested_limit, OptionalField::Missing);
+    let limit = match requested_limit {
+        OptionalField::Missing => existing_limit,
+        OptionalField::Null => 0,
+        OptionalField::Value(value) => {
+            normalize_concurrency_limit(Some(value), "concurrencyLimit")?
+        }
+    };
+    Ok((note_missing, note, limit_missing, limit))
+}
+
+fn decode_oauth_login_group_metadata(
+    session: &OauthLoginSessionRow,
+) -> (Vec<String>, bool, bool, bool, bool) {
+    (
+        decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref()),
+        decode_group_node_shunt_enabled(session.group_node_shunt_enabled),
+        decode_group_requested_flag(session.group_node_shunt_enabled_requested),
+        decode_group_single_account_rotation_enabled(session.group_single_account_rotation_enabled),
+        decode_group_requested_flag(session.group_single_account_rotation_enabled_requested),
+    )
+}
+
 pub(crate) async fn update_oauth_login_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -907,31 +960,24 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Null => None,
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
-    let session_group_bound_proxy_keys =
-        decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref());
-    let session_group_node_shunt_enabled =
-        decode_group_node_shunt_enabled(session.group_node_shunt_enabled);
-    let session_group_node_shunt_enabled_requested =
-        decode_group_requested_flag(session.group_node_shunt_enabled_requested);
-    let session_group_single_account_rotation_enabled =
-        decode_group_single_account_rotation_enabled(session.group_single_account_rotation_enabled);
-    let session_group_single_account_rotation_enabled_requested =
-        decode_group_requested_flag(session.group_single_account_rotation_enabled_requested);
-    let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
-    let mut normalized_group_note = match requested_group_note {
-        OptionalField::Missing => session.group_note.clone(),
-        OptionalField::Null => None,
-        OptionalField::Value(value) => normalize_optional_text(Some(value)),
-    };
-    let requested_group_concurrency_limit_missing =
-        matches!(requested_concurrency_limit, OptionalField::Missing);
-    let mut normalized_group_concurrency_limit = match requested_concurrency_limit {
-        OptionalField::Missing => session.group_concurrency_limit,
-        OptionalField::Null => 0,
-        OptionalField::Value(value) => {
-            normalize_concurrency_limit(Some(value), "concurrencyLimit")?
-        }
-    };
+    let (
+        session_group_bound_proxy_keys,
+        session_group_node_shunt_enabled,
+        session_group_node_shunt_enabled_requested,
+        session_group_single_account_rotation_enabled,
+        session_group_single_account_rotation_enabled_requested,
+    ) = decode_oauth_login_group_metadata(&session);
+    let (
+        requested_group_note_missing,
+        mut normalized_group_note,
+        requested_group_concurrency_limit_missing,
+        mut normalized_group_concurrency_limit,
+    ) = normalize_oauth_login_group_metadata(
+        requested_group_note,
+        session.group_note.clone(),
+        requested_concurrency_limit,
+        session.group_concurrency_limit,
+    )?;
     let group_name_changed = group_name.as_deref() != session.group_name.as_deref();
     let requested_group_bound_proxy_keys = match requested_group_bound_proxy_keys {
         OptionalField::Missing if group_name_changed => None,
@@ -1016,17 +1062,24 @@ pub(crate) async fn update_oauth_login_session(
     )
     .await?;
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
-    let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        normalized_group_note.clone(),
-        requested_group_note_was_updated,
-        Some(resolved_group_binding.bound_proxy_keys.clone()),
-        requested_group_bound_proxy_keys_was_updated,
-        normalized_group_concurrency_limit,
-        requested_group_concurrency_limit_was_updated,
-        Some(resolved_group_binding.node_shunt_enabled),
-        requested_group_node_shunt_enabled_was_updated,
-        requested_group_single_account_rotation_enabled,
-        requested_group_single_account_rotation_enabled_was_updated,
+    let requested_group_metadata_changes = requested_group_metadata_changes_from_oauth_login_update(
+        (
+            normalized_group_note.clone(),
+            requested_group_note_was_updated,
+        ),
+        &resolved_group_binding,
+        (
+            requested_group_bound_proxy_keys_was_updated,
+            requested_group_node_shunt_enabled_was_updated,
+        ),
+        (
+            normalized_group_concurrency_limit,
+            requested_group_concurrency_limit_was_updated,
+        ),
+        (
+            requested_group_single_account_rotation_enabled,
+            requested_group_single_account_rotation_enabled_was_updated,
+        ),
     );
 
     let next_display_name = resolve_display_name_after_email_change(
@@ -1430,9 +1483,8 @@ pub(crate) async fn create_api_key_account_inner(
     reject_manual_tag_ids(&payload.tag_ids)?;
     let group_name: Option<String> = None;
     let note = normalize_optional_text(payload.note);
-    let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        None, false, None, false, 0, false, None, false, None, false,
-    );
+    let requested_group_metadata_changes =
+        build_requested_group_metadata_changes(RequestedGroupMetadataInput::default());
     let target_group_name: Option<String> = None;
     let is_mother = false;
     let bound_proxy_keys = match payload.bound_proxy_keys {
@@ -1803,18 +1855,12 @@ pub(crate) async fn update_upstream_account_inner(
         .map(|value| normalize_optional_text(Some(value)));
     let normalized_group_concurrency_limit =
         normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
-    let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        requested_group_note.clone().flatten(),
-        payload.group_note.is_some(),
-        payload.group_bound_proxy_keys.clone(),
-        payload.group_bound_proxy_keys.is_some(),
-        normalized_group_concurrency_limit,
-        payload.concurrency_limit.is_some(),
-        payload.group_node_shunt_enabled,
-        payload.group_node_shunt_enabled.is_some(),
-        payload.group_single_account_rotation_enabled,
-        payload.group_single_account_rotation_enabled.is_some(),
-    );
+    let requested_group_metadata_changes =
+        build_requested_group_metadata_changes(RequestedGroupMetadataInput::from_update_request(
+            &payload,
+            requested_group_note.clone().flatten(),
+            normalized_group_concurrency_limit,
+        ));
 
     let requested_display_name = match payload.display_name.clone() {
         Some(display_name) => Some(normalize_required_display_name(&display_name)?),
@@ -3160,24 +3206,7 @@ pub(crate) async fn persist_oauth_callback_inner(
             session.note.clone(),
             parse_tag_ids_json(session.tag_ids_json.as_deref()),
             build_requested_group_metadata_changes(
-                session.group_note.clone(),
-                true,
-                Some(decode_group_bound_proxy_keys_json(
-                    session.group_bound_proxy_keys_json.as_deref(),
-                )),
-                true,
-                session.group_concurrency_limit,
-                true,
-                Some(decode_group_node_shunt_enabled(
-                    session.group_node_shunt_enabled,
-                )),
-                decode_group_requested_flag(session.group_node_shunt_enabled_requested),
-                Some(decode_group_single_account_rotation_enabled(
-                    session.group_single_account_rotation_enabled,
-                )),
-                decode_group_requested_flag(
-                    session.group_single_account_rotation_enabled_requested,
-                ),
+                RequestedGroupMetadataInput::from_oauth_login_session(&session),
             ),
         )
     };
