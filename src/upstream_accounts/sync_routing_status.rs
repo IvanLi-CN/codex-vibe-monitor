@@ -592,72 +592,7 @@ pub(crate) fn apply_group_routing_policy_override(
             decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
         );
     }
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
-        row.policy_status_change_upstream_http_401,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
-        row.policy_status_change_upstream_http_402,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
-        row.policy_status_change_upstream_http_403,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
-        row.policy_status_change_reauth_required,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
-        row.policy_status_change_upstream_http_429_rate_limit,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
-        row.policy_status_change_upstream_http_429_quota_exhausted,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
-        row.policy_status_change_usage_snapshot_exhausted,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
-        row.policy_status_change_quota_still_exhausted,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
-        row.policy_status_change_transport_failure,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
-        row.policy_status_change_upstream_server_overloaded,
-    );
-    apply_status_change_reason_override(
-        rule,
-        "group",
-        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
-        row.policy_status_change_upstream_http_5xx,
-    );
+    apply_group_status_change_reason_overrides(rule, row);
     apply_routing_timeout_override(
         rule,
         "group",
@@ -669,6 +604,60 @@ pub(crate) fn apply_group_routing_policy_override(
             row.policy_compact_stream_timeout_secs,
         ),
     );
+}
+
+fn apply_group_status_change_reason_overrides(
+    rule: &mut EffectiveRoutingRule,
+    row: &GroupRoutingPolicyOverrideRow,
+) {
+    for (reason_code, value) in [
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_401,
+            row.policy_status_change_upstream_http_401,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_402,
+            row.policy_status_change_upstream_http_402,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_403,
+            row.policy_status_change_upstream_http_403,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+            row.policy_status_change_reauth_required,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT,
+            row.policy_status_change_upstream_http_429_rate_limit,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            row.policy_status_change_upstream_http_429_quota_exhausted,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+            row.policy_status_change_usage_snapshot_exhausted,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+            row.policy_status_change_quota_still_exhausted,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+            row.policy_status_change_transport_failure,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+            row.policy_status_change_upstream_server_overloaded,
+        ),
+        (
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_5XX,
+            row.policy_status_change_upstream_http_5xx,
+        ),
+    ] {
+        apply_status_change_reason_override(rule, "group", reason_code, value);
+    }
 }
 
 pub(crate) fn apply_tag_layer_routing_policy(
