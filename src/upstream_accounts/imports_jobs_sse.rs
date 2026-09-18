@@ -1175,10 +1175,10 @@ pub(crate) async fn import_validated_oauth_accounts(
                 }
             };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
-        let usage_scope = match resolve_imported_oauth_probe_scope(
+        let usage_scope = match resolve_imported_oauth_import_scope(
             state.as_ref(),
             &resolved_group_binding,
-            Some(&assignments),
+            &assignments,
             existing_match.as_ref(),
             &consumed_proxy_keys,
         )
@@ -1190,7 +1190,7 @@ pub(crate) async fn import_validated_oauth_accounts(
                     normalized,
                     existing_match.as_ref().map(|row| row.id),
                     matched_account,
-                    err.to_string(),
+                    err,
                 ));
                 continue;
             }

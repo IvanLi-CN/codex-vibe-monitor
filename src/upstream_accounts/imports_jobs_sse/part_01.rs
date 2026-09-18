@@ -302,6 +302,24 @@ async fn probe_imported_oauth_for_import(
     result
 }
 
+async fn resolve_imported_oauth_import_scope(
+    state: &AppState,
+    binding: &ResolvedRequiredGroupProxyBinding,
+    assignments: &UpstreamAccountNodeShuntAssignments,
+    existing_match: Option<&UpstreamAccountRow>,
+    consumed_proxy_keys: &HashSet<String>,
+) -> Result<ForwardProxyRouteScope, String> {
+    resolve_imported_oauth_probe_scope(
+        state,
+        binding,
+        Some(assignments),
+        existing_match,
+        consumed_proxy_keys,
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
 impl ImportBatch {
     fn new(input_files: usize, selected_files: usize) -> Self {
         Self {
