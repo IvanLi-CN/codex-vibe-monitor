@@ -1244,25 +1244,8 @@ pub(crate) async fn list_upstream_accounts_from_params(
     let total = filtered_items.len();
     let metrics = build_upstream_account_list_metrics(&filtered_items);
     let forward_proxy_catalog_keys = collect_forward_proxy_catalog_keys(&groups, &filtered_items);
-    let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let items = if include_all {
-        filtered_items.clone()
-    } else if offset >= total {
-        Vec::new()
-    } else {
-        filtered_items
-            .iter()
-            .skip(offset)
-            .take(page_size)
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let response_page = if include_all { 1 } else { page };
-    let response_page_size = if include_all {
-        total.max(page_size)
-    } else {
-        page_size
-    };
+    let (items, response_page, response_page_size) =
+        paginate_upstream_account_summaries(&filtered_items, page, page_size, include_all);
     let roster_core_ms = started_at.elapsed().as_millis() as u64;
     let usage_batch_ms = 0_u64;
     let has_ungrouped_accounts =

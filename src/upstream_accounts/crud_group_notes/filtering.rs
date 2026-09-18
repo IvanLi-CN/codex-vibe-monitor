@@ -77,3 +77,32 @@ async fn load_api_key_group_migration_rows(
     .await
     .map_err(Into::into)
 }
+
+fn paginate_upstream_account_summaries(
+    filtered_items: &[UpstreamAccountSummary],
+    page: usize,
+    page_size: usize,
+    include_all: bool,
+) -> (Vec<UpstreamAccountSummary>, usize, usize) {
+    let total = filtered_items.len();
+    let offset = page.saturating_sub(1).saturating_mul(page_size);
+    let items = if include_all {
+        filtered_items.to_vec()
+    } else if offset >= total {
+        Vec::new()
+    } else {
+        filtered_items
+            .iter()
+            .skip(offset)
+            .take(page_size)
+            .cloned()
+            .collect()
+    };
+    let response_page = if include_all { 1 } else { page };
+    let response_page_size = if include_all {
+        total.max(page_size)
+    } else {
+        page_size
+    };
+    (items, response_page, response_page_size)
+}
