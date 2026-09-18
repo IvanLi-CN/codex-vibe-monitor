@@ -34,6 +34,7 @@ import {
   type UpstreamAccountsTableLabels,
   windowPercent,
 } from "./UpstreamAccountsTable";
+import { useReportVisibleAccountIds } from "./useReportVisibleAccountIds";
 
 const GROUP_CARD_VERTICAL_GAP_PX = 16;
 const GROUP_SUMMARY_ESTIMATE_PX = 176;
@@ -612,28 +613,7 @@ function GroupMembersList({
   containerRef?: (node: HTMLDivElement | null) => void;
   onVisibleAccountIdsChange?: (accountIds: number[]) => void;
 }) {
-  const visibleAccountIds = items.map((item) => item.id);
-  const visibleAccountIdsKey = visibleAccountIds.join(",");
-  const lastReportedVisibleAccountIdsKeyRef = useRef<string | null>(null);
-  const onVisibleAccountIdsChangeRef = useRef(onVisibleAccountIdsChange);
-
-  useEffect(() => {
-    onVisibleAccountIdsChangeRef.current = onVisibleAccountIdsChange;
-  }, [onVisibleAccountIdsChange]);
-
-  useEffect(() => {
-    if (lastReportedVisibleAccountIdsKeyRef.current === visibleAccountIdsKey) return;
-    lastReportedVisibleAccountIdsKeyRef.current = visibleAccountIdsKey;
-    onVisibleAccountIdsChangeRef.current?.(visibleAccountIds);
-  }, [visibleAccountIds, visibleAccountIdsKey]);
-
-  useEffect(
-    () => () => {
-      lastReportedVisibleAccountIdsKeyRef.current = null;
-      onVisibleAccountIdsChangeRef.current?.([]);
-    },
-    [],
-  );
+  useReportVisibleAccountIds(items, onVisibleAccountIdsChange);
 
   if (memberLayout === "grid") {
     return (
