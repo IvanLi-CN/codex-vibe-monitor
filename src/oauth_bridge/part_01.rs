@@ -616,19 +616,25 @@ fn prepare_counted_oauth_responses_request(
             (body, request_debug, request_is_stream.unwrap_or(false))
         }
     };
-    outbound_headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    insert_oauth_auth_headers(
+    configure_counted_oauth_responses_headers(
         &mut outbound_headers,
         access_token,
         chatgpt_account_id,
-        true,
     );
     log_counted_oauth_responses_request(account_id, &prepared.1);
-
     Ok((outbound_headers, prepared.0, prepared.1, prepared.2))
+}
+
+fn configure_counted_oauth_responses_headers(
+    headers: &mut HeaderMap,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) {
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    insert_oauth_auth_headers(headers, access_token, chatgpt_account_id, true);
 }
 
 fn log_counted_oauth_responses_request(

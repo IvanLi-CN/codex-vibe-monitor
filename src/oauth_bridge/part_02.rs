@@ -336,27 +336,7 @@ async fn send_oauth_responses_request(
         .bearer_auth(access_token)
         .header("OpenAI-Beta", "responses=experimental");
     let request = attach_account_header(request, chatgpt_account_id);
-    info!(
-        account_id,
-        path = "/v1/responses",
-        forwarded_header_count = request_debug.forwarded_header_names.len(),
-        forwarded_header_names = ?request_debug.forwarded_header_names,
-        forwarded_header_fingerprints = ?request_debug.forwarded_header_fingerprints,
-        prompt_cache_header_forwarded = request_debug.prompt_cache_header_forwarded,
-        fingerprint_version = request_debug.fingerprint_version,
-        request_body_prefix_bytes = request_debug.request_body_prefix_bytes,
-        request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint,
-        request_body_snapshot_kind = request_debug.request_body_snapshot_kind,
-        responses_body_mode = request_debug.responses_body_mode,
-        rewrite_applied = request_debug.rewrite.applied,
-        rewrite_added_instructions = request_debug.rewrite.added_instructions,
-        rewrite_added_store = request_debug.rewrite.added_store,
-        rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
-        rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
-        rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id,
-        rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id,
-        "forwarding oauth responses request"
-    );
+    log_oauth_responses_request(account_id, &request_debug);
     let request_started = Instant::now();
     info!(
         account_id,
@@ -425,6 +405,10 @@ async fn send_oauth_responses_request(
         }
     };
     Ok((upstream, request_debug, request_started))
+}
+
+fn log_oauth_responses_request(account_id: Option<i64>, request_debug: &OauthRequestDebugInfo) {
+    info!(account_id, path = "/v1/responses", forwarded_header_count = request_debug.forwarded_header_names.len(), forwarded_header_names = ?request_debug.forwarded_header_names, forwarded_header_fingerprints = ?request_debug.forwarded_header_fingerprints, prompt_cache_header_forwarded = request_debug.prompt_cache_header_forwarded, fingerprint_version = request_debug.fingerprint_version, request_body_prefix_bytes = request_debug.request_body_prefix_bytes, request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint, request_body_snapshot_kind = request_debug.request_body_snapshot_kind, responses_body_mode = request_debug.responses_body_mode, rewrite_applied = request_debug.rewrite.applied, rewrite_added_instructions = request_debug.rewrite.added_instructions, rewrite_added_store = request_debug.rewrite.added_store, rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true, rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens, rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id, rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id, "forwarding oauth responses request");
 }
 
 async fn oauth_responses(
@@ -648,25 +632,7 @@ async fn oauth_passthrough(
         None,
         crypto_key,
     );
-    info!(
-        account_id,
-        path = original_uri.path(),
-        forwarded_header_count = request_debug.forwarded_header_names.len(),
-        forwarded_header_names = ?request_debug.forwarded_header_names,
-        forwarded_header_fingerprints = ?request_debug.forwarded_header_fingerprints,
-        prompt_cache_header_forwarded = request_debug.prompt_cache_header_forwarded,
-        fingerprint_version = request_debug.fingerprint_version,
-        request_body_prefix_bytes = request_debug.request_body_prefix_bytes,
-        request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint,
-        rewrite_applied = request_debug.rewrite.applied,
-        rewrite_added_instructions = request_debug.rewrite.added_instructions,
-        rewrite_added_store = request_debug.rewrite.added_store,
-        rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
-        rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
-        rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id,
-        rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id,
-        "forwarding oauth passthrough request"
-    );
+    log_oauth_passthrough_request(account_id, original_uri.path(), &request_debug);
     let upstream = match timeout(handshake_timeout, builder.body(body.0).send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
@@ -707,6 +673,14 @@ async fn oauth_passthrough(
         response: reqwest_response_to_axum_response(upstream),
         request_debug: Some(request_debug),
     }
+}
+
+fn log_oauth_passthrough_request(
+    account_id: Option<i64>,
+    path: &str,
+    request_debug: &OauthRequestDebugInfo,
+) {
+    info!(account_id, path, forwarded_header_count = request_debug.forwarded_header_names.len(), forwarded_header_names = ?request_debug.forwarded_header_names, forwarded_header_fingerprints = ?request_debug.forwarded_header_fingerprints, prompt_cache_header_forwarded = request_debug.prompt_cache_header_forwarded, fingerprint_version = request_debug.fingerprint_version, request_body_prefix_bytes = request_debug.request_body_prefix_bytes, request_body_prefix_fingerprint = request_debug.request_body_prefix_fingerprint, rewrite_applied = request_debug.rewrite.applied, rewrite_added_instructions = request_debug.rewrite.added_instructions, rewrite_added_store = request_debug.rewrite.added_store, rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true, rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens, rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id, rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id, "forwarding oauth passthrough request");
 }
 
 fn build_oauth_upstream_url(path_suffix: &str, query: Option<&str>) -> Result<Url> {

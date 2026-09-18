@@ -358,22 +358,11 @@ async fn run_runtime_startup_hourly_rollup_bootstrap(
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let task_start_window = format_utc_iso_millis(Utc::now());
     loop {
-        let Some(task_run) = record_startup_hourly_rollup_bootstrap_task(
-            state.as_ref(),
-            &cancel,
-            &task_start_window,
-            pressure_gate,
-            &coordinator,
-        )
-        .await
-        else {
-            return;
-        };
-        let Some((rollup_guard, pressure_permit, write_permit)) =
-            acquire_startup_hourly_rollup_work(
+        let Some((task_run, rollup_guard, pressure_permit, write_permit)) =
+            prepare_startup_hourly_rollup_cycle(
                 state.as_ref(),
                 &cancel,
-                &task_run,
+                &task_start_window,
                 started_at,
                 pressure_gate,
                 &coordinator,
@@ -382,31 +371,25 @@ async fn run_runtime_startup_hourly_rollup_bootstrap(
         else {
             return;
         };
-        let hourly_rollups_started_at = Instant::now();
-        let hourly_rollups =
-            wait_for_startup_hourly_rollup_repair(&state, &cancel, &coordinator).await;
+        let (hourly_rollups_started_at, hourly_rollups) =
+            start_startup_hourly_rollup_repair(&state, &cancel, &coordinator).await;
         let Some(hourly_rollups) = hourly_rollups else {
-            drop(write_permit);
-            drop(pressure_permit);
+            drop((write_permit, pressure_permit));
             drop(rollup_guard);
-            if !finish_cancelled_startup_hourly_rollup_bootstrap(
+            if retry_after_cancelled_hourly_rollup_repair(
                 state.as_ref(),
                 &cancel,
                 &task_run,
                 started_at,
-                HOURLY_ROLLUP_REPAIR_CANCELLED_SUMMARY,
-                HOURLY_ROLLUP_REPAIR_CANCELLED_LOG,
             )
             .await
             {
-                return;
+                continue;
             }
-            wait_before_startup_hourly_rollup_retry(&cancel).await;
-            continue;
+            return;
         };
         if let Err(err) = hourly_rollups {
-            drop(write_permit);
-            drop(pressure_permit);
+            drop((write_permit, pressure_permit));
             drop(rollup_guard);
             finish_failed_startup_hourly_rollup_bootstrap(
                 state.as_ref(),
@@ -420,31 +403,25 @@ async fn run_runtime_startup_hourly_rollup_bootstrap(
             return;
         }
         log_startup_hourly_rollup_repair(hourly_rollups_started_at);
-        let summary_rollups_started_at = Instant::now();
-        let summary_rollups =
-            wait_for_startup_summary_rollup_repair(&state, &cancel, &coordinator).await;
+        let (summary_rollups_started_at, summary_rollups) =
+            start_startup_summary_rollup_repair(&state, &cancel, &coordinator).await;
         drop(rollup_guard);
         let Some(summary_rollups) = summary_rollups else {
-            drop(write_permit);
-            drop(pressure_permit);
-            if !finish_cancelled_startup_hourly_rollup_bootstrap(
+            drop((write_permit, pressure_permit));
+            if retry_after_cancelled_summary_rollup_repair(
                 state.as_ref(),
                 &cancel,
                 &task_run,
                 started_at,
-                SUMMARY_ROLLUP_REPAIR_CANCELLED_SUMMARY,
-                SUMMARY_ROLLUP_REPAIR_CANCELLED_LOG,
             )
             .await
             {
-                return;
+                continue;
             }
-            wait_before_startup_hourly_rollup_retry(&cancel).await;
-            continue;
+            return;
         };
         if let Err(err) = summary_rollups {
-            drop(write_permit);
-            drop(pressure_permit);
+            drop((write_permit, pressure_permit));
             finish_failed_startup_hourly_rollup_bootstrap(
                 state.as_ref(),
                 &cancel,
@@ -456,12 +433,9 @@ async fn run_runtime_startup_hourly_rollup_bootstrap(
             .await;
             return;
         }
-        drop(write_permit);
-        drop(pressure_permit);
-        finish_completed_startup_hourly_rollup_bootstrap(
-            state.as_ref(),
-            &cancel,
-            &task_run,
+        drop((write_permit, pressure_permit));
+        finish_hourly_bootstrap_success(
+            (state.as_ref(), &cancel, &task_run),
             (
                 started_at,
                 hourly_rollups_started_at,
@@ -473,6 +447,63 @@ async fn run_runtime_startup_hourly_rollup_bootstrap(
     }
 }
 
+async fn prepare_startup_hourly_rollup_cycle<'a>(
+    state: &'a AppState,
+    cancel: &CancellationToken,
+    task_start_window: &str,
+    started_at: Instant,
+    pressure_gate: &crate::db_pressure::DbPressureGate,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+) -> Option<(
+    SystemTaskRunHandle,
+    tokio::sync::MutexGuard<'a, ()>,
+    crate::db_pressure::DbBackgroundPermit,
+    crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
+)> {
+    let task_run = record_startup_hourly_rollup_bootstrap_task(
+        state,
+        cancel,
+        task_start_window,
+        pressure_gate,
+        coordinator,
+    )
+    .await?;
+    let (rollup_guard, pressure_permit, write_permit) = acquire_startup_hourly_rollup_work(
+        state,
+        cancel,
+        &task_run,
+        started_at,
+        pressure_gate,
+        coordinator,
+    )
+    .await?;
+    Some((task_run, rollup_guard, pressure_permit, write_permit))
+}
+
+async fn start_startup_hourly_rollup_repair(
+    state: &AppState,
+    cancel: &CancellationToken,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+) -> (Instant, Option<Result<()>>) {
+    let started_at = Instant::now();
+    (
+        started_at,
+        wait_for_startup_hourly_rollup_repair(state, cancel, coordinator).await,
+    )
+}
+
+async fn start_startup_summary_rollup_repair(
+    state: &AppState,
+    cancel: &CancellationToken,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+) -> (Instant, Option<Result<()>>) {
+    let started_at = Instant::now();
+    (
+        started_at,
+        wait_for_startup_summary_rollup_repair(state, cancel, coordinator).await,
+    )
+}
+
 const HOURLY_ROLLUP_REPAIR_CANCELLED_SUMMARY: &str =
     "background hourly rollup bootstrap cancelled during hourly rollup repair";
 const HOURLY_ROLLUP_REPAIR_CANCELLED_LOG: &str =
@@ -482,6 +513,40 @@ const SUMMARY_ROLLUP_REPAIR_CANCELLED_SUMMARY: &str =
 const SUMMARY_ROLLUP_REPAIR_CANCELLED_LOG: &str =
     "background startup hourly rollup bootstrap cancelled during summary rollup repair";
 
+async fn retry_after_cancelled_hourly_rollup_repair(
+    state: &AppState,
+    cancel: &CancellationToken,
+    task_run: &SystemTaskRunHandle,
+    started_at: Instant,
+) -> bool {
+    retry_after_cancelled_startup_hourly_rollup_bootstrap(
+        state,
+        cancel,
+        task_run,
+        started_at,
+        HOURLY_ROLLUP_REPAIR_CANCELLED_SUMMARY,
+        HOURLY_ROLLUP_REPAIR_CANCELLED_LOG,
+    )
+    .await
+}
+
+async fn retry_after_cancelled_summary_rollup_repair(
+    state: &AppState,
+    cancel: &CancellationToken,
+    task_run: &SystemTaskRunHandle,
+    started_at: Instant,
+) -> bool {
+    retry_after_cancelled_startup_hourly_rollup_bootstrap(
+        state,
+        cancel,
+        task_run,
+        started_at,
+        SUMMARY_ROLLUP_REPAIR_CANCELLED_SUMMARY,
+        SUMMARY_ROLLUP_REPAIR_CANCELLED_LOG,
+    )
+    .await
+}
+
 fn log_startup_hourly_rollup_repair(started_at: Instant) {
     info!(
         elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -489,10 +554,8 @@ fn log_startup_hourly_rollup_repair(started_at: Instant) {
     );
 }
 
-async fn finish_completed_startup_hourly_rollup_bootstrap(
-    state: &AppState,
-    cancel: &CancellationToken,
-    task_run: &SystemTaskRunHandle,
+async fn finish_hourly_bootstrap_success(
+    (state, cancel, task_run): (&AppState, &CancellationToken, &SystemTaskRunHandle),
     (started_at, hourly_rollups_started_at, summary_rollups_started_at): (
         Instant,
         Instant,
@@ -622,6 +685,30 @@ async fn wait_before_startup_hourly_rollup_retry(cancel: &CancellationToken) {
             BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
         )) => {}
     }
+}
+
+async fn retry_after_cancelled_startup_hourly_rollup_bootstrap(
+    state: &AppState,
+    cancel: &CancellationToken,
+    task_run: &SystemTaskRunHandle,
+    started_at: Instant,
+    summary: &'static str,
+    log_message: &'static str,
+) -> bool {
+    if !finish_cancelled_startup_hourly_rollup_bootstrap(
+        state,
+        cancel,
+        task_run,
+        started_at,
+        summary,
+        log_message,
+    )
+    .await
+    {
+        return false;
+    }
+    wait_before_startup_hourly_rollup_retry(cancel).await;
+    true
 }
 
 async fn finish_failed_startup_hourly_rollup_bootstrap(

@@ -83,23 +83,7 @@ mod tests {
         }
 
         let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
-        let app = Router::new().route("/backend-api/codex/alpha/search", post(search_upstream));
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind standalone search oauth upstream");
-        let addr = listener
-            .local_addr()
-            .expect("standalone search oauth upstream addr");
-        let handle = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("standalone search oauth upstream should run");
-        });
-        set_test_oauth_codex_upstream_base_url(
-            Url::parse(&format!("http://{addr}/backend-api/codex"))
-                .expect("valid standalone search oauth base url"),
-        )
-        .await;
+        let handle = start_standalone_search_oauth_upstream(search_upstream).await;
 
         let headers = HeaderMap::from_iter([(
             header::CONTENT_TYPE,
@@ -170,6 +154,29 @@ mod tests {
 
         handle.abort();
         reset_test_oauth_codex_upstream_base_url().await;
+    }
+
+    async fn start_standalone_search_oauth_upstream(
+        handler: impl axum::handler::Handler<(), ()> + Clone + Send + 'static,
+    ) -> tokio::task::JoinHandle<()> {
+        let app = Router::new().route("/backend-api/codex/alpha/search", post(handler));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind standalone search oauth upstream");
+        let addr = listener
+            .local_addr()
+            .expect("standalone search oauth upstream addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("standalone search oauth upstream should run");
+        });
+        set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid standalone search oauth base url"),
+        )
+        .await;
+        handle
     }
 
     #[test]
