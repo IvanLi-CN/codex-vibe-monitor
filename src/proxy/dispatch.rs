@@ -3695,15 +3695,10 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
                 read_bytes = data_len,
                 "openai proxy request body read timed out"
             );
-            return Err(RequestBodyReadError {
-                status: StatusCode::REQUEST_TIMEOUT,
-                message: format!(
-                    "request body read timed out after {}ms",
-                    request_read_timeout.as_millis()
-                ),
-                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+            return Err(request_body_read_timeout_error(
+                request_read_timeout,
                 partial_body,
-            });
+            ));
         }
 
         let next_chunk = match timeout(remaining, stream.next()).await {
@@ -3715,15 +3710,10 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
                     read_bytes = data_len,
                     "openai proxy request body read timed out"
                 );
-                return Err(RequestBodyReadError {
-                    status: StatusCode::REQUEST_TIMEOUT,
-                    message: format!(
-                        "request body read timed out after {}ms",
-                        request_read_timeout.as_millis()
-                    ),
-                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                return Err(request_body_read_timeout_error(
+                    request_read_timeout,
                     partial_body,
-                });
+                ));
             }
         };
 
@@ -3755,20 +3745,13 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
         };
 
         if data_len.saturating_add(chunk.len()) > body_limit {
-            let allowed = body_limit.saturating_sub(data_len);
-            if allowed > 0 {
-                append_bounded_partial_body(
-                    &mut partial_body,
-                    &chunk[..allowed.min(chunk.len())],
-                    ERROR_PARTIAL_BODY_LIMIT_BYTES,
-                );
-            }
-            return Err(RequestBodyReadError {
-                status: StatusCode::PAYLOAD_TOO_LARGE,
-                message: format!("request body exceeds {body_limit} bytes"),
-                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+            return Err(request_body_snapshot_too_large_error(
+                body_limit,
+                data_len,
+                &chunk,
                 partial_body,
-            });
+                ERROR_PARTIAL_BODY_LIMIT_BYTES,
+            ));
         }
         data_len = data_len.saturating_add(chunk.len());
         append_bounded_partial_body(&mut partial_body, &chunk, ERROR_PARTIAL_BODY_LIMIT_BYTES);
@@ -3782,6 +3765,38 @@ pub(crate) async fn read_request_body_snapshot_with_partial_limit(
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 partial_body: partial_body.clone(),
             })?;
+    }
+}
+
+fn request_body_read_timeout_error(
+    request_read_timeout: Duration,
+    partial_body: Vec<u8>,
+) -> RequestBodyReadError {
+    RequestBodyReadError {
+        status: StatusCode::REQUEST_TIMEOUT,
+        message: format!(
+            "request body read timed out after {}ms",
+            request_read_timeout.as_millis()
+        ),
+        failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+        partial_body,
+    }
+}
+
+fn request_body_snapshot_too_large_error(
+    body_limit: usize,
+    data_len: usize,
+    chunk: &[u8],
+    mut partial_body: Vec<u8>,
+    partial_body_limit: usize,
+) -> RequestBodyReadError {
+    let allowed = body_limit.saturating_sub(data_len).min(chunk.len());
+    append_bounded_partial_body(&mut partial_body, &chunk[..allowed], partial_body_limit);
+    RequestBodyReadError {
+        status: StatusCode::PAYLOAD_TOO_LARGE,
+        message: format!("request body exceeds {body_limit} bytes"),
+        failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
+        partial_body,
     }
 }
 
