@@ -3369,7 +3369,44 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     Ok(result.rows_affected() > 0)
 }
 
-pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
+struct RuntimeRecordPayload {
+    value: Option<Value>,
+    prompt_cache_key: Option<String>,
+    sticky_key: Option<String>,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    blocked_binding: Option<BlockedBindingDiagnostic>,
+    blocked_binding_json: Option<String>,
+    failure: FailureClassification,
+}
+
+impl RuntimeRecordPayload {
+    fn text(&self, key: &str) -> Option<String> {
+        self.value
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn i64(&self, key: &str) -> Option<i64> {
+        self.value
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(crate::proxy::json_value_to_i64)
+    }
+
+    fn f64(&self, key: &str) -> Option<f64> {
+        self.value
+            .as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_f64)
+    }
+}
+
+fn runtime_record_payload(record: &ProxyCaptureRecord) -> RuntimeRecordPayload {
     let payload = record
         .payload
         .as_deref()
@@ -3425,20 +3462,41 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         None,
         None,
     );
+    RuntimeRecordPayload {
+        value: payload,
+        prompt_cache_key,
+        sticky_key,
+        upstream_account_id,
+        upstream_account_name,
+        blocked_binding,
+        blocked_binding_json,
+        failure,
+    }
+}
+
+pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) -> ApiInvocation {
+    build_api_invocation_from_runtime_record(record, runtime_record_payload(record))
+}
+
+fn build_api_invocation_from_runtime_record(
+    record: &ProxyCaptureRecord,
+    payload: RuntimeRecordPayload,
+) -> ApiInvocation {
+    let failure = payload.failure.clone();
     ApiInvocation {
         id: 0,
         invoke_id: record.invoke_id.clone(),
         occurred_at: record.occurred_at.clone(),
         source: SOURCE_PROXY.to_string(),
-        proxy_display_name: payload_text("proxyDisplayName"),
+        proxy_display_name: payload.text("proxyDisplayName"),
         model: record.model.clone(),
-        request_model: payload_text("requestModel"),
-        response_model: payload_text("responseModel"),
+        request_model: payload.text("requestModel"),
+        response_model: payload.text("responseModel"),
         input_tokens: record.usage.input_tokens,
         output_tokens: record.usage.output_tokens,
         cache_input_tokens: record.usage.cache_input_tokens,
         reasoning_tokens: record.usage.reasoning_tokens,
-        reasoning_effort: payload_text("reasoningEffort"),
+        reasoning_effort: payload.text("reasoningEffort"),
         total_tokens: record.usage.total_tokens,
         cost: record.cost,
         cost_input: record.cost_breakdown.map(|value| value.input),
@@ -3452,40 +3510,40 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         status: Some(record.status.clone()),
         live_phase: None,
         error_message: record.error_message.clone(),
-        downstream_status_code: payload_i64("downstreamStatusCode"),
+        downstream_status_code: payload.i64("downstreamStatusCode"),
         failure_kind: failure
             .failure_kind
             .clone()
             .or_else(|| record.failure_kind.clone()),
-        blocked_binding,
-        blocked_binding_json,
-        stream_terminal_event: payload_text("streamTerminalEvent"),
-        upstream_error_code: payload_text("upstreamErrorCode"),
-        upstream_error_message: payload_text("upstreamErrorMessage"),
-        downstream_error_message: payload_text("downstreamErrorMessage"),
-        upstream_request_id: payload_text("upstreamRequestId"),
+        blocked_binding: payload.blocked_binding.clone(),
+        blocked_binding_json: payload.blocked_binding_json.clone(),
+        stream_terminal_event: payload.text("streamTerminalEvent"),
+        upstream_error_code: payload.text("upstreamErrorCode"),
+        upstream_error_message: payload.text("upstreamErrorMessage"),
+        downstream_error_message: payload.text("downstreamErrorMessage"),
+        upstream_request_id: payload.text("upstreamRequestId"),
         failure_class: Some(failure.failure_class.as_str().to_string()),
         is_actionable: Some(failure.is_actionable),
-        endpoint: payload_text("endpoint"),
-        compaction_request_kind: payload_text("compactionRequestKind"),
-        compaction_response_kind: payload_text("compactionResponseKind"),
-        image_intent: payload_text("imageIntent"),
-        requester_ip: payload_text("requesterIp"),
-        prompt_cache_key,
-        sticky_key,
-        route_mode: payload_text("routeMode"),
-        upstream_account_id,
-        upstream_account_name,
-        response_content_encoding: payload_text("responseContentEncoding"),
-        request_compression_algorithm: payload_text("requestCompressionAlgorithm"),
+        endpoint: payload.text("endpoint"),
+        compaction_request_kind: payload.text("compactionRequestKind"),
+        compaction_response_kind: payload.text("compactionResponseKind"),
+        image_intent: payload.text("imageIntent"),
+        requester_ip: payload.text("requesterIp"),
+        prompt_cache_key: payload.prompt_cache_key.clone(),
+        sticky_key: payload.sticky_key.clone(),
+        route_mode: payload.text("routeMode"),
+        upstream_account_id: payload.upstream_account_id,
+        upstream_account_name: payload.upstream_account_name.clone(),
+        response_content_encoding: payload.text("responseContentEncoding"),
+        request_compression_algorithm: payload.text("requestCompressionAlgorithm"),
         transport: None,
-        pool_attempt_count: payload_i64("poolAttemptCount"),
-        pool_distinct_account_count: payload_i64("poolDistinctAccountCount"),
-        pool_attempt_terminal_reason: payload_text("poolAttemptTerminalReason"),
-        requested_service_tier: payload_text("requestedServiceTier"),
-        service_tier: payload_text("serviceTier"),
-        billing_service_tier: payload_text("billingServiceTier"),
-        proxy_weight_delta: payload_f64("proxyWeightDelta"),
+        pool_attempt_count: payload.i64("poolAttemptCount"),
+        pool_distinct_account_count: payload.i64("poolDistinctAccountCount"),
+        pool_attempt_terminal_reason: payload.text("poolAttemptTerminalReason"),
+        requested_service_tier: payload.text("requestedServiceTier"),
+        service_tier: payload.text("serviceTier"),
+        billing_service_tier: payload.text("billingServiceTier"),
+        proxy_weight_delta: payload.f64("proxyWeightDelta"),
         cost_estimated: Some(record.cost_estimated as i64),
         price_version: record.price_version.clone(),
         cost_audit: None,
