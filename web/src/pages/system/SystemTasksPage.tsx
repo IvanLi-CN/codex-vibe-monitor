@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { useTranslation } from "../../i18n";
 import { fetchSystemTaskRuns, type SystemTaskRun } from "../../lib/api";
@@ -15,30 +15,67 @@ function toIsoStringOrUndefined(value: string, upperBound = false): string | und
   return parsed.toISOString();
 }
 
-export default function SystemTasksPage() {
-  const { t } = useTranslation();
+function SystemTaskFilterPanel({
+  filteredCount,
+  onStartedAtFromChange,
+  onStartedAtToChange,
+  onStatusChange,
+  onTaskKindChange,
+  startedAtFrom,
+  startedAtTo,
+  status,
+  taskKind,
+  t,
+}: Omit<ComponentProps<typeof SystemTaskFilters>, "t"> & {
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  return (
+    <SystemTaskFilters
+      taskKind={taskKind}
+      status={status}
+      startedAtFrom={startedAtFrom}
+      startedAtTo={startedAtTo}
+      filteredCount={filteredCount}
+      onTaskKindChange={onTaskKindChange}
+      onStatusChange={onStatusChange}
+      onStartedAtFromChange={onStartedAtFromChange}
+      onStartedAtToChange={onStartedAtToChange}
+      t={t}
+    />
+  );
+}
+
+function useSystemTaskRuns({
+  page,
+  pageSize,
+  setPage,
+  setPageSize,
+  startedAtFrom,
+  startedAtTo,
+  status,
+  taskKind,
+}: {
+  page: number;
+  pageSize: number;
+  setPage: (value: number) => void;
+  setPageSize: (value: number) => void;
+  startedAtFrom?: string;
+  startedAtTo?: string;
+  status: string;
+  taskKind: string;
+}) {
   const [items, setItems] = useState<SystemTaskRun[]>([]);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [taskKind, setTaskKind] = useState("");
-  const [status, setStatus] = useState("");
-  const [startedAtFrom, setStartedAtFrom] = useState("");
-  const [startedAtTo, setStartedAtTo] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-
-  const startedAtFromIso = useMemo(() => toIsoStringOrUndefined(startedAtFrom), [startedAtFrom]);
-  const startedAtToIso = useMemo(() => toIsoStringOrUndefined(startedAtTo, true), [startedAtTo]);
-
   useEffect(() => {
     let active = true;
     setIsLoading(true);
     fetchSystemTaskRuns({
       taskKind: taskKind || undefined,
       status: status || undefined,
-      startedAtFrom: startedAtFromIso,
-      startedAtTo: startedAtToIso,
+      startedAtFrom,
+      startedAtTo,
       page,
       pageSize,
     })
@@ -51,18 +88,40 @@ export default function SystemTasksPage() {
         setError(null);
       })
       .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
+        if (active) setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!active) return;
-        setIsLoading(false);
+        if (active) setIsLoading(false);
       });
-
     return () => {
       active = false;
     };
-  }, [page, pageSize, startedAtFromIso, startedAtToIso, status, taskKind]);
+  }, [page, pageSize, setPage, setPageSize, startedAtFrom, startedAtTo, status, taskKind]);
+  return { items, total, error, isLoading };
+}
+
+export default function SystemTasksPage() {
+  const { t } = useTranslation();
+  const [taskKind, setTaskKind] = useState("");
+  const [status, setStatus] = useState("");
+  const [startedAtFrom, setStartedAtFrom] = useState("");
+  const [startedAtTo, setStartedAtTo] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  const startedAtFromIso = useMemo(() => toIsoStringOrUndefined(startedAtFrom), [startedAtFrom]);
+  const startedAtToIso = useMemo(() => toIsoStringOrUndefined(startedAtTo, true), [startedAtTo]);
+
+  const { items, total, error, isLoading } = useSystemTaskRuns({
+    page,
+    pageSize,
+    setPage,
+    setPageSize,
+    startedAtFrom: startedAtFromIso,
+    startedAtTo: startedAtToIso,
+    status,
+    taskKind,
+  });
 
   const filteredCount = useMemo(() => total.toLocaleString(), [total]);
   const pageCount = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [pageSize, total]);
@@ -75,7 +134,7 @@ export default function SystemTasksPage() {
             <h2 className="section-title text-2xl">{t("system.tasks.title")}</h2>
             <p className="section-description max-w-3xl">{t("system.tasks.description")}</p>
           </div>
-          <SystemTaskFilters
+          <SystemTaskFilterPanel
             taskKind={taskKind}
             status={status}
             startedAtFrom={startedAtFrom}
