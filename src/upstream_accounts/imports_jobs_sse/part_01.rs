@@ -240,6 +240,20 @@ fn normalize_imported_oauth_for_import(
         .unwrap_or_else(|| normalize_imported_oauth_credentials(item))
 }
 
+async fn load_imported_oauth_existing_match(
+    state: &AppState,
+    normalized: &NormalizedImportedOauthCredentials,
+) -> Result<Option<UpstreamAccountRow>, String> {
+    find_existing_import_match(
+        &state.pool,
+        normalized.chatgpt_user_id.as_deref(),
+        &normalized.chatgpt_account_id,
+        &normalized.email,
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
 impl ImportBatch {
     fn new(input_files: usize, selected_files: usize) -> Self {
         Self {

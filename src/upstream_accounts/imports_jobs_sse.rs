@@ -42,14 +42,7 @@ pub(crate) async fn build_imported_oauth_validation_response(
             ));
             continue;
         }
-        let existing_match = match find_existing_import_match(
-            &state.pool,
-            normalized.chatgpt_user_id.as_deref(),
-            &normalized.chatgpt_account_id,
-            &normalized.email,
-        )
-        .await
-        {
+        let existing_match = match load_imported_oauth_existing_match(state, &normalized).await {
             Ok(value) => value,
             Err(err) => {
                 rows.push(imported_oauth_validation_row(
@@ -1168,25 +1161,19 @@ pub(crate) async fn import_validated_oauth_accounts(
             continue;
         }
 
-        let existing_match = match find_existing_import_match(
-            &state.pool,
-            normalized.chatgpt_user_id.as_deref(),
-            &normalized.chatgpt_account_id,
-            &normalized.email,
-        )
-        .await
-        {
-            Ok(value) => value,
-            Err(err) => {
-                batch.record_failure(failed_imported_oauth_import_result(
-                    normalized,
-                    None,
-                    None,
-                    err.to_string(),
-                ));
-                continue;
-            }
-        };
+        let existing_match =
+            match load_imported_oauth_existing_match(state.as_ref(), &normalized).await {
+                Ok(value) => value,
+                Err(err) => {
+                    batch.record_failure(failed_imported_oauth_import_result(
+                        normalized,
+                        None,
+                        None,
+                        err.to_string(),
+                    ));
+                    continue;
+                }
+            };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
         let usage_scope = match resolve_imported_oauth_probe_scope(
             state.as_ref(),
