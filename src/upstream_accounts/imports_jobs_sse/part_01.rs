@@ -283,6 +283,25 @@ async fn load_imported_oauth_existing_match(
     .map_err(|err| err.to_string())
 }
 
+async fn probe_imported_oauth_for_import(
+    state: &AppState,
+    normalized: &NormalizedImportedOauthCredentials,
+    existing_account_id: Option<i64>,
+    refresh_scope: &ForwardProxyRouteScope,
+    usage_scope: &ForwardProxyRouteScope,
+) -> Result<ImportedOauthProbeOutcome> {
+    let reservation_key = reserve_imported_oauth_node_shunt_scope(
+        state,
+        &normalized.source_id,
+        existing_account_id,
+        usage_scope,
+    )?;
+    let result =
+        probe_imported_oauth_credentials(state, normalized, refresh_scope, usage_scope).await;
+    release_imported_oauth_node_shunt_scope(state, reservation_key);
+    result
+}
+
 impl ImportBatch {
     fn new(input_files: usize, selected_files: usize) -> Self {
         Self {

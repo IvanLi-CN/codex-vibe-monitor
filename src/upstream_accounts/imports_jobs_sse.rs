@@ -1198,21 +1198,14 @@ pub(crate) async fn import_validated_oauth_accounts(
         let probe = match cached_validation {
             Some(cached) => cached.probe,
             None => {
-                let reservation_key = reserve_imported_oauth_node_shunt_scope(
-                    state.as_ref(),
-                    &normalized.source_id,
-                    existing_match.as_ref().map(|row| row.id),
-                    &usage_scope,
-                )
-                .map_err(internal_error_tuple)?;
-                let probe_result = probe_imported_oauth_credentials(
+                let probe_result = probe_imported_oauth_for_import(
                     state.as_ref(),
                     &normalized,
+                    existing_match.as_ref().map(|row| row.id),
                     &refresh_scope,
                     &usage_scope,
                 )
                 .await;
-                release_imported_oauth_node_shunt_scope(state.as_ref(), reservation_key);
                 match probe_result {
                     Ok(value) => value,
                     Err(err) => {
