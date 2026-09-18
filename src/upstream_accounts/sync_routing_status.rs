@@ -1,5 +1,10 @@
 use super::*;
 
+#[path = "sync_routing_status/routing_rule_builder.rs"]
+mod routing_rule_builder;
+
+pub(crate) use routing_rule_builder::build_effective_routing_rule;
+
 pub(crate) fn intersect_available_models(
     current: impl IntoIterator<Item = String>,
     next: &[String],
@@ -11,136 +16,6 @@ pub(crate) fn intersect_available_models(
                 .any(|candidate| requested_model_matches_constraint(model, candidate))
         })
         .collect()
-}
-
-pub(crate) fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
-    let mut source_tag_ids = Vec::with_capacity(tags.len());
-    let mut source_tag_names = Vec::with_capacity(tags.len());
-    let has_editable_tags = tags
-        .iter()
-        .any(|tag| !tag.protected && tag.system_key.is_none());
-    let mut allow_cut_out = true;
-    let mut allow_cut_in = true;
-    let mut priority_tier = if !has_editable_tags {
-        TagPriorityTier::Normal
-    } else {
-        TagPriorityTier::Primary
-    };
-    let mut fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
-    let image_tool_rewrite_mode = ImageToolRewriteMode::KeepOriginal;
-    let codex_imagegen_rewrite_mode = CodexImagegenRewriteMode::KeepOriginal;
-    let request_compression_algorithm = RequestCompressionAlgorithm::Identity;
-    let mut concurrency_limit = 0;
-    let mut upstream_429_retry_enabled = false;
-    let mut upstream_429_max_retries = 0_u8;
-    let mut available_models: Option<Vec<String>> = None;
-    let mut tag_available_models_defined = false;
-    let status_change_reasons = default_status_change_reasons();
-    let status_change_reason_field_sources = default_status_change_reason_field_sources("root");
-    let mut system_denied_models = BTreeSet::new();
-
-    for tag in tags {
-        source_tag_ids.push(tag.id);
-        source_tag_names.push(tag.name.clone());
-        if !tag.protected && tag.system_key.is_none() {
-            allow_cut_out &= tag.routing_rule.allow_cut_out;
-            allow_cut_in &= tag.routing_rule.allow_cut_in;
-            priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
-            if tag.routing_rule.fast_mode_rewrite_mode.merge_rank()
-                < fast_mode_rewrite_mode.merge_rank()
-            {
-                fast_mode_rewrite_mode = tag.routing_rule.fast_mode_rewrite_mode;
-            }
-            concurrency_limit =
-                merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
-            if tag.routing_rule.upstream_429_retry_enabled {
-                upstream_429_retry_enabled = true;
-                upstream_429_max_retries =
-                    upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
-            }
-        }
-        if tag.available_models_invalid {
-            tag_available_models_defined = true;
-            available_models = Some(Vec::new());
-        } else if !tag.routing_rule.available_models.is_empty() {
-            tag_available_models_defined = true;
-            available_models = Some(match available_models.take() {
-                Some(current) => {
-                    intersect_available_models(current, &tag.routing_rule.available_models)
-                }
-                None => tag.routing_rule.available_models.clone(),
-            });
-        }
-        if let Some(model) = tag
-            .system_key
-            .as_deref()
-            .and_then(|value| value.strip_prefix("unsupported_model:"))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            system_denied_models.insert(model.to_string());
-        }
-    }
-
-    let field_source = if has_editable_tags { "tag" } else { "root" }.to_string();
-    let available_models_source = if tag_available_models_defined {
-        "tag"
-    } else {
-        "root"
-    }
-    .to_string();
-    let system_denied_models_source = if system_denied_models.is_empty() {
-        "root"
-    } else {
-        "system"
-    }
-    .to_string();
-    EffectiveRoutingRule {
-        allow_cut_out,
-        allow_cut_in,
-        priority_tier,
-        fast_mode_rewrite_mode,
-        image_tool_rewrite_mode,
-        codex_imagegen_rewrite_mode,
-        request_compression_algorithm,
-        concurrency_limit,
-        upstream_429_retry_enabled,
-        upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
-            upstream_429_retry_enabled,
-            upstream_429_max_retries,
-        ),
-        available_models: available_models.unwrap_or_default(),
-        available_models_mode: AvailableModelsMode::Allowlist,
-        available_models_defined: tag_available_models_defined,
-        tag_available_models: None,
-        status_change_reasons,
-        status_change_reason_field_sources,
-        system_denied_models: system_denied_models.into_iter().collect(),
-        source_tag_ids,
-        source_tag_names,
-        field_sources: EffectiveRoutingRuleFieldSources {
-            allow_cut_out: field_source.clone(),
-            allow_cut_in: field_source.clone(),
-            priority_tier: field_source.clone(),
-            fast_mode_rewrite_mode: field_source.clone(),
-            image_tool_rewrite_mode: "root".to_string(),
-            codex_imagegen_rewrite_mode: "root".to_string(),
-            request_compression_algorithm: "root".to_string(),
-            concurrency_limit: field_source.clone(),
-            upstream_429_retry: field_source.clone(),
-            available_models: available_models_source,
-            available_models_mode: "root".to_string(),
-            system_denied_models: system_denied_models_source,
-        },
-        timeouts: RoutingTimeoutSettings::default(),
-        timeout_field_sources: RoutingTimeoutFieldSources {
-            responses_first_byte_timeout_secs: "root".to_string(),
-            compact_first_byte_timeout_secs: "root".to_string(),
-            image_first_byte_timeout_secs: "root".to_string(),
-            responses_stream_timeout_secs: "root".to_string(),
-            compact_stream_timeout_secs: "root".to_string(),
-        },
-    }
 }
 
 pub(crate) fn default_effective_routing_rule() -> EffectiveRoutingRule {
