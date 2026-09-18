@@ -252,6 +252,271 @@ function promptCacheBindingEvents(promptCacheKey: string) {
   ];
 }
 
+function handleInvocationListRequest(pathname: string, url: URL): DemoRouteResult {
+  if (pathname === "/api/quota/latest")
+    return json({
+      capturedAt: demoNow(),
+      accounts: demoAccounts().map((account) => ({
+        accountId: account.id,
+        displayName: account.displayName,
+        primaryWindow: account.primaryWindow,
+        secondaryWindow: account.secondaryWindow,
+      })),
+    });
+  if (pathname === "/api/invocations") {
+    const records = filterDemoInvocations(url);
+    const pageSize = Number(
+      url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 50,
+    );
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const start = Math.max(0, (page - 1) * pageSize);
+    return json({
+      snapshotId: 901,
+      total: records.length,
+      page,
+      pageSize,
+      records: records.slice(start, start + pageSize),
+    });
+  }
+  if (pathname === "/api/invocations/summary") {
+    return json({
+      snapshotId: 901,
+      newRecordsCount: 0,
+      ...demoInvocationSummary(filterDemoInvocations(url)),
+    });
+  }
+  if (pathname === "/api/invocations/new-count")
+    return json({ snapshotId: 901, newRecordsCount: 0 });
+  if (pathname !== "/api/invocations/suggestions") return undefined;
+  const bucket = (
+    selector: (record: ReturnType<typeof invocations>[number]) => string | null | undefined,
+  ) => ({
+    items: Array.from(recordsToSuggestionCounts(invocations(), selector), ([value, count]) => ({
+      value,
+      count,
+    })),
+    hasMore: false,
+  });
+  return json({
+    model: bucket((record) => record.model),
+    endpoint: bucket((record) => record.endpoint),
+    failureKind: bucket((record) => record.failureKind),
+    promptCacheKey: bucket((record) => record.promptCacheKey),
+    requesterIp: bucket((record) => record.requesterIp),
+  });
+}
+
+function handleInvocationDetailRequest(pathname: string): DemoRouteResult {
+  if (pathname.endsWith("/detail")) {
+    const id = Number(pathname.split("/").at(-2));
+    const record = invocations().find((item) => item.id === id);
+    return json({
+      id,
+      abnormalResponseBody:
+        record?.failureClass && record.failureClass !== "none"
+          ? {
+              available: true,
+              previewText: record.errorMessage ?? "Simulated non-success response.",
+              hasMore: false,
+              unavailableReason: null,
+            }
+          : {
+              available: false,
+              previewText: null,
+              hasMore: false,
+              unavailableReason: "Only non-success invocations retain a demo abnormal preview.",
+            },
+    });
+  }
+  if (pathname.endsWith("/workflow-detail")) {
+    const id = Number(pathname.split("/").at(-2));
+    const record = invocations().find((item) => item.id === id);
+    if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
+    return json(buildDemoInvocationWorkflowDetail(record));
+  }
+  if (!pathname.endsWith("/request-body")) return undefined;
+  const id = Number(pathname.split("/").at(-2));
+  const record = invocations().find((item) => item.id === id);
+  if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
+  if (id === 9002) return json({ available: false, unavailableReason: "missing_body" });
+  return json({
+    available: true,
+    bodyText: JSON.stringify(
+      {
+        model: record.requestModel ?? record.model,
+        endpoint: record.endpoint,
+        invoke_id: record.invokeId,
+        demo: true,
+      },
+      null,
+      2,
+    ),
+    headers: {
+      userAgent: "monitor-ui/1.0",
+      xForwardedFor: record.requesterIp ?? "203.0.113.24",
+    },
+    routing: {
+      routeMode: record.routeMode ?? "pool",
+      promptCacheKey: record.promptCacheKey ?? null,
+      proxyDisplayName: record.proxyDisplayName ?? null,
+    },
+    bodySize: 412,
+    bodyTruncated: false,
+    detailLevel: "full",
+    captureSource: "raw_file",
+  });
+}
+
+function handleInvocationAttemptResponseRequest(pathname: string): DemoRouteResult {
+  const match = pathname.match(/^\/api\/invocations\/(\d+)\/attempts\/([^/]+)\/response-body$/);
+  if (!match) return undefined;
+  const id = Number(match[1]);
+  const attemptId = decodeURIComponent(match[2] ?? "");
+  const record = invocations().find((item) => item.id === id);
+  const attempt = record
+    ? poolAttempts(record.invokeId).find((item) => item.attemptId === attemptId)
+    : null;
+  if (!record || !attempt) {
+    return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
+  }
+  return json({
+    available: true,
+    bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
+    headers: {
+      contentEncoding: "identity",
+      upstreamRequestId: attempt.upstreamRequestId ?? `req_demo_${record.id}`,
+      cvmInvokeId: record.invokeId,
+    },
+    routing: { forwardedChunkCount: 12 },
+    bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
+    bodyTruncated: false,
+    detailLevel: "full",
+    captureSource: "attempt_raw_file",
+    availableAtAttemptLevel: true,
+  });
+}
+
+function handleInvocationResponseRequest(pathname: string): DemoRouteResult {
+  if (!pathname.endsWith("/response-body")) return undefined;
+  const id = Number(pathname.split("/").at(-2));
+  const record = invocations().find((item) => item.id === id);
+  if (id === 9002) {
+    return json({
+      available: true,
+      bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
+      headers: {
+        contentEncoding: "identity",
+        upstreamRequestId: `req_demo_${id}`,
+        cvmInvokeId: record?.invokeId ?? null,
+      },
+      routing: { forwardedChunkCount: 12 },
+      bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
+      bodyTruncated: false,
+      detailLevel: "full",
+      captureSource: "raw_file",
+    });
+  }
+  const isFailure = record?.failureClass && record.failureClass !== "none";
+  return json(
+    isFailure
+      ? {
+          available: true,
+          bodyText:
+            id === 9002
+              ? [
+                  ": keepalive",
+                  "",
+                  "event: response.output_item.done",
+                  `data: ${JSON.stringify({
+                    type: "response.output_item.done",
+                    output_index: 0,
+                    item: {
+                      id: "msg_demo_9002",
+                      type: "message",
+                      content: [
+                        {
+                          type: "output_text",
+                          text: "A long streamed response remains contained inside the payload inspector without widening the invocation drawer.",
+                        },
+                      ],
+                    },
+                  })}`,
+                  "",
+                  "event: response.failed",
+                  `data: ${JSON.stringify({
+                    type: "response.failed",
+                    error: {
+                      message: record?.errorMessage,
+                      type: record?.failureKind,
+                      request_id: `req_demo_${id}`,
+                    },
+                  })}`,
+                ].join("\n")
+              : JSON.stringify(
+                  {
+                    error: {
+                      message: record?.errorMessage,
+                      type: record?.failureKind,
+                      request_id: `req_demo_${id}`,
+                    },
+                  },
+                  null,
+                  2,
+                ),
+          unavailableReason: null,
+        }
+      : {
+          available: true,
+          bodyText: JSON.stringify(
+            {
+              id: `resp_demo_${id}`,
+              object: "response",
+              model: record?.model,
+              status: record?.status,
+              output: [
+                {
+                  type: "message",
+                  content: [
+                    {
+                      type: "output_text",
+                      text: "Demo response body retained locally for visual inspection.",
+                    },
+                  ],
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+          unavailableReason: null,
+        },
+  );
+}
+
+function handleInvocationAttemptsRequest(
+  pathname: string,
+  url: URL,
+  request: Request,
+): DemoRouteResult {
+  if (pathname.endsWith("/pool-attempts"))
+    return json(poolAttempts(decodeURIComponent(pathname.split("/").at(-2) ?? "")));
+  const match = pathname.match(
+    /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
+  );
+  if (!match || request.method !== "GET") return undefined;
+  const accountId = Number(match[1]);
+  const response = upstreamAccountAttempts(accountId, url.searchParams);
+  const requestedAttemptId = url.searchParams.get("attemptId")?.trim();
+  if (
+    pathname.endsWith("/locate") &&
+    requestedAttemptId &&
+    !response.items.some((attempt) => attempt.attemptId === requestedAttemptId)
+  ) {
+    return json({ message: "upstream account attempt was not found" }, { status: 404 });
+  }
+  return json(response);
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -261,6 +526,16 @@ export async function handleDemoRequest(request: Request) {
   if (coreStatsResponse) return coreStatsResponse;
   const forwardProxyResponse = handleForwardProxyRequest(pathname);
   if (forwardProxyResponse) return forwardProxyResponse;
+  const invocationListResponse = handleInvocationListRequest(pathname, url);
+  if (invocationListResponse) return invocationListResponse;
+  const invocationDetailResponse = handleInvocationDetailRequest(pathname);
+  if (invocationDetailResponse) return invocationDetailResponse;
+  const invocationAttemptResponse = handleInvocationAttemptResponseRequest(pathname);
+  if (invocationAttemptResponse) return invocationAttemptResponse;
+  const invocationResponse = handleInvocationResponseRequest(pathname);
+  if (invocationResponse) return invocationResponse;
+  const invocationAttemptsResponse = handleInvocationAttemptsRequest(pathname, url, request);
+  if (invocationAttemptsResponse) return invocationAttemptsResponse;
   if (pathname === "/api/stats/prompt-cache-conversations") return json(promptCacheConversations());
   if (pathname.startsWith("/api/stats/prompt-cache-conversation-binding-events/")) {
     const promptCacheKey = decodeURIComponent(pathname.split("/").at(-1) ?? "");
@@ -316,271 +591,6 @@ export async function handleDemoRequest(request: Request) {
       updatedAt: "2026-07-10T09:20:00Z",
     });
   }
-  if (pathname === "/api/quota/latest")
-    return json({
-      capturedAt: demoNow(),
-      accounts: demoAccounts().map((account) => ({
-        accountId: account.id,
-        displayName: account.displayName,
-        primaryWindow: account.primaryWindow,
-        secondaryWindow: account.secondaryWindow,
-      })),
-    });
-
-  if (pathname === "/api/invocations") {
-    const records = filterDemoInvocations(url);
-    const pageSize = Number(
-      url.searchParams.get("pageSize") ?? url.searchParams.get("limit") ?? 50,
-    );
-    const page = Number(url.searchParams.get("page") ?? 1);
-    const start = Math.max(0, (page - 1) * pageSize);
-    return json({
-      snapshotId: 901,
-      total: records.length,
-      page,
-      pageSize,
-      records: records.slice(start, start + pageSize),
-    });
-  }
-  if (pathname === "/api/invocations/summary") {
-    return json({
-      snapshotId: 901,
-      newRecordsCount: 0,
-      ...demoInvocationSummary(filterDemoInvocations(url)),
-    });
-  }
-  if (pathname === "/api/invocations/new-count")
-    return json({ snapshotId: 901, newRecordsCount: 0 });
-  if (pathname === "/api/invocations/suggestions") {
-    const bucket = (
-      selector: (record: ReturnType<typeof invocations>[number]) => string | null | undefined,
-    ) => ({
-      items: Array.from(recordsToSuggestionCounts(invocations(), selector), ([value, count]) => ({
-        value,
-        count,
-      })),
-      hasMore: false,
-    });
-    return json({
-      model: bucket((record) => record.model),
-      endpoint: bucket((record) => record.endpoint),
-      failureKind: bucket((record) => record.failureKind),
-      promptCacheKey: bucket((record) => record.promptCacheKey),
-      requesterIp: bucket((record) => record.requesterIp),
-    });
-  }
-  if (pathname.endsWith("/detail")) {
-    const id = Number(pathname.split("/").at(-2));
-    const record = invocations().find((item) => item.id === id);
-    return json({
-      id,
-      abnormalResponseBody:
-        record?.failureClass && record.failureClass !== "none"
-          ? {
-              available: true,
-              previewText: record.errorMessage ?? "Simulated non-success response.",
-              hasMore: false,
-              unavailableReason: null,
-            }
-          : {
-              available: false,
-              previewText: null,
-              hasMore: false,
-              unavailableReason: "Only non-success invocations retain a demo abnormal preview.",
-            },
-    });
-  }
-  if (pathname.endsWith("/workflow-detail")) {
-    const id = Number(pathname.split("/").at(-2));
-    const record = invocations().find((item) => item.id === id);
-    if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
-    return json(buildDemoInvocationWorkflowDetail(record));
-  }
-  if (pathname.endsWith("/request-body")) {
-    const id = Number(pathname.split("/").at(-2));
-    const record = invocations().find((item) => item.id === id);
-    if (!record) return json({ error: `Demo invocation ${id} not found.` }, { status: 404 });
-    if (id === 9002) {
-      return json({
-        available: false,
-        unavailableReason: "missing_body",
-      });
-    }
-    return json({
-      available: true,
-      bodyText: JSON.stringify(
-        {
-          model: record.requestModel ?? record.model,
-          endpoint: record.endpoint,
-          invoke_id: record.invokeId,
-          demo: true,
-        },
-        null,
-        2,
-      ),
-      headers: {
-        userAgent: "monitor-ui/1.0",
-        xForwardedFor: record.requesterIp ?? "203.0.113.24",
-      },
-      routing: {
-        routeMode: record.routeMode ?? "pool",
-        promptCacheKey: record.promptCacheKey ?? null,
-        proxyDisplayName: record.proxyDisplayName ?? null,
-      },
-      bodySize: 412,
-      bodyTruncated: false,
-      detailLevel: "full",
-      captureSource: "raw_file",
-    });
-  }
-  const attemptResponseBodyMatch = pathname.match(
-    /^\/api\/invocations\/(\d+)\/attempts\/([^/]+)\/response-body$/,
-  );
-  if (attemptResponseBodyMatch) {
-    const id = Number(attemptResponseBodyMatch[1]);
-    const attemptId = decodeURIComponent(attemptResponseBodyMatch[2] ?? "");
-    const record = invocations().find((item) => item.id === id);
-    const attempt = record
-      ? poolAttempts(record.invokeId).find((item) => item.attemptId === attemptId)
-      : null;
-    if (!record || !attempt) {
-      return json({ error: `Demo attempt ${attemptId} not found.` }, { status: 404 });
-    }
-    return json({
-      available: true,
-      bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
-      headers: {
-        contentEncoding: "identity",
-        upstreamRequestId: attempt.upstreamRequestId ?? `req_demo_${record.id}`,
-        cvmInvokeId: record.invokeId,
-      },
-      routing: {
-        forwardedChunkCount: 12,
-      },
-      bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
-      bodyTruncated: false,
-      detailLevel: "full",
-      captureSource: "attempt_raw_file",
-      availableAtAttemptLevel: true,
-    });
-  }
-  if (pathname.endsWith("/response-body")) {
-    const id = Number(pathname.split("/").at(-2));
-    const record = invocations().find((item) => item.id === id);
-    if (id === 9002) {
-      return json({
-        available: true,
-        bodyText: DEMO_INVOCATION_RESPONSE_BODY_TEXT,
-        headers: {
-          contentEncoding: "identity",
-          upstreamRequestId: `req_demo_${id}`,
-          cvmInvokeId: record?.invokeId ?? null,
-        },
-        routing: {
-          forwardedChunkCount: 12,
-        },
-        bodySize: DEMO_INVOCATION_RESPONSE_BODY_SIZE,
-        bodyTruncated: false,
-        detailLevel: "full",
-        captureSource: "raw_file",
-      });
-    }
-    const isFailure = record?.failureClass && record.failureClass !== "none";
-    return json(
-      isFailure
-        ? {
-            available: true,
-            bodyText:
-              id === 9002
-                ? [
-                    ": keepalive",
-                    "",
-                    "event: response.output_item.done",
-                    `data: ${JSON.stringify({
-                      type: "response.output_item.done",
-                      output_index: 0,
-                      item: {
-                        id: "msg_demo_9002",
-                        type: "message",
-                        content: [
-                          {
-                            type: "output_text",
-                            text: "A long streamed response remains contained inside the payload inspector without widening the invocation drawer.",
-                          },
-                        ],
-                      },
-                    })}`,
-                    "",
-                    "event: response.failed",
-                    `data: ${JSON.stringify({
-                      type: "response.failed",
-                      error: {
-                        message: record?.errorMessage,
-                        type: record?.failureKind,
-                        request_id: `req_demo_${id}`,
-                      },
-                    })}`,
-                  ].join("\n")
-                : JSON.stringify(
-                    {
-                      error: {
-                        message: record?.errorMessage,
-                        type: record?.failureKind,
-                        request_id: `req_demo_${id}`,
-                      },
-                    },
-                    null,
-                    2,
-                  ),
-            unavailableReason: null,
-          }
-        : {
-            available: true,
-            bodyText: JSON.stringify(
-              {
-                id: `resp_demo_${id}`,
-                object: "response",
-                model: record?.model,
-                status: record?.status,
-                output: [
-                  {
-                    type: "message",
-                    content: [
-                      {
-                        type: "output_text",
-                        text: "Demo response body retained locally for visual inspection.",
-                      },
-                    ],
-                  },
-                ],
-              },
-              null,
-              2,
-            ),
-            unavailableReason: null,
-          },
-    );
-  }
-  if (pathname.endsWith("/pool-attempts"))
-    return json(poolAttempts(decodeURIComponent(pathname.split("/").at(-2) ?? "")));
-
-  const upstreamAccountAttemptsMatch = pathname.match(
-    /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
-  );
-  if (upstreamAccountAttemptsMatch && request.method === "GET") {
-    const accountId = Number(upstreamAccountAttemptsMatch[1]);
-    const response = upstreamAccountAttempts(accountId, url.searchParams);
-    const requestedAttemptId = url.searchParams.get("attemptId")?.trim();
-    if (
-      pathname.endsWith("/locate") &&
-      requestedAttemptId &&
-      !response.items.some((attempt) => attempt.attemptId === requestedAttemptId)
-    ) {
-      return json({ message: "upstream account attempt was not found" }, { status: 404 });
-    }
-    return json(response);
-  }
-
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
   if (pathname === "/api/settings/external-api-keys" && request.method === "GET")
