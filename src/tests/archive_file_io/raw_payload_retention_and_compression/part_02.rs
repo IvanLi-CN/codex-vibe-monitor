@@ -145,10 +145,7 @@ pub(crate) async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadca
 
     let drain_handle = tokio::spawn({
         let state = state.clone();
-        async move {
-            drain_runtime_after_shutdown(state, None, None, None, None, None, None, None, None)
-                .await
-        }
+        async move { drain_runtime_after_shutdown(state, RuntimeHandles::default()).await }
     });
 
     started_rx_a

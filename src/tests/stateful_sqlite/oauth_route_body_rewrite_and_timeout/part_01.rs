@@ -468,20 +468,31 @@ pub(crate) async fn pool_route_oauth_observability_omits_fingerprints_without_cr
     )
     .await;
 
+    let uri = "/v1/responses".parse().expect("valid uri");
+    let headers = HeaderMap::from_iter([
+        (
+            HeaderName::from_static("session_id"),
+            HeaderValue::from_static("session-no-crypto"),
+        ),
+        (
+            HeaderName::from_static("traceparent"),
+            HeaderValue::from_static("00-11111111111111111111111111111111-2222222222222222-01"),
+        ),
+    ]);
     let oauth_response = oauth_bridge::send_oauth_upstream_request(
         &reqwest::Client::new(),
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([
-            (
-                HeaderName::from_static("session_id"),
-                HeaderValue::from_static("session-no-crypto"),
-            ),
-            (
-                HeaderName::from_static("traceparent"),
-                HeaderValue::from_static("00-11111111111111111111111111111111-2222222222222222-01"),
-            ),
-        ]),
+        oauth_bridge::OauthUpstreamRequestContext {
+            method: Method::POST,
+            original_uri: &uri,
+            headers: &headers,
+            handshake_timeout: Duration::from_secs(5),
+            response_timeout: Duration::from_secs(5),
+            account_id: Some(7),
+            access_token: "oauth-no-crypto",
+            chatgpt_account_id: Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
+            installation_seed: None,
+            crypto_key: None,
+        },
         oauth_bridge::OauthUpstreamRequestBody::Bytes(Bytes::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
@@ -489,13 +500,6 @@ pub(crate) async fn pool_route_oauth_observability_omits_fingerprints_without_cr
             }))
             .expect("serialize oauth responses body"),
         )),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
-        Some(7),
-        "oauth-no-crypto",
-        Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
-        None,
-        None,
     )
     .await;
 
@@ -704,14 +708,25 @@ pub(crate) async fn oauth_responses_timeout_marks_transport_failure_header() {
     )
     .await;
 
+    let uri = "/v1/responses".parse().expect("valid uri");
+    let headers = HeaderMap::from_iter([(
+        http_header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    )]);
     let oauth_response = oauth_bridge::send_oauth_upstream_request(
         &reqwest::Client::new(),
-        Method::POST,
-        &"/v1/responses".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
-            http_header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        )]),
+        oauth_bridge::OauthUpstreamRequestContext {
+            method: Method::POST,
+            original_uri: &uri,
+            headers: &headers,
+            handshake_timeout: Duration::from_millis(100),
+            response_timeout: Duration::from_millis(120),
+            account_id: Some(7),
+            access_token: "oauth-timeout",
+            chatgpt_account_id: Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
+            installation_seed: None,
+            crypto_key: None,
+        },
         oauth_bridge::OauthUpstreamRequestBody::Bytes(Bytes::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
@@ -719,13 +734,6 @@ pub(crate) async fn oauth_responses_timeout_marks_transport_failure_header() {
             }))
             .expect("serialize oauth responses body"),
         )),
-        Duration::from_millis(100),
-        Duration::from_millis(120),
-        Some(7),
-        "oauth-timeout",
-        Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
-        None,
-        None,
     )
     .await;
 

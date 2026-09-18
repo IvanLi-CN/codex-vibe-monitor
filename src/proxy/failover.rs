@@ -1108,7 +1108,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
-                        // The drop guard releases silently if cancellation interrupts this fence.
                         let failure_recorded = reservation_guard
                             .fence_failure(record_pool_route_transport_failure_for_model(
                                 &state.pool,
@@ -2286,19 +2285,23 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             )
                         });
                         let oauth_response = oauth_bridge::send_counted_oauth_upstream_request(
-                            method.clone(),
-                            original_uri,
-                            headers,
+                            oauth_bridge::CountedOauthUpstreamRequestContext {
+                                request: oauth_bridge::OauthUpstreamRequestContext {
+                                    method: method.clone(),
+                                    original_uri,
+                                    headers,
+                                    handshake_timeout: attempt_send_timeout,
+                                    response_timeout: attempt_pre_first_byte_timeout,
+                                    account_id: Some(account.account_id),
+                                    access_token,
+                                    chatgpt_account_id: chatgpt_account_id.as_deref(),
+                                    installation_seed: Some(&state.oauth_installation_seed),
+                                    crypto_key: state.upstream_accounts.crypto_key.as_ref(),
+                                },
+                                forward_proxy_url: selected_proxy.endpoint_url.as_ref(),
+                                reporter: live_reporter,
+                            },
                             oauth_body,
-                            attempt_send_timeout,
-                            attempt_pre_first_byte_timeout,
-                            Some(account.account_id),
-                            access_token,
-                            chatgpt_account_id.as_deref(),
-                            Some(&state.oauth_installation_seed),
-                            state.upstream_accounts.crypto_key.as_ref(),
-                            selected_proxy.endpoint_url.as_ref(),
-                            live_reporter,
                         )
                         .await;
                         (
@@ -3609,7 +3612,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     "failed to record compact support observation"
                 );
             }
-
             if let Some((forward_proxy_scope, selected_proxy)) = forward_proxy_selection.as_ref() {
                 record_pool_account_forward_proxy_result(
                     state.as_ref(),

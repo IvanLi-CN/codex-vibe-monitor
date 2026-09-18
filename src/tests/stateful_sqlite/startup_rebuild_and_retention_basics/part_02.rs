@@ -398,14 +398,11 @@ pub(crate) async fn runtime_drain_joins_pending_startup_hydration_after_http_rea
         Duration::from_secs(1),
         drain_runtime_after_shutdown(
             state.clone(),
-            Some(server_handle),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(hydration_handle),
+            RuntimeHandles {
+                server_handle: Some(server_handle),
+                startup_hot_read_hydration_handle: Some(hydration_handle),
+                ..RuntimeHandles::default()
+            },
         ),
     )
     .await
