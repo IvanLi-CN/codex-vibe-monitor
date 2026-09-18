@@ -1,6 +1,43 @@
 use super::*;
 use sqlx::Transaction;
 
+struct PreparedExternalOauthUpsert {
+    identity: ExternalAccountIdentity,
+    metadata: ExternalUpstreamAccountMetadataRequest,
+    normalized: NormalizedImportedOauthCredentials,
+    probe: ImportedOauthProbeOutcome,
+    existing_account_id: Option<i64>,
+}
+
+struct ExternalExistingOauthUpsertPlan {
+    display_name: String,
+    chosen_email: Option<String>,
+    verified_email: Option<String>,
+    group_name: Option<String>,
+    is_mother: bool,
+    note: Option<String>,
+    tag_ids: Vec<i64>,
+    requested_group_metadata_changes: RequestedGroupMetadataChanges,
+    encrypted_credentials: String,
+    next_enabled: bool,
+    routing_scope_is_global: bool,
+}
+
+struct ExternalOauthCreatePlan {
+    group_name: Option<String>,
+    is_mother: bool,
+    note: Option<String>,
+    tag_ids: Vec<i64>,
+    requested_group_metadata_changes: RequestedGroupMetadataChanges,
+    encrypted_credentials: String,
+    next_enabled: bool,
+}
+
+enum ExternalOauthPersistenceResult {
+    Created(i64),
+    Existing(UpstreamAccountDetail),
+}
+
 fn normalize_external_source_account_id(raw: &str) -> Result<String, (StatusCode, String)> {
     let Some(value) = normalize_optional_text(Some(raw.to_string())) else {
         return Err((
@@ -312,12 +349,26 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     probe: ImportedOauthProbeOutcome,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let existing_row = load_external_oauth_account_by_id(state, account_id, identity).await?;
+    let plan =
+        prepare_external_existing_oauth_upsert_plan(state, &existing_row, metadata, &probe).await?;
+    let routing_scope_is_global = plan.routing_scope_is_global;
+    persist_external_existing_oauth_account(state, identity, &existing_row, &probe, plan).await?;
+    complete_external_existing_oauth_upsert(state, existing_row.id, &probe, routing_scope_is_global)
+        .await
+}
+
+async fn prepare_external_existing_oauth_upsert_plan(
+    state: &AppState,
+    existing_row: &UpstreamAccountRow,
+    metadata: &ExternalUpstreamAccountMetadataRequest,
+    probe: &ImportedOauthProbeOutcome,
+) -> Result<ExternalExistingOauthUpsertPlan, (StatusCode, String)> {
     let requested_display_name = metadata
         .display_name
         .as_deref()
         .map(normalize_required_display_name)
         .transpose()?;
-    let target_group_name = normalize_external_group_name(metadata, Some(&existing_row));
+    let target_group_name = normalize_external_group_name(metadata, Some(existing_row));
     let group_concurrency_limit =
         normalize_concurrency_limit(metadata.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
@@ -325,7 +376,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     );
     validate_group_note_target(target_group_name.as_deref(), metadata.group_note.is_some())?;
     let resolved_group_binding =
-        resolve_external_group_binding(state, metadata, Some(&existing_row)).await?;
+        resolve_external_group_binding(state, metadata, Some(existing_row)).await?;
     let group_name = resolved_group_binding
         .as_ref()
         .map(|value| value.group_name.clone())
@@ -380,7 +431,41 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         chosen_email.as_deref(),
     )
     .unwrap_or(existing_row.display_name.clone());
+    Ok(ExternalExistingOauthUpsertPlan {
+        display_name,
+        chosen_email,
+        verified_email: next_verified_email,
+        group_name,
+        is_mother,
+        note,
+        tag_ids,
+        requested_group_metadata_changes,
+        encrypted_credentials,
+        next_enabled,
+        routing_scope_is_global,
+    })
+}
 
+async fn persist_external_existing_oauth_account(
+    state: &AppState,
+    identity: &ExternalAccountIdentity,
+    existing_row: &UpstreamAccountRow,
+    probe: &ImportedOauthProbeOutcome,
+    plan: ExternalExistingOauthUpsertPlan,
+) -> Result<(), (StatusCode, String)> {
+    let ExternalExistingOauthUpsertPlan {
+        display_name,
+        chosen_email,
+        verified_email,
+        group_name,
+        is_mother,
+        note,
+        tag_ids,
+        requested_group_metadata_changes,
+        encrypted_credentials,
+        next_enabled,
+        routing_scope_is_global: _,
+    } = plan;
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -411,7 +496,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
             account_id: Some(existing_row.id),
             display_name: &display_name,
             chosen_email,
-            verified_email: next_verified_email,
+            verified_email,
             group_name,
             is_mother,
             note,
@@ -443,14 +528,22 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         .map_err(internal_error_tuple)?;
     }
     tx.commit().await.map_err(internal_error_tuple)?;
+    Ok(())
+}
 
-    let _warning = apply_imported_oauth_probe_result(state, existing_row.id, &probe)
+async fn complete_external_existing_oauth_upsert(
+    state: &AppState,
+    account_id: i64,
+    probe: &ImportedOauthProbeOutcome,
+    routing_scope_is_global: bool,
+) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+    let _warning = apply_imported_oauth_probe_result(state, account_id, probe)
         .await
         .map_err(internal_error_tuple)?;
     let routing_scope = if routing_scope_is_global {
         None
     } else {
-        Some(std::slice::from_ref(&existing_row.id))
+        Some(std::slice::from_ref(&account_id))
     };
     let routing_state_version =
         match publish_account_effective_routing_rules_changed(state, routing_scope, &[]).await {
@@ -458,8 +551,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
             Err(err) => {
                 warn!(
                     ?err,
-                    account_id = existing_row.id,
-                    "external OAuth update committed but routing publication failed"
+                    account_id, "external OAuth update committed but routing publication failed"
                 );
                 invalidate_dashboard_activity_snapshots_with_accounts(
                     state.dashboard_activity_snapshot_cache.as_ref(),
@@ -469,7 +561,7 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
                 None
             }
         };
-    let mut detail = load_upstream_account_detail_with_actual_usage(state, existing_row.id)
+    let mut detail = load_upstream_account_detail_with_actual_usage(state, account_id)
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
@@ -534,6 +626,33 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
     identity: ExternalAccountIdentity,
     payload: ExternalUpstreamAccountUpsertRequest,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+    let prepared = prepare_external_oauth_upsert(state.as_ref(), identity, payload).await?;
+    if let Some(account_id) = prepared.existing_account_id {
+        return state
+            .upstream_accounts
+            .account_ops
+            .run_external_oauth_upsert(
+                state,
+                account_id,
+                prepared.identity,
+                prepared.metadata,
+                prepared.probe,
+            )
+            .await;
+    }
+    match persist_external_new_oauth_account(state.as_ref(), &prepared).await? {
+        ExternalOauthPersistenceResult::Created(account_id) => {
+            complete_external_new_oauth_upsert(state, account_id, prepared.probe).await
+        }
+        ExternalOauthPersistenceResult::Existing(detail) => Ok(detail),
+    }
+}
+
+async fn prepare_external_oauth_upsert(
+    state: &AppState,
+    identity: ExternalAccountIdentity,
+    payload: ExternalUpstreamAccountUpsertRequest,
+) -> Result<PreparedExternalOauthUpsert, (StatusCode, String)> {
     let identity = ExternalAccountIdentity {
         client_id: identity.client_id,
         source_account_id: normalize_external_source_account_id(&identity.source_account_id)?,
@@ -556,158 +675,174 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
     let normalized =
         normalize_external_oauth_credentials(&identity.source_account_id, &payload.oauth)?;
     let probe = probe_external_oauth_credentials(
-        state.as_ref(),
+        state,
         &identity,
         &payload.metadata,
         existing_row.as_ref(),
         &normalized,
     )
     .await?;
+    Ok(PreparedExternalOauthUpsert {
+        identity,
+        metadata: payload.metadata,
+        normalized,
+        probe,
+        existing_account_id: existing_row.map(|row| row.id),
+    })
+}
 
-    if let Some(existing_row) = existing_row.as_ref() {
-        return state
-            .upstream_accounts
-            .account_ops
-            .run_external_oauth_upsert(
-                state.clone(),
-                existing_row.id,
-                identity,
-                payload.metadata,
-                probe,
-            )
-            .await;
-    }
-
-    let target_group_name = normalize_external_group_name(&payload.metadata, None);
+async fn prepare_external_oauth_create_plan(
+    state: &AppState,
+    metadata: &ExternalUpstreamAccountMetadataRequest,
+    probe: &ImportedOauthProbeOutcome,
+) -> Result<ExternalOauthCreatePlan, (StatusCode, String)> {
+    let target_group_name = normalize_external_group_name(metadata, None);
     let group_concurrency_limit =
-        normalize_concurrency_limit(payload.metadata.concurrency_limit, "concurrencyLimit")?;
+        normalize_concurrency_limit(metadata.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        RequestedGroupMetadataInput::from_external_metadata(
-            &payload.metadata,
-            group_concurrency_limit,
-        ),
+        RequestedGroupMetadataInput::from_external_metadata(metadata, group_concurrency_limit),
     );
-    validate_group_note_target(
-        target_group_name.as_deref(),
-        payload.metadata.group_note.is_some(),
-    )?;
-    let resolved_group_binding =
-        resolve_external_group_binding(state.as_ref(), &payload.metadata, None).await?;
-    let create_group_name = resolved_group_binding
+    validate_group_note_target(target_group_name.as_deref(), metadata.group_note.is_some())?;
+    let resolved_group_binding = resolve_external_group_binding(state, metadata, None).await?;
+    let group_name = resolved_group_binding
         .as_ref()
         .map(|value| value.group_name.clone())
         .or(target_group_name);
-    let note = normalize_optional_text(payload.metadata.note.clone());
+    let note = normalize_optional_text(metadata.note.clone());
     // New external imports no longer accept manual tag mutation; keep the
     // stored contract stable by tolerating an explicit empty array.
-    let tag_ids = match payload.metadata.tag_ids.clone() {
-        Some(values) => {
-            reject_manual_tag_ids(&values)?;
-            Vec::new()
-        }
-        None => Vec::new(),
-    };
-    let is_mother = payload.metadata.is_mother.unwrap_or(false);
-    let next_enabled = payload.metadata.enabled.unwrap_or(true);
+    if let Some(values) = metadata.tag_ids.clone() {
+        reject_manual_tag_ids(&values)?;
+    }
     let encrypted_credentials = encrypt_credentials(
         state.upstream_accounts.require_crypto_key()?,
         &StoredCredentials::Oauth(probe.credentials.clone()),
     )
     .map_err(internal_error_tuple)?;
-    let persisted_account_id = {
-        let mut tx = state
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(internal_error_tuple)?;
-        if let Some(existing_row) = load_upstream_account_row_by_external_identity_conn(
-            tx.as_mut(),
-            &identity.client_id,
-            &identity.source_account_id,
-        )
-        .await
-        .map_err(internal_error_tuple)?
-        {
-            drop(tx);
-            let reprobe = probe_external_oauth_credentials(
-                state.as_ref(),
-                &identity,
-                &payload.metadata,
-                Some(&existing_row),
-                &normalized,
-            )
-            .await?;
-            return persist_external_existing_oauth_upsert(
-                state.as_ref(),
-                &identity,
-                existing_row.id,
-                &payload.metadata,
-                reprobe,
-            )
-            .await;
-        }
-        let display_name = resolve_external_create_display_name(
-            &mut tx,
-            &identity,
-            &payload.metadata,
-            &normalized,
-        )
-        .await?;
-        let account_id = upsert_oauth_account(
-            &mut tx,
-            OauthAccountUpsert {
-                account_id: None,
-                display_name: &display_name,
-                chosen_email: normalize_email_value(probe.claims.email.clone()),
-                verified_email: normalize_email_value(probe.claims.email.clone()),
-                group_name: create_group_name,
-                is_mother,
-                note,
-                tag_ids,
-                requested_group_metadata_changes,
-                claims: &probe.claims,
-                encrypted_credentials,
-                has_refresh_token: oauth_credentials_have_refresh_token(&probe.credentials),
-                token_expires_at: &probe.token_expires_at,
-                external_identity: Some(&identity),
-            },
-        )
+    Ok(ExternalOauthCreatePlan {
+        group_name,
+        is_mother: metadata.is_mother.unwrap_or(false),
+        note,
+        tag_ids: Vec::new(),
+        requested_group_metadata_changes,
+        encrypted_credentials,
+        next_enabled: metadata.enabled.unwrap_or(true),
+    })
+}
+
+async fn persist_external_new_oauth_account(
+    state: &AppState,
+    prepared: &PreparedExternalOauthUpsert,
+) -> Result<ExternalOauthPersistenceResult, (StatusCode, String)> {
+    let plan =
+        prepare_external_oauth_create_plan(state, &prepared.metadata, &prepared.probe).await?;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-        if !next_enabled {
-            sqlx::query(
-                r#"
-                UPDATE pool_upstream_accounts
-                SET enabled = 0,
-                    updated_at = ?2
-                WHERE id = ?1
-                "#,
-            )
-            .bind(account_id)
-            .bind(format_utc_iso(Utc::now()))
-            .execute(tx.as_mut())
-            .await
-            .map_err(internal_error_tuple)?;
-        }
-        tx.commit().await.map_err(internal_error_tuple)?;
-        account_id
-    };
+    if let Some(existing_row) = load_upstream_account_row_by_external_identity_conn(
+        tx.as_mut(),
+        &prepared.identity.client_id,
+        &prepared.identity.source_account_id,
+    )
+    .await
+    .map_err(internal_error_tuple)?
+    {
+        drop(tx);
+        let reprobe = probe_external_oauth_credentials(
+            state,
+            &prepared.identity,
+            &prepared.metadata,
+            Some(&existing_row),
+            &prepared.normalized,
+        )
+        .await?;
+        return persist_external_existing_oauth_upsert(
+            state,
+            &prepared.identity,
+            existing_row.id,
+            &prepared.metadata,
+            reprobe,
+        )
+        .await
+        .map(ExternalOauthPersistenceResult::Existing);
+    }
+    let display_name = resolve_external_create_display_name(
+        &mut tx,
+        &prepared.identity,
+        &prepared.metadata,
+        &prepared.normalized,
+    )
+    .await?;
+    let ExternalOauthCreatePlan {
+        group_name,
+        is_mother,
+        note,
+        tag_ids,
+        requested_group_metadata_changes,
+        encrypted_credentials,
+        next_enabled,
+    } = plan;
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: None,
+            display_name: &display_name,
+            chosen_email: normalize_email_value(prepared.probe.claims.email.clone()),
+            verified_email: normalize_email_value(prepared.probe.claims.email.clone()),
+            group_name,
+            is_mother,
+            note,
+            tag_ids,
+            requested_group_metadata_changes,
+            claims: &prepared.probe.claims,
+            encrypted_credentials,
+            has_refresh_token: oauth_credentials_have_refresh_token(&prepared.probe.credentials),
+            token_expires_at: &prepared.probe.token_expires_at,
+            external_identity: Some(&prepared.identity),
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    if !next_enabled {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = 0,
+                updated_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(format_utc_iso(Utc::now()))
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+    }
+    tx.commit().await.map_err(internal_error_tuple)?;
+    Ok(ExternalOauthPersistenceResult::Created(account_id))
+}
+
+async fn complete_external_new_oauth_upsert(
+    state: Arc<AppState>,
+    account_id: i64,
+    probe: ImportedOauthProbeOutcome,
+) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let _warning = state
         .upstream_accounts
         .account_ops
-        .run_persist_imported_oauth(state.clone(), persisted_account_id, probe)
+        .run_persist_imported_oauth(state.clone(), account_id, probe)
         .await?;
     // The imported OAuth command publishes the post-commit routing snapshot. Reuse its
     // generation for the detail response without advancing the cache a second time.
     let routing_state_version = current_routing_state_version(state.as_ref());
-    publish_new_account_routing_availability_if_selectable(state.as_ref(), persisted_account_id)
-        .await;
+    publish_new_account_routing_availability_if_selectable(state.as_ref(), account_id).await;
 
-    let mut detail =
-        load_upstream_account_detail_with_actual_usage(state.as_ref(), persisted_account_id)
-            .await
-            .map_err(internal_error_tuple)?
-            .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let mut detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     detail.routing_state_version = routing_state_version;
     Ok(detail)
 }
