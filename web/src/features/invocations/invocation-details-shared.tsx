@@ -671,18 +671,18 @@ export function buildInvocationDetailViewModel({
   const legacyModelValue = record.model?.trim() || modelDisplay.primaryValue || FALLBACK_CELL;
   const requestModelValue = modelDisplay.requestValue ?? FALLBACK_CELL;
   const responseModelValue = modelDisplay.responseValue ?? legacyModelValue ?? FALLBACK_CELL;
-  const accountLabel = resolveInvocationAccountLabel(
-    record.routeMode,
-    normalizedStatus,
-    record.failureKind,
-    record.errorMessage,
-    record.upstreamAccountName,
-    record.upstreamAccountId,
-    t("table.account.reverseProxy"),
-    t("table.account.poolRoutingPending"),
-    t("table.account.poolAccountUnknown"),
-    t("table.account.poolAccountUnavailable"),
-  );
+  const accountLabel = resolveInvocationAccountLabel({
+    routeMode: record.routeMode,
+    status: normalizedStatus,
+    failureKind: record.failureKind,
+    errorMessage: record.errorMessage,
+    upstreamAccountName: record.upstreamAccountName,
+    upstreamAccountId: record.upstreamAccountId,
+    reverseProxyLabel: t("table.account.reverseProxy"),
+    poolRoutingPendingLabel: t("table.account.poolRoutingPending"),
+    poolAccountUnknownLabel: t("table.account.poolAccountUnknown"),
+    poolAccountUnavailableLabel: t("table.account.poolAccountUnavailable"),
+  });
   const accountClickable = canOpenInvocationAccount(record);
   const accountRoutingInProgress = isInvocationPoolAccountRoutingInProgress(
     record.routeMode,
