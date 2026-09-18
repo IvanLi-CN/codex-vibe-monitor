@@ -24,6 +24,10 @@ function sortExternalApiKeys(items: ExternalApiKeySummary[]) {
   });
 }
 
+function countActiveExternalApiKeys(items: ExternalApiKeySummary[]) {
+  return items.filter((item) => item.status === "active").length;
+}
+
 export function useExternalApiKeys() {
   const [items, setItems] = useState<ExternalApiKeySummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -108,10 +112,7 @@ export function useExternalApiKeys() {
     }
   }, []);
 
-  const activeCount = useMemo(
-    () => items.filter((item) => item.status === "active").length,
-    [items],
-  );
+  const activeCount = useMemo(() => countActiveExternalApiKeys(items), [items]);
 
   return {
     items,
