@@ -1,5 +1,10 @@
 include!("oauth_sessions_callbacks/part_04.rs");
+
+#[path = "oauth_sessions_callbacks/callback_account_defaults.rs"]
+mod callback_account_defaults;
+
 use super::*;
+use callback_account_defaults::resolve_oauth_callback_account_defaults;
 use sqlx::Transaction;
 
 static POOL_ROUTING_SETTINGS_WRITE_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
@@ -3132,92 +3137,27 @@ pub(crate) async fn persist_oauth_callback_inner(
             "This login session has already been consumed.".to_string(),
         ));
     }
-    let existing_account = if let Some(account_id) = session.account_id {
-        let account = load_upstream_account_row_conn(tx.as_mut(), account_id)
-            .await
-            .map_err(internal_error_tuple)?
-            .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
-        if oauth_identity_requires_confirmation(&account, &input) {
-            mark_login_session_needs_identity_confirmation_with_executor(
-                &mut *tx, &session, &input,
-            )
-            .await
-            .map_err(internal_error_tuple)?;
-            tx.commit().await.map_err(internal_error_tuple)?;
-            return Err((
-                StatusCode::CONFLICT,
-                "OAuth identity confirmation required".to_string(),
-            ));
-        }
-        Some(account)
-    } else {
-        let current_plan_type = normalize_plan_type(input.claims.chatgpt_plan_type.as_deref());
-        if let Err((status, message)) = ensure_display_name_available_for_oauth_identity(
-            &mut *tx,
-            &input.display_name,
-            None,
-            input.claims.chatgpt_account_id.as_deref(),
-            input.claims.chatgpt_user_id.as_deref(),
-            session.group_name.as_deref(),
-            current_plan_type.as_deref(),
-        )
-        .await
-        {
+    let defaults = match resolve_oauth_callback_account_defaults(&mut tx, &session, &input).await {
+        Ok(defaults) => defaults,
+        Err((status, message)) => {
             if status == StatusCode::CONFLICT {
-                fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
-                    .await
-                    .map_err(internal_error_tuple)?;
                 tx.commit().await.map_err(internal_error_tuple)?;
             }
             return Err((status, message));
         }
-        None
-    };
-    let (
-        effective_display_name,
-        effective_chosen_email,
-        effective_group_name,
-        effective_is_mother,
-        effective_note,
-        effective_tag_ids,
-        effective_group_metadata_changes,
-    ) = if let Some(account) = existing_account {
-        (
-            account.display_name,
-            account.email,
-            account.group_name,
-            account.is_mother != 0,
-            account.note,
-            current_account_tag_ids_with_executor(tx.as_mut(), account.id)
-                .await
-                .map_err(internal_error_tuple)?,
-            RequestedGroupMetadataChanges::default(),
-        )
-    } else {
-        (
-            input.display_name.clone(),
-            input.chosen_email.clone(),
-            session.group_name.clone(),
-            session.is_mother != 0,
-            session.note.clone(),
-            parse_tag_ids_json(session.tag_ids_json.as_deref()),
-            build_requested_group_metadata_changes(
-                RequestedGroupMetadataInput::from_oauth_login_session(&session),
-            ),
-        )
     };
     let account_id = upsert_oauth_account(
         &mut tx,
         OauthAccountUpsert {
             account_id: session.account_id,
-            display_name: &effective_display_name,
-            chosen_email: effective_chosen_email,
+            display_name: &defaults.display_name,
+            chosen_email: defaults.chosen_email,
             verified_email: input.verified_email.clone(),
-            group_name: effective_group_name,
-            is_mother: effective_is_mother,
-            note: effective_note,
-            tag_ids: effective_tag_ids,
-            requested_group_metadata_changes: effective_group_metadata_changes,
+            group_name: defaults.group_name,
+            is_mother: defaults.is_mother,
+            note: defaults.note,
+            tag_ids: defaults.tag_ids,
+            requested_group_metadata_changes: defaults.group_metadata_changes,
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
             has_refresh_token: input.has_refresh_token,
