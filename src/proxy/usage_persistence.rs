@@ -1663,6 +1663,90 @@ pub(crate) async fn recover_proxy_invocations_with_scope(
     Ok(rows)
 }
 
+async fn recover_proxy_invocation_selector_chunks_tx(
+    tx: &mut SqliteConnection,
+    selectors: &[InvocationRecoverySelector],
+) -> Result<Vec<RecoveredInvocationRow>> {
+    let selectors: Vec<_> = selectors
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if selectors.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut recovered = Vec::new();
+    for chunk in selectors.chunks(PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE) {
+        recovered.extend(recover_proxy_invocation_selector_chunk_tx(tx, chunk).await?);
+    }
+    Ok(recovered)
+}
+
+async fn recover_proxy_invocation_selector_chunk_tx(
+    tx: &mut SqliteConnection,
+    chunk: &[InvocationRecoverySelector],
+) -> Result<Vec<RecoveredInvocationRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        UPDATE codex_invocations
+        SET status = "#,
+    );
+    query.push_bind(INVOCATION_STATUS_INTERRUPTED);
+    query.push(
+        r#",
+            error_message = "#,
+    );
+    query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
+    query.push(
+        r#",
+            failure_kind = "#,
+    );
+    query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
+    query.push(
+        r#",
+            failure_class = "#,
+    );
+    query.push_bind(FAILURE_CLASS_SERVICE);
+    query.push(
+        r#",
+            is_actionable = 1
+        WHERE source = "#,
+    );
+    query.push_bind(SOURCE_PROXY);
+    query.push(
+        r#"
+          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+          AND (
+        "#,
+    );
+    let mut first = true;
+    for selector in chunk {
+        if !first {
+            query.push(" OR ");
+        }
+        first = false;
+        query.push("(");
+        query.push("invoke_id = ");
+        query.push_bind(&selector.invoke_id);
+        query.push(" AND occurred_at = ");
+        query.push_bind(&selector.occurred_at);
+        query.push(")");
+    }
+    query.push(
+        r#"
+          )
+        RETURNING id, invoke_id, occurred_at
+        "#,
+    );
+    query
+        .build_query_as::<RecoveredInvocationRow>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn recover_proxy_invocations_with_scope_tx(
     tx: &mut SqliteConnection,
     scope: ProxyInvocationRecoveryScope<'_>,
@@ -1691,78 +1775,7 @@ pub(crate) async fn recover_proxy_invocations_with_scope_tx(
             .await?
         }
         ProxyInvocationRecoveryScope::Selectors(selectors) => {
-            let selectors: Vec<_> = selectors
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            if selectors.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            let mut recovered = Vec::new();
-            for chunk in selectors.chunks(PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE) {
-                let mut query = QueryBuilder::<Sqlite>::new(
-                    r#"
-                    UPDATE codex_invocations
-                    SET status = "#,
-                );
-                query.push_bind(INVOCATION_STATUS_INTERRUPTED);
-                query.push(
-                    r#",
-                        error_message = "#,
-                );
-                query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
-                query.push(
-                    r#",
-                        failure_kind = "#,
-                );
-                query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
-                query.push(
-                    r#",
-                        failure_class = "#,
-                );
-                query.push_bind(FAILURE_CLASS_SERVICE);
-                query.push(
-                    r#",
-                        is_actionable = 1
-                    WHERE source = "#,
-                );
-                query.push_bind(SOURCE_PROXY);
-                query.push(
-                    r#"
-                      AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-                      AND (
-                    "#,
-                );
-                let mut first = true;
-                for selector in chunk {
-                    if !first {
-                        query.push(" OR ");
-                    }
-                    first = false;
-                    query.push("(");
-                    query.push("invoke_id = ");
-                    query.push_bind(&selector.invoke_id);
-                    query.push(" AND occurred_at = ");
-                    query.push_bind(&selector.occurred_at);
-                    query.push(")");
-                }
-                query.push(
-                    r#"
-                      )
-                    RETURNING id, invoke_id, occurred_at
-                    "#,
-                );
-                recovered.extend(
-                    query
-                        .build_query_as::<RecoveredInvocationRow>()
-                        .fetch_all(&mut *tx)
-                        .await?,
-                );
-            }
-            recovered
+            recover_proxy_invocation_selector_chunks_tx(tx, selectors).await?
         }
     };
 
