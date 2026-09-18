@@ -48,7 +48,7 @@ describe("ListBodyState", () => {
     const state = host?.querySelector('[data-testid="list-loading"]');
     expect(state).toBeInstanceOf(HTMLDivElement);
     expect(state?.getAttribute("aria-busy")).toBe("true");
-    expect(state?.getAttribute("aria-label")).toBe("Loading records");
+    expect(state?.getAttribute("role")).toBe("status");
     expect(host?.textContent).toContain("Loading records");
     expect(host?.textContent).toContain("Fetching the first page.");
     expect(state?.querySelectorAll(".bg-base-content\\/10")).toHaveLength(12);

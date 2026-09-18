@@ -53,7 +53,6 @@ export function ListBodyState({
       role={variant === "error" ? "alert" : "status"}
       aria-live="polite"
       aria-busy={variant === "loading" ? "true" : undefined}
-      aria-label={variant === "loading" ? title : undefined}
     >
       <div
         className={cn(
