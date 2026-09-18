@@ -1,4 +1,4 @@
-use sqlx::{SqliteConnection, Transaction};
+use sqlx::{SqliteConnection, Transaction, query::Query as SqlxQuery, sqlite::SqliteArguments};
 
 const UPDATE_GROUP_ROUTING_RULE_SQL: &str = r#"
 UPDATE pool_upstream_account_group_notes
@@ -408,21 +408,28 @@ async fn persist_group_routing_rule(
     group_name: &str,
     patch: &NormalizedGroupRoutingRule<'_>,
 ) -> anyhow::Result<()> {
+    let query = bind_group_routing_rule_policy_fields(
+        sqlx::query(UPDATE_GROUP_ROUTING_RULE_SQL),
+        group_name,
+        patch,
+    );
+    let query = bind_group_routing_rule_status_fields(query, patch);
+    query.execute(&mut *conn).await?;
+    persist_available_models_mode(conn, group_name, patch).await
+}
+
+type SqliteRoutingRuleQuery<'query> = SqlxQuery<'query, Sqlite, SqliteArguments<'query>>;
+
+fn bind_group_routing_rule_policy_fields<'query, 'rule>(
+    query: SqliteRoutingRuleQuery<'query>,
+    group_name: &'query str,
+    patch: &'query NormalizedGroupRoutingRule<'rule>,
+) -> SqliteRoutingRuleQuery<'query>
+where
+    'rule: 'query,
+{
     let rule = patch.rule;
-    let [
-        status_401,
-        status_402,
-        status_403,
-        status_reauth,
-        status_429_rate,
-        status_429_quota,
-        status_usage,
-        status_quota,
-        status_transport,
-        status_overloaded,
-        status_5xx,
-    ] = patch.status_change.clone();
-    sqlx::query(UPDATE_GROUP_ROUTING_RULE_SQL)
+    query
         .bind(group_name)
         .bind(if matches!(rule.allow_cut_out, OptionalField::Missing) {
             1_i64
@@ -496,6 +503,40 @@ async fn persist_group_routing_rule(
             0_i64
         })
         .bind(patch.available_models_json.as_deref())
+}
+
+fn bind_group_routing_rule_status_fields<'query, 'rule>(
+    query: SqliteRoutingRuleQuery<'query>,
+    patch: &'query NormalizedGroupRoutingRule<'rule>,
+) -> SqliteRoutingRuleQuery<'query>
+where
+    'rule: 'query,
+{
+    let query = bind_group_routing_rule_status_change_fields(query, patch);
+    bind_group_routing_rule_timeout_fields(query, patch)
+}
+
+fn bind_group_routing_rule_status_change_fields<'query, 'rule>(
+    query: SqliteRoutingRuleQuery<'query>,
+    patch: &'query NormalizedGroupRoutingRule<'rule>,
+) -> SqliteRoutingRuleQuery<'query>
+where
+    'rule: 'query,
+{
+    let [
+        status_401,
+        status_402,
+        status_403,
+        status_reauth,
+        status_429_rate,
+        status_429_quota,
+        status_usage,
+        status_quota,
+        status_transport,
+        status_overloaded,
+        status_5xx,
+    ] = patch.status_change.clone();
+    query
         .bind(if matches!(status_401, OptionalField::Missing) {
             1_i64
         } else {
@@ -562,6 +603,17 @@ async fn persist_group_routing_rule(
             0_i64
         })
         .bind(optional_bool_to_i64(&status_5xx))
+}
+
+fn bind_group_routing_rule_timeout_fields<'query, 'rule>(
+    query: SqliteRoutingRuleQuery<'query>,
+    patch: &'query NormalizedGroupRoutingRule<'rule>,
+) -> SqliteRoutingRuleQuery<'query>
+where
+    'rule: 'query,
+{
+    let rule = patch.rule;
+    query
         .bind(if patch.responses_first_byte_timeout_secs.is_none() {
             1_i64
         } else {
@@ -600,8 +652,14 @@ async fn persist_group_routing_rule(
             },
         )
         .bind(patch.policy_codex_imagegen_rewrite_mode.as_deref())
-        .execute(&mut *conn)
-        .await?;
+}
+
+async fn persist_available_models_mode(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+    patch: &NormalizedGroupRoutingRule<'_>,
+) -> anyhow::Result<()> {
+    let rule = patch.rule;
     if !matches!(rule.available_models_mode, OptionalField::Missing)
         || matches!(
             rule.available_models,
