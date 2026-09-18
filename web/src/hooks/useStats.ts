@@ -307,6 +307,8 @@ function useHttpSummaryFallback(
     if (enabled) void refresh();
   }, [enabled, refresh]);
   useEffect(() => {
+    if (!enabled) return;
+
     let cancelled = false;
     let timerId: ReturnType<typeof globalThis.setTimeout> | null = null;
     const schedule = () => {
@@ -325,7 +327,7 @@ function useHttpSummaryFallback(
       cancelled = true;
       if (timerId != null) globalThis.clearTimeout(timerId);
     };
-  }, [refresh, window]);
+  }, [enabled, refresh, window]);
   return { summary, isLoading, error, refresh };
 }
 
