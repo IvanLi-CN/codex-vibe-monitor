@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, QueryBuilder, Sqlite};
 use std::{collections::BTreeMap, time::Instant};
 
+include!("crud_group_notes/filtering.rs");
+
 const ACCOUNT_ATTEMPT_RETENTION_DAYS: u64 = 7;
 const ACCOUNT_ATTEMPT_STICKY_KEY_UNBOUND: &str = "__unbound__";
 const ACCOUNT_ATTEMPT_TYPE_NORMAL: &str = "normal";
@@ -656,49 +658,15 @@ pub(crate) fn build_model_routing_attempt_timeline_query(
            AND accounts.kind = "#,
     ));
     attempt_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
-    attempt_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
-    attempt_query
-        .push(" AND ")
-        .push("attempts.occurred_epoch_ms")
-        .push(" >= ");
-    attempt_query.push_bind(cutoff_epoch_ms);
-    attempt_query
-        .push(" AND ")
-        .push(&model_sql)
-        .push(" IS NOT NULL");
-    if let Some(account_id) = account_id {
-        attempt_query.push(" AND attempts.upstream_account_id = ");
-        attempt_query.push_bind(account_id);
-    }
-    if let Some(model) = model {
-        attempt_query.push(" AND ").push(&model_sql).push(" = ");
-        attempt_query.push_bind(model.to_string());
-    }
-    append_model_routing_route_key_filter(
+    append_model_routing_attempt_timeline_filters(
         &mut attempt_query,
+        account_id,
+        model,
+        cutoff_epoch_ms,
+        cursor,
         route_keys,
-        "attempts.upstream_account_id",
         &model_sql,
     );
-    if let Some(cursor) = cursor {
-        attempt_query
-            .push(" AND (")
-            .push("attempts.occurred_epoch_ms")
-            .push(" < ");
-        attempt_query.push_bind(cursor.occurred_epoch_ms);
-        attempt_query
-            .push(" OR (")
-            .push("attempts.occurred_epoch_ms")
-            .push(" = ");
-        attempt_query.push_bind(cursor.occurred_epoch_ms);
-        attempt_query.push(" AND (1 < ");
-        attempt_query.push_bind(cursor.kind_rank);
-        attempt_query.push(" OR (1 = ");
-        attempt_query.push_bind(cursor.kind_rank);
-        attempt_query.push(" AND attempts.id < ");
-        attempt_query.push_bind(cursor.id);
-        attempt_query.push("))))");
-    }
     attempt_query
         .push(" ORDER BY attempts.occurred_epoch_ms DESC, attempts.id DESC LIMIT ")
         .push_bind(limit as i64);
