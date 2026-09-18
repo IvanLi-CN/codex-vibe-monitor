@@ -2026,33 +2026,35 @@ fn ensure_lite_codex_execution_contract(value: &mut Value) -> bool {
     changed
 }
 
-fn rewrite_lite_codex_imagegen_tools(
-    value: &mut Value,
-    mode: crate::CodexImagegenRewriteMode,
-) -> (bool, Option<Value>, &'static str) {
-    use crate::CodexImagegenRewriteMode::*;
-
-    let (top_level_developer_tools, migrated_top_level_developer_tools) =
-        take_lite_top_level_developer_tools(value);
-    let Some((input, input_normalized)) = normalise_lite_input_tools(value) else {
-        return (false, None, "invalid_input");
-    };
-    let existing = input
+fn find_lite_codex_imagegen_function(
+    input: &[Value],
+    top_level_developer_tools: &[Value],
+) -> Option<Value> {
+    input
         .iter()
         .find_map(|item| {
             is_lite_developer_additional_tools(item)
                 .then(|| item.get("tools").and_then(Value::as_array))
                 .flatten()
-                .and_then(|tools| find_codex_imagegen_function(tools))
+                .and_then(|tools| find_codex_imagegen_function(tools.as_slice()))
         })
-        .or_else(|| find_codex_imagegen_function(&top_level_developer_tools));
-    let first_developer_tools_position = input
+        .or_else(|| find_codex_imagegen_function(top_level_developer_tools))
+}
+
+fn ensure_lite_developer_tools_position(
+    input: &mut Vec<Value>,
+    top_level_developer_tools: &[Value],
+    mode: crate::CodexImagegenRewriteMode,
+    existing: Option<&Value>,
+) -> Option<usize> {
+    input
         .iter()
         .position(is_lite_developer_additional_tools)
         .or_else(|| {
             let needs_developer_tools = !top_level_developer_tools.is_empty()
-                || matches!(mode, ForceAdd)
-                || (matches!(mode, FillMissing) && existing.is_none());
+                || matches!(mode, crate::CodexImagegenRewriteMode::ForceAdd)
+                || (matches!(mode, crate::CodexImagegenRewriteMode::FillMissing)
+                    && existing.is_none());
             needs_developer_tools.then(|| {
                 input.insert(
                     0,
@@ -2064,28 +2066,95 @@ fn rewrite_lite_codex_imagegen_tools(
                 );
                 0
             })
-        });
-    let mut changed = input_normalized || migrated_top_level_developer_tools;
+        })
+}
 
-    if let Some(position) = first_developer_tools_position {
-        let tools = input[position]
-            .as_object_mut()
-            .expect("additional tools item is an object")
-            .entry("tools".to_string())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        if !tools.is_array() {
-            *tools = Value::Array(Vec::new());
-            changed = true;
-        }
-        if let Some(tools) = tools.as_array_mut() {
-            tools.extend(top_level_developer_tools);
+fn merge_lite_top_level_developer_tools(
+    input: &mut [Value],
+    position: usize,
+    top_level_developer_tools: Vec<Value>,
+) -> bool {
+    let tools = input[position]
+        .as_object_mut()
+        .expect("additional tools item is an object")
+        .entry("tools".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let mut changed = false;
+    if !tools.is_array() {
+        *tools = Value::Array(Vec::new());
+        changed = true;
+    }
+    if let Some(tools) = tools.as_array_mut() {
+        tools.extend(top_level_developer_tools);
+    }
+    changed
+}
+
+fn remove_lite_codex_imagegen_tools(input: &mut [Value]) -> bool {
+    let mut removed = false;
+    for item in input
+        .iter_mut()
+        .filter(|item| is_lite_developer_additional_tools(item))
+    {
+        if let Some(tools) = item.get_mut("tools").and_then(Value::as_array_mut) {
+            let (tool_changed, _, _) = replace_codex_imagegen_in_tool_list(
+                tools,
+                crate::CodexImagegenRewriteMode::ForceRemove,
+            );
+            removed |= tool_changed;
         }
     }
+    removed
+}
 
-    let outcome = match mode {
-        KeepOriginal => "no_change",
-        FillMissing if existing.is_some() => "no_change",
-        FillMissing => {
+fn force_add_lite_codex_imagegen_tool(
+    input: &mut [Value],
+    target_position: usize,
+    existing: Option<&Value>,
+    changed: &mut bool,
+) -> &'static str {
+    let target_already_canonical = input[target_position]
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| find_codex_imagegen_function(tools))
+        .is_some_and(|tool| tool == codex_imagegen_function());
+    let multiple_definitions = input
+        .iter()
+        .filter(|item| is_lite_developer_additional_tools(item))
+        .filter_map(|item| item.get("tools").and_then(Value::as_array))
+        .filter(|tools| find_codex_imagegen_function(tools).is_some())
+        .count()
+        > 1;
+    if !target_already_canonical || multiple_definitions {
+        *changed |= remove_lite_codex_imagegen_tools(input);
+        let tools = input[target_position]
+            .get_mut("tools")
+            .and_then(Value::as_array_mut)
+            .expect("developer tools are normalized");
+        let (tool_changed, _, _) =
+            replace_codex_imagegen_in_tool_list(tools, crate::CodexImagegenRewriteMode::ForceAdd);
+        *changed |= tool_changed;
+    }
+    if existing.is_some() && !target_already_canonical {
+        "replaced"
+    } else if *changed {
+        "injected"
+    } else {
+        "no_change"
+    }
+}
+
+fn rewrite_lite_codex_imagegen_mode(
+    input: &mut [Value],
+    first_developer_tools_position: Option<usize>,
+    mode: crate::CodexImagegenRewriteMode,
+    existing: Option<&Value>,
+    changed: &mut bool,
+) -> &'static str {
+    match mode {
+        crate::CodexImagegenRewriteMode::KeepOriginal => "no_change",
+        crate::CodexImagegenRewriteMode::FillMissing if existing.is_some() => "no_change",
+        crate::CodexImagegenRewriteMode::FillMissing => {
             let position =
                 first_developer_tools_position.expect("fill missing creates developer tools");
             let tools = input[position]
@@ -2093,65 +2162,49 @@ fn rewrite_lite_codex_imagegen_tools(
                 .and_then(Value::as_array_mut)
                 .expect("developer tools are normalized");
             let (tool_changed, _, outcome) = replace_codex_imagegen_in_tool_list(tools, mode);
-            changed |= tool_changed;
+            *changed |= tool_changed;
             outcome
         }
-        ForceRemove => {
-            let mut removed = false;
-            for item in input
-                .iter_mut()
-                .filter(|item| is_lite_developer_additional_tools(item))
-            {
-                if let Some(tools) = item.get_mut("tools").and_then(Value::as_array_mut) {
-                    let (tool_changed, _, _) = replace_codex_imagegen_in_tool_list(tools, mode);
-                    removed |= tool_changed;
-                }
-            }
-            changed |= removed;
+        crate::CodexImagegenRewriteMode::ForceRemove => {
+            let removed = remove_lite_codex_imagegen_tools(input);
+            *changed |= removed;
             if removed { "removed" } else { "no_change" }
         }
-        ForceAdd => {
-            let target_position =
+        crate::CodexImagegenRewriteMode::ForceAdd => {
+            let position =
                 first_developer_tools_position.expect("force add creates developer tools");
-            let target_already_canonical = input[target_position]
-                .get("tools")
-                .and_then(Value::as_array)
-                .and_then(|tools| find_codex_imagegen_function(tools))
-                .is_some_and(|tool| tool == codex_imagegen_function());
-            let multiple_definitions = input
-                .iter()
-                .filter(|item| is_lite_developer_additional_tools(item))
-                .filter_map(|item| item.get("tools").and_then(Value::as_array))
-                .filter(|tools| find_codex_imagegen_function(tools).is_some())
-                .count()
-                > 1;
-            if !target_already_canonical || multiple_definitions {
-                for item in input
-                    .iter_mut()
-                    .filter(|item| is_lite_developer_additional_tools(item))
-                {
-                    if let Some(tools) = item.get_mut("tools").and_then(Value::as_array_mut) {
-                        let (tool_changed, _, _) =
-                            replace_codex_imagegen_in_tool_list(tools, ForceRemove);
-                        changed |= tool_changed;
-                    }
-                }
-                let tools = input[target_position]
-                    .get_mut("tools")
-                    .and_then(Value::as_array_mut)
-                    .expect("developer tools are normalized");
-                let (tool_changed, _, _) = replace_codex_imagegen_in_tool_list(tools, ForceAdd);
-                changed |= tool_changed;
-            }
-            if existing.is_some() && !target_already_canonical {
-                "replaced"
-            } else if changed {
-                "injected"
-            } else {
-                "no_change"
-            }
+            force_add_lite_codex_imagegen_tool(input, position, existing, changed)
         }
+    }
+}
+
+fn rewrite_lite_codex_imagegen_tools(
+    value: &mut Value,
+    mode: crate::CodexImagegenRewriteMode,
+) -> (bool, Option<Value>, &'static str) {
+    let (top_level_developer_tools, migrated_top_level_developer_tools) =
+        take_lite_top_level_developer_tools(value);
+    let Some((mut input, input_normalized)) = normalise_lite_input_tools(value) else {
+        return (false, None, "invalid_input");
     };
+    let existing = find_lite_codex_imagegen_function(&input, &top_level_developer_tools);
+    let first_developer_tools_position = ensure_lite_developer_tools_position(
+        input,
+        &top_level_developer_tools,
+        mode,
+        existing.as_ref(),
+    );
+    let mut changed = input_normalized || migrated_top_level_developer_tools;
+    if let Some(position) = first_developer_tools_position {
+        changed |= merge_lite_top_level_developer_tools(input, position, top_level_developer_tools);
+    }
+    let outcome = rewrite_lite_codex_imagegen_mode(
+        input,
+        first_developer_tools_position,
+        mode,
+        existing.as_ref(),
+        &mut changed,
+    );
 
     (changed, existing, outcome)
 }
