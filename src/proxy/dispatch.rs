@@ -881,43 +881,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             .fallback_reason
             .or(semantic_projection.request_info.parse_error.as_deref()),
     );
-    let mut request_info = semantic_projection.request_info.clone();
-    let body_rewritten = semantic_projection.body_rewritten;
-    let mut prompt_cache_key = request_info
-        .prompt_cache_key
-        .clone()
-        .or_else(|| header_prompt_cache_key.clone());
-    let mut sticky_key = request_info
-        .sticky_key
-        .clone()
-        .or_else(|| header_sticky_key.clone());
-    if prompt_cache_key.is_some() && request_info.prompt_cache_key_attribution_source.is_none() {
-        request_info.prompt_cache_key_attribution_source = Some("request".to_string());
-    }
-    if capture_target == ProxyCaptureTarget::ResponsesCompact
-        && prompt_cache_key.is_none()
-        && let Some(attribution) =
-            lookup_recent_prompt_cache_attribution(&client_attribution_context, Instant::now())
-    {
-        prompt_cache_key = Some(attribution.prompt_cache_key.clone());
-        if sticky_key.is_none() {
-            sticky_key = attribution.sticky_key.clone();
-        }
-        request_info.prompt_cache_key = prompt_cache_key.clone();
-        request_info.sticky_key = sticky_key.clone();
-        request_info.prompt_cache_key_attribution_source =
-            Some("client_fingerprint_recent".to_string());
-    }
-    if capture_target == ProxyCaptureTarget::Responses
-        && let Some(prompt_cache_key) = prompt_cache_key.as_deref()
-    {
-        remember_prompt_cache_attribution(
-            &client_attribution_context,
-            prompt_cache_key,
-            sticky_key.as_deref(),
-            Instant::now(),
-        );
-    }
+    let metadata = resolve_proxy_capture_metadata(
+        capture_target,
+        semantic_projection.request_info.clone(),
+        semantic_projection.body_rewritten,
+        header_sticky_key.as_deref(),
+        header_prompt_cache_key.as_deref(),
+        &client_attribution_context,
+    );
+    let ProxyCaptureMetadataResolution {
+        mut request_info,
+        body_rewritten,
+        prompt_cache_key,
+        sticky_key,
+    } = metadata;
     let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) = if pool_route_active
     {
         let encrypted_owner_routing_enabled =

@@ -94,6 +94,64 @@ struct InitialProxyCaptureSnapshotRequest<'a> {
     t_req_parse_ms: f64,
 }
 
+struct ProxyCaptureMetadataResolution {
+    request_info: RequestCaptureInfo,
+    body_rewritten: bool,
+    prompt_cache_key: Option<String>,
+    sticky_key: Option<String>,
+}
+
+fn resolve_proxy_capture_metadata(
+    capture_target: ProxyCaptureTarget,
+    mut request_info: RequestCaptureInfo,
+    body_rewritten: bool,
+    header_sticky_key: Option<&str>,
+    header_prompt_cache_key: Option<&str>,
+    client_attribution_context: &ClientPromptCacheAttributionContext,
+) -> ProxyCaptureMetadataResolution {
+    let mut prompt_cache_key = request_info
+        .prompt_cache_key
+        .clone()
+        .or_else(|| header_prompt_cache_key.map(ToOwned::to_owned));
+    let mut sticky_key = request_info
+        .sticky_key
+        .clone()
+        .or_else(|| header_sticky_key.map(ToOwned::to_owned));
+    if prompt_cache_key.is_some() && request_info.prompt_cache_key_attribution_source.is_none() {
+        request_info.prompt_cache_key_attribution_source = Some("request".to_string());
+    }
+    if capture_target == ProxyCaptureTarget::ResponsesCompact
+        && prompt_cache_key.is_none()
+        && let Some(attribution) =
+            lookup_recent_prompt_cache_attribution(client_attribution_context, Instant::now())
+    {
+        prompt_cache_key = Some(attribution.prompt_cache_key.clone());
+        if sticky_key.is_none() {
+            sticky_key = attribution.sticky_key.clone();
+        }
+        request_info.prompt_cache_key = prompt_cache_key.clone();
+        request_info.sticky_key = sticky_key.clone();
+        request_info.prompt_cache_key_attribution_source =
+            Some("client_fingerprint_recent".to_string());
+    }
+    if capture_target == ProxyCaptureTarget::Responses
+        && let Some(prompt_cache_key) = prompt_cache_key.as_deref()
+    {
+        remember_prompt_cache_attribution(
+            client_attribution_context,
+            prompt_cache_key,
+            sticky_key.as_deref(),
+            Instant::now(),
+        );
+    }
+    ProxyCaptureMetadataResolution {
+        request_info,
+        body_rewritten,
+        prompt_cache_key,
+        sticky_key,
+    }
+}
+
 async fn emit_initial_proxy_capture_snapshot(request: InitialProxyCaptureSnapshotRequest<'_>) {
     let InitialProxyCaptureSnapshotRequest {
         state,
