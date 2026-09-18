@@ -31,10 +31,90 @@ function mergeReadyRanges(
   return sortDashboardOverviewSnapshotRanges([...current, range]);
 }
 
+async function readDashboardOverviewSnapshotState(activeRange: DashboardOverviewSnapshotRange) {
+  const [readyRanges, entry] = await Promise.all([
+    listDashboardOverviewSnapshotRanges(),
+    readDashboardOverviewSnapshotEntry(activeRange),
+  ]);
+  return { readyRanges, entry };
+}
+
+async function prefetchDashboardOverviewSnapshots({
+  activeRange,
+  controller,
+  forcePrefetchAll,
+  isCurrent,
+  readyRanges,
+  onReadyRange,
+}: {
+  activeRange: DashboardOverviewSnapshotRange;
+  controller: AbortController;
+  forcePrefetchAll: boolean;
+  isCurrent: () => boolean;
+  readyRanges: DashboardOverviewSnapshotRange[];
+  onReadyRange: (range: DashboardOverviewSnapshotRange) => void;
+}) {
+  const targets = getDashboardOverviewSnapshotPrefetchOrder(activeRange).filter(
+    (range) => range !== activeRange && (forcePrefetchAll || !readyRanges.includes(range)),
+  );
+  for (const range of targets) {
+    if (controller.signal.aborted || !isCurrent()) return;
+    try {
+      const bundle = await fetchDashboardOverviewSnapshotBundle(range, {
+        signal: controller.signal,
+      });
+      if (!isCurrent()) return;
+      const entry = createDashboardOverviewSnapshotEntry(range, bundle);
+      await writeDashboardOverviewSnapshotEntry(entry);
+      if (!isCurrent()) return;
+      onReadyRange(range);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (!isDashboardOverviewSnapshotNetworkError(error)) continue;
+      return;
+    }
+  }
+}
+
+function useDashboardOverviewOnlineState(forcePrefetchAllRef: { current: boolean }) {
+  const [isOnline, setIsOnline] = useState(getInitialOnlineState);
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const handleOnline = () => {
+      forcePrefetchAllRef.current = true;
+      setIsOnline(true);
+    };
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [forcePrefetchAllRef]);
+  return isOnline;
+}
+
+function buildDashboardOverviewSnapshotRuntime({
+  bundle,
+  cachedAt,
+  mode,
+  readyRanges,
+}: {
+  bundle: DashboardOverviewSnapshotBundle | null;
+  cachedAt: string | null;
+  mode: DashboardOverviewSnapshotMode;
+  readyRanges: DashboardOverviewSnapshotRange[];
+}): DashboardOverviewSnapshotRuntime {
+  return {
+    status: { mode, cachedAt, readyRanges },
+    bundle: mode === "not-cached-yet" ? null : bundle,
+  };
+}
+
 export function useDashboardOverviewSnapshotRuntime(
   activeRange: DashboardOverviewSnapshotRange,
 ): DashboardOverviewSnapshotRuntime {
-  const [isOnline, setIsOnline] = useState(getInitialOnlineState);
   const [mode, setMode] = useState<DashboardOverviewSnapshotMode>(() =>
     getInitialOnlineState() ? "live" : "not-cached-yet",
   );
@@ -43,25 +123,7 @@ export function useDashboardOverviewSnapshotRuntime(
   const [cachedAt, setCachedAt] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const forcePrefetchAllRef = useRef(true);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return undefined;
-
-    const handleOnline = () => {
-      forcePrefetchAllRef.current = true;
-      setIsOnline(true);
-    };
-    const handleOffline = () => {
-      setIsOnline(false);
-    };
-
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
-    };
-  }, []);
+  const isOnline = useDashboardOverviewOnlineState(forcePrefetchAllRef);
 
   useEffect(() => {
     const requestSeq = requestSeqRef.current + 1;
@@ -70,10 +132,8 @@ export function useDashboardOverviewSnapshotRuntime(
     let disposed = false;
 
     const applyCachedState = async () => {
-      const [nextReadyRanges, entry] = await Promise.all([
-        listDashboardOverviewSnapshotRanges(),
-        readDashboardOverviewSnapshotEntry(activeRange),
-      ]);
+      const { readyRanges: nextReadyRanges, entry } =
+        await readDashboardOverviewSnapshotState(activeRange);
       if (disposed || requestSeq !== requestSeqRef.current) return;
       setReadyRanges(nextReadyRanges);
       setBundle(entry?.payload ?? null);
@@ -82,10 +142,8 @@ export function useDashboardOverviewSnapshotRuntime(
     };
 
     const refreshSnapshots = async () => {
-      const [nextReadyRanges, cachedEntry] = await Promise.all([
-        listDashboardOverviewSnapshotRanges(),
-        readDashboardOverviewSnapshotEntry(activeRange),
-      ]);
+      const { readyRanges: nextReadyRanges, entry: cachedEntry } =
+        await readDashboardOverviewSnapshotState(activeRange);
       if (disposed || requestSeq !== requestSeqRef.current) return;
 
       setReadyRanges(nextReadyRanges);
@@ -129,33 +187,14 @@ export function useDashboardOverviewSnapshotRuntime(
         return;
       }
 
-      const prefetchTargets = getDashboardOverviewSnapshotPrefetchOrder(activeRange).filter(
-        (range) => range !== activeRange && (forcePrefetchAll || !nextReadyRanges.includes(range)),
-      );
-
-      for (const range of prefetchTargets) {
-        if (controller.signal.aborted || disposed || requestSeq !== requestSeqRef.current) {
-          return;
-        }
-        try {
-          const nextBundle = await fetchDashboardOverviewSnapshotBundle(range, {
-            signal: controller.signal,
-          });
-          if (disposed || requestSeq !== requestSeqRef.current) return;
-          const nextEntry = createDashboardOverviewSnapshotEntry(range, nextBundle);
-          await writeDashboardOverviewSnapshotEntry(nextEntry);
-          if (disposed || requestSeq !== requestSeqRef.current) return;
-          setReadyRanges((current) => mergeReadyRanges(current, range));
-        } catch (error) {
-          if (controller.signal.aborted) {
-            return;
-          }
-          if (!isDashboardOverviewSnapshotNetworkError(error)) {
-            continue;
-          }
-          break;
-        }
-      }
+      await prefetchDashboardOverviewSnapshots({
+        activeRange,
+        controller,
+        forcePrefetchAll,
+        isCurrent: () => !disposed && requestSeq === requestSeqRef.current,
+        readyRanges: nextReadyRanges,
+        onReadyRange: (range) => setReadyRanges((current) => mergeReadyRanges(current, range)),
+      });
     };
 
     void (isOnline ? refreshSnapshots() : applyCachedState());
@@ -166,19 +205,10 @@ export function useDashboardOverviewSnapshotRuntime(
     };
   }, [activeRange, isOnline]);
 
-  const status = useMemo<DashboardOverviewSnapshotStatus>(
-    () => ({
-      mode,
-      cachedAt,
-      readyRanges,
-    }),
-    [cachedAt, mode, readyRanges],
+  return useMemo(
+    () => buildDashboardOverviewSnapshotRuntime({ bundle, cachedAt, mode, readyRanges }),
+    [bundle, cachedAt, mode, readyRanges],
   );
-
-  return {
-    status,
-    bundle: mode === "cached-offline" ? bundle : mode === "not-cached-yet" ? null : bundle,
-  };
 }
 
 export default useDashboardOverviewSnapshotRuntime;
