@@ -2692,7 +2692,6 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
     ));
     query.push(" WHERE COALESCE(deleted_at, '') = ''");
-
     if let Some(kind) = params.kind.as_deref() {
         query.push(" AND kind = ").push_bind(kind);
     }
