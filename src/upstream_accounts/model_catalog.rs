@@ -31,6 +31,13 @@ struct CatalogRefreshFailure {
     message: String,
 }
 
+struct CatalogRequestInput {
+    scope: ForwardProxyRouteScope,
+    target_url: Url,
+    authorization: String,
+    chatgpt_account_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct UpstreamModelsPayload {
     data: Vec<UpstreamModelRecord>,
@@ -283,6 +290,82 @@ async fn discover_account_models(
     state: &AppState,
     row: &UpstreamAccountRow,
 ) -> std::result::Result<Vec<String>, CatalogRefreshFailure> {
+    let input = prepare_catalog_request_input(state, row).await?;
+    let mut last_failure = None;
+    for _attempt in 0..MODEL_CATALOG_RETRY_ATTEMPTS {
+        let selected_proxy = match crate::select_forward_proxy_for_scope(state, &input.scope).await
+        {
+            Ok(proxy) => proxy,
+            Err(err) => {
+                last_failure = Some(CatalogRefreshFailure {
+                    status: StatusCode::BAD_GATEWAY,
+                    code: "forward_proxy_unavailable".to_string(),
+                    message: safe_proxy_error_message(&err),
+                });
+                continue;
+            }
+        };
+        let client = match state
+            .http_clients
+            .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        {
+            Ok(client) => client,
+            Err(_) => {
+                last_failure = Some(CatalogRefreshFailure {
+                    status: StatusCode::BAD_GATEWAY,
+                    code: "forward_proxy_unavailable".to_string(),
+                    message: "The forward proxy client could not be initialized.".to_string(),
+                });
+                continue;
+            }
+        };
+        let response = send_catalog_request(state, row, &input, client).await;
+        let response = match response {
+            Ok(response) => response,
+            Err(failure) => {
+                last_failure = Some(failure);
+                continue;
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            last_failure = Some(CatalogRefreshFailure {
+                status: if status.is_client_error() {
+                    StatusCode::BAD_GATEWAY
+                } else {
+                    status
+                },
+                code: format!("upstream_http_{}", status.as_u16()),
+                message: format!("The upstream returned HTTP {}.", status.as_u16()),
+            });
+            if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
+                continue;
+            }
+            break;
+        }
+        if response
+            .content_length()
+            .is_none_or(|length| length <= MODEL_CATALOG_MAX_RESPONSE_BYTES as u64)
+        {
+            return parse_catalog_response(response).await;
+        }
+        return Err(CatalogRefreshFailure {
+            status: StatusCode::BAD_GATEWAY,
+            code: "upstream_response_too_large".to_string(),
+            message: "The upstream model catalog response is too large.".to_string(),
+        });
+    }
+    Err(last_failure.unwrap_or(CatalogRefreshFailure {
+        status: StatusCode::BAD_GATEWAY,
+        code: "upstream_unavailable".to_string(),
+        message: "The upstream model catalog could not be reached.".to_string(),
+    }))
+}
+
+async fn prepare_catalog_request_input(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+) -> std::result::Result<CatalogRequestInput, CatalogRefreshFailure> {
     let crypto_key = state
         .upstream_accounts
         .require_crypto_key()
@@ -346,87 +429,38 @@ async fn discover_account_models(
         }
     };
 
-    let mut last_failure = None;
-    for _attempt in 0..MODEL_CATALOG_RETRY_ATTEMPTS {
-        let selected_proxy = match crate::select_forward_proxy_for_scope(state, &scope).await {
-            Ok(proxy) => proxy,
-            Err(err) => {
-                last_failure = Some(CatalogRefreshFailure {
-                    status: StatusCode::BAD_GATEWAY,
-                    code: "forward_proxy_unavailable".to_string(),
-                    message: safe_proxy_error_message(&err),
-                });
-                continue;
-            }
-        };
-        let client = match state
-            .http_clients
-            .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
-        {
-            Ok(client) => client,
-            Err(_) => {
-                last_failure = Some(CatalogRefreshFailure {
-                    status: StatusCode::BAD_GATEWAY,
-                    code: "forward_proxy_unavailable".to_string(),
-                    message: "The forward proxy client could not be initialized.".to_string(),
-                });
-                continue;
-            }
-        };
-        let mut request = client
-            .get(target_url.clone())
-            .header(header::AUTHORIZATION, authorization.clone());
-        if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
-            request = request.header("OpenAI-Beta", "responses=experimental");
-            if let Some(account_id) = chatgpt_account_id.as_deref() {
-                request = request.header("chatgpt-account-id", account_id);
-            }
+    Ok(CatalogRequestInput {
+        scope,
+        target_url,
+        authorization,
+        chatgpt_account_id,
+    })
+}
+
+async fn send_catalog_request(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    input: &CatalogRequestInput,
+    client: reqwest::Client,
+) -> std::result::Result<reqwest::Response, CatalogRefreshFailure> {
+    let mut request = client
+        .get(input.target_url.clone())
+        .header(header::AUTHORIZATION, input.authorization.clone());
+    if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        request = request.header("OpenAI-Beta", "responses=experimental");
+        if let Some(account_id) = input.chatgpt_account_id.as_deref() {
+            request = request.header("chatgpt-account-id", account_id);
         }
-        let response =
-            match timeout(state.config.openai_proxy_handshake_timeout, request.send()).await {
-                Ok(Ok(response)) => response,
-                Ok(Err(_)) | Err(_) => {
-                    last_failure = Some(CatalogRefreshFailure {
-                        status: StatusCode::BAD_GATEWAY,
-                        code: "upstream_unavailable".to_string(),
-                        message: "The upstream model catalog could not be reached.".to_string(),
-                    });
-                    continue;
-                }
-            };
-        let status = response.status();
-        if !status.is_success() {
-            last_failure = Some(CatalogRefreshFailure {
-                status: if status.is_client_error() {
-                    StatusCode::BAD_GATEWAY
-                } else {
-                    status
-                },
-                code: format!("upstream_http_{}", status.as_u16()),
-                message: format!("The upstream returned HTTP {}.", status.as_u16()),
-            });
-            if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
-                continue;
-            }
-            break;
-        }
-        let Some(content_length) = response.content_length() else {
-            return parse_catalog_response(response).await;
-        };
-        if content_length > MODEL_CATALOG_MAX_RESPONSE_BYTES as u64 {
-            return Err(CatalogRefreshFailure {
-                status: StatusCode::BAD_GATEWAY,
-                code: "upstream_response_too_large".to_string(),
-                message: "The upstream model catalog response is too large.".to_string(),
-            });
-        }
-        return parse_catalog_response(response).await;
     }
-    Err(last_failure.unwrap_or(CatalogRefreshFailure {
-        status: StatusCode::BAD_GATEWAY,
-        code: "upstream_unavailable".to_string(),
-        message: "The upstream model catalog could not be reached.".to_string(),
-    }))
+    timeout(state.config.openai_proxy_handshake_timeout, request.send())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .ok_or_else(|| CatalogRefreshFailure {
+            status: StatusCode::BAD_GATEWAY,
+            code: "upstream_unavailable".to_string(),
+            message: "The upstream model catalog could not be reached.".to_string(),
+        })
 }
 
 fn build_catalog_url(kind: &str, mut base_url: Url) -> Result<Url> {
