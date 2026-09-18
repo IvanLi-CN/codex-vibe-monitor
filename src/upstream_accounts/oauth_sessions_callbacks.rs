@@ -3348,6 +3348,11 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     .await
     .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
+    refresh_confirmed_oauth_identity(state, account_id).await;
+    Ok(account_id)
+}
+
+async fn refresh_confirmed_oauth_identity(state: &AppState, account_id: i64) {
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth identity overwrite confirmed but initial sync failed");
     }
@@ -3364,7 +3369,6 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
         )
         .await;
     }
-    Ok(account_id)
 }
 
 fn oauth_identity_requires_confirmation(
