@@ -1759,6 +1759,34 @@ fn estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets() {
 }
 
 #[test]
+fn estimate_proxy_cost_rejects_invalid_or_preview_gpt_6_variants() {
+    let catalog = default_pricing_catalog();
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: None,
+        total_tokens: Some(1_200),
+    };
+
+    for model in [
+        "gpt-6-terra-2026-99-99",
+        "gpt-6-terra-2026-02-29",
+        "gpt-6-terra-preview",
+    ] {
+        let (cost, estimated, _) = estimate_proxy_cost(
+            &catalog,
+            Some(model),
+            &usage,
+            Some("default"),
+            ProxyPricingMode::ResponseTier,
+        );
+        assert!(cost.is_none(), "{model} should remain unpriced");
+        assert!(!estimated, "{model} should not be estimated");
+    }
+}
+
+#[test]
 fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
     let catalog = PricingCatalog {
         version: "unit-test".to_string(),

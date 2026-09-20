@@ -292,6 +292,9 @@ pub(crate) fn dated_model_alias_base(model: &str) -> Option<&str> {
     if !is_dated_suffix {
         return None;
     }
+    if chrono::NaiveDate::parse_from_str(&model[model.len() - 10..], "%Y-%m-%d").is_err() {
+        return None;
+    }
     let base = &model[..model.len() - DATED_SUFFIX_LEN];
     if base.is_empty() { None } else { Some(base) }
 }
