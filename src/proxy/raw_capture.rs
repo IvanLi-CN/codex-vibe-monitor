@@ -292,6 +292,9 @@ pub(crate) fn dated_model_alias_base(model: &str) -> Option<&str> {
     if !is_dated_suffix {
         return None;
     }
+    if chrono::NaiveDate::parse_from_str(&model[model.len() - 10..], "%Y-%m-%d").is_err() {
+        return None;
+    }
     let base = &model[..model.len() - DATED_SUFFIX_LEN];
     if base.is_empty() { None } else { Some(base) }
 }
@@ -1702,22 +1705,11 @@ pub(crate) async fn current_proxy_cost_backfill_snapshot_max_id(
     .await?)
 }
 
-fn backfill_value_differs(current: Option<&str>, expected: Option<&str>) -> bool {
-    !current
-        .map(str::trim)
-        .unwrap_or_default()
-        .eq_ignore_ascii_case(expected.map(str::trim).unwrap_or_default())
-}
-
 fn proxy_cost_backfill_candidate_needs_update(
     candidate: &ProxyCostBackfillCandidate,
     update: &ProxyCostBackfillUpdate,
 ) -> bool {
-    backfill_value_differs(
-        candidate.billing_service_tier.as_deref(),
-        update.billing_service_tier.as_deref(),
-    ) || candidate.price_version != update.price_version
-        || candidate.cost.is_some() != update.cost.is_some()
+    candidate.cost.is_none() && update.cost.is_some() && update.cost_estimated
 }
 
 pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
@@ -1725,7 +1717,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
     start_after_id: i64,
     snapshot_max_id: i64,
     catalog: &PricingCatalog,
-    attempt_version: &str,
+    _attempt_version: &str,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<ProxyCostBackfillSummary>> {
@@ -1866,6 +1858,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                       OR COALESCE(inv.cache_input_tokens, 0) > 0
                       OR COALESCE(inv.reasoning_tokens, 0) > 0
                   )
+                  AND inv.cost IS NULL
                   AND inv.id > ?2
                   AND inv.id <= ?3
             ),
@@ -1948,11 +1941,6 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 candidate.live_upstream_account_kind.as_deref(),
                 allow_live_fallback,
             );
-            let upstream_base_url_host = resolve_backfill_upstream_base_url_host(
-                candidate.snapshot_upstream_base_url_host.as_deref(),
-                candidate.live_upstream_base_url_host.as_deref(),
-                allow_live_fallback,
-            );
             let (billing_service_tier, pricing_mode) =
                 resolve_proxy_billing_service_tier_and_pricing_mode(
                     None,
@@ -1967,29 +1955,30 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 billing_service_tier.as_deref(),
                 pricing_mode,
             );
-            let persisted_price_version = if cost_estimated && cost.is_some() {
-                price_version
-            } else {
-                Some(attempt_version.to_string())
-            };
-            let update = ProxyCostBackfillUpdate {
-                id: candidate.id,
-                cost,
-                cost_estimated,
-                price_version: persisted_price_version,
-                billing_service_tier,
-                upstream_account_kind,
-                upstream_base_url_host,
-            };
-            if !proxy_cost_backfill_candidate_needs_update(&candidate, &update) {
-                continue;
-            }
-            if cost.is_none() || !cost_estimated {
+            let Some(cost) = cost else {
                 summary.skipped_unpriced_model += 1;
                 push_backfill_sample(
                     &mut samples,
                     format!("id={} model={} reason=unpriced_model", candidate.id, model),
                 );
+                continue;
+            };
+            if !cost_estimated {
+                summary.skipped_unpriced_model += 1;
+                push_backfill_sample(
+                    &mut samples,
+                    format!("id={} model={} reason=unpriced_model", candidate.id, model),
+                );
+                continue;
+            }
+            let update = ProxyCostBackfillUpdate {
+                id: candidate.id,
+                cost: Some(cost),
+                cost_estimated,
+                price_version,
+            };
+            if !proxy_cost_backfill_candidate_needs_update(&candidate, &update) {
+                continue;
             }
             updates.push(update);
         }
@@ -2002,29 +1991,14 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 let affected = sqlx::query(
                     r#"
                     UPDATE codex_invocations
-                    SET payload = json_set(
-                            json_set(
-                                json_set(
-                                    CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
-                                    '$.billingServiceTier',
-                                    ?1
-                                ),
-                                '$.upstreamAccountKind',
-                                ?2
-                            ),
-                            '$.upstreamBaseUrlHost',
-                            ?3
-                        ),
-                        cost = ?4,
-                        cost_estimated = ?5,
-                        price_version = ?6
-                    WHERE id = ?7
-                      AND source = ?8
+                    SET cost = ?1,
+                        cost_estimated = ?2,
+                        price_version = COALESCE(price_version, ?3)
+                    WHERE id = ?4
+                      AND source = ?5
+                      AND cost IS NULL
                     "#,
                 )
-                .bind(update.billing_service_tier.as_deref())
-                .bind(update.upstream_account_kind.as_deref())
-                .bind(update.upstream_base_url_host.as_deref())
                 .bind(update.cost)
                 .bind(update.cost_estimated as i64)
                 .bind(update.price_version.as_deref())

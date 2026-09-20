@@ -25,6 +25,9 @@
 - [x] Add shared structured read-only model identity icons for the GPT-5.6 Sol/Terra/Luna family, including dated aliases, accessible IDs, invocation surfaces, usage/performance details, routing health, and long-term model summaries.
 - [x] Group GPT-5.6 invocation-card model identity, reasoning effort, and FAST metadata in a reusable visual cluster while preserving legacy non-target and mismatch layouts.
 - [x] Tighten the grouped Dashboard context cluster to a fixed 20px model segment, one tone-matched reasoning marker, 4px sibling spacing, no internal vertical separators, and omission of missing reasoning values while preserving FAST accessibility.
+- [x] Add direct temporary GPT-6 Sol/Terra/Luna catalog presets using the matching GPT-5.6 rates and preserve custom catalog rows during the catalog version upgrade.
+- [x] Validate calendar dates in dated model aliases and keep invalid or preview variants unpriced.
+- [x] Restrict online proxy cost repair to null-cost terminal rows, keep existing persisted pricing fields immutable, refresh affected hourly rollups, and expose bounded progress in System Tasks.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
 ## Verification
@@ -36,6 +39,14 @@
 - `cargo test seed_default_pricing_catalog_`
 - `cargo test estimate_proxy_cost_falls_back_to_dated_gpt_5_6_terra_base_pricing`
 - `cargo test estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing`
+- `cargo test estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets`
+- `cargo test startup_backfill_proxy_cost_audit_includes_catalog_and_cursor_detail`
+- `cargo test backfill_proxy_missing_costs_skips_missing_model_or_usage_and_retries_unpriced_rows`
+- `cargo test proxy_cost_backfill_versioned_progress_preserves_historical_rows`
+- `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+- `cargo fmt --all -- --check`
+- `cargo check --locked --all-targets --all-features`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - `cargo test ranged_summary_`
 - `cargo test ranged_summary_groups_model_usage_by_reasoning_effort`
 - `cd web && bun run test` (1313 passed, 6 skipped)

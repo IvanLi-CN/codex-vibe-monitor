@@ -1718,6 +1718,75 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing() {
 }
 
 #[test]
+fn estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets() {
+    let catalog = default_pricing_catalog();
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: None,
+        total_tokens: Some(1_200),
+    };
+
+    for (model, dated_model, expected) in [
+        (
+            "gpt-6-sol",
+            "gpt-6-sol-2026-09-20",
+            ((600.0 * 6.25) + (400.0 * 0.5) + (200.0 * 30.0)) / 1_000_000.0,
+        ),
+        (
+            "gpt-6-terra",
+            "gpt-6-terra-2026-09-20",
+            ((600.0 * 2.5) + (400.0 * 0.20) + (200.0 * 12.0)) / 1_000_000.0,
+        ),
+        (
+            "gpt-6-luna",
+            "gpt-6-luna-2026-09-20",
+            ((600.0 * 0.25) + (400.0 * 0.02) + (200.0 * 1.20)) / 1_000_000.0,
+        ),
+    ] {
+        assert!(catalog.models.contains_key(model));
+        let (cost, estimated, _) = estimate_proxy_cost(
+            &catalog,
+            Some(dated_model),
+            &usage,
+            Some("default"),
+            ProxyPricingMode::ResponseTier,
+        );
+        assert!(estimated, "{dated_model} should be estimated");
+        assert!((cost.expect("dated GPT-6 cost should exist") - expected).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn estimate_proxy_cost_rejects_invalid_or_preview_gpt_6_variants() {
+    let catalog = default_pricing_catalog();
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: None,
+        total_tokens: Some(1_200),
+    };
+
+    for model in [
+        "gpt-6-terra-2026-99-99",
+        "gpt-6-terra-2026-02-29",
+        "gpt-6-terra-preview",
+    ] {
+        let (cost, estimated, _) = estimate_proxy_cost(
+            &catalog,
+            Some(model),
+            &usage,
+            Some("default"),
+            ProxyPricingMode::ResponseTier,
+        );
+        assert!(cost.is_none(), "{model} should remain unpriced");
+        assert!(!estimated, "{model} should not be estimated");
+    }
+}
+
+#[test]
 fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
     let catalog = PricingCatalog {
         version: "unit-test".to_string(),

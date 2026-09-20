@@ -2213,7 +2213,7 @@ async fn startup_historical_rollup_backfill_persists_cursor_and_defers_under_pre
 }
 
 #[tokio::test]
-async fn historical_rollup_noop_pass_does_not_create_a_system_task_run() {
+async fn historical_rollup_noop_pass_records_proxy_cost_audit_detail() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -2236,7 +2236,8 @@ async fn historical_rollup_noop_pass_does_not_create_a_system_task_run() {
     .expect("count startup task runs after historical noop pass");
     assert!(!outcome.ran_actionable_task);
     assert!(!outcome.had_failure);
-    assert_eq!(after, before);
+    assert!(outcome.detail.is_some());
+    assert_eq!(after, before + 1);
 }
 
 #[tokio::test]
@@ -2283,7 +2284,7 @@ async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
 }
 
 #[tokio::test]
-async fn startup_backfill_idle_pass_does_not_create_a_system_task_run() {
+async fn startup_backfill_idle_pass_records_proxy_cost_audit_detail() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -2306,10 +2307,56 @@ async fn startup_backfill_idle_pass_does_not_create_a_system_task_run() {
     .expect("count startup backfill task runs after idle pass");
     assert!(!outcome.ran_actionable_task);
     assert!(!outcome.had_failure);
+    assert!(outcome.detail.is_some());
     assert_eq!(
-        after, before,
-        "idle maintenance must not create task-run audit rows"
+        after,
+        before + 1,
+        "idle maintenance should record the proxy cost audit detail"
     );
+}
+
+#[tokio::test]
+async fn startup_backfill_proxy_cost_audit_includes_catalog_and_cursor_detail() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    insert_proxy_cost_backfill_row(
+        &state.pool,
+        "proxy-cost-backfill-system-task-detail",
+        Some("gpt-6-terra-2026-09-20"),
+        Some(1_000),
+        Some(500),
+    )
+    .await;
+
+    let cancel = CancellationToken::new();
+    let selected_tasks = [StartupBackfillTask::ProxyCost];
+    let outcome =
+        run_startup_backfill_maintenance_pass(state.clone(), &cancel, Some(&selected_tasks)).await;
+    let detail = outcome
+        .detail
+        .as_deref()
+        .expect("proxy cost maintenance should expose audit detail");
+    assert!(detail.contains("catalog_version="));
+    assert!(detail.contains("attempt_version="));
+    assert!(detail.contains("scanned=1"));
+    assert!(detail.contains("updated=1"));
+    assert!(detail.contains("cursor_id="));
+    assert!(detail.contains("state=drained"));
+
+    state
+        .sqlite_batch_writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush startup backfill task audit detail");
+    let persisted_detail: String = sqlx::query_scalar(
+        "SELECT detail FROM system_task_runs WHERE task_kind = 'startup_backfill' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("query startup backfill audit detail");
+    assert_eq!(persisted_detail, detail);
 }
 
 #[tokio::test]

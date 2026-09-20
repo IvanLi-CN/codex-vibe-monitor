@@ -8,6 +8,32 @@ The repo-managed pricing catalog, `/v1/models` preset list, and Settings pricing
 
 The project needs a compatible upgrade that preserves existing user-defined pricing rows and existing API consumers while making GPT-5.6 cost estimation, Settings editing, and operator-facing model selection accurate.
 
+## GPT-6 同值预设与在线成本修复
+
+The repo-managed catalog also provides direct preset rows for `gpt-6-sol`,
+`gpt-6-terra`, and `gpt-6-luna`. These rows intentionally reuse the matching
+GPT-5.6 rates as temporary estimation defaults and do not claim an official
+GPT-6 price source:
+
+- `gpt-6-sol`: input `5.0`, cache read `0.5`, cache write `6.25`, output `30.0`
+- `gpt-6-terra`: input `2.0`, cache read `0.20`, cache write `2.5`, output `12.0`
+- `gpt-6-luna`: input `0.20`, cache read `0.02`, cache write `0.25`, output `1.20`
+
+The repo-managed catalog version is `openai-standard-2026-09-20`. Existing
+repo-managed catalogs receive missing GPT-6 rows through idempotent insertion;
+custom catalogs and user-edited rows are preserved. Exact GPT-6 ids and
+calendar-valid `-YYYY-MM-DD` aliases use the existing dated-model resolver.
+Invalid dates, unknown variants, and preview variants remain unpriced.
+
+Online cost repair is a bounded, resumable SQLite maintenance operation. It
+selects only terminal proxy rows with billable usage and a null persisted cost,
+writes only successfully estimated cost fields, and refreshes affected hourly
+rollups in the same batch transaction. Existing non-null cost, price-version,
+bucket, and payload values are immutable. Unpriced rows remain untouched, and
+archive files and archive-derived aggregates are outside this operation.
+The existing System Tasks audit records the catalog and attempt versions,
+scan/update/skip counters, cursor, and drained-or-continuing state.
+
 ## Goals
 
 - Add first-class support for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` across the default pricing catalog, proxy preset models, Settings model lists, and `/v1/models` hijack payloads.
@@ -24,7 +50,7 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 
 ## Requirements
 
-- The repo-managed catalog version must advance to `openai-standard-2026-07-31`.
+- The repo-managed catalog version must advance to `openai-standard-2026-09-20`.
 - The repo-managed catalog must contain:
   - `gpt-5.6-sol`: input `5.0`, output `30.0`, cache read `0.5`, cache write `6.25`
   - `gpt-5.6-terra`: input `2.0`, output `12.0`, cache read `0.20`, cache write `2.5`
@@ -32,7 +58,7 @@ The project needs a compatible upgrade that preserves existing user-defined pric
 - `PUT /api/settings/pricing` must accept both legacy `cacheInputPer1m` and the new `cacheReadPer1m` / `cacheWritePer1m` fields.
 - `GET /api/settings/pricing` must return the new fields and continue mirroring `cacheInputPer1m` from `cacheReadPer1m` during the compatibility window.
 - SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values. During this catalog revision, only Terra/Luna rows from a repo-managed catalog with `source=official` and all four prior unit prices still intact may be updated in place.
-- Model resolution must match exact ids first and also map `gpt-5.6-sol|terra|luna-YYYY-MM-DD` to their base model pricing rows.
+- Model resolution must match exact ids first and also map calendar-valid `gpt-5.6-sol|terra|luna-YYYY-MM-DD` aliases to their base model pricing rows. Invalid dates and preview variants remain unpriced.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
 - Structured read-only model fields must render `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as solar, earth, and lunar icons. Exact and date-suffixed IDs share the base icon; tooltips and accessible names retain the complete ID. Editors, filters, selectors, and raw payload viewers keep the original text.
 - New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
@@ -81,11 +107,12 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 - Given a legacy pricing payload with only `cacheInputPer1m`, when the backend saves and reloads it, then `cacheReadPer1m` matches that value and `cacheInputPer1m` is still mirrored on response.
 - Given an existing SQLite database with legacy pricing rows, when the schema upgrade runs, then read pricing is preserved and no existing user-defined row is overwritten.
-- Given a new SQLite database, when the default catalog is loaded, then its version is `openai-standard-2026-07-31` and the Terra/Luna unit prices match the latest Standard short-context table.
+- Given a new SQLite database, when the default catalog is loaded, then its version is `openai-standard-2026-09-20` and the Terra/Luna unit prices match the latest Standard short-context table.
 - Given a repo-managed catalog at `openai-standard-2026-07-10` with unchanged official Terra or Luna rows, when startup loads the catalog, then all four unit prices are refreshed and the catalog version advances; any changed field, non-official row, or custom catalog version remains unchanged.
 - Given a new Terra or Luna invocation, when cost is estimated, then its cache read, cache write, and output buckets use the revised unit prices; existing invocation costs remain persisted truth and are never recomputed or rewritten.
 - Given `model=gpt-5.6-sol`, `input_tokens=1000`, `cached_tokens=400`, and `output_tokens=200`, when cost is estimated, then 600 prompt tokens bill at `6.25 / 1M`, 400 cached tokens bill at `0.5 / 1M`, and 200 output tokens bill at `30 / 1M`.
 - Given `gpt-5.6-sol-2026-07-08`, `gpt-5.6-terra-2026-07-08`, or `gpt-5.6-luna-2026-07-08`, when cost is estimated, then the base GPT-5.6 pricing row is used rather than `unknown`.
+- Given an invalid date suffix such as `gpt-6-terra-2026-99-99` or a preview variant such as `gpt-6-terra-preview`, when cost is estimated, then the model remains unpriced.
 - Given a legacy model entry that only has cached-input pricing, when cost is estimated, then existing legacy tests continue to use the pre-upgrade uncached-input semantics.
 - Given default proxy model settings, when repo-managed defaults are normalized, then the GPT-5.6 model ids appear in preset lists and are appended only for legacy default enabled-model lists.
 - Given account tags containing `unsupported_model:gpt-5.6-sol`, when the roster and routing UI render, then the tag behaves like other system unsupported-model tags without GPT-5.5-specific special casing.
@@ -175,8 +202,6 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - state: date-suffixed GPT-5.6 alias and unsupported model fallback
 - evidence_note: Verifies a date-suffixed GPT-5.6 model inherits the Sol icon and an unsupported model remains visible as its original text.
 
-PR: include
-
 ![GPT-5.6 invocation context cluster, dark theme](./assets/gpt56-invocation-context-dark-storybook.png)
 
 - source_type: storybook_canvas
@@ -191,8 +216,6 @@ PR: include
 - story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
 - state: GPT-5.6 Sol `max` reasoning with FAST in the `vibe-dark` theme
 - evidence_note: Owner-approved component capture. The component keeps its own low-contrast boundary, one error-tone reasoning marker, 4px sibling spacing, and centered model/FAST icons without an additional presentation frame or excess whitespace.
-
-PR: include
 
 ![GPT-5.6 invocation context cluster, light theme](./assets/gpt56-invocation-context-light-storybook.png)
 
