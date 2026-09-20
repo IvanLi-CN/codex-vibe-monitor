@@ -1063,6 +1063,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
 pub(crate) struct StartupBackfillMaintenancePass {
     pub(crate) ran_actionable_task: bool,
     pub(crate) had_failure: bool,
+    pub(crate) detail: Option<String>,
 }
 
 pub(crate) async fn defer_startup_backfill_task(
@@ -1566,6 +1567,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
+    let mut detail = None;
     let tasks = match selected_tasks {
         Some(tasks) => tasks,
         None => StartupBackfillTask::ordered_tasks(),
@@ -1593,11 +1595,14 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
             result = run_startup_backfill_task_if_due_outcome(&state, *task, gate) => result,
         };
         match task_result {
-            Ok(outcome) => {
+            Ok((outcome, task_detail)) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
                 had_failure |= outcome.failed;
                 had_deferred_task |= outcome.deferred;
+                if task_detail.is_some() {
+                    detail = task_detail;
+                }
                 if outcome.completed {
                     STARTUP_BACKFILL_SCHEDULER.record_task_result(
                         *task,
@@ -1635,6 +1640,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                     return StartupBackfillMaintenancePass {
                         ran_actionable_task,
                         had_failure,
+                        detail,
                     };
                 }
                 guard = state.hourly_rollup_sync_lock.lock() => guard,
@@ -1689,7 +1695,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
         }
     }
 
-    if (ran_actionable_task || had_failure) && !cancel.is_cancelled() {
+    if (ran_actionable_task || had_failure || detail.is_some()) && !cancel.is_cancelled() {
         // The audit row is non-critical bookkeeping. Do not hold a pressure slot while the
         // P2 admission waits: if cancellation wins, leave the row for the next pass. The durable
         // task/progress rows above remain the source of truth.
@@ -1722,7 +1728,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                             &run,
                             audit_status,
                             Some(audit_summary.to_string()),
-                            None,
+                            detail.clone(),
                         )
                         .await
                         {
@@ -1763,6 +1769,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     StartupBackfillMaintenancePass {
         ran_actionable_task,
         had_failure,
+        detail,
     }
 }
 
@@ -1783,7 +1790,7 @@ pub(crate) async fn run_startup_backfill_task_if_due(
         crate::db_pressure::global_db_pressure_gate(),
     )
     .await
-    .map(|outcome| outcome.actionable)
+    .map(|(outcome, _)| outcome.actionable)
 }
 
 pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
@@ -1793,30 +1800,35 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
 ) -> Result<bool> {
     run_startup_backfill_task_if_due_outcome(state, task, gate)
         .await
-        .map(|outcome| outcome.actionable)
+        .map(|(outcome, _)| outcome.actionable)
 }
 
 async fn run_startup_backfill_task_if_due_outcome(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
-) -> Result<StartupBackfillTaskRunOutcome> {
+) -> Result<(StartupBackfillTaskRunOutcome, Option<String>)> {
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
             task = task.log_label(),
             "startup backfill task is disabled by config"
         );
-        return Ok(StartupBackfillTaskRunOutcome {
-            actionable: false,
-            failed: false,
-            deferred: false,
-            completed: true,
-            next_due: Utc::now() + ChronoDuration::days(1),
-        });
+        return Ok((
+            StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: false,
+                completed: true,
+                next_due: Utc::now() + ChronoDuration::days(1),
+            },
+            None,
+        ));
     }
 
     if task == StartupBackfillTask::AccountActivityV2Coverage {
-        return run_startup_backfill_coverage_repair_if_due(state, gate).await;
+        return run_startup_backfill_coverage_repair_if_due(state, gate)
+            .await
+            .map(|outcome| (outcome, None));
     }
 
     // Legacy-mirror identity reads can decompress large archives. Keep that raw work out of
@@ -1824,14 +1836,17 @@ async fn run_startup_backfill_task_if_due_outcome(
     if task == StartupBackfillTask::LegacyDetailMirrors
         && state.subscription_hub.summary_projection().await.is_none()
     {
-        return Ok(StartupBackfillTaskRunOutcome {
-            actionable: false,
-            failed: false,
-            deferred: false,
-            completed: false,
-            next_due: Utc::now()
-                + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-        });
+        return Ok((
+            StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: false,
+                completed: false,
+                next_due: Utc::now()
+                    + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+            },
+            None,
+        ));
     }
 
     // Pool health archive backfill shares the hourly-rollup synchronization lock. Acquire that
@@ -1847,17 +1862,25 @@ async fn run_startup_backfill_task_if_due_outcome(
     // scheduler-only decision, not turn into a SQLite read, progress write, or task-run audit.
     let _permit = match gate.try_begin_background("startup_backfill") {
         Ok(permit) => permit,
-        Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
+        Err(reason) => {
+            return Ok((
+                startup_backfill_pressure_defer_outcome(task, gate, reason),
+                None,
+            ));
+        }
     };
     let write_permit = match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
     {
         Some(permit) => permit,
         None => {
-            return Ok(startup_backfill_pressure_defer_outcome(
-                task,
-                gate,
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+            return Ok((
+                startup_backfill_pressure_defer_outcome(
+                    task,
+                    gate,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+                ),
+                None,
             ));
         }
     };
@@ -1881,13 +1904,16 @@ async fn run_startup_backfill_task_if_due_outcome(
             last_updated = progress.last_updated,
             "startup backfill task is not due"
         );
-        return Ok(StartupBackfillTaskRunOutcome {
-            actionable: false,
-            failed: false,
-            deferred: false,
-            completed: false,
-            next_due: startup_backfill_progress_due(&progress),
-        });
+        return Ok((
+            StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: false,
+                completed: false,
+                next_due: startup_backfill_progress_due(&progress),
+            },
+            None,
+        ));
     }
 
     mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id)
@@ -1913,7 +1939,8 @@ async fn run_startup_backfill_task_if_due_outcome(
                 gate,
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
             )
-            .await;
+            .await
+            .map(|outcome| (outcome, None));
         }
         result = run_startup_backfill_task(
             state,
@@ -1983,13 +2010,16 @@ async fn run_startup_backfill_task_if_due_outcome(
                 samples = %startup_backfill_samples_text(&run.samples),
                 "startup backfill pass finished"
             );
-            StartupBackfillTaskRunOutcome {
-                actionable: startup_backfill_run_is_actionable(&run),
-                failed: false,
-                deferred: false,
-                completed: true,
-                next_due: parse_to_utc_datetime(&next_run_after).unwrap_or_else(Utc::now),
-            }
+            (
+                StartupBackfillTaskRunOutcome {
+                    actionable: startup_backfill_run_is_actionable(&run),
+                    failed: false,
+                    deferred: false,
+                    completed: true,
+                    next_due: parse_to_utc_datetime(&next_run_after).unwrap_or_else(Utc::now),
+                },
+                (task == StartupBackfillTask::ProxyCost).then_some(detail),
+            )
         }
         Err(err) => {
             let next_due = match persist_startup_backfill_task_failure(
@@ -2008,13 +2038,16 @@ async fn run_startup_backfill_task_if_due_outcome(
             // Keep the permit until the failure state is durable and any relevant cooldown is
             // visible. Releasing it first would let another background task enter SQLite.
             record_startup_backfill_pressure_error(gate, &err);
-            StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: true,
-                deferred: false,
-                completed: true,
-                next_due,
-            }
+            (
+                StartupBackfillTaskRunOutcome {
+                    actionable: false,
+                    failed: true,
+                    deferred: false,
+                    completed: true,
+                    next_due,
+                },
+                None,
+            )
         }
     };
 
@@ -2122,8 +2155,18 @@ pub(crate) async fn run_startup_backfill_task(
             )
             .await?;
             let detail = format!(
-                "skipped_unpriced_model={}",
-                outcome.summary.skipped_unpriced_model
+                "catalog_version={} attempt_version={} scanned={} updated={} skipped_unpriced_model={} cursor_id={} state={}",
+                catalog.version,
+                attempt_version,
+                outcome.summary.scanned,
+                outcome.summary.updated,
+                outcome.summary.skipped_unpriced_model,
+                outcome.next_cursor_id,
+                if outcome.hit_budget {
+                    "continuing"
+                } else {
+                    "drained"
+                },
             );
             Ok((
                 StartupBackfillRunState {

@@ -373,7 +373,10 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
             'gpt-5.5-pro',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
-            'gpt-5.6-luna'
+            'gpt-5.6-luna',
+            'gpt-6-sol',
+            'gpt-6-terra',
+            'gpt-6-luna'
         )
         "#,
     )
@@ -391,6 +394,9 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
     assert!(catalog.models.contains_key("gpt-5.6-sol"));
     assert!(catalog.models.contains_key("gpt-5.6-terra"));
     assert!(catalog.models.contains_key("gpt-5.6-luna"));
+    assert!(catalog.models.contains_key("gpt-6-sol"));
+    assert!(catalog.models.contains_key("gpt-6-terra"));
+    assert!(catalog.models.contains_key("gpt-6-luna"));
 }
 
 #[tokio::test]
@@ -421,6 +427,23 @@ async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_r
     assert_eq!(luna.cache_read_per_1m, Some(0.02));
     assert_eq!(luna.cache_write_per_1m, Some(0.25));
     assert_eq!(luna.output_per_1m, 1.20);
+
+    for (model, input, cache, write, output) in [
+        ("gpt-6-sol", 5.0, 0.5, 6.25, 30.0),
+        ("gpt-6-terra", 2.0, 0.20, 2.5, 12.0),
+        ("gpt-6-luna", 0.20, 0.02, 0.25, 1.20),
+    ] {
+        let pricing = catalog
+            .models
+            .get(model)
+            .unwrap_or_else(|| panic!("{model} default pricing should exist"));
+        assert_eq!(pricing.input_per_1m, input);
+        assert_eq!(pricing.cache_input_per_1m, Some(cache));
+        assert_eq!(pricing.cache_read_per_1m, Some(cache));
+        assert_eq!(pricing.cache_write_per_1m, Some(write));
+        assert_eq!(pricing.output_per_1m, output);
+        assert_eq!(pricing.source, "temporary");
+    }
 }
 
 #[tokio::test]
@@ -671,7 +694,10 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
             'gpt-5.5-pro',
             'gpt-5.6-sol',
             'gpt-5.6-terra',
-            'gpt-5.6-luna'
+            'gpt-5.6-luna',
+            'gpt-6-sol',
+            'gpt-6-terra',
+            'gpt-6-luna'
         )
         "#,
     )
@@ -690,6 +716,9 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
     assert!(!catalog.models.contains_key("gpt-5.6-sol"));
     assert!(!catalog.models.contains_key("gpt-5.6-terra"));
     assert!(!catalog.models.contains_key("gpt-5.6-luna"));
+    assert!(!catalog.models.contains_key("gpt-6-sol"));
+    assert!(!catalog.models.contains_key("gpt-6-terra"));
+    assert!(!catalog.models.contains_key("gpt-6-luna"));
 }
 
 #[tokio::test]

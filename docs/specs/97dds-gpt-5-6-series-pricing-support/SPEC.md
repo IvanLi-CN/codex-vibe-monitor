@@ -8,6 +8,32 @@ The repo-managed pricing catalog, `/v1/models` preset list, and Settings pricing
 
 The project needs a compatible upgrade that preserves existing user-defined pricing rows and existing API consumers while making GPT-5.6 cost estimation, Settings editing, and operator-facing model selection accurate.
 
+## GPT-6 同值预设与在线成本修复
+
+The repo-managed catalog also provides direct preset rows for `gpt-6-sol`,
+`gpt-6-terra`, and `gpt-6-luna`. These rows intentionally reuse the matching
+GPT-5.6 rates as temporary estimation defaults and do not claim an official
+GPT-6 price source:
+
+- `gpt-6-sol`: input `5.0`, cache read `0.5`, cache write `6.25`, output `30.0`
+- `gpt-6-terra`: input `2.0`, cache read `0.20`, cache write `2.5`, output `12.0`
+- `gpt-6-luna`: input `0.20`, cache read `0.02`, cache write `0.25`, output `1.20`
+
+The repo-managed catalog version is `openai-standard-2026-09-20`. Existing
+repo-managed catalogs receive missing GPT-6 rows through idempotent insertion;
+custom catalogs and user-edited rows are preserved. Exact GPT-6 ids and valid
+`-YYYY-MM-DD` aliases use the existing dated-model resolver. Unknown and
+preview variants remain unpriced.
+
+Online cost repair is a bounded, resumable SQLite maintenance operation. It
+selects only terminal proxy rows with billable usage and a null persisted cost,
+writes only successfully estimated cost fields, and refreshes affected hourly
+rollups in the same batch transaction. Existing non-null cost, price-version,
+bucket, and payload values are immutable. Unpriced rows remain untouched, and
+archive files and archive-derived aggregates are outside this operation.
+The existing System Tasks audit records the catalog and attempt versions,
+scan/update/skip counters, cursor, and drained-or-continuing state.
+
 ## Goals
 
 - Add first-class support for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` across the default pricing catalog, proxy preset models, Settings model lists, and `/v1/models` hijack payloads.
@@ -175,8 +201,6 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - state: date-suffixed GPT-5.6 alias and unsupported model fallback
 - evidence_note: Verifies a date-suffixed GPT-5.6 model inherits the Sol icon and an unsupported model remains visible as its original text.
 
-PR: include
-
 ![GPT-5.6 invocation context cluster, dark theme](./assets/gpt56-invocation-context-dark-storybook.png)
 
 - source_type: storybook_canvas
@@ -191,8 +215,6 @@ PR: include
 - story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
 - state: GPT-5.6 Sol `max` reasoning with FAST in the `vibe-dark` theme
 - evidence_note: Owner-approved component capture. The component keeps its own low-contrast boundary, one error-tone reasoning marker, 4px sibling spacing, and centered model/FAST icons without an additional presentation frame or excess whitespace.
-
-PR: include
 
 ![GPT-5.6 invocation context cluster, light theme](./assets/gpt56-invocation-context-light-storybook.png)
 

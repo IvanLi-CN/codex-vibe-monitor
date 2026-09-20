@@ -486,7 +486,7 @@ async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempoten
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("second cost backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
 }
 
@@ -550,7 +550,7 @@ async fn proxy_cost_backfill_settled_history_advances_cursor_to_id_high_water() 
     .await
     .expect("settled history should complete the high-water range");
 
-    assert_eq!(outcome.summary.scanned, 1);
+    assert_eq!(outcome.summary.scanned, 0);
     assert_eq!(outcome.summary.updated, 0);
     assert_eq!(outcome.next_cursor_id, high_water);
     let row = sqlx::query(
@@ -645,7 +645,7 @@ async fn proxy_cost_backfill_bounded_scan_reprices_stale_rows_and_advances_acros
     .await
     .expect("bounded cost backfill should traverse settled and stale rows");
 
-    assert_eq!(outcome.summary.scanned, 2);
+    assert_eq!(outcome.summary.scanned, 1);
     assert_eq!(outcome.summary.updated, 1);
     assert_eq!(outcome.next_cursor_id, high_water);
     let stale_row =
@@ -670,7 +670,7 @@ async fn proxy_cost_backfill_bounded_scan_reprices_stale_rows_and_advances_acros
 }
 
 #[tokio::test]
-async fn proxy_cost_backfill_versioned_progress_recomputes_historical_rows() {
+async fn proxy_cost_backfill_versioned_progress_preserves_historical_rows() {
     let pool = test_current_schema_pool().await;
     insert_proxy_cost_backfill_row(
         &pool,
@@ -726,9 +726,9 @@ async fn proxy_cost_backfill_versioned_progress_recomputes_historical_rows() {
 
     let summary = backfill_proxy_missing_costs(&pool, &catalog)
         .await
-        .expect("new pricing version should reprice historical rows");
-    assert_eq!(summary.scanned, 1);
-    assert_eq!(summary.updated, 1);
+        .expect("new pricing version should leave historical rows unchanged");
+    assert_eq!(summary.scanned, 0);
+    assert_eq!(summary.updated, 0);
     let row = sqlx::query("SELECT cost, price_version FROM codex_invocations WHERE invoke_id = ?1")
         .bind("proxy-cost-backfill-versioned-history")
         .fetch_one(&pool)
@@ -737,13 +737,13 @@ async fn proxy_cost_backfill_versioned_progress_recomputes_historical_rows() {
     assert_eq!(
         row.try_get::<Option<f64>, _>("cost")
             .expect("read versioned cost"),
-        Some(0.0035)
+        Some(0.001)
     );
     assert_eq!(
         row.try_get::<Option<String>, _>("price_version")
             .expect("read versioned price_version")
             .as_deref(),
-        Some("new-pricing@response-tier")
+        Some("old-pricing@response-tier")
     );
 }
 
@@ -779,9 +779,9 @@ async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billi
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.0035_f64)
-    .bind(1_i64)
-    .bind("unit-cost-backfill")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","serviceTier":"default","billingServiceTier":null}"#)
     .bind("{}")
     .execute(&pool)
@@ -847,7 +847,7 @@ async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billi
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("standard row backfill should become idempotent");
-    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
 }
 
@@ -883,9 +883,9 @@ async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_ti
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.0035_f64)
-    .bind(1_i64)
-    .bind("unit-cost-backfill")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","serviceTier":"default","billingServiceTier":"auto"}"#)
     .bind("{}")
     .execute(&pool)
@@ -930,7 +930,7 @@ async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_ti
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("stale standard billing tier row should become idempotent");
-    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
 }
 
@@ -988,9 +988,9 @@ async fn backfill_proxy_missing_costs_reprices_api_keys_requested_tier_rows() {
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"API Keys Pool","routeMode":"pool"}"#)
     .bind("{}")
     .execute(&pool)
@@ -1113,9 +1113,9 @@ async fn backfill_proxy_missing_costs_reprices_failed_api_keys_requested_tier_ro
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2750,"upstreamAccountName":"API Keys Pool","routeMode":"pool"}"#)
     .bind(r#"{"type":"response.failed"}"#)
     .execute(&pool)
@@ -1247,9 +1247,9 @@ async fn backfill_proxy_missing_costs_prefers_payload_account_kind_snapshots_ove
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"API Keys Pool","upstreamAccountKind":"api_key_codex","upstreamBaseUrlHost":"api-keys.vendor.invalid","routeMode":"pool"}"#)
     .bind("{}")
     .execute(&pool)
@@ -1305,9 +1305,9 @@ async fn backfill_proxy_missing_costs_prefers_payload_account_kind_snapshots_ove
         WHERE invoke_id = ?4
         "#,
     )
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind("proxy-api-keys-requested-tier-snapshot")
     .execute(&pool)
     .await
@@ -1414,9 +1414,9 @@ async fn backfill_proxy_missing_costs_falls_back_to_safe_live_api_key_account_ki
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":6144,"upstreamAccountName":"API Keys Safe Live","routeMode":"pool"}"#)
     .bind("{}")
     .execute(&pool)
@@ -1531,9 +1531,9 @@ async fn backfill_proxy_missing_costs_keeps_response_tier_when_live_account_crea
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":5120,"upstreamAccountName":"Late API Keys Account","routeMode":"pool"}"#)
     .bind("{}")
     .execute(&pool)
@@ -1626,9 +1626,9 @@ async fn backfill_proxy_missing_costs_keeps_non_api_keys_rows_on_response_tier_s
     .bind(1_000_i64)
     .bind(500_i64)
     .bind(1_500_i64)
-    .bind(0.01_f64)
-    .bind(1_i64)
-    .bind("openai-standard-2026-02-23")
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
     .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountKind":"oauth_codex","routeMode":"pool"}"#)
     .bind("{}")
     .execute(&pool)
@@ -1745,7 +1745,7 @@ async fn backfill_proxy_missing_costs_skips_rows_already_settled_with_requested_
     let summary = backfill_proxy_missing_costs(&pool, &catalog)
         .await
         .expect("settled requested-tier rows should remain idempotent");
-    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.scanned, 0);
     assert_eq!(summary.updated, 0);
 }
 
@@ -1798,10 +1798,8 @@ async fn backfill_proxy_missing_costs_skips_missing_model_or_usage_and_retries_u
         .await
         .expect("cost backfill should succeed");
     assert_eq!(summary.scanned, 1);
-    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.updated, 0);
     assert_eq!(summary.skipped_unpriced_model, 1);
-    let expected_attempt_version = pricing_backfill_attempt_version(&catalog);
-
     let unknown_row = sqlx::query(
         "SELECT cost, cost_estimated, price_version FROM codex_invocations WHERE invoke_id = ?1",
     )
@@ -1826,12 +1824,12 @@ async fn backfill_proxy_missing_costs_skips_missing_model_or_usage_and_retries_u
             .try_get::<Option<String>, _>("price_version")
             .expect("read unknown price_version")
             .as_deref(),
-        Some(expected_attempt_version.as_str())
+        None
     );
 
     let summary_same_version = backfill_proxy_missing_costs(&pool, &catalog)
         .await
-        .expect("same-version cost backfill should skip attempted unpriced rows");
+        .expect("same-version cost backfill should retry unpriced rows");
     assert_eq!(summary_same_version.scanned, 1);
     assert_eq!(summary_same_version.updated, 0);
 

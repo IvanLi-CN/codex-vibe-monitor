@@ -420,6 +420,48 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
         },
     )
     .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-6-sol",
+        ModelPricing {
+            input_per_1m: 5.0,
+            output_per_1m: 30.0,
+            cache_input_per_1m: Some(0.5),
+            cache_read_per_1m: Some(0.5),
+            cache_write_per_1m: Some(6.25),
+            reasoning_per_1m: None,
+            source: "temporary".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-6-terra",
+        ModelPricing {
+            input_per_1m: 2.0,
+            output_per_1m: 12.0,
+            cache_input_per_1m: Some(0.20),
+            cache_read_per_1m: Some(0.20),
+            cache_write_per_1m: Some(2.5),
+            reasoning_per_1m: None,
+            source: "temporary".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-6-luna",
+        ModelPricing {
+            input_per_1m: 0.20,
+            output_per_1m: 1.20,
+            cache_input_per_1m: Some(0.02),
+            cache_read_per_1m: Some(0.02),
+            cache_write_per_1m: Some(0.25),
+            reasoning_per_1m: None,
+            source: "temporary".to_string(),
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -428,6 +470,7 @@ pub(crate) fn is_repo_managed_default_pricing_catalog_version(version: &str) -> 
         version,
         DEFAULT_PRICING_CATALOG_VERSION
             | PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION
+            | PRIOR_DEFAULT_PRICING_CATALOG_VERSION
             | LEGACY_DEFAULT_PRICING_CATALOG_VERSION
             | OLDEST_LEGACY_DEFAULT_PRICING_CATALOG_VERSION
             | EARLIEST_LEGACY_DEFAULT_PRICING_CATALOG_VERSION
@@ -961,6 +1004,42 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
                 cache_write_per_1m: Some(0.25),
                 reasoning_per_1m: None,
                 source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-6-sol",
+            ModelPricing {
+                input_per_1m: 5.0,
+                output_per_1m: 30.0,
+                cache_input_per_1m: Some(0.5),
+                cache_read_per_1m: Some(0.5),
+                cache_write_per_1m: Some(6.25),
+                reasoning_per_1m: None,
+                source: "temporary".to_string(),
+            },
+        ),
+        (
+            "gpt-6-terra",
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 12.0,
+                cache_input_per_1m: Some(0.20),
+                cache_read_per_1m: Some(0.20),
+                cache_write_per_1m: Some(2.5),
+                reasoning_per_1m: None,
+                source: "temporary".to_string(),
+            },
+        ),
+        (
+            "gpt-6-luna",
+            ModelPricing {
+                input_per_1m: 0.20,
+                output_per_1m: 1.20,
+                cache_input_per_1m: Some(0.02),
+                cache_read_per_1m: Some(0.02),
+                cache_write_per_1m: Some(0.25),
+                reasoning_per_1m: None,
+                source: "temporary".to_string(),
             },
         ),
         (

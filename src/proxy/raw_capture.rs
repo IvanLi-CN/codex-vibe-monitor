@@ -1725,7 +1725,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
     start_after_id: i64,
     snapshot_max_id: i64,
     catalog: &PricingCatalog,
-    attempt_version: &str,
+    _attempt_version: &str,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<ProxyCostBackfillSummary>> {
@@ -1866,6 +1866,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                       OR COALESCE(inv.cache_input_tokens, 0) > 0
                       OR COALESCE(inv.reasoning_tokens, 0) > 0
                   )
+                  AND inv.cost IS NULL
                   AND inv.id > ?2
                   AND inv.id <= ?3
             ),
@@ -1967,29 +1968,33 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 billing_service_tier.as_deref(),
                 pricing_mode,
             );
-            let persisted_price_version = if cost_estimated && cost.is_some() {
-                price_version
-            } else {
-                Some(attempt_version.to_string())
+            let Some(cost) = cost else {
+                summary.skipped_unpriced_model += 1;
+                push_backfill_sample(
+                    &mut samples,
+                    format!("id={} model={} reason=unpriced_model", candidate.id, model),
+                );
+                continue;
             };
+            if !cost_estimated {
+                summary.skipped_unpriced_model += 1;
+                push_backfill_sample(
+                    &mut samples,
+                    format!("id={} model={} reason=unpriced_model", candidate.id, model),
+                );
+                continue;
+            }
             let update = ProxyCostBackfillUpdate {
                 id: candidate.id,
-                cost,
+                cost: Some(cost),
                 cost_estimated,
-                price_version: persisted_price_version,
+                price_version,
                 billing_service_tier,
                 upstream_account_kind,
                 upstream_base_url_host,
             };
             if !proxy_cost_backfill_candidate_needs_update(&candidate, &update) {
                 continue;
-            }
-            if cost.is_none() || !cost_estimated {
-                summary.skipped_unpriced_model += 1;
-                push_backfill_sample(
-                    &mut samples,
-                    format!("id={} model={} reason=unpriced_model", candidate.id, model),
-                );
             }
             updates.push(update);
         }
@@ -2020,6 +2025,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                         price_version = ?6
                     WHERE id = ?7
                       AND source = ?8
+                      AND cost IS NULL
                     "#,
                 )
                 .bind(update.billing_service_tier.as_deref())
