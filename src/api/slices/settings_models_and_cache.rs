@@ -1862,9 +1862,6 @@ pub(crate) struct ProxyCostBackfillUpdate {
     pub(crate) cost: Option<f64>,
     pub(crate) cost_estimated: bool,
     pub(crate) price_version: Option<String>,
-    pub(crate) billing_service_tier: Option<String>,
-    pub(crate) upstream_account_kind: Option<String>,
-    pub(crate) upstream_base_url_host: Option<String>,
 }
 
 #[derive(Debug, FromRow)]

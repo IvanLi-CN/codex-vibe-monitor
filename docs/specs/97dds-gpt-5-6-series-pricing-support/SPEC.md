@@ -50,7 +50,7 @@ scan/update/skip counters, cursor, and drained-or-continuing state.
 
 ## Requirements
 
-- The repo-managed catalog version must advance to `openai-standard-2026-07-31`.
+- The repo-managed catalog version must advance to `openai-standard-2026-09-20`.
 - The repo-managed catalog must contain:
   - `gpt-5.6-sol`: input `5.0`, output `30.0`, cache read `0.5`, cache write `6.25`
   - `gpt-5.6-terra`: input `2.0`, output `12.0`, cache read `0.20`, cache write `2.5`
@@ -107,7 +107,7 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 - Given a legacy pricing payload with only `cacheInputPer1m`, when the backend saves and reloads it, then `cacheReadPer1m` matches that value and `cacheInputPer1m` is still mirrored on response.
 - Given an existing SQLite database with legacy pricing rows, when the schema upgrade runs, then read pricing is preserved and no existing user-defined row is overwritten.
-- Given a new SQLite database, when the default catalog is loaded, then its version is `openai-standard-2026-07-31` and the Terra/Luna unit prices match the latest Standard short-context table.
+- Given a new SQLite database, when the default catalog is loaded, then its version is `openai-standard-2026-09-20` and the Terra/Luna unit prices match the latest Standard short-context table.
 - Given a repo-managed catalog at `openai-standard-2026-07-10` with unchanged official Terra or Luna rows, when startup loads the catalog, then all four unit prices are refreshed and the catalog version advances; any changed field, non-official row, or custom catalog version remains unchanged.
 - Given a new Terra or Luna invocation, when cost is estimated, then its cache read, cache write, and output buckets use the revised unit prices; existing invocation costs remain persisted truth and are never recomputed or rewritten.
 - Given `model=gpt-5.6-sol`, `input_tokens=1000`, `cached_tokens=400`, and `output_tokens=200`, when cost is estimated, then 600 prompt tokens bill at `6.25 / 1M`, 400 cached tokens bill at `0.5 / 1M`, and 200 output tokens bill at `30 / 1M`.

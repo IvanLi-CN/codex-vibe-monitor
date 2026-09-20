@@ -842,7 +842,7 @@ async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billi
     let payload: String = row.try_get("payload").expect("read standard payload");
     let payload_json: Value = serde_json::from_str(&payload).expect("decode standard payload JSON");
     assert_eq!(payload_json["serviceTier"], "default");
-    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], Value::Null);
 
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
@@ -852,7 +852,7 @@ async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billi
 }
 
 #[tokio::test]
-async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_tier() {
+async fn backfill_proxy_missing_costs_preserves_stale_standard_billing_service_tier() {
     let pool = test_current_schema_pool().await;
 
     sqlx::query(
@@ -885,7 +885,7 @@ async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_ti
     .bind(1_500_i64)
     .bind(None::<f64>)
     .bind(0_i64)
-    .bind(None::<&str>)
+    .bind("legacy-price-version")
     .bind(r#"{"endpoint":"/v1/responses","serviceTier":"default","billingServiceTier":"auto"}"#)
     .bind("{}")
     .execute(&pool)
@@ -915,17 +915,24 @@ async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_ti
     assert_eq!(summary.updated, 1);
     assert_eq!(summary.skipped_unpriced_model, 0);
 
-    let row = sqlx::query("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
-        .bind("proxy-standard-stale-billing-tier")
-        .fetch_one(&pool)
-        .await
-        .expect("query stale standard billing tier row");
+    let row =
+        sqlx::query("SELECT price_version, payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("proxy-standard-stale-billing-tier")
+            .fetch_one(&pool)
+            .await
+            .expect("query stale standard billing tier row");
 
     let payload: String = row.try_get("payload").expect("read stale standard payload");
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read stale standard price version")
+            .as_deref(),
+        Some("legacy-price-version")
+    );
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode stale standard payload JSON");
     assert_eq!(payload_json["serviceTier"], "default");
-    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "auto");
 
     let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
         .await
@@ -1051,12 +1058,9 @@ async fn backfill_proxy_missing_costs_reprices_api_keys_requested_tier_rows() {
     let payload: String = row.try_get("payload").expect("read api keys payload");
     let payload_json: Value = serde_json::from_str(&payload).expect("decode api keys payload JSON");
     assert_eq!(payload_json["serviceTier"], "default");
-    assert_eq!(payload_json["billingServiceTier"], "priority");
-    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
-    assert_eq!(
-        payload_json["upstreamBaseUrlHost"],
-        "api-keys.vendor.invalid"
-    );
+    assert!(payload_json.get("billingServiceTier").is_none());
+    assert!(payload_json.get("upstreamAccountKind").is_none());
+    assert!(payload_json.get("upstreamBaseUrlHost").is_none());
 }
 
 #[tokio::test]
@@ -1184,12 +1188,9 @@ async fn backfill_proxy_missing_costs_reprices_failed_api_keys_requested_tier_ro
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode failed api keys payload JSON");
     assert_eq!(payload_json["serviceTier"], "default");
-    assert_eq!(payload_json["billingServiceTier"], "priority");
-    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
-    assert_eq!(
-        payload_json["upstreamBaseUrlHost"],
-        "api-keys.vendor.invalid"
-    );
+    assert!(payload_json.get("billingServiceTier").is_none());
+    assert!(payload_json.get("upstreamAccountKind").is_none());
+    assert!(payload_json.get("upstreamBaseUrlHost").is_none());
 }
 
 #[tokio::test]
@@ -1351,7 +1352,7 @@ async fn backfill_proxy_missing_costs_prefers_payload_account_kind_snapshots_ove
         .expect("read api keys snapshot payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode api keys snapshot payload JSON");
-    assert_eq!(payload_json["billingServiceTier"], "priority");
+    assert_eq!(payload_json["billingServiceTier"], Value::Null);
     assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
     assert_eq!(
         payload_json["upstreamBaseUrlHost"],
@@ -1472,9 +1473,9 @@ async fn backfill_proxy_missing_costs_falls_back_to_safe_live_api_key_account_ki
         .expect("read safe live api keys payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode safe live api keys payload JSON");
-    assert_eq!(payload_json["billingServiceTier"], "priority");
-    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
-    assert_eq!(payload_json["upstreamBaseUrlHost"], "api-keys.safe.invalid");
+    assert!(payload_json.get("billingServiceTier").is_none());
+    assert!(payload_json.get("upstreamAccountKind").is_none());
+    assert!(payload_json.get("upstreamBaseUrlHost").is_none());
 }
 
 #[tokio::test]
@@ -1589,9 +1590,9 @@ async fn backfill_proxy_missing_costs_keeps_response_tier_when_live_account_crea
         .expect("read late live api keys payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode late live api keys payload JSON");
-    assert_eq!(payload_json["billingServiceTier"], "default");
-    assert_eq!(payload_json.get("upstreamAccountKind"), Some(&Value::Null));
-    assert_eq!(payload_json.get("upstreamBaseUrlHost"), Some(&Value::Null));
+    assert!(payload_json.get("billingServiceTier").is_none());
+    assert!(payload_json.get("upstreamAccountKind").is_none());
+    assert!(payload_json.get("upstreamBaseUrlHost").is_none());
 }
 
 #[tokio::test]
@@ -1682,7 +1683,8 @@ async fn backfill_proxy_missing_costs_keeps_non_api_keys_rows_on_response_tier_s
     let payload: String = row.try_get("payload").expect("read non-api-keys payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode non-api-keys payload JSON");
-    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert!(payload_json.get("billingServiceTier").is_none());
+    assert_eq!(payload_json["upstreamAccountKind"], "oauth_codex");
 }
 
 #[tokio::test]
