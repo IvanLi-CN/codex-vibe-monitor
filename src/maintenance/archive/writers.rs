@@ -289,6 +289,8 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
+            let _archive_lock =
+                super::super::retention::retention_archive_file_lock(&archive_path)?;
             let suffix = retention_temp_suffix();
             let work_path = PathBuf::from(format!("{}.{}.sqlite", batch.file_path, suffix));
             let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", batch.file_path, suffix));
@@ -340,6 +342,17 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 let _ = fs::remove_file(&temp_gzip_path);
                 return Err(err);
             }
+            let Some(admission) = super::super::retention::acquire_retention_write_admission(
+                "archive_public_id_backfill",
+            )
+            .await
+            else {
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_public_id_backfill",
+                ));
+            };
             fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
                 format!(
                     "failed to move pool_upstream_request_attempts archive batch into place: {} -> {}",
@@ -356,6 +369,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 .bind(batch.id)
                 .execute(pool)
                 .await?;
+            drop(admission);
         }
     }
 
