@@ -4130,6 +4130,16 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
         SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
     );
     assert_eq!(batch.get::<i64, _>("row_count"), 1);
+    let prepared_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count detail-prune recovery ledger rows");
+    assert_eq!(
+        prepared_count, 0,
+        "successful detail prune retires its ledger"
+    );
     assert!(
         crate::stats::load_completed_invocation_archive_paths(&pool)
             .await
@@ -4576,6 +4586,8 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
 async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-recovery-actionable-queue").await;
+    let recovery_archive_root = config.archive_dir.join("codex_invocations");
+    std::fs::create_dir_all(&recovery_archive_root).expect("create recovery archive root");
     for index in 0..32 {
         sqlx::query(
             r#"
@@ -4589,7 +4601,7 @@ async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() 
         )
         .bind(format!("unexpired-quarantine-{index:02}"))
         .bind(
-            temp_dir
+            recovery_archive_root
                 .join(format!("unexpired-quarantine-{index:02}.sqlite.gz"))
                 .to_string_lossy()
                 .to_string(),
@@ -4610,7 +4622,7 @@ async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() 
         "#,
     )
     .bind(
-        temp_dir
+        recovery_archive_root
             .join("missing-published.sqlite.gz")
             .to_string_lossy()
             .to_string(),
@@ -4618,6 +4630,11 @@ async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() 
     .execute(&pool)
     .await
     .expect("seed actionable published journal row");
+    std::fs::write(
+        recovery_archive_root.join("missing-published.sqlite.gz"),
+        b"not a valid archive",
+    )
+    .expect("write actionable published artifact");
 
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await

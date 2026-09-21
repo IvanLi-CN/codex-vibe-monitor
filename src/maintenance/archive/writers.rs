@@ -503,6 +503,11 @@ pub(crate) async fn archive_rows_into_month_batch(
     let suffix = retention_temp_suffix();
     let work_path = PathBuf::from(format!("{}.{}.sqlite", final_path.display(), suffix));
     let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", final_path.display(), suffix));
+    let existing_final_sha256 = if final_path.exists() {
+        Some(sha256_hex_file(&final_path)?)
+    } else {
+        None
+    };
 
     if work_path.exists() {
         let _ = fs::remove_file(&work_path);
@@ -651,6 +656,7 @@ pub(crate) async fn archive_rows_into_month_batch(
         month_key,
         &temp_gzip_path,
         &final_path,
+        existing_final_sha256.as_deref(),
     )
     .await
     {
@@ -688,6 +694,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     month_key: &str,
     temporary_file_path: &Path,
     final_file_path: &Path,
+    expected_existing_sha256: Option<&str>,
 ) -> Result<()> {
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
@@ -706,6 +713,17 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .unwrap_or_default();
     let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let current_existing_sha256 = if final_file_path.exists() {
+        Some(sha256_hex_file(final_file_path)?)
+    } else {
+        None
+    };
+    if current_existing_sha256.as_deref() != expected_existing_sha256 {
+        tx.rollback().await?;
+        return Err(anyhow::anyhow!(
+            "legacy archive changed while it was being prepared; retry required"
+        ));
+    }
     sqlx::query(
         r#"
         UPDATE archive_batches
@@ -1344,6 +1362,7 @@ mod tests {
             "2025-01",
             &missing_temp_path,
             &final_path,
+            None,
         )
         .await
         .expect_err("missing replacement file must roll back pending reactivation");
@@ -1362,5 +1381,49 @@ mod tests {
         assert_eq!(manifest.1.as_deref(), Some("2025-01-04"));
 
         let _ = fs::remove_file(&final_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_archive_replacement_rejects_a_stale_preparation_baseline() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-legacy-archive-baseline-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::create_dir_all(&root).expect("create archive test directory");
+        let final_path = root.join("archive.sqlite.gz");
+        let temporary_path = root.join("archive.next.tmp");
+        fs::write(&final_path, b"newer archive").expect("write newer archive");
+        fs::write(&temporary_path, b"stale prepared archive").expect("write stale archive");
+
+        let error = replace_legacy_archive_file_with_cleanup_serialization(
+            &pool,
+            "codex_invocations",
+            "2026-01",
+            &temporary_path,
+            &final_path,
+            Some(&format!("{:x}", Sha256::digest(b"older archive"))),
+        )
+        .await
+        .expect_err("stale baseline must not overwrite a newer archive");
+        assert!(error.to_string().contains("retry required"));
+        assert_eq!(
+            fs::read(&final_path).expect("read newer archive"),
+            b"newer archive"
+        );
+        assert!(
+            temporary_path.exists(),
+            "caller retains stale staging for retry cleanup"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

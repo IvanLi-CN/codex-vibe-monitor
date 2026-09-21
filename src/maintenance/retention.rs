@@ -3,6 +3,7 @@ use super::*;
 use futures_util::TryStreamExt;
 use sqlx::{FromRow, Row};
 use std::{
+    cell::RefCell,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -29,6 +30,7 @@ static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync
 
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
+    static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
 }
 
 #[cfg(test)]
@@ -140,8 +142,25 @@ fn retention_recovery_record_progress() {
         .expect("retention recovery health");
     health.state = "healthy".to_string();
     health.last_progress_at = Some(format_utc_iso(Utc::now()));
-    health.failure_stage = None;
-    health.failure_fingerprint = None;
+}
+
+fn retention_recovery_set_current_prepared_key(prepared_key: &str) {
+    let _ = RETENTION_CURRENT_PREPARED_KEY.try_with(|current| {
+        *current.borrow_mut() = Some(prepared_key.to_string());
+    });
+}
+
+fn retention_recovery_current_prepared_key() -> Option<String> {
+    RETENTION_CURRENT_PREPARED_KEY
+        .try_with(|current| current.borrow().clone())
+        .ok()
+        .flatten()
+}
+
+fn retention_recovery_clear_current_prepared_key() {
+    let _ = RETENTION_CURRENT_PREPARED_KEY.try_with(|current| {
+        *current.borrow_mut() = None;
+    });
 }
 
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
@@ -1007,6 +1026,27 @@ pub(crate) struct InvocationArchiveCandidate {
     pub(crate) response_raw_path: Option<String>,
 }
 
+async fn load_invocation_archive_candidates_by_ids(
+    pool: &Pool<Sqlite>,
+    ids: &[i64],
+) -> Result<Vec<InvocationArchiveCandidate>> {
+    let ids_json = serde_json::to_string(ids)?;
+    sqlx::query_as::<_, InvocationArchiveCandidate>(
+        r#"
+        SELECT id, invoke_id, occurred_at, source, status, input_tokens, output_tokens,
+               cache_input_tokens, reasoning_tokens, total_tokens, cost, first_token_ms,
+               payload, request_raw_path, response_raw_path
+        FROM codex_invocations
+        WHERE id IN (SELECT value FROM json_each(?1))
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(ids_json)
+    .fetch_all(pool)
+    .await
+    .context("failed to load invocation archive candidates")
+}
+
 #[derive(Debug, Clone)]
 struct RetentionPreparedArchiveDescriptor {
     prepared_key: String,
@@ -1372,11 +1412,13 @@ async fn retention_recovery_persist_latest_failure_best_effort(
     error: &anyhow::Error,
 ) {
     let persist_result = async {
-        let prepared_key = sqlx::query_scalar::<_, String>(
-            "SELECT prepared_key FROM retention_prepared_archives WHERE state IN ('preparing', 'published') ORDER BY updated_at DESC, id DESC LIMIT 1",
-        )
-        .fetch_optional(pool)
-        .await?;
+        let prepared_key = retention_recovery_current_prepared_key().or(
+            sqlx::query_scalar::<_, String>(
+                "SELECT prepared_key FROM retention_prepared_archives WHERE state IN ('preparing', 'published') ORDER BY updated_at DESC, id DESC LIMIT 1",
+            )
+            .fetch_optional(pool)
+            .await?,
+        );
         if let Some(prepared_key) = prepared_key {
             retention_recovery_persist_failure(pool, &prepared_key, stage, error).await?;
         } else {
@@ -1477,6 +1519,59 @@ async fn retention_recovery_verify_publication_tx(
     Ok(())
 }
 
+async fn verify_prepared_retention_archive_artifact(
+    pool: &Pool<Sqlite>,
+    descriptor: &RetentionPreparedArchiveDescriptor,
+    archive_path: &Path,
+    expected_sha256: &str,
+) -> Result<()> {
+    if descriptor.dataset != "codex_invocations" {
+        bail!("unsupported prepared archive dataset for recovery verification");
+    }
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.recovery.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    inflate_gzip_sqlite_file(archive_path, &temp_path)?;
+    let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
+    ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
+    let archive_ids =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
+            .fetch_all(&mut archive_db)
+            .await?;
+    let expected_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)?;
+    if archive_ids != expected_ids {
+        bail!("prepared archive source identity verification failed");
+    }
+    let archive_identity = invocation_archive_source_identity_sha256(
+        &mut archive_db,
+        InvocationArchiveIdentityDatabase::Main,
+        &archive_ids,
+    )
+    .await?;
+    archive_db.close().await?;
+    if archive_identity != descriptor.source_identity_sha256 {
+        bail!("prepared archive source identity verification failed");
+    }
+    let mut source_connection = pool.acquire().await?;
+    let source_identity = invocation_archive_source_identity_sha256(
+        &mut source_connection,
+        InvocationArchiveIdentityDatabase::Main,
+        &expected_ids,
+    )
+    .await?;
+    drop(source_connection);
+    if source_identity != descriptor.source_identity_sha256 {
+        bail!("prepared archive live source identity verification failed");
+    }
+    if sha256_hex_file(archive_path)? != expected_sha256 {
+        bail!("prepared archive artifact digest verification failed");
+    }
+    Ok(())
+}
+
 async fn retention_recovery_delete_tx(
     tx: &mut sqlx::SqliteConnection,
     prepared_key: &str,
@@ -1518,14 +1613,35 @@ async fn quarantine_published_retention_archive_if_unchanged(
     Ok(result.rows_affected() == 1)
 }
 
+fn retention_archive_path_is_owned(config: &AppConfig, path: &Path) -> bool {
+    let root = resolved_archive_dir(config).join("codex_invocations");
+    path.is_absolute()
+        && path.starts_with(&root)
+        && fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false)
+}
+
 async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
     retention_recovery_set_stage("legacy_reconcile");
-    let rows = sqlx::query_as::<_, (String, String, String, Option<String>, Option<String>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        ),
+    >(
         r#"
-        SELECT prepared_key, file_path, state, artifact_sha256, quarantined_at
+        SELECT prepared_key, file_path, state, artifact_sha256, quarantined_at,
+               source_ids_json, source_identity_sha256
         FROM retention_prepared_archives
         WHERE (
             state IN ('preparing', 'published')
@@ -1554,10 +1670,47 @@ async fn reconcile_retention_prepared_archives(
     .bind(RETENTION_RECOVERY_LEGACY_SCAN_BATCH as i64)
     .fetch_all(pool)
     .await?;
-    for (prepared_key, file_path, state, artifact_sha256, quarantined_at) in rows {
+    for (
+        prepared_key,
+        file_path,
+        state,
+        artifact_sha256,
+        quarantined_at,
+        source_ids_json,
+        source_identity_sha256,
+    ) in rows
+    {
         let path = Path::new(&file_path);
+        if !retention_archive_path_is_owned(config, path) {
+            if state == RETENTION_RECOVERY_STATE_PREPARING
+                || state == RETENTION_RECOVERY_STATE_PUBLISHED
+            {
+                let error = anyhow!("prepared archive path failed ownership verification");
+                retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
+                    .await?;
+            }
+            continue;
+        }
         if state == RETENTION_RECOVERY_STATE_PREPARING && path.is_file() {
             let actual_sha = sha256_hex_file(path)?;
+            let descriptor = RetentionPreparedArchiveDescriptor {
+                prepared_key: prepared_key.clone(),
+                dataset: "codex_invocations",
+                month_key: String::new(),
+                day_key: None,
+                part_key: None,
+                file_path: file_path.clone(),
+                source_ids_json,
+                source_identity_sha256,
+            };
+            if let Err(error) =
+                verify_prepared_retention_archive_artifact(pool, &descriptor, path, &actual_sha)
+                    .await
+            {
+                retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
+                    .await?;
+                continue;
+            }
             let Some(admission) =
                 acquire_retention_write_admission("retention_recovery_reconcile").await
             else {
@@ -1922,6 +2075,7 @@ async fn verify_legacy_retention_archive_segment(
     let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
+    ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
     let ids = sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
         .fetch_all(&mut archive_db)
         .await?;
@@ -2909,22 +3063,27 @@ pub(crate) async fn run_data_retention_maintenance(
     shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
     let defer_generation = retention_defer_generation();
-    let result = if let Some(shutdown) = shutdown {
-        RETENTION_SHUTDOWN
-            .scope(
-                shutdown.clone(),
-                run_data_retention_maintenance_with_task_run_prune(
-                    pool,
-                    config,
-                    dry_run_override,
-                    Some(shutdown),
-                ),
-            )
-            .await
-    } else {
-        run_data_retention_maintenance_with_task_run_prune(pool, config, dry_run_override, None)
-            .await
+    let run = async {
+        if let Some(shutdown) = shutdown {
+            RETENTION_SHUTDOWN
+                .scope(
+                    shutdown.clone(),
+                    run_data_retention_maintenance_with_task_run_prune(
+                        pool,
+                        config,
+                        dry_run_override,
+                        Some(shutdown),
+                    ),
+                )
+                .await
+        } else {
+            run_data_retention_maintenance_with_task_run_prune(pool, config, dry_run_override, None)
+                .await
+        }
     };
+    let result = RETENTION_CURRENT_PREPARED_KEY
+        .scope(RefCell::new(None), run)
+        .await;
     result.map(|mut summary| {
         summary.deferred = retention_defer_generation() != defer_generation;
         summary
@@ -3106,6 +3265,7 @@ async fn run_data_retention_maintenance_inner(
         return Ok(summary);
     }
 
+    retention_recovery_clear_current_prepared_key();
     let invocation_archive = if invocation_payload_retention_ready {
         match archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await {
             Ok(archive) => archive,
@@ -3137,6 +3297,7 @@ async fn run_data_retention_maintenance_inner(
         );
         (0, 0, 0)
     };
+    retention_recovery_clear_current_prepared_key();
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
@@ -4231,25 +4392,75 @@ pub(crate) async fn prune_old_invocation_details(
                     ]
                 })
                 .collect::<Vec<_>>();
-            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(
-                match archive_layout_for_dataset(config, spec.dataset) {
-                    ArchiveBatchLayout::LegacyMonth => {
-                        archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
-                    }
-                    ArchiveBatchLayout::SegmentV1 => {
-                        archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
-                    }
-                },
-            )?
+            let mut source_connection = pool.acquire().await?;
+            let source_identity_sha256 = invocation_archive_source_identity_sha256(
+                &mut source_connection,
+                InvocationArchiveIdentityDatabase::Main,
+                &ids,
+            )
+            .await?;
+            drop(source_connection);
+            let descriptor = retention_prepared_archive_descriptor(
+                config,
+                spec.dataset,
+                &group_key,
+                &load_invocation_archive_candidates_by_ids(pool, &ids).await?,
+                source_identity_sha256,
+            )?;
+            retention_recovery_set_current_prepared_key(&descriptor.prepared_key);
+            if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
+                if is_retention_write_deferred(&error) {
+                    retention_recovery_record_deferred("preparing");
+                    return Ok((rows_pruned, archive_batches, raw_files_removed));
+                }
+                retention_recovery_persist_failure(
+                    pool,
+                    &descriptor.prepared_key,
+                    "preparing",
+                    &error,
+                )
+                .await?;
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
+            }
+            let archive_result = match archive_layout_for_dataset(config, spec.dataset) {
+                ArchiveBatchLayout::LegacyMonth => {
+                    archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
+                }
+                ArchiveBatchLayout::SegmentV1 => {
+                    archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
+                }
+            };
+            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
             else {
                 return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
+            if archive_outcome.source_identity_sha256.as_deref()
+                != Some(descriptor.source_identity_sha256.as_str())
+            {
+                let error =
+                    anyhow!("retention prepared archive source identity verification failed");
+                retention_recovery_persist_failure(
+                    pool,
+                    &descriptor.prepared_key,
+                    "preparing",
+                    &error,
+                )
+                .await?;
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
+            }
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
                 Some(config.invocation_archive_ttl_days),
             )?;
             archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR;
+            retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
             let Some(admission) =
@@ -4264,6 +4475,12 @@ pub(crate) async fn prune_old_invocation_details(
                 tx.as_mut(),
                 spec.dataset,
                 &archive_outcome.file_path,
+            )
+            .await?;
+            retention_recovery_verify_publication_tx(
+                tx.as_mut(),
+                &descriptor,
+                &archive_outcome.sha256,
             )
             .await?;
             let mut query = QueryBuilder::<Sqlite>::new(
@@ -4291,6 +4508,7 @@ pub(crate) async fn prune_old_invocation_details(
             {
                 record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
             }
+            retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
             let commit_started = Instant::now();
             tx.commit().await?;
             retention_record_commit!(
@@ -4457,6 +4675,7 @@ pub(crate) async fn archive_old_invocations(
                 &group,
                 source_identity_sha256,
             )?;
+            retention_recovery_set_current_prepared_key(&descriptor.prepared_key);
             if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("preparing");

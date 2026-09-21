@@ -4345,9 +4345,26 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
 pub(crate) async fn ensure_codex_invocations_archive_schema(
     conn: &mut SqliteConnection,
 ) -> Result<()> {
-    let archive_columns =
-        load_sqlite_table_columns_from_connection(conn, Some("archive_db"), "codex_invocations")
-            .await?;
+    ensure_codex_invocations_archive_schema_in_schema(conn, "archive_db").await
+}
+
+pub(crate) async fn ensure_codex_invocations_archive_schema_direct(
+    conn: &mut SqliteConnection,
+) -> Result<()> {
+    ensure_codex_invocations_archive_schema_in_schema(conn, "main").await
+}
+
+async fn ensure_codex_invocations_archive_schema_in_schema(
+    conn: &mut SqliteConnection,
+    schema: &str,
+) -> Result<()> {
+    let table_prefix = if schema == "main" { "" } else { "archive_db." };
+    let archive_columns = load_sqlite_table_columns_from_connection(
+        conn,
+        (schema != "main").then_some(schema),
+        "codex_invocations",
+    )
+    .await?;
     for (column, ty) in [
         ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
@@ -4361,18 +4378,18 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
     ] {
         if !archive_columns.contains(column) {
             let statement =
-                format!("ALTER TABLE archive_db.codex_invocations ADD COLUMN {column} {ty}");
+                format!("ALTER TABLE {table_prefix}codex_invocations ADD COLUMN {column} {ty}");
             sqlx::query(&statement)
                 .execute(&mut *conn)
                 .await
                 .with_context(|| {
-                    format!("failed to add archive_db.codex_invocations column {column}")
+                    format!("failed to add {table_prefix}codex_invocations column {column}")
                 })?;
         }
     }
-    sqlx::query(
+    sqlx::query(&format!(
         r#"
-        UPDATE archive_db.codex_invocations
+        UPDATE {table_prefix}codex_invocations
         SET request_raw_codec = CASE
                 WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
                 ELSE 'identity'
@@ -4380,13 +4397,13 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
         WHERE COALESCE(TRIM(request_raw_codec), '') = ''
            OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
         "#,
-    )
+    ))
     .execute(&mut *conn)
     .await
     .context("failed to backfill archive_db.codex_invocations request_raw_codec")?;
-    sqlx::query(
+    sqlx::query(&format!(
         r#"
-        UPDATE archive_db.codex_invocations
+        UPDATE {table_prefix}codex_invocations
         SET response_raw_codec = CASE
                 WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
                 ELSE 'identity'
@@ -4394,7 +4411,7 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
         WHERE COALESCE(TRIM(response_raw_codec), '') = ''
            OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
         "#,
-    )
+    ))
     .execute(&mut *conn)
     .await
     .context("failed to backfill archive_db.codex_invocations response_raw_codec")?;
