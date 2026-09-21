@@ -2937,15 +2937,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
 
     let mut changed_path_count = 0_usize;
     if !proven_mirrors.is_empty() || !ambiguous_mirrors.is_empty() {
-        let Some(admission) = super::super::retention::acquire_retention_write_admission(
-            "summary_legacy_detail_mirror_reconcile",
-        )
-        .await
-        else {
-            return Err(super::super::retention::retention_write_deferred(
-                "summary_legacy_detail_mirror_reconcile",
-            ));
-        };
+        // The startup-backfill caller holds the P2 SQLite write permit before entering this stage.
         let mut tx = pool.begin().await?;
         for candidate in proven_mirrors {
             changed_path_count += sqlx::query(
@@ -2978,7 +2970,6 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
             .rows_affected() as usize;
         }
         tx.commit().await?;
-        drop(admission);
     }
 
     Ok(LegacyDetailMirrorRecoveryWindowResult {
@@ -3159,15 +3150,7 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
             .map(|candidate| candidate.file_path.as_str()),
     )?;
     let started_at = Instant::now();
-    let Some(admission) = super::super::retention::acquire_retention_write_admission(
-        "historical_rollup_startup_replay",
-    )
-    .await
-    else {
-        return Err(super::super::retention::retention_write_deferred(
-            "historical_rollup_startup_replay",
-        ));
-    };
+    // The startup-backfill caller holds the P2 SQLite write permit before entering this stage.
     let mut tx = pool.begin().await?;
     let mut next_cursor_id = if wrapped { 0 } else { cursor_id };
     let mut scanned_archive_batches = 0_usize;
@@ -3240,7 +3223,6 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         next_cursor_id = next_cursor_id.max(candidate.id);
     }
     tx.commit().await?;
-    drop(admission);
 
     Ok(HistoricalRollupStartupWindowResult {
         summary: HistoricalRollupMaterializationSummary {
