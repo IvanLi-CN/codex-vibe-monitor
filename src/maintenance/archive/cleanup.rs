@@ -329,6 +329,8 @@ async fn stage_archive_batch_deletion(
     expected_sha256: &str,
     source_safe_start: Option<NaiveDate>,
 ) -> Result<bool> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
+        .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?;
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("archive_cleanup_stage").await
     else {
@@ -3810,6 +3812,9 @@ pub(crate) async fn compact_old_quota_snapshots(
                     .map(|candidate| candidate.timestamp_value.as_str()),
             )?;
             let prepare_elapsed = prepare_started.elapsed();
+            let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(
+                &archive_outcome.file_path,
+            ))?;
             let Some(admission) =
                 super::super::retention::acquire_retention_write_admission("quota_compaction")
                     .await
@@ -3818,6 +3823,35 @@ pub(crate) async fn compact_old_quota_snapshots(
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
+            let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+            )
+            .bind(spec.dataset)
+            .bind(&archive_outcome.month_key)
+            .bind(&archive_outcome.file_path)
+            .fetch_one(tx.as_mut())
+            .await?;
+            if cleanup_state
+                .as_deref()
+                .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
+            {
+                tx.rollback().await?;
+                drop(admission);
+                return Ok((rows_archived, archive_batches));
+            }
+            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
+                Ok(value) => value,
+                Err(_) => {
+                    tx.rollback().await?;
+                    drop(admission);
+                    return Ok((rows_archived, archive_batches));
+                }
+            };
+            if actual_sha256 != archive_outcome.sha256 {
+                tx.rollback().await?;
+                drop(admission);
+                return Ok((rows_archived, archive_batches));
+            }
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             let commit_started = Instant::now();

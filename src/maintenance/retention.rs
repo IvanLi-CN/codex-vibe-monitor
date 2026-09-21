@@ -5397,12 +5397,42 @@ pub(crate) async fn archive_timestamped_dataset(
                 )?;
             }
             let prepare_elapsed = prepare_started.elapsed();
+            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let Some(admission) = acquire_retention_write_admission("timestamped_archive").await
             else {
                 return Ok((rows_archived, archive_batches));
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
+            let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+            )
+            .bind(spec.dataset)
+            .bind(&archive_outcome.month_key)
+            .bind(&archive_outcome.file_path)
+            .fetch_one(tx.as_mut())
+            .await?;
+            if cleanup_state
+                .as_deref()
+                .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
+            {
+                tx.rollback().await?;
+                drop(admission);
+                return Ok((rows_archived, archive_batches));
+            }
+            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
+                Ok(value) => value,
+                Err(_) => {
+                    tx.rollback().await?;
+                    drop(admission);
+                    return Ok((rows_archived, archive_batches));
+                }
+            };
+            if actual_sha256 != archive_outcome.sha256 {
+                tx.rollback().await?;
+                drop(admission);
+                return Ok((rows_archived, archive_batches));
+            }
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             if spec.dataset == "pool_upstream_request_attempts" {
                 let archive_batch_id = load_archive_batch_id_for_file_tx(
