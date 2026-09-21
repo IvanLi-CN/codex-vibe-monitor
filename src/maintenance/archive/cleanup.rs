@@ -3829,8 +3829,9 @@ pub(crate) async fn compact_old_quota_snapshots(
             .bind(spec.dataset)
             .bind(&archive_outcome.month_key)
             .bind(&archive_outcome.file_path)
-            .fetch_one(tx.as_mut())
-            .await?;
+            .fetch_optional(tx.as_mut())
+            .await?
+            .flatten();
             if cleanup_state
                 .as_deref()
                 .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
