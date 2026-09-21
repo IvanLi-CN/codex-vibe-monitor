@@ -27,7 +27,7 @@
 ### REQ-ARR-002
 
 - The system MUST persist bounded recovery state for every Prepared Archive and resume it automatically after process interruption, archive I/O failure, or SQLite admission deferral.
-- A recovery pass MAY reuse an artifact only after exact source-identity and digest verification. An unverified artifact MUST NOT authorize source or raw deletion.
+- A recovery pass MAY reuse an artifact only after exact source-identity and digest verification. Invocation identity covers every archive-column value, including its SQLite storage type; both the live source rows and the rows in the artifact MUST match. An unverified artifact MUST NOT authorize source or raw deletion.
 - A legacy or unmatched artifact MUST be handled by a resumable, bounded reconciliation cursor. It is retained as quarantined evidence for 24 hours and may then be removed only when it matches neither a Prepared Archive nor a committed manifest.
 
 ### REQ-ARR-003

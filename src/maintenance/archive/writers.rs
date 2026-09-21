@@ -519,6 +519,7 @@ pub(crate) async fn archive_rows_into_month_batch(
     let row_count = if spec.dataset == "pool_upstream_request_attempts" {
         archive_pool_upstream_request_attempt_rows_into_month_batch(pool, spec, ids, &work_path)
             .await
+            .map(|(count, upstream_last_activity)| (count, upstream_last_activity, None))
     } else {
         async {
         let mut conn = pool.acquire().await?;
@@ -599,16 +600,32 @@ pub(crate) async fn archive_rows_into_month_batch(
             .fetch_one(&mut *conn)
             .await
             .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
+        let source_identity_sha256 = if spec.dataset == "codex_invocations" {
+            Some(
+                super::super::retention::invocation_archive_source_identity_sha256(
+                    &mut conn,
+                    super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+                    ids,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         sqlx::query("DETACH DATABASE archive_db")
             .execute(&mut *conn)
             .await
             .context("failed to detach archive database")?;
-        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
+        Ok::<(i64, Vec<(i64, String)>, Option<String>), anyhow::Error>((
+            row_count,
+            upstream_last_activity,
+            source_identity_sha256,
+        ))
     }
         .await
     };
 
-    let (result, upstream_last_activity) = match row_count {
+    let (result, upstream_last_activity, source_identity_sha256) = match row_count {
         Ok(values) => values,
         Err(err) => {
             let _ = fs::remove_file(&work_path);
@@ -650,6 +667,7 @@ pub(crate) async fn archive_rows_into_month_batch(
         part_key: None,
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
+        source_identity_sha256,
         row_count: result,
         upstream_last_activity,
         coverage_start_at: None,
@@ -846,11 +864,21 @@ pub(crate) async fn archive_rows_into_segment_batch(
             .fetch_one(&mut *conn)
             .await
             .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
+        let source_identity_sha256 = super::super::retention::invocation_archive_source_identity_sha256(
+            &mut conn,
+            super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+            ids,
+        )
+        .await?;
         sqlx::query("DETACH DATABASE archive_db")
             .execute(&mut *conn)
             .await
             .context("failed to detach archive database")?;
-        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
+        Ok::<(i64, Vec<(i64, String)>, String), anyhow::Error>((
+            row_count,
+            upstream_last_activity,
+            source_identity_sha256,
+        ))
     }
     .await?;
 
@@ -867,6 +895,7 @@ pub(crate) async fn archive_rows_into_segment_batch(
         part_key: Some(part_key),
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
+        source_identity_sha256: Some(row_count.2),
         row_count: row_count.0,
         upstream_last_activity: row_count.1,
         coverage_start_at: None,

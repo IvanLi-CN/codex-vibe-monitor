@@ -1796,6 +1796,7 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "Orphan sweep",
     "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile":
       "Legacy reconciliation",
+    "system.status.runtimePressure.retentionRecovery.stages.status_refresh": "Status refresh",
     "system.status.runtimePressure.retentionRecovery.backlog": "Expired backlog",
     "system.status.runtimePressure.retentionRecovery.backlogHint": "Oldest backlog age {{age}}s.",
     "system.status.runtimePressure.retentionRecovery.prepared": "Prepared / quarantined artifacts",
@@ -4984,6 +4985,7 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.stages.finalizing": "最终化",
     "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "孤儿清扫",
     "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile": "遗留对账",
+    "system.status.runtimePressure.retentionRecovery.stages.status_refresh": "状态刷新",
     "system.status.runtimePressure.retentionRecovery.backlog": "过期积压",
     "system.status.runtimePressure.retentionRecovery.backlogHint": "最旧积压已存在 {{age}} 秒。",
     "system.status.runtimePressure.retentionRecovery.prepared": "已准备 / 已隔离产物",

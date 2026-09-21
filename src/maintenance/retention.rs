@@ -1,6 +1,7 @@
 use super::*;
 
-use sqlx::FromRow;
+use futures_util::TryStreamExt;
+use sqlx::{FromRow, Row};
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -28,6 +29,12 @@ static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync
 
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
+        std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
 }
 
 static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
@@ -154,6 +161,41 @@ fn retention_recovery_record_deferred(stage: &'static str) {
         .expect("retention recovery health");
     health.state = "deferred".to_string();
     health.stage = Some(stage.to_string());
+}
+
+fn retention_recovery_log_event(
+    level: tracing::Level,
+    operation: &'static str,
+    message: &'static str,
+) {
+    let health = retention_recovery_health_snapshot();
+    macro_rules! emit {
+        ($level:expr) => {
+            tracing::event!(
+                $level,
+                operation = operation,
+                message = message,
+                retention_recovery_state = %health.state,
+                retention_recovery_stage = ?health.stage,
+                retention_recovery_prepared_count = health.prepared_count,
+                retention_recovery_quarantined_count = health.quarantined_count,
+                retention_recovery_expired_backlog_count = health.expired_backlog_count,
+                retention_recovery_oldest_backlog_age_secs = ?health.oldest_backlog_age_secs,
+                retention_recovery_last_progress_at = ?health.last_progress_at,
+                retention_recovery_next_retry_at = ?health.next_retry_at,
+                retention_recovery_failure_stage = ?health.failure_stage,
+                retention_recovery_failure_fingerprint = ?health.failure_fingerprint,
+                "retention recovery diagnostics"
+            )
+        };
+    }
+    match level {
+        tracing::Level::ERROR => emit!(tracing::Level::ERROR),
+        tracing::Level::WARN => emit!(tracing::Level::WARN),
+        tracing::Level::INFO => emit!(tracing::Level::INFO),
+        tracing::Level::DEBUG => emit!(tracing::Level::DEBUG),
+        tracing::Level::TRACE => emit!(tracing::Level::TRACE),
+    }
 }
 
 #[derive(Debug)]
@@ -523,6 +565,13 @@ pub(super) async fn acquire_retention_write_admission(
         retention_record_defer(operation, reason);
         return None;
     }
+    #[cfg(test)]
+    let coordinator = RETENTION_TEST_WRITE_COORDINATOR
+        .try_with(std::sync::Arc::clone)
+        .unwrap_or_else(|_| {
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        });
+    #[cfg(not(test))]
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {
         Ok(shutdown) => {
@@ -540,10 +589,7 @@ pub(super) async fn acquire_retention_write_admission(
         retention_record_defer(operation, "shutdown");
         return None;
     };
-    let coordinator_snapshot =
-        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .snapshot()
-            .await;
+    let coordinator_snapshot = coordinator.snapshot().await;
     match pressure_gate.try_begin_background(operation) {
         Ok(pressure_permit) => Some(RetentionWriteAdmission {
             write_permit,
@@ -871,6 +917,7 @@ pub(crate) struct ArchiveBatchOutcome {
     pub(crate) part_key: Option<String>,
     pub(crate) file_path: String,
     pub(crate) sha256: String,
+    pub(crate) source_identity_sha256: Option<String>,
     pub(crate) row_count: i64,
     pub(crate) upstream_last_activity: Vec<(i64, String)>,
     pub(crate) coverage_start_at: Option<String>,
@@ -934,33 +981,88 @@ struct RetentionPreparedArchiveDescriptor {
     source_identity_sha256: String,
 }
 
-fn invocation_archive_identity_sha256(candidates: &[InvocationArchiveCandidate]) -> Result<String> {
-    invocation_archive_identity_for_rows(
-        candidates
-            .iter()
-            .map(|candidate| {
-                (
-                    candidate.id,
-                    candidate.invoke_id.clone(),
-                    candidate.occurred_at.clone(),
-                )
-            })
-            .collect(),
-    )
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum InvocationArchiveIdentityDatabase {
+    Main,
+    Archive,
 }
 
-fn invocation_archive_identity_for_rows(
-    mut identities: Vec<(i64, String, String)>,
+impl InvocationArchiveIdentityDatabase {
+    fn table_name(self) -> &'static str {
+        match self {
+            Self::Main => "main.codex_invocations",
+            Self::Archive => "archive_db.codex_invocations",
+        }
+    }
+}
+
+fn hash_identity_component(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+pub(crate) async fn invocation_archive_source_identity_sha256(
+    connection: &mut sqlx::SqliteConnection,
+    database: InvocationArchiveIdentityDatabase,
+    ids: &[i64],
 ) -> Result<String> {
-    identities.sort_by_key(|(id, _, _)| *id);
+    if ids.is_empty() {
+        bail!("retention archive source identity requires at least one row");
+    }
+
+    let columns = CODEX_INVOCATIONS_ARCHIVE_COLUMNS
+        .split(", ")
+        .collect::<Vec<_>>();
+    let table_name = database.table_name();
+    let mut query = sqlx::QueryBuilder::<Sqlite>::new("SELECT ");
+    for (index, column) in columns.iter().enumerate() {
+        if index > 0 {
+            query.push(", ");
+        }
+        query
+            .push("typeof(")
+            .push(table_name)
+            .push(".")
+            .push(*column)
+            .push("), CAST(")
+            .push(table_name)
+            .push(".")
+            .push(*column)
+            .push(" AS BLOB)");
+    }
+    query
+        .push(" FROM ")
+        .push(table_name)
+        .push(" WHERE id IN (SELECT value FROM json_each(")
+        .push_bind(serde_json::to_string(ids).context("encode retention archive identity ids")?)
+        .push(")) ORDER BY id ASC");
+
+    // Length framing and SQLite storage classes keep NULL, text, numeric, and blob values distinct.
     let mut hasher = Sha256::new();
-    for (id, invoke_id, occurred_at) in identities {
-        hasher.update(id.to_be_bytes());
-        hasher.update([0]);
-        hasher.update(invoke_id.as_bytes());
-        hasher.update([0]);
-        hasher.update(occurred_at.as_bytes());
+    hasher.update(b"codex-vibe-monitor/retention-source-identity/v2\0");
+    hasher.update((ids.len() as u64).to_be_bytes());
+    let mut row_count = 0usize;
+    let mut rows = query.build().fetch(&mut *connection);
+    while let Some(row) = rows.try_next().await? {
+        row_count += 1;
+        for (index, column) in columns.iter().enumerate() {
+            let sqlite_type = row.try_get::<String, _>(index * 2)?;
+            let value = row.try_get::<Option<Vec<u8>>, _>(index * 2 + 1)?;
+            hash_identity_component(&mut hasher, column.as_bytes());
+            hash_identity_component(&mut hasher, sqlite_type.as_bytes());
+            match value {
+                Some(value) => {
+                    hasher.update([1]);
+                    hash_identity_component(&mut hasher, &value);
+                }
+                None => hasher.update([0]),
+            }
+        }
         hasher.update([0xff]);
+    }
+
+    if row_count != ids.len() {
+        bail!("retention archive source identity verification failed: source row count changed");
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
@@ -970,6 +1072,7 @@ fn retention_prepared_archive_descriptor(
     dataset: &'static str,
     group_key: &str,
     candidates: &[InvocationArchiveCandidate],
+    source_identity_sha256: String,
 ) -> Result<RetentionPreparedArchiveDescriptor> {
     let mut ids = candidates
         .iter()
@@ -980,7 +1083,6 @@ fn retention_prepared_archive_descriptor(
     if ids.is_empty() {
         bail!("retention prepared archive requires source ids");
     }
-    let identity_sha256 = invocation_archive_identity_sha256(candidates)?;
     let source_ids_json =
         serde_json::to_string(&ids).context("encode retention prepared archive source ids")?;
     let layout = archive_layout_for_dataset(config, dataset);
@@ -1012,14 +1114,14 @@ fn retention_prepared_archive_descriptor(
         }
     };
     Ok(RetentionPreparedArchiveDescriptor {
-        prepared_key: format!("{dataset}:{file_path}:{identity_sha256}"),
+        prepared_key: format!("{dataset}:{file_path}:{source_identity_sha256}"),
         dataset,
         month_key,
         day_key,
         part_key,
         file_path,
         source_ids_json,
-        source_identity_sha256: identity_sha256,
+        source_identity_sha256,
     })
 }
 
@@ -1246,10 +1348,10 @@ async fn retention_recovery_persist_latest_failure_best_effort(
         } else {
             retention_recovery_record_failure(stage, error);
         }
-        warn!(
-            stage,
-            failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
-            "retention recovery failure state could not be persisted; continuing independent stages"
+        retention_recovery_log_event(
+            tracing::Level::WARN,
+            "failure_persist",
+            "retention recovery failure state could not be persisted; continuing independent stages",
         );
     }
 }
@@ -1293,7 +1395,6 @@ async fn retention_recovery_mark_published(
 async fn retention_recovery_verify_publication_tx(
     tx: &mut sqlx::SqliteConnection,
     descriptor: &RetentionPreparedArchiveDescriptor,
-    candidates: &[InvocationArchiveCandidate],
     artifact_sha256: &str,
 ) -> Result<()> {
     let journal_identity = sqlx::query_scalar::<_, String>(
@@ -1303,9 +1404,7 @@ async fn retention_recovery_verify_publication_tx(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| anyhow!("published retention archive journal entry is missing"))?;
-    if journal_identity != descriptor.source_identity_sha256
-        || invocation_archive_identity_sha256(candidates)? != journal_identity
-    {
+    if journal_identity != descriptor.source_identity_sha256 {
         bail!("retention prepared archive source identity verification failed");
     }
     let expected_sha = sqlx::query_scalar::<_, Option<String>>(
@@ -1320,27 +1419,16 @@ async fn retention_recovery_verify_publication_tx(
     }
     let source_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)
         .context("decode retention prepared archive source ids")?;
-    let mut rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, invoke_id, occurred_at FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
+    let source_identity = invocation_archive_source_identity_sha256(
+        tx,
+        InvocationArchiveIdentityDatabase::Main,
+        &source_ids,
     )
-    .bind(&descriptor.source_ids_json)
-    .fetch_all(&mut *tx)
     .await?;
-    rows.sort_by_key(|(id, _, _)| *id);
-    if rows.len() != source_ids.len() {
-        bail!("retention prepared archive source rows changed before publication");
-    }
-    let mut hasher = Sha256::new();
-    for (id, invoke_id, occurred_at) in rows {
-        hasher.update(id.to_be_bytes());
-        hasher.update([0]);
-        hasher.update(invoke_id.as_bytes());
-        hasher.update([0]);
-        hasher.update(occurred_at.as_bytes());
-        hasher.update([0xff]);
-    }
-    if format!("{:x}", hasher.finalize()) != journal_identity {
-        bail!("retention prepared archive source rows no longer match journal");
+    if source_identity != journal_identity {
+        bail!(
+            "retention prepared archive source identity verification failed: live rows no longer match journal"
+        );
     }
     Ok(())
 }
@@ -1732,28 +1820,29 @@ async fn verify_legacy_retention_archive_segment(
     let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
-    let archived_rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, invoke_id, occurred_at FROM codex_invocations ORDER BY id ASC",
-    )
-    .fetch_all(&mut archive_db)
-    .await?;
-    archive_db.close().await?;
-    let ids = archived_rows
-        .iter()
-        .map(|(id, _, _)| *id)
-        .collect::<Vec<_>>();
+    let ids = sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC")
+        .fetch_all(&mut archive_db)
+        .await?;
     if ids.is_empty() || archive_segment_part_key_for_ids(&ids).ok().as_deref() != Some(part_key) {
         return Ok(None);
     }
-    let source_ids_json = serde_json::to_string(&ids)?;
-    let mut source_rows = sqlx::query_as::<_, (i64, String, String)>(
-        "SELECT id, invoke_id, occurred_at FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id ASC",
+    let archive_identity = invocation_archive_source_identity_sha256(
+        &mut archive_db,
+        InvocationArchiveIdentityDatabase::Main,
+        &ids,
     )
-    .bind(&source_ids_json)
-    .fetch_all(pool)
     .await?;
-    source_rows.sort_by_key(|(id, _, _)| *id);
-    if source_rows != archived_rows {
+    archive_db.close().await?;
+    let source_ids_json = serde_json::to_string(&ids)?;
+    let mut source_connection = pool.acquire().await?;
+    let source_identity = invocation_archive_source_identity_sha256(
+        &mut source_connection,
+        InvocationArchiveIdentityDatabase::Main,
+        &ids,
+    )
+    .await?;
+    drop(source_connection);
+    if source_identity != archive_identity {
         return Ok(None);
     }
     let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
@@ -1769,17 +1858,22 @@ async fn verify_legacy_retention_archive_segment(
     .bind(&source_ids_json)
     .fetch_all(pool)
     .await?;
-    let descriptor =
-        retention_prepared_archive_descriptor(config, "codex_invocations", &day_key, &candidates)?;
+    if candidates.len() != ids.len() {
+        return Ok(None);
+    }
+    let descriptor = retention_prepared_archive_descriptor(
+        config,
+        "codex_invocations",
+        &day_key,
+        &candidates,
+        source_identity,
+    )?;
     if descriptor.file_path != archive_path.to_string_lossy()
         || descriptor.part_key.as_deref() != Some(part_key)
     {
         return Ok(None);
     }
-    let identity_sha256 = invocation_archive_identity_for_rows(source_rows)?;
-    if identity_sha256 != descriptor.source_identity_sha256
-        || sha256_hex_file(archive_path)? != expected_sha256
-    {
+    if sha256_hex_file(archive_path)? != expected_sha256 {
         return Ok(None);
     }
     Ok(Some((descriptor, expected_sha256.to_string())))
@@ -2794,17 +2888,19 @@ async fn run_data_retention_maintenance_inner(
         if let Err(error) = reconcile_retention_prepared_archives(pool, config).await {
             retention_recovery_persist_latest_failure_best_effort(pool, "legacy_reconcile", &error)
                 .await;
-            warn!(
-                failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
-                "retention prepared archive reconciliation deferred"
+            retention_recovery_log_event(
+                tracing::Level::WARN,
+                "prepared_reconcile",
+                "retention prepared archive reconciliation deferred",
             );
         }
         if let Err(error) = reconcile_legacy_retention_archive_segments(pool, config).await {
             retention_recovery_persist_latest_failure_best_effort(pool, "legacy_reconcile", &error)
                 .await;
-            warn!(
-                failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
-                "legacy retention archive reconciliation deferred"
+            retention_recovery_log_event(
+                tracing::Level::WARN,
+                "legacy_reconcile",
+                "legacy retention archive reconciliation deferred",
             );
         }
     }
@@ -2823,9 +2919,10 @@ async fn run_data_retention_maintenance_inner(
                 retention_recovery_persist_latest_failure_best_effort(pool, "orphan_sweep", &error)
                     .await;
             }
-            warn!(
-                failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
-                "raw orphan sweep deferred; continuing independent retention stages"
+            retention_recovery_log_event(
+                tracing::Level::WARN,
+                "orphan_sweep",
+                "raw orphan sweep deferred; continuing independent retention stages",
             );
         }
     }
@@ -2921,9 +3018,10 @@ async fn run_data_retention_maintenance_inner(
                     )
                     .await;
                 }
-                warn!(
-                    failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
-                    "invocation archive stage failed; continuing independent retention stages"
+                retention_recovery_log_event(
+                    tracing::Level::WARN,
+                    "invocation_archive",
+                    "invocation archive stage failed; continuing independent retention stages",
                 );
                 (0, 0, 0)
             }
@@ -2939,7 +3037,21 @@ async fn run_data_retention_maintenance_inner(
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
     if !dry_run {
-        retention_recovery_refresh_counts(pool, config).await?;
+        retention_recovery_set_stage("status_refresh");
+        if let Err(error) = retention_recovery_refresh_counts(pool, config).await {
+            retention_recovery_record_failure("status_refresh", &error);
+            retention_recovery_log_event(
+                tracing::Level::WARN,
+                "status_refresh",
+                "retention recovery status refresh failed; continuing independent retention stages",
+            );
+        } else {
+            retention_recovery_log_event(
+                tracing::Level::INFO,
+                "status_refresh",
+                "retention recovery status refreshed",
+            );
+        }
     }
     if !dry_run && (pruned.1 > 0 || invocation_archive.1 > 0) {
         let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, config, false)
@@ -4221,9 +4333,26 @@ pub(crate) async fn archive_old_invocations(
             let group = take_retention_micro_batch(group, |candidate| {
                 candidate.payload.as_deref().map_or(256, str::len).max(1)
             });
+            let ids = group
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            let mut source_connection = pool.acquire().await?;
+            let source_identity_sha256 = invocation_archive_source_identity_sha256(
+                &mut source_connection,
+                InvocationArchiveIdentityDatabase::Main,
+                &ids,
+            )
+            .await?;
+            drop(source_connection);
             let prepare_started = Instant::now();
-            let descriptor =
-                retention_prepared_archive_descriptor(config, spec.dataset, &group_key, &group)?;
+            let descriptor = retention_prepared_archive_descriptor(
+                config,
+                spec.dataset,
+                &group_key,
+                &group,
+                source_identity_sha256,
+            )?;
             if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("preparing");
@@ -4248,10 +4377,6 @@ pub(crate) async fn archive_old_invocations(
                 })
                 .collect::<Vec<_>>();
 
-            let ids = group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
             let materialized_rows = group
                 .iter()
                 .map(invocation_archive_candidate_to_hourly_source_record)
@@ -4283,6 +4408,20 @@ pub(crate) async fn archive_old_invocations(
             }) else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
+            if archive_outcome.source_identity_sha256.as_deref()
+                != Some(descriptor.source_identity_sha256.as_str())
+            {
+                let error =
+                    anyhow!("retention prepared archive source identity verification failed");
+                retention_recovery_persist_failure(
+                    pool,
+                    &descriptor.prepared_key,
+                    "preparing",
+                    &error,
+                )
+                .await?;
+                return Err(error);
+            }
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
@@ -4411,7 +4550,6 @@ pub(crate) async fn archive_old_invocations(
             retention_recovery_verify_publication_tx(
                 tx.as_mut(),
                 &descriptor,
-                &group,
                 &archive_outcome.sha256,
             )
             .await?;

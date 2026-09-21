@@ -2031,7 +2031,7 @@ function systemStatus() {
               : "healthy",
         stage:
           runtimeState === "degraded"
-            ? "finalizing"
+            ? "status_refresh"
             : runtimeState === "deferred"
               ? "publishing"
               : "orphan_sweep",
@@ -2041,7 +2041,7 @@ function systemStatus() {
         oldestBacklogAgeSecs: runtimeState === "healthy" ? undefined : 86_400,
         lastProgressAt: "2026-09-21T03:00:00Z",
         nextRetryAt: runtimeState === "healthy" ? undefined : "2026-09-21T03:05:00Z",
-        failureStage: runtimeState === "degraded" ? "finalizing" : undefined,
+        failureStage: runtimeState === "degraded" ? "status_refresh" : undefined,
         failureFingerprint: runtimeState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
       },
       dashboardProjection: {

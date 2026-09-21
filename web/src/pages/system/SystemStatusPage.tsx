@@ -11,6 +11,7 @@ const RETENTION_RECOVERY_STAGES = new Set([
   "finalizing",
   "orphan_sweep",
   "legacy_reconcile",
+  "status_refresh",
 ]);
 
 function formatBytes(value: number): string {

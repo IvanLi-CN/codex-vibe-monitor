@@ -380,18 +380,53 @@ async fn retention_recovery_persistence_failure_does_not_block_orphan_sweep() {
     let orphan = config.proxy_raw_dir.join("aged-orphan.bin");
     fs::write(&orphan, b"safe-to-sweep").expect("write aged orphan");
     set_file_mtime_seconds_ago(&orphan, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
+    let old_attempt_at = shanghai_local_days_ago(
+        config.forward_proxy_attempts_retention_days as i64 + 2,
+        12,
+        0,
+        0,
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempts (
+            proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe
+        ) VALUES ('retention-recovery-independence', ?1, 1, 12.0, NULL, 0)
+        "#,
+    )
+    .bind(old_attempt_at)
+    .execute(&pool)
+    .await
+    .expect("seed independent forward proxy archive candidate");
 
     sqlx::query("DROP TABLE retention_prepared_archives")
         .execute(&pool)
         .await
         .expect("break recovery failure persistence after schema setup");
 
-    let _result = run_data_retention_maintenance(&pool, &config, Some(false), None).await;
+    let result = run_data_retention_maintenance(&pool, &config, Some(false), None).await;
+    assert!(
+        result.is_ok(),
+        "recovery status refresh failure must not abort independent stages: {result:?}"
+    );
 
     assert!(
         !orphan.exists(),
         "orphan sweep must run even when reconciliation and failure persistence fail"
     );
+    let archived_attempts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'forward_proxy_attempts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count independent forward proxy archive batches");
+    assert_eq!(archived_attempts, 1);
+    let live_attempts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM forward_proxy_attempts WHERE proxy_key = 'retention-recovery-independence'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining forward proxy attempts");
+    assert_eq!(live_attempts, 0);
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
@@ -525,6 +560,83 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
             .await
             .expect("count recovery journal after successful retry");
     assert_eq!(remaining_journal_count, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_finalization_rejects_source_content_changed_after_archive_copy() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-source-content-identity").await;
+    let occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
+    let raw_path = config.proxy_raw_dir.join("source-content-identity.bin");
+    fs::write(&raw_path, b"owned-until-verified-publication").expect("write raw response");
+    insert_retention_invocation(
+        &pool,
+        "retention-source-content-identity",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        Some(&raw_path),
+        Some(12),
+        Some(0.12),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER retention_test_mutate_archived_source
+        AFTER INSERT ON archive_batches
+        WHEN NEW.dataset = 'codex_invocations' AND NEW.status = 'materializing'
+        BEGIN
+            UPDATE codex_invocations
+            SET payload = '{"error":"changed-during-finalization"}'
+            WHERE invoke_id = 'retention-source-content-identity';
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("install source-content mutation trigger");
+
+    let error = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect_err("changed archive-covered source fields must prevent publication");
+    assert!(
+        error
+            .to_string()
+            .contains("source identity verification failed")
+    );
+    let source = sqlx::query(
+        "SELECT payload FROM codex_invocations WHERE invoke_id = 'retention-source-content-identity'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("source row remains after verification rollback");
+    assert_eq!(
+        source.get::<Option<String>, _>("payload").as_deref(),
+        Some("{\"endpoint\":\"/v1/responses\"}")
+    );
+    assert!(
+        raw_path.exists(),
+        "raw data remains source-owned after rollback"
+    );
+
+    sqlx::query("DROP TRIGGER retention_test_mutate_archived_source")
+        .execute(&pool)
+        .await
+        .expect("remove source-content mutation trigger");
+    let retry = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("retry publication after the source identity is stable");
+    assert_eq!(retry.0, 1);
+    assert!(
+        !raw_path.exists(),
+        "raw data is released after verified publication"
+    );
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

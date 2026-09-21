@@ -6022,6 +6022,7 @@ async fn same_path_invocation_archive_append_preserves_coverage_for_stale_rebuil
         part_key: None,
         file_path: archive_file_path.clone(),
         sha256: replacement_sha.clone(),
+        source_identity_sha256: None,
         row_count: 3,
         upstream_last_activity: Vec::new(),
         coverage_start_at: Some(appended_occurred_at.clone()),

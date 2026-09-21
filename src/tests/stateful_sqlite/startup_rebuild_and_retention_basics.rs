@@ -4590,25 +4590,32 @@ async fn retention_recovery_failure_persistence_waits_for_p1_admission() {
     .await
     .expect("insert prepared archive failure fixture");
 
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
     let p1_permit = coordinator
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
         .await;
     let maintenance_waiters_before = coordinator.snapshot().await.maintenance_waiter_count;
     let failure_pool = pool.clone();
+    let failure_coordinator = coordinator.clone();
     let persist = tokio::spawn(async move {
-        crate::maintenance::retention_recovery_persist_failure(
-            &failure_pool,
-            "p1-admission-test",
-            "finalizing",
-            &anyhow::anyhow!("simulated archive failure"),
-        )
-        .await
+        crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+            .scope(
+                failure_coordinator,
+                crate::maintenance::retention_recovery_persist_failure(
+                    &failure_pool,
+                    "p1-admission-test",
+                    "finalizing",
+                    &anyhow::anyhow!("simulated archive failure"),
+                ),
+            )
+            .await
     });
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            if coordinator.snapshot().await.maintenance_waiter_count > maintenance_waiters_before {
+            if coordinator.snapshot().await.maintenance_waiter_count
+                == maintenance_waiters_before + 1
+            {
                 break;
             }
             tokio::task::yield_now().await;
@@ -5462,6 +5469,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             part_key: None,
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            source_identity_sha256: None,
             row_count: 1,
             upstream_last_activity: vec![(account_id, occurred_at.to_string())],
             coverage_start_at: None,
@@ -5562,6 +5570,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             part_key: None,
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            source_identity_sha256: None,
             row_count: 1,
             upstream_last_activity: vec![(account_id, occurred_at.to_string())],
             coverage_start_at: None,

@@ -612,7 +612,7 @@ function retentionRecoveryStatus(
         expiredBacklogCount: state === "healthy" ? 0 : 42,
         oldestBacklogAgeSecs: state === "healthy" ? undefined : 86_400,
         nextRetryAt: state === "healthy" ? undefined : "2026-06-22T08:05:00Z",
-        failureStage: state === "degraded" ? "finalizing" : undefined,
+        failureStage: state === "degraded" ? "status_refresh" : undefined,
         failureFingerprint: state === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
       },
     },
@@ -814,7 +814,7 @@ export const StatusRetentionRecoveryDegraded: Story = {
     await userEvent.click(await canvas.findByText("运行压力详情"));
     const recovery = canvas.getByTestId("system-status-retention-recovery");
     await expect(recovery).toHaveTextContent("最终化");
-    await expect(recovery).toHaveTextContent("失败阶段 最终化 · 7d38a1c0b4c8e2f1");
+    await expect(recovery).toHaveTextContent("失败阶段 状态刷新 · 7d38a1c0b4c8e2f1");
   },
 };
 
