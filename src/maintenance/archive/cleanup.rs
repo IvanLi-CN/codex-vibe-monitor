@@ -3141,24 +3141,10 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         candidates = load_historical_rollup_startup_candidates(pool, 0).await?;
         wrapped = !candidates.is_empty();
     }
-    let skipped_cursor_id = candidates
-        .iter()
-        .filter(|candidate| {
-            Path::new(&candidate.file_path)
-                .parent()
-                .is_none_or(|parent| !parent.exists())
-        })
-        .map(|candidate| candidate.id)
-        .max();
-    candidates.retain(|candidate| {
-        Path::new(&candidate.file_path)
-            .parent()
-            .is_some_and(Path::exists)
-    });
     if candidates.is_empty() {
         return Ok(HistoricalRollupStartupWindowResult {
             summary: HistoricalRollupMaterializationSummary::default(),
-            next_cursor_id: skipped_cursor_id.unwrap_or(0),
+            next_cursor_id: 0,
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
@@ -3183,7 +3169,7 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         ));
     };
     let mut tx = pool.begin().await?;
-    let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
+    let mut next_cursor_id = if wrapped { 0 } else { cursor_id };
     let mut scanned_archive_batches = 0_usize;
     let mut skipped_archive_batches = 0_usize;
     let mut materialized_archive_batches = 0_usize;
@@ -3198,6 +3184,16 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         .iter()
         .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
     {
+        if Path::new(&candidate.file_path)
+            .parent()
+            .is_none_or(|parent| !parent.exists())
+        {
+            inspected_path_count += 1;
+            scanned_archive_batches += 1;
+            skipped_archive_batches += 1;
+            next_cursor_id = next_cursor_id.max(candidate.id);
+            continue;
+        }
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 tx.as_mut(),
