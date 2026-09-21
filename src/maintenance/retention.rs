@@ -1220,22 +1220,38 @@ pub(crate) async fn retention_recovery_persist_failure(
     Ok(())
 }
 
-async fn retention_recovery_persist_latest_failure(
+async fn retention_recovery_persist_latest_failure_best_effort(
     pool: &Pool<Sqlite>,
     stage: &'static str,
     error: &anyhow::Error,
-) -> Result<()> {
-    let prepared_key = sqlx::query_scalar::<_, String>(
-        "SELECT prepared_key FROM retention_prepared_archives WHERE state IN ('preparing', 'published') ORDER BY updated_at DESC, id DESC LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await?;
-    if let Some(prepared_key) = prepared_key {
-        retention_recovery_persist_failure(pool, &prepared_key, stage, error).await?;
-    } else {
-        retention_recovery_record_failure(stage, error);
+) {
+    let persist_result = async {
+        let prepared_key = sqlx::query_scalar::<_, String>(
+            "SELECT prepared_key FROM retention_prepared_archives WHERE state IN ('preparing', 'published') ORDER BY updated_at DESC, id DESC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        if let Some(prepared_key) = prepared_key {
+            retention_recovery_persist_failure(pool, &prepared_key, stage, error).await?;
+        } else {
+            retention_recovery_record_failure(stage, error);
+        }
+        Ok::<(), anyhow::Error>(())
     }
-    Ok(())
+    .await;
+
+    if let Err(persist_error) = persist_result {
+        if is_retention_write_deferred(&persist_error) {
+            retention_recovery_record_deferred(stage);
+        } else {
+            retention_recovery_record_failure(stage, error);
+        }
+        warn!(
+            stage,
+            failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
+            "retention recovery failure state could not be persisted; continuing independent stages"
+        );
+    }
 }
 
 async fn retention_recovery_mark_published(
@@ -2776,14 +2792,16 @@ async fn run_data_retention_maintenance_inner(
             );
         }
         if let Err(error) = reconcile_retention_prepared_archives(pool, config).await {
-            retention_recovery_persist_latest_failure(pool, "legacy_reconcile", &error).await?;
+            retention_recovery_persist_latest_failure_best_effort(pool, "legacy_reconcile", &error)
+                .await;
             warn!(
                 failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
                 "retention prepared archive reconciliation deferred"
             );
         }
         if let Err(error) = reconcile_legacy_retention_archive_segments(pool, config).await {
-            retention_recovery_persist_latest_failure(pool, "legacy_reconcile", &error).await?;
+            retention_recovery_persist_latest_failure_best_effort(pool, "legacy_reconcile", &error)
+                .await;
             warn!(
                 failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
                 "legacy retention archive reconciliation deferred"
@@ -2802,7 +2820,8 @@ async fn run_data_retention_maintenance_inner(
             if dry_run {
                 retention_recovery_record_failure("orphan_sweep", &error);
             } else {
-                retention_recovery_persist_latest_failure(pool, "orphan_sweep", &error).await?;
+                retention_recovery_persist_latest_failure_best_effort(pool, "orphan_sweep", &error)
+                    .await;
             }
             warn!(
                 failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,
@@ -2895,7 +2914,12 @@ async fn run_data_retention_maintenance_inner(
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("finalizing");
                 } else {
-                    retention_recovery_persist_latest_failure(pool, "finalizing", &error).await?;
+                    retention_recovery_persist_latest_failure_best_effort(
+                        pool,
+                        "finalizing",
+                        &error,
+                    )
+                    .await;
                 }
                 warn!(
                     failure_fingerprint = ?retention_recovery_health_snapshot().failure_fingerprint,

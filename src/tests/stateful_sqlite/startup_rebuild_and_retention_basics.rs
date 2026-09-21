@@ -4594,6 +4594,7 @@ async fn retention_recovery_failure_persistence_waits_for_p1_admission() {
     let p1_permit = coordinator
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
         .await;
+    let maintenance_waiters_before = coordinator.snapshot().await.maintenance_waiter_count;
     let failure_pool = pool.clone();
     let persist = tokio::spawn(async move {
         crate::maintenance::retention_recovery_persist_failure(
@@ -4605,7 +4606,16 @@ async fn retention_recovery_failure_persistence_waits_for_p1_admission() {
         .await
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if coordinator.snapshot().await.maintenance_waiter_count > maintenance_waiters_before {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failure persistence must queue for maintenance admission while P1 is active");
     let retry_before_p1_release: Option<String> = sqlx::query_scalar(
         "SELECT next_retry_at FROM retention_prepared_archives WHERE prepared_key = 'p1-admission-test'",
     )

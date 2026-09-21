@@ -5,6 +5,13 @@ import { useTranslation } from "../../i18n";
 import { fetchSystemStatus, type SystemStatusResponse } from "../../lib/api";
 
 const REFRESH_INTERVAL_MS = 60_000;
+const RETENTION_RECOVERY_STAGES = new Set([
+  "preparing",
+  "publishing",
+  "finalizing",
+  "orphan_sweep",
+  "legacy_reconcile",
+]);
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -383,6 +390,10 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const eventBusState = eventBus?.state ?? "unknown";
   const backfillState = backfill?.state ?? "unknown";
   const recovery = health?.retentionRecovery;
+  const recoveryStageLabel = (stage?: string | null) =>
+    stage && RETENTION_RECOVERY_STAGES.has(stage)
+      ? t(`system.status.runtimePressure.retentionRecovery.stages.${stage}`)
+      : t("system.status.runtimePressure.states.unknown");
   const recoveryHints = recovery
     ? [
         recovery.nextRetryAt
@@ -392,7 +403,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
           : undefined,
         recovery.failureFingerprint
           ? t("system.status.runtimePressure.retentionRecovery.failureHint", {
-              stage: recovery.failureStage ?? "-",
+              stage: recoveryStageLabel(recovery.failureStage),
               fingerprint: recovery.failureFingerprint,
             })
           : undefined,
@@ -674,13 +685,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <BreakdownRow
                     label={t("system.status.runtimePressure.retentionRecovery.stage")}
-                    value={
-                      recovery?.stage
-                        ? t(
-                            `system.status.runtimePressure.retentionRecovery.stages.${recovery.stage}`,
-                          )
-                        : t("system.status.runtimePressure.states.unknown")
-                    }
+                    value={recoveryStageLabel(recovery?.stage)}
                   />
                   <BreakdownRow
                     label={t("system.status.runtimePressure.retentionRecovery.backlog")}

@@ -374,6 +374,30 @@ async fn retention_orphan_sweep_skips_fresh_raw_files() {
 }
 
 #[tokio::test]
+async fn retention_recovery_persistence_failure_does_not_block_orphan_sweep() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-recovery-orphan-independence").await;
+    let orphan = config.proxy_raw_dir.join("aged-orphan.bin");
+    fs::write(&orphan, b"safe-to-sweep").expect("write aged orphan");
+    set_file_mtime_seconds_ago(&orphan, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
+
+    sqlx::query("DROP TABLE retention_prepared_archives")
+        .execute(&pool)
+        .await
+        .expect("break recovery failure persistence after schema setup");
+
+    let _result = run_data_retention_maintenance(&pool, &config, Some(false), None).await;
+
+    assert!(
+        !orphan.exists(),
+        "orphan sweep must run even when reconciliation and failure persistence fail"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_recovery_journal() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("retention-archive-recovery").await;

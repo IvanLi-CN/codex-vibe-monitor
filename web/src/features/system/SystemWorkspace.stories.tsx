@@ -812,12 +812,9 @@ export const StatusRetentionRecoveryDegraded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByText("运行压力详情"));
-    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
-      "最终化",
-    );
-    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
-      "7d38a1c0b4c8e2f1",
-    );
+    const recovery = canvas.getByTestId("system-status-retention-recovery");
+    await expect(recovery).toHaveTextContent("最终化");
+    await expect(recovery).toHaveTextContent("失败阶段 最终化 · 7d38a1c0b4c8e2f1");
   },
 };
 
