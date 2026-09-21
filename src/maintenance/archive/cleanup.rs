@@ -1384,18 +1384,18 @@ async fn promote_verified_summary_snapshot_page_sets(
         if started_at.elapsed() >= max_elapsed {
             break;
         }
+        let Some(admission) = super::super::retention::acquire_retention_write_admission(
+            "summary_snapshot_proof_promotion",
+        )
+        .await
+        else {
+            return Err(super::super::retention::retention_write_deferred(
+                "summary_snapshot_proof_promotion",
+            ));
+        };
         if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
             .await?
         {
-            let Some(admission) = super::super::retention::acquire_retention_write_admission(
-                "summary_snapshot_proof_promotion",
-            )
-            .await
-            else {
-                return Err(super::super::retention::retention_write_deferred(
-                    "summary_snapshot_proof_promotion",
-                ));
-            };
             sqlx::query(
                 "INSERT INTO summary_archive_snapshot_backfill_outcome \
                  (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
@@ -1411,9 +1411,9 @@ async fn promote_verified_summary_snapshot_page_sets(
             .execute(pool)
             .await
             .context("record promoted Summary Snapshot V2 outcome")?;
-            drop(admission);
             promoted += 1;
         }
+        drop(admission);
     }
     if promoted > 0 {
         tracing::info!(
