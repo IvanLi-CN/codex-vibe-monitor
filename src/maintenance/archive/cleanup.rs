@@ -2872,6 +2872,15 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         true,
     )
     .await?;
+    let skipped_cursor_id = candidates
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_none_or(|parent| !parent.exists())
+        })
+        .map(|candidate| candidate.id)
+        .max();
     candidates.retain(|candidate| {
         Path::new(&candidate.file_path)
             .parent()
@@ -2881,7 +2890,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         return Ok(LegacyDetailMirrorRecoveryWindowResult {
             // Keep the completed-cycle cursor so an idle pass does not immediately scan the
             // same archive identities again.
-            next_cursor_id: cursor_id,
+            next_cursor_id: skipped_cursor_id.unwrap_or(cursor_id),
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
@@ -2896,7 +2905,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
             .map(|candidate| candidate.file_path.as_str()),
     )?;
     let started_at = Instant::now();
-    let mut next_cursor_id = cursor_id;
+    let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
     let mut inspected_path_count = 0_usize;
     let mut hit_budget = false;
     let mut proven_mirrors = Vec::new();
@@ -3002,6 +3011,15 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
         false,
     )
     .await?;
+    let skipped_cursor_id = candidates
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_none_or(|parent| !parent.exists())
+        })
+        .map(|candidate| candidate.id)
+        .max();
     candidates.retain(|candidate| {
         Path::new(&candidate.file_path)
             .parent()
@@ -3009,7 +3027,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
     });
     if candidates.is_empty() {
         return Ok(SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
-            next_cursor_id: cursor_id,
+            next_cursor_id: skipped_cursor_id.unwrap_or(cursor_id),
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
@@ -3061,7 +3079,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
     .await;
     proof_results.sort_unstable_by_key(|(index, _, _)| *index);
 
-    let mut next_cursor_id = cursor_id;
+    let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
     let mut inspected_path_count = 0_usize;
     let mut unavailable_path_count = 0_usize;
     let mut hit_budget = false;
@@ -3123,6 +3141,15 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         candidates = load_historical_rollup_startup_candidates(pool, 0).await?;
         wrapped = !candidates.is_empty();
     }
+    let skipped_cursor_id = candidates
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_none_or(|parent| !parent.exists())
+        })
+        .map(|candidate| candidate.id)
+        .max();
     candidates.retain(|candidate| {
         Path::new(&candidate.file_path)
             .parent()
@@ -3131,7 +3158,7 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
     if candidates.is_empty() {
         return Ok(HistoricalRollupStartupWindowResult {
             summary: HistoricalRollupMaterializationSummary::default(),
-            next_cursor_id: 0,
+            next_cursor_id: skipped_cursor_id.unwrap_or(0),
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
@@ -3156,7 +3183,7 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         ));
     };
     let mut tx = pool.begin().await?;
-    let mut next_cursor_id = cursor_id;
+    let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
     let mut scanned_archive_batches = 0_usize;
     let mut skipped_archive_batches = 0_usize;
     let mut materialized_archive_batches = 0_usize;

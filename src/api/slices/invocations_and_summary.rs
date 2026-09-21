@@ -13839,7 +13839,8 @@ async fn summary_archive_snapshot_path_has_proof(
     else {
         return Ok(false);
     };
-    summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256).await
+    summary_archive_snapshot_has_final_proof_read_only(pool, archive_batch_id, &manifest_sha256)
+        .await
 }
 
 /// A complete V2 proof set is stronger than the per-page replay/rollup proof used by the
@@ -13940,7 +13941,11 @@ async fn summary_all_time_manifest_v2_coverage_complete(
     .await
     .context("summary all-time Snapshot V2 coverage manifest lookup failed")?;
     for (archive_batch_id, manifest_sha256) in manifests {
-        if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
+        if !summary_archive_snapshot_has_final_proof_read_only(
+            pool,
+            archive_batch_id,
+            &manifest_sha256,
+        )
             .await
             .with_context(|| {
                 format!(
@@ -15395,8 +15400,12 @@ async fn load_summary_v2_archive_totals_from_archives(
         // fast path: otherwise a verified Snapshot could never remove the old boundary
         // unavailable proof, leaving a selection permanently unavailable after recovery.
         if !proof_identities.contains(&(archive_batch_id, manifest_sha256.clone()))
-            || !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
-                .await?
+            || !summary_archive_snapshot_has_final_proof_read_only(
+                pool,
+                archive_batch_id,
+                &manifest_sha256,
+            )
+            .await?
         {
             continue;
         }
