@@ -236,6 +236,7 @@ pub(crate) struct PoolAttemptPublicIdArchiveBackfillSummary {
 struct PoolAttemptPublicIdArchiveBatchRow {
     id: i64,
     file_path: String,
+    sha256: Option<String>,
 }
 
 pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_from_batch_cursor(
@@ -263,7 +264,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
 
         let rows = sqlx::query_as::<_, PoolAttemptPublicIdArchiveBatchRow>(
             r#"
-            SELECT id, file_path
+            SELECT id, file_path, sha256
             FROM archive_batches
             WHERE dataset = 'pool_upstream_request_attempts'
               AND status = ?1
@@ -355,6 +356,24 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     "archive_public_id_backfill",
                 ));
             };
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+            let current_sha256 = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT sha256 FROM archive_batches WHERE id = ?1 AND dataset = 'pool_upstream_request_attempts' AND file_path = ?2 AND status = ?3 AND cleanup_state = ?4",
+            )
+            .bind(batch.id)
+            .bind(&batch.file_path)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+            .fetch_optional(tx.as_mut())
+            .await?
+            .flatten();
+            if current_sha256 != batch.sha256 {
+                tx.rollback().await?;
+                drop(admission);
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                continue;
+            }
             fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
                 format!(
                     "failed to move pool_upstream_request_attempts archive batch into place: {} -> {}",
@@ -369,8 +388,9 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
                 .bind(&sha256)
                 .bind(batch.id)
-                .execute(pool)
+                .execute(tx.as_mut())
                 .await?;
+            tx.commit().await?;
             drop(admission);
         }
     }
