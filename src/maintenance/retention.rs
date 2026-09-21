@@ -82,7 +82,7 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
         if retention_archive_locks_are_try_only() {
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() == Some(libc::EAGAIN) {
-                return Err(anyhow!("archive directory lock busy: {}", parent.display()));
+                return Err(anyhow!("archive directory lock busy"));
             }
         }
         return Err(std::io::Error::last_os_error())

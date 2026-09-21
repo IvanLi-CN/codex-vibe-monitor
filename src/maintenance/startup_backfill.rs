@@ -305,6 +305,7 @@ impl StartupBackfillTaskRunOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupBackfillFailureKind {
+    ArchiveLockBusy,
     SqliteBusyOrLocked,
     Operation,
 }
@@ -312,6 +313,7 @@ enum StartupBackfillFailureKind {
 impl StartupBackfillFailureKind {
     fn telemetry_reason(self) -> &'static str {
         match self {
+            Self::ArchiveLockBusy => "archive_lock_busy",
             Self::SqliteBusyOrLocked => "sqlite_busy_or_locked",
             Self::Operation => "operation_error",
         }
@@ -319,6 +321,15 @@ impl StartupBackfillFailureKind {
 }
 
 fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureKind {
+    let has_archive_lock_busy_message = err.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("archive directory lock busy")
+    });
+    if has_archive_lock_busy_message {
+        return StartupBackfillFailureKind::ArchiveLockBusy;
+    }
     let has_busy_message = err.chain().any(|cause| {
         cause
             .to_string()
@@ -437,6 +448,52 @@ async fn persist_startup_backfill_pressure_defer(
     Ok(startup_backfill_pressure_defer_outcome_at(
         task, reason, retry_at,
     ))
+}
+
+async fn persist_startup_backfill_archive_lock_defer(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    started_at: Instant,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    let retry_at =
+        Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
+    let retry_after = format_utc_iso(retry_at);
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .await;
+    save_startup_backfill_progress(
+        &state.pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_IDLE,
+            suspension_reason: Some("archive_lock_busy"),
+        },
+    )
+    .await?;
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    info!(
+        task = task.log_label(),
+        task_name,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        next_run_after = %retry_after,
+        defer_reason = "archive_lock_busy",
+        wake_reason = "archive_lock_retry",
+        "startup backfill task deferred because an archive directory lock was busy"
+    );
+    Ok(StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    })
 }
 
 fn startup_backfill_pressure_error_defer_outcome(
@@ -2023,6 +2080,17 @@ async fn run_startup_backfill_task_if_due_outcome(
                 (task == StartupBackfillTask::ProxyCost).then_some(detail),
             )
         }
+        Err(err)
+            if startup_backfill_failure_kind(&err)
+                == StartupBackfillFailureKind::ArchiveLockBusy =>
+        {
+            drop(write_permit);
+            let outcome = persist_startup_backfill_archive_lock_defer(
+                state, task, &task_name, &progress, started_at,
+            )
+            .await?;
+            (outcome, None)
+        }
         Err(err) => {
             let next_due = match persist_startup_backfill_task_failure(
                 state, task, &task_name, &progress, started_at, &err,
@@ -2854,6 +2922,10 @@ mod startup_backfill_tests {
                 StartupBackfillFailureKind::SqliteBusyOrLocked
             );
         }
+        assert_eq!(
+            startup_backfill_failure_kind(&anyhow::anyhow!("archive directory lock busy")),
+            StartupBackfillFailureKind::ArchiveLockBusy
+        );
         assert_eq!(
             startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
             StartupBackfillFailureKind::Operation
