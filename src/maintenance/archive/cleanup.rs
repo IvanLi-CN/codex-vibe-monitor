@@ -1065,7 +1065,8 @@ async fn summary_archive_snapshot_cleanup_gate_satisfied(
     if !proof_marker_exists {
         return Ok(false);
     }
-    summary_archive_snapshot_has_final_proof(pool, archive_batch_id, manifest_sha256).await
+    summary_archive_snapshot_has_final_proof_read_only(pool, archive_batch_id, manifest_sha256)
+        .await
 }
 
 #[derive(Debug, FromRow)]
@@ -1970,7 +1971,8 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     .await?
         != 0;
     if proof_marker_exists
-        && summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256).await?
+        && summary_archive_snapshot_has_final_proof_read_only(pool, candidate.id, &candidate.sha256)
+            .await?
     {
         return Ok("complete");
     }
@@ -3447,6 +3449,13 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
     )
     .await?;
+    if pending_archive_files.iter().any(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_none_or(|parent| !parent.exists())
+    }) {
+        return Ok(HistoricalRollupMaterializationSummary::default());
+    }
     let pending_usage_breakdown_batches = pending_archive_files.len();
     let bounded_skip = if pending_usage_breakdown_batches == 0 {
         0
@@ -3556,6 +3565,13 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(pool)
     .await?;
+    if pending_archive_paths.iter().any(|path| {
+        Path::new(path)
+            .parent()
+            .is_none_or(|parent| !parent.exists())
+    }) {
+        return Ok(HistoricalRollupMaterializationSummary::default());
+    }
     let _archive_locks =
         retain_archive_directory_locks(pending_archive_paths.iter().map(String::as_str))?;
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
