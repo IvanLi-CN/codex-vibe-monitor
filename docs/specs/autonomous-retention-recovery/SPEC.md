@@ -98,8 +98,28 @@
 
 ## Visual Evidence
 
-- `assets/retention-recovery-desktop.png` — `ui_demo`, Runtime Pressure expanded, degraded recovery state, desktop viewport.
-- `assets/retention-recovery-mobile.png` — `ui_demo`, Runtime Pressure expanded, degraded recovery state, source-managed `393x852` CSS viewport.
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1280x577
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: degraded recovery with `status_refresh` stage and failure
+  evidence_note: shows the recovery backlog and sanitized failure fingerprint in System Status
+  image:
+  ![Desktop System Status retention recovery](./assets/retention-recovery-desktop.png)
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 393x852
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: degraded recovery with `status_refresh` stage and failure
+  evidence_note: shows the recovery diagnostics within the mobile System Status viewport
+  image:
+  ![Mobile System Status retention recovery](./assets/retention-recovery-mobile.png)
 - Healthy, recovering, degraded, and missing-field `unknown` states are covered by System Workspace Storybook interactions.
 
 ## References
