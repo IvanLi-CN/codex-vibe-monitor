@@ -2932,7 +2932,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
             }
         }
         inspected_path_count += 1;
-        next_cursor_id = candidate.id;
+        next_cursor_id = next_cursor_id.max(candidate.id);
     }
 
     let mut changed_path_count = 0_usize;
@@ -3096,7 +3096,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
             }
         }
         inspected_path_count += 1;
-        next_cursor_id = candidate_id;
+        next_cursor_id = next_cursor_id.max(candidate_id);
     }
 
     let changed_path_count =
@@ -3237,11 +3237,11 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         if candidate_summary.hit_budget {
             hit_budget = true;
             if candidate_summary.advance_cursor_after_unstarted_replay {
-                next_cursor_id = candidate.id;
+                next_cursor_id = next_cursor_id.max(candidate.id);
             }
             break;
         }
-        next_cursor_id = candidate.id;
+        next_cursor_id = next_cursor_id.max(candidate.id);
     }
     tx.commit().await?;
     drop(admission);
