@@ -2025,6 +2025,7 @@ async fn reconcile_legacy_retention_archive_segments(
                 continue;
             }
         };
+        let _archive_lock = retention_archive_file_lock(path)?;
         let sha256 = match sha256_hex_file(path) {
             Ok(sha256) => Some(sha256),
             Err(error) => {
