@@ -308,6 +308,7 @@ pub(crate) struct ArchiveBatchCleanupCandidate {
     dataset: String,
     file_path: String,
     sha256: String,
+    summary_source_kind: String,
     cleanup_state: String,
     historical_rollups_materialized_at: Option<String>,
     coverage_end_at: Option<String>,
@@ -519,7 +520,22 @@ where
         return Ok(false);
     };
 
-    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+    let summary_source_kind = sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(summary_source_kind, 'unknown') FROM archive_batches \
+         WHERE id = ?1 AND dataset = ?2 AND file_path = ?3 AND sha256 = ?4 \
+           AND status = ?5 AND cleanup_state = ?6",
+    )
+    .bind(archive_batch_id)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    let is_live_mirror = summary_source_kind.as_deref()
+        == Some(crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && !is_live_mirror {
         let proof_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
@@ -653,7 +669,9 @@ pub(crate) async fn cleanup_expired_archive_batches(
     let owner_facing_node_health_window_cutoff = shanghai_local_cutoff_string(7);
     let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
         r#"
-        SELECT id, dataset, file_path, sha256, cleanup_state, historical_rollups_materialized_at, coverage_end_at
+        SELECT id, dataset, file_path, sha256,
+               COALESCE(summary_source_kind, 'unknown') AS summary_source_kind,
+               cleanup_state, historical_rollups_materialized_at, coverage_end_at
         FROM archive_batches
         WHERE status = ?1
           AND archive_expires_at IS NOT NULL
@@ -664,10 +682,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(&cutoff)
-    .bind(super::super::retention::retention_candidate_limit(
-        config,
-        "archive_cleanup",
-    ) as i64)
+    .bind(super::super::retention::retention_candidate_limit(config, "archive_cleanup") as i64)
     .fetch_all(pool)
     .await?;
     let materialized_pool_upstream_cache_files = sqlx::query_scalar::<_, String>(
@@ -751,6 +766,16 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate.summary_source_kind
+                == crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+        {
+            // A live mirror is deliberately outside Summary authority. Its TTL is sufficient
+            // cleanup evidence once the completed manifest is staged; it has no rollup or
+            // Snapshot proof to wait for.
+            eligible_candidates.push(candidate);
+            continue;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
                 && !summary_archive_snapshot_cleanup_gate_satisfied(
@@ -863,6 +888,35 @@ pub(crate) async fn cleanup_expired_archive_batches(
                 &candidate.sha256,
             )
             .await?
+            {
+                deleted += 1;
+            }
+            continue;
+        }
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate.summary_source_kind
+                == crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+        {
+            // Mirrors do not own historical rollup boundaries. Stage and finalize them with no
+            // source-safe-start marker, while the finalizer still rechecks file identity.
+            let staged = stage_archive_batch_deletion(
+                pool,
+                candidate.id,
+                &candidate.dataset,
+                &candidate.file_path,
+                &candidate.sha256,
+                None,
+            )
+            .await?;
+            if staged
+                && finalize_archive_batch_file_deletion(
+                    pool,
+                    candidate.id,
+                    &candidate.dataset,
+                    &candidate.file_path,
+                    &candidate.sha256,
+                )
+                .await?
             {
                 deleted += 1;
             }
@@ -2306,6 +2360,7 @@ pub(crate) struct SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
 enum LegacyDetailMirrorProof {
     Proven,
     NotMirror,
+    Ambiguous,
     BudgetExhausted,
 }
 
@@ -2481,28 +2536,37 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
             if started_at.elapsed() >= max_elapsed {
                 return Ok(LegacyDetailMirrorProof::BudgetExhausted);
             }
-            if live_rows.len() != archive_rows.len() {
-                return Ok(LegacyDetailMirrorProof::NotMirror);
-            }
+            let live_row_count = live_rows.len();
             let live_invoke_ids = live_rows.into_iter().collect::<HashMap<_, _>>();
-            if archive_rows
+            let matched_in_page = archive_rows
                 .iter()
-                .any(|(id, invoke_id)| live_invoke_ids.get(id) != Some(invoke_id))
+                .filter(|(id, invoke_id)| live_invoke_ids.get(id) == Some(invoke_id))
+                .count() as i64;
+            if live_row_count != archive_rows.len()
+                || matched_in_page != archive_rows.len() as i64
             {
-                return Ok(LegacyDetailMirrorProof::NotMirror);
+                return Ok(if matched_rows + matched_in_page > 0 {
+                    LegacyDetailMirrorProof::Ambiguous
+                } else {
+                    LegacyDetailMirrorProof::NotMirror
+                });
             }
-            matched_rows += archive_rows.len() as i64;
+            matched_rows += matched_in_page;
         }
         Ok(LegacyDetailMirrorProof::Proven)
     }
     .await;
     archive_pool.close().await;
     let proof = proof_result?;
-    if proof != LegacyDetailMirrorProof::Proven {
+    if !matches!(proof, LegacyDetailMirrorProof::Proven) {
         return Ok(proof);
     }
     if matched_rows != candidate.row_count {
-        return Ok(LegacyDetailMirrorProof::NotMirror);
+        return Ok(if matched_rows > 0 {
+            LegacyDetailMirrorProof::Ambiguous
+        } else {
+            LegacyDetailMirrorProof::NotMirror
+        });
     }
     let Some(sha256_after_read) =
         legacy_detail_mirror_sha256_with_budget(archive_path, started_at, max_elapsed)?
@@ -2555,8 +2619,14 @@ async fn load_legacy_detail_mirror_recovery_candidates(
     cursor_id: i64,
     high_watermark_id: Option<i64>,
     candidate_limit: i64,
+    include_authoritative_legacy_month: bool,
 ) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
-    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
+    let role_filter = if include_authoritative_legacy_month {
+        "(COALESCE(summary_source_kind, 'unknown') = 'unknown' OR (summary_source_kind = 'authoritative' AND layout = 'legacy_month'))"
+    } else {
+        "COALESCE(summary_source_kind, 'unknown') = 'unknown'"
+    };
+    let query = format!(
         r#"
         SELECT
             id,
@@ -2570,21 +2640,21 @@ async fn load_legacy_detail_mirror_recovery_candidates(
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
-          AND COALESCE(summary_source_kind, 'unknown') = ?2
-          AND id > ?3
-          AND (?4 IS NULL OR id <= ?4)
+          AND {role_filter}
+          AND id > ?2
+          AND (?3 IS NULL OR id <= ?3)
         ORDER BY id ASC
-        LIMIT ?5
+        LIMIT ?4
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
-    .bind(cursor_id)
-    .bind(high_watermark_id)
-    .bind(candidate_limit)
-    .fetch_all(pool)
-    .await
-    .context("failed to load legacy detail mirror recovery candidates")
+    );
+    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(&query)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(cursor_id)
+        .bind(high_watermark_id)
+        .bind(candidate_limit)
+        .fetch_all(pool)
+        .await
+        .context("failed to load legacy detail mirror recovery candidates")
 }
 
 pub(crate) async fn summary_startup_legacy_detail_mirror_high_watermark(
@@ -2641,6 +2711,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         cursor_id,
         None,
         LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT,
+        true,
     )
     .await?;
     if candidates.is_empty() {
@@ -2661,6 +2732,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     let mut inspected_path_count = 0_usize;
     let mut hit_budget = false;
     let mut proven_mirrors = Vec::new();
+    let mut ambiguous_mirrors = Vec::new();
     for candidate in candidates.iter() {
         if started_at.elapsed() >= max_elapsed {
             hit_budget = true;
@@ -2676,6 +2748,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         {
             LegacyDetailMirrorProof::Proven => proven_mirrors.push(candidate),
             LegacyDetailMirrorProof::NotMirror => {}
+            LegacyDetailMirrorProof::Ambiguous => ambiguous_mirrors.push(candidate),
             LegacyDetailMirrorProof::BudgetExhausted => {
                 hit_budget = true;
                 break;
@@ -2686,17 +2759,33 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     }
 
     let mut changed_path_count = 0_usize;
-    if !proven_mirrors.is_empty() {
+    if !proven_mirrors.is_empty() || !ambiguous_mirrors.is_empty() {
         let mut tx = pool.begin().await?;
         for candidate in proven_mirrors {
             changed_path_count += sqlx::query(
                 "UPDATE archive_batches SET summary_source_kind = ?1 \
-                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+                 WHERE id = ?2 AND status = ?3 \
+                   AND (summary_source_kind = ?4 OR summary_source_kind = ?5) AND sha256 = ?6",
             )
             .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
             .bind(candidate.id)
             .bind(ARCHIVE_STATUS_COMPLETED)
             .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+            .bind(&candidate.sha256)
+            .execute(tx.as_mut())
+            .await?
+            .rows_affected() as usize;
+        }
+        for candidate in ambiguous_mirrors {
+            changed_path_count += sqlx::query(
+                "UPDATE archive_batches SET summary_source_kind = ?1 \
+                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+            )
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(candidate.id)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
             .bind(&candidate.sha256)
             .execute(tx.as_mut())
             .await?
@@ -2732,6 +2821,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
         cursor_id,
         Some(high_watermark_id),
         SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT,
+        false,
     )
     .await?;
     if candidates.is_empty() {
@@ -2762,6 +2852,9 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
                     SummaryStartupLegacyDetailMirrorProof::Proven
                 }
                 Ok(LegacyDetailMirrorProof::NotMirror) => {
+                    SummaryStartupLegacyDetailMirrorProof::NotMirror
+                }
+                Ok(LegacyDetailMirrorProof::Ambiguous) => {
                     SummaryStartupLegacyDetailMirrorProof::NotMirror
                 }
                 Ok(LegacyDetailMirrorProof::BudgetExhausted) => {

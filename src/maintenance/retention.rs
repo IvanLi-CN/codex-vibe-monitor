@@ -1425,11 +1425,16 @@ pub(crate) async fn retention_recovery_persist_failure(
     let retry_seconds = 30_u64
         .saturating_mul(1_u64 << attempt_count.min(7))
         .min(3_600);
+    // Preserve the first quarantine timestamp so repeated identity collisions cannot postpone
+    // the bounded cleanup window forever.
     sqlx::query(
         r#"
         UPDATE retention_prepared_archives
         SET state = CASE WHEN ?1 THEN ?2 ELSE state END,
-            quarantined_at = CASE WHEN ?1 THEN datetime('now') ELSE quarantined_at END,
+            quarantined_at = CASE
+                WHEN ?1 AND quarantined_at IS NULL THEN datetime('now')
+                ELSE quarantined_at
+            END,
             last_failure_stage = ?3,
             last_failure_fingerprint = ?4,
             next_retry_at = CASE WHEN ?1 THEN NULL ELSE datetime('now', ?5) END,
@@ -4674,6 +4679,24 @@ pub(crate) async fn prune_old_invocation_details(
                 record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
             }
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
+            let final_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
+            if final_archive_sha256 != archive_outcome.sha256 {
+                tx.rollback().await?;
+                drop(admission);
+                let error =
+                    anyhow!("retention prepared archive artifact changed before publication");
+                retention_recovery_persist_failure(
+                    pool,
+                    &descriptor.prepared_key,
+                    "publishing",
+                    &error,
+                )
+                .await?;
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
+            }
             let commit_started = Instant::now();
             tx.commit().await?;
             retention_record_commit!(

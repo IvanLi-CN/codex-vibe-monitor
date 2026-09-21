@@ -5091,6 +5091,45 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
     assert_eq!(recovered.summary.materialized_invocation_batches, 0);
 
+    // Older releases could leave a LegacyMonth detail mirror classified as authoritative after
+    // reusing the deterministic month path. The bounded recovery pass must re-prove and repair
+    // that role before Summary treats it as authority again.
+    sqlx::query("DROP TRIGGER trg_update_authoritative_invocation_archive_requires_summary_proof")
+        .execute(&pool)
+        .await
+        .expect("temporarily remove publication guard for legacy fixture");
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = ?1, layout = ?2 \
+         WHERE dataset = ?3 AND file_path = ?4",
+    )
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+    .bind(ARCHIVE_LAYOUT_LEGACY_MONTH)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed an older authoritative LegacyMonth detail mirror");
+    let legacy_role_recovery =
+        reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
+            .await
+            .expect("reconcile older authoritative LegacyMonth detail mirror");
+    let repaired_source_kind: String = sqlx::query_scalar(
+        "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired legacy source role");
+    assert_eq!(legacy_role_recovery.changed_path_count, 1);
+    assert_eq!(
+        repaired_source_kind,
+        SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+    );
+    ensure_schema(&pool)
+        .await
+        .expect("restore publication guard after legacy fixture");
+
     let recovered_archive_path = temp_dir.join("sparse-legacy-detail-mirror-recovered.sqlite.gz");
     fs::copy(&archive_path, &recovered_archive_path)
         .expect("copy an independently provable legacy detail mirror");
@@ -7008,6 +7047,61 @@ async fn prune_legacy_archive_batches_keeps_detail_prune_backups_within_live_win
         Path::new(&archive_path).exists(),
         "detail backup archive must remain"
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_live_mirror_does_not_require_summary_proof() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-prune-expired-detail-mirror").await;
+    config.invocation_archive_ttl_days = 365;
+    let occurred_at = shanghai_local_days_ago(31, 14, 30, 0);
+    insert_retention_invocation(
+        &pool,
+        "expired-detail-mirror",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"expired-detail-mirror\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(11),
+        Some(0.11),
+    )
+    .await;
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention detail prune");
+    let (archive_id, archive_path): (i64, String) = sqlx::query_as(
+        "SELECT id, file_path FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load live mirror manifest");
+    assert!(Path::new(&archive_path).exists());
+    sqlx::query(
+        "UPDATE archive_batches SET archive_expires_at = '2000-01-01 00:00:00' WHERE id = ?1",
+    )
+    .bind(archive_id)
+    .execute(&pool)
+    .await
+    .expect("expire live mirror manifest");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup expired live mirror");
+    assert_eq!(deleted, 1);
+    assert!(!Path::new(&archive_path).exists());
+    let manifest_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = ?1")
+            .bind(archive_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count expired live mirror manifest");
+    assert_eq!(manifest_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

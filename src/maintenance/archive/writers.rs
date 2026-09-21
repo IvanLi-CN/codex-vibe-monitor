@@ -517,6 +517,38 @@ pub(crate) async fn archive_rows_into_month_batch_at_path(
     } else {
         None
     };
+    if spec.dataset == "codex_invocations"
+        && let Some(existing_sha256) = existing_final_sha256.as_deref()
+    {
+        let known_manifest_sha256 = sqlx::query_scalar::<_, String>(
+            "SELECT sha256 FROM archive_batches \
+                 WHERE dataset = ?1 AND file_path = ?2 AND sha256 IS NOT NULL AND sha256 <> '' \
+                 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(spec.dataset)
+        .bind(final_path.to_string_lossy().to_string())
+        .fetch_optional(pool)
+        .await?;
+        let known_prepared_sha256 = sqlx::query_scalar::<_, String>(
+            "SELECT artifact_sha256 FROM retention_prepared_archives \
+                 WHERE dataset = ?1 AND file_path = ?2 AND artifact_sha256 IS NOT NULL \
+                 ORDER BY updated_at DESC, id DESC LIMIT 1",
+        )
+        .bind(spec.dataset)
+        .bind(final_path.to_string_lossy().to_string())
+        .fetch_optional(pool)
+        .await?;
+        for known_sha256 in [known_manifest_sha256, known_prepared_sha256]
+            .into_iter()
+            .flatten()
+        {
+            if known_sha256 != existing_sha256 {
+                bail!(
+                    "legacy archive existing artifact digest does not match its recorded identity"
+                );
+            }
+        }
+    }
 
     if work_path.exists() {
         let _ = fs::remove_file(&work_path);
