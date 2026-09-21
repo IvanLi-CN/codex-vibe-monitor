@@ -282,6 +282,44 @@ pub(super) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
     error.is::<RetentionWriteDeferred>()
 }
 
+#[derive(Debug)]
+struct RetentionRecoveryFailurePersisted {
+    prepared_key: String,
+    source: anyhow::Error,
+}
+
+impl std::fmt::Display for RetentionRecoveryFailurePersisted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "retention recovery failure persisted: {}",
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for RetentionRecoveryFailurePersisted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+pub(crate) fn retention_recovery_failure_persisted(
+    prepared_key: &str,
+    source: anyhow::Error,
+) -> anyhow::Error {
+    anyhow::Error::new(RetentionRecoveryFailurePersisted {
+        prepared_key: prepared_key.to_string(),
+        source,
+    })
+}
+
+pub(crate) fn is_retention_recovery_failure_persisted(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<RetentionRecoveryFailurePersisted>()
+        .is_some_and(|failure| !failure.prepared_key.is_empty())
+}
+
 pub(super) fn retention_prepared_batch_or_deferred<T>(result: Result<T>) -> Result<Option<T>> {
     match result {
         Err(error) if is_retention_write_deferred(&error) => Ok(None),
@@ -1450,6 +1488,36 @@ async fn retention_recovery_delete_tx(
     Ok(())
 }
 
+async fn quarantine_published_retention_archive_if_unchanged(
+    pool: &Pool<Sqlite>,
+    prepared_key: &str,
+    expected_artifact_sha256: Option<&str>,
+    failure_fingerprint: Option<&str>,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        UPDATE retention_prepared_archives
+        SET state = ?1,
+            quarantined_at = datetime('now'),
+            last_failure_stage = ?2,
+            last_failure_fingerprint = ?3,
+            updated_at = datetime('now')
+        WHERE prepared_key = ?4
+          AND state = ?5
+          AND artifact_sha256 IS ?6
+        "#,
+    )
+    .bind(RETENTION_RECOVERY_STATE_QUARANTINED)
+    .bind("legacy_reconcile")
+    .bind(failure_fingerprint)
+    .bind(prepared_key)
+    .bind(RETENTION_RECOVERY_STATE_PUBLISHED)
+    .bind(expected_artifact_sha256)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -1527,22 +1595,14 @@ async fn reconcile_retention_prepared_archives(
                 else {
                     return Err(retention_write_deferred("retention_recovery_quarantine"));
                 };
-                sqlx::query(
-                    r#"
-                    UPDATE retention_prepared_archives
-                    SET state = ?1,
-                        quarantined_at = datetime('now'),
-                        last_failure_stage = ?2,
-                        last_failure_fingerprint = ?3,
-                        updated_at = datetime('now')
-                    WHERE prepared_key = ?4
-                    "#,
+                quarantine_published_retention_archive_if_unchanged(
+                    pool,
+                    &prepared_key,
+                    artifact_sha256.as_deref(),
+                    retention_recovery_health_snapshot()
+                        .failure_fingerprint
+                        .as_deref(),
                 )
-                .bind(RETENTION_RECOVERY_STATE_QUARANTINED)
-                .bind("legacy_reconcile")
-                .bind(retention_recovery_health_snapshot().failure_fingerprint)
-                .bind(prepared_key)
-                .execute(pool)
                 .await?;
                 drop(admission);
             }
@@ -3052,6 +3112,8 @@ async fn run_data_retention_maintenance_inner(
             Err(error) => {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("finalizing");
+                } else if is_retention_recovery_failure_persisted(&error) {
+                    retention_recovery_record_failure("finalizing", &error);
                 } else {
                     retention_recovery_persist_latest_failure_best_effort(
                         pool,
@@ -4407,7 +4469,10 @@ pub(crate) async fn archive_old_invocations(
                     &error,
                 )
                 .await?;
-                return Err(error);
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
             }
             let raw_paths = group
                 .iter()
@@ -4445,7 +4510,10 @@ pub(crate) async fn archive_old_invocations(
                         &error,
                     )
                     .await?;
-                    return Err(error);
+                    return Err(retention_recovery_failure_persisted(
+                        &descriptor.prepared_key,
+                        error,
+                    ));
                 }
             }) else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
@@ -4462,7 +4530,10 @@ pub(crate) async fn archive_old_invocations(
                     &error,
                 )
                 .await?;
-                return Err(error);
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
             }
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
@@ -5143,6 +5214,68 @@ mod retention_write_budget_tests {
             ))
         );
         assert!(!system_task_run_retention_admission_requires_pressure_backoff(None));
+    }
+}
+
+#[cfg(test)]
+mod retention_recovery_race_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn quarantine_guard_does_not_overwrite_a_republished_artifact() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect in-memory retention database");
+        sqlx::query(
+            r#"
+            CREATE TABLE retention_prepared_archives (
+                prepared_key TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                artifact_sha256 TEXT,
+                quarantined_at TEXT,
+                last_failure_stage TEXT,
+                last_failure_fingerprint TEXT,
+                updated_at TEXT
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create prepared archive fixture");
+        sqlx::query(
+            "INSERT INTO retention_prepared_archives (prepared_key, state, artifact_sha256) VALUES ('race', 'published', 'old-sha')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed published archive fixture");
+
+        sqlx::query(
+            "UPDATE retention_prepared_archives SET state = 'published', artifact_sha256 = 'new-sha' WHERE prepared_key = 'race'",
+        )
+        .execute(&pool)
+        .await
+        .expect("republish archive fixture before stale quarantine update");
+
+        let updated = quarantine_published_retention_archive_if_unchanged(
+            &pool,
+            "race",
+            Some("old-sha"),
+            Some("fingerprint"),
+        )
+        .await
+        .expect("run stale quarantine guard");
+        assert!(!updated);
+
+        let row: (String, String) = sqlx::query_as(
+            "SELECT state, artifact_sha256 FROM retention_prepared_archives WHERE prepared_key = 'race'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load republished archive fixture");
+        assert_eq!(row, ("published".to_string(), "new-sha".to_string()));
     }
 }
 

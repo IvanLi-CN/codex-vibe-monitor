@@ -32,9 +32,9 @@ PR1 does not implement the aggregate physical raw inventory or the raw-capture c
 ## Verification
 
 - `cargo fmt --all -- --check`, Linux `cargo check --locked --all-targets --all-features`, and Linux Clippy with `-D warnings` pass.
-- The `lightweight` profile passes 1117 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer.
+- The `lightweight` profile passes 1118 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer and the republish-safe quarantine guard.
 - The `stateful-sqlite` profile passes 1304 tests, including P1 admission for failure persistence, prepared-schema re-entry, unmeasured status counts, and reaching due published work past 32 unexpired quarantines.
-- The `archive-file-io` profile passes 250 tests, including full archive-column identity mismatch rollback, retry after publication failure, source/raw ownership retention, independent orphan cleanup, sanitized failure fingerprints, the 32-file bound, and cursor wrap for late earlier paths.
+- The `archive-file-io` profile passes 251 tests, including full archive-column identity mismatch rollback, retry after publication failure, source/raw ownership retention, independent orphan cleanup, sanitized failure fingerprints, prepared-key failure attribution, the republish-safe quarantine guard, the 32-file bound, and cursor wrap for late earlier paths.
 - Web unit tests pass 1538 tests across 156 files, with 6 skipped. Type checking and a focused Biome check pass. Storybook (91 tests) and production build passed on the unchanged UI surface before this backend/status-contract repair batch; no page, component, or Storybook source changed in this batch. Repo-wide lint from the preceding candidate reported 86 existing warnings; the build reported the existing large-bundle warning.
 
 ## References

@@ -642,6 +642,23 @@ async fn retention_finalization_rejects_source_content_changed_after_archive_cop
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[test]
+fn persisted_recovery_failure_keeps_its_prepared_key_for_outer_error_handling() {
+    let error = crate::maintenance::retention_recovery_failure_persisted(
+        "codex_invocations:/tmp/archive-a:sha-a",
+        anyhow::anyhow!("source identity verification failed"),
+    );
+
+    assert!(crate::maintenance::is_retention_recovery_failure_persisted(
+        &error
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("source identity verification failed")
+    );
+}
+
 #[tokio::test]
 async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     let (pool, config, temp_dir) =
