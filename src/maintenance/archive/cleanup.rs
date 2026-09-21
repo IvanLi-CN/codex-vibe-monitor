@@ -483,14 +483,8 @@ async fn finalize_archive_batch_file_deletion_with_remove<F>(
 where
     F: FnOnce(&str) -> io::Result<()>,
 {
-    let _archive_lock = if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
-        Some(
-            super::super::retention::retention_archive_file_lock(Path::new(file_path))
-                .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?,
-        )
-    } else {
-        None
-    };
+    let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
+        .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?;
     // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
     // manifest and rename its file under the same lock, so they either win before this check or
     // wait until this identity has been fully finalized.
@@ -1895,6 +1889,16 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
+    let _archive_lock = super::super::retention::retention_archive_file_lock(archive_path)?;
+    let Some(_admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_archive_snapshot_backfill",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_archive_snapshot_backfill",
+        ));
+    };
     let source_fingerprint = summary_archive_source_fingerprint(archive_path)?;
     let mut hash_progress =
         load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;

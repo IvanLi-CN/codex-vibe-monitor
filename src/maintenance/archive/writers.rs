@@ -267,6 +267,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             FROM archive_batches
             WHERE dataset = 'pool_upstream_request_attempts'
               AND status = ?1
+              AND cleanup_state = ?4
               AND id > ?2
             ORDER BY id ASC
             LIMIT ?3
@@ -278,6 +279,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             summary.scanned_batches,
             scan_limit,
         ))
+        .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
         .fetch_all(pool)
         .await?;
 

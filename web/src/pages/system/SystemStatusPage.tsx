@@ -674,14 +674,16 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
               <div
                 className="col-span-full border-t border-base-300/60 pt-3"
                 data-testid="system-status-retention-recovery"
-                aria-live="polite"
-                aria-atomic="true"
               >
                 <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                   <h4 className="text-sm font-semibold text-base-content">
                     {t("system.status.runtimePressure.retentionRecovery.title")}
                   </h4>
-                  <span className="text-xs font-medium text-base-content/70">
+                  <span
+                    className="text-xs font-medium text-base-content/70"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
                     {t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`)}
                   </span>
                 </div>
