@@ -2482,6 +2482,9 @@ where
         let Some(parent) = archive_path.parent() else {
             bail!("archive path has no parent directory: {path}");
         };
+        if !parent.exists() {
+            continue;
+        }
         representatives
             .entry(parent.to_path_buf())
             .or_insert_with(|| archive_path.to_path_buf());
