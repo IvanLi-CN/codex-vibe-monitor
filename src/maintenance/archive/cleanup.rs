@@ -1053,6 +1053,18 @@ async fn summary_archive_snapshot_cleanup_gate_satisfied(
         // is admitted only after a final V2 proof exists.
         return Ok(false);
     }
+    let proof_marker_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if !proof_marker_exists {
+        return Ok(false);
+    }
     summary_archive_snapshot_has_final_proof(pool, archive_batch_id, manifest_sha256).await
 }
 
@@ -1948,7 +1960,18 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     // A valid V2 page is already an exact authority and does not require reopening the raw
     // archive. Marking it complete here also upgrades V2 pages written by an older process into
     // the durable backfill outcome index.
-    if summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256).await? {
+    let proof_marker_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
+    )
+    .bind(candidate.id)
+    .bind(&candidate.sha256)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if proof_marker_exists
+        && summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256).await?
+    {
         return Ok("complete");
     }
     if candidate.row_count <= 0 {
