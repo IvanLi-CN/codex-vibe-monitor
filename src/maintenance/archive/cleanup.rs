@@ -2778,6 +2778,15 @@ async fn update_summary_startup_proven_legacy_detail_mirrors(
         return Ok(0);
     }
 
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_legacy_detail_mirror_reconcile",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_legacy_detail_mirror_reconcile",
+        ));
+    };
     let mut changed_path_count = 0_usize;
     let mut tx = pool.begin().await?;
     for candidate in proven_mirrors {
@@ -2796,6 +2805,7 @@ async fn update_summary_startup_proven_legacy_detail_mirrors(
         .rows_affected() as usize;
     }
     tx.commit().await?;
+    drop(admission);
     Ok(changed_path_count)
 }
 
@@ -2858,6 +2868,15 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
 
     let mut changed_path_count = 0_usize;
     if !proven_mirrors.is_empty() || !ambiguous_mirrors.is_empty() {
+        let Some(admission) = super::super::retention::acquire_retention_write_admission(
+            "summary_legacy_detail_mirror_reconcile",
+        )
+        .await
+        else {
+            return Err(super::super::retention::retention_write_deferred(
+                "summary_legacy_detail_mirror_reconcile",
+            ));
+        };
         let mut tx = pool.begin().await?;
         for candidate in proven_mirrors {
             changed_path_count += sqlx::query(
@@ -2890,6 +2909,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
             .rows_affected() as usize;
         }
         tx.commit().await?;
+        drop(admission);
     }
 
     Ok(LegacyDetailMirrorRecoveryWindowResult {
@@ -3046,6 +3066,15 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
     }
 
     let started_at = Instant::now();
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "historical_rollup_startup_replay",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "historical_rollup_startup_replay",
+        ));
+    };
     let mut tx = pool.begin().await?;
     let mut next_cursor_id = cursor_id;
     let mut scanned_archive_batches = 0_usize;
@@ -3108,6 +3137,7 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         next_cursor_id = candidate.id;
     }
     tx.commit().await?;
+    drop(admission);
 
     Ok(HistoricalRollupStartupWindowResult {
         summary: HistoricalRollupMaterializationSummary {
@@ -3346,6 +3376,15 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         skip_pending_archives % pending_usage_breakdown_batches
     };
 
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "historical_rollup_usage_breakdown",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "historical_rollup_usage_breakdown",
+        ));
+    };
     let mut tx = pool.begin().await?;
     let invocation_summary =
         replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
@@ -3357,6 +3396,7 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         )
         .await?;
     tx.commit().await?;
+    drop(admission);
 
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: invocation_summary.scanned_batches as usize,
@@ -3427,6 +3467,15 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         });
     }
 
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "historical_rollup_materialization",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "historical_rollup_materialization",
+        ));
+    };
     let mut tx = pool.begin().await?;
     let invocation_summary = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         tx.as_mut(),
@@ -3466,6 +3515,7 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         }
     }
     tx.commit().await?;
+    drop(admission);
 
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: (invocation_summary.scanned_batches
