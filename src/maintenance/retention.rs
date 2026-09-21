@@ -309,10 +309,17 @@ struct RetentionRecoveryFailurePersisted {
 
 impl std::fmt::Display for RetentionRecoveryFailurePersisted {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let category = self.source.to_string();
+        let category = if category.contains("source identity verification failed") {
+            "source identity verification failed"
+        } else if category.contains("artifact digest verification failed") {
+            "artifact digest verification failed"
+        } else {
+            "retention operation failed"
+        };
         write!(
             formatter,
-            "retention recovery failure persisted: {}",
-            self.source
+            "retention recovery failure persisted: {category}"
         )
     }
 }
@@ -1272,7 +1279,18 @@ async fn retention_recovery_record_preparing(
     else {
         return Err(retention_write_deferred("retention_recovery_prepare"));
     };
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let existing_identity = sqlx::query_scalar::<_, String>(
+        "SELECT source_identity_sha256 FROM retention_prepared_archives WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(descriptor.dataset)
+    .bind(&descriptor.file_path)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    if existing_identity.is_some_and(|identity| identity != descriptor.source_identity_sha256) {
+        tx.rollback().await?;
+        bail!("retention prepared archive identity collision");
+    }
     sqlx::query(
         r#"
         INSERT INTO retention_prepared_archives (
@@ -1542,13 +1560,25 @@ async fn verify_prepared_retention_archive_artifact(
             .fetch_all(&mut archive_db)
             .await?;
     let expected_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)?;
-    if archive_ids != expected_ids {
+    if descriptor.part_key.is_some() && archive_ids != expected_ids {
         bail!("prepared archive source identity verification failed");
     }
+    if descriptor.part_key.is_none()
+        && expected_ids
+            .iter()
+            .any(|expected_id| archive_ids.binary_search(expected_id).is_err())
+    {
+        bail!("prepared archive source identity verification failed");
+    }
+    let identity_ids = if descriptor.part_key.is_some() {
+        archive_ids.as_slice()
+    } else {
+        expected_ids.as_slice()
+    };
     let archive_identity = invocation_archive_source_identity_sha256(
         &mut archive_db,
         InvocationArchiveIdentityDatabase::Main,
-        &archive_ids,
+        identity_ids,
     )
     .await?;
     archive_db.close().await?;
@@ -1615,11 +1645,32 @@ async fn quarantine_published_retention_archive_if_unchanged(
 
 fn retention_archive_path_is_owned(config: &AppConfig, path: &Path) -> bool {
     let root = resolved_archive_dir(config).join("codex_invocations");
-    path.is_absolute()
-        && path.starts_with(&root)
-        && fs::symlink_metadata(path)
-            .map(|metadata| metadata.file_type().is_file())
-            .unwrap_or(false)
+    let Ok(root) = fs::canonicalize(root) else {
+        return false;
+    };
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let candidates = if path.is_absolute() {
+        vec![path.to_path_buf()]
+    } else {
+        vec![path.to_path_buf(), root.join(path)]
+    };
+    candidates.into_iter().any(|candidate| {
+        let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+            return false;
+        };
+        if !metadata.file_type().is_file() {
+            return false;
+        }
+        let Ok(canonical_candidate) = fs::canonicalize(&candidate) else {
+            return false;
+        };
+        canonical_candidate.starts_with(&root)
+    })
 }
 
 async fn reconcile_retention_prepared_archives(
@@ -3247,9 +3298,31 @@ async fn run_data_retention_maintenance_inner(
         .await
         .context("failed to verify parallel-work minute coverage before invocation retention")?;
     let pruned = if invocation_payload_retention_ready {
-        prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run)
-            .await
-            .context("failed to prune old invocation details during retention")?
+        match prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                if dry_run {
+                    retention_recovery_record_failure("detail_prune", &error);
+                } else if is_retention_write_deferred(&error) {
+                    retention_recovery_record_deferred("detail_prune");
+                } else if is_retention_recovery_failure_persisted(&error) {
+                    retention_recovery_record_failure("detail_prune", &error);
+                } else {
+                    retention_recovery_persist_latest_failure_best_effort(
+                        pool,
+                        "detail_prune",
+                        &error,
+                    )
+                    .await;
+                }
+                retention_recovery_log_event(
+                    tracing::Level::WARN,
+                    "detail_prune",
+                    "invocation detail pruning failed; continuing independent retention stages",
+                );
+                (0, 0, 0)
+            }
+        }
     } else {
         info!(
             payload_loss_days,
@@ -4461,6 +4534,22 @@ pub(crate) async fn prune_old_invocation_details(
             )?;
             archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR;
             retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
+            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
+            if actual_archive_sha256 != archive_outcome.sha256 {
+                let error =
+                    anyhow!("retention prepared archive artifact digest verification failed");
+                retention_recovery_persist_failure(
+                    pool,
+                    &descriptor.prepared_key,
+                    "publishing",
+                    &error,
+                )
+                .await?;
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
+            }
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
             let Some(admission) =

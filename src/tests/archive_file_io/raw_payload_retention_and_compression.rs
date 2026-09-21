@@ -512,12 +512,26 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     .expect("load published recovery artifact path");
     assert!(Path::new(&published_path).is_file());
 
+    sqlx::query(
+        "UPDATE retention_prepared_archives SET state = 'preparing', next_retry_at = NULL WHERE dataset = 'codex_invocations'",
+    )
+    .execute(&pool)
+    .await
+    .expect("rewind recovery journal to simulate interrupted preparation");
+
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("retention should continue after archive finalization failure");
     assert_eq!(summary.orphan_raw_files_removed, 1);
     assert!(!orphan_path.exists(), "safe orphan cleanup is independent");
     assert!(raw_path.exists(), "source-owned raw data remains available");
+    let reconciled_state: String = sqlx::query_scalar(
+        "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load reconciled recovery journal state");
+    assert_eq!(reconciled_state, "published");
 
     let fingerprint: String = sqlx::query_scalar(
         "SELECT last_failure_fingerprint FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",

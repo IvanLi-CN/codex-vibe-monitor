@@ -1051,7 +1051,12 @@ async fn upsert_archive_batch_manifest_with_status(
                 ELSE MAX(archive_batches.coverage_end_at, excluded.coverage_end_at)
             END,
             archive_expires_at = excluded.archive_expires_at,
-            summary_source_kind = excluded.summary_source_kind,
+            summary_source_kind = CASE
+                WHEN archive_batches.summary_source_kind = 'authoritative'
+                    AND excluded.summary_source_kind = 'live_mirror'
+                    THEN archive_batches.summary_source_kind
+                ELSE excluded.summary_source_kind
+            END,
             created_at = datetime('now')
         "#,
     )
@@ -1253,6 +1258,88 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn live_mirror_manifest_does_not_downgrade_authoritative_manifest() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let authoritative = ArchiveBatchOutcome {
+            dataset: HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            month_key: "2026-01".to_string(),
+            day_key: None,
+            part_key: None,
+            file_path: "/tmp/codex-invocations-2026-01.sqlite.gz".to_string(),
+            sha256: "authoritative-sha".to_string(),
+            source_identity_sha256: None,
+            row_count: 10,
+            upstream_last_activity: Vec::new(),
+            coverage_start_at: None,
+            coverage_end_at: None,
+            archive_expires_at: None,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
+        };
+        let live_mirror = ArchiveBatchOutcome {
+            dataset: HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            month_key: "2026-01".to_string(),
+            day_key: None,
+            part_key: None,
+            file_path: authoritative.file_path.clone(),
+            sha256: "live-mirror-sha".to_string(),
+            source_identity_sha256: None,
+            row_count: 11,
+            upstream_last_activity: Vec::new(),
+            coverage_start_at: None,
+            coverage_end_at: None,
+            archive_expires_at: None,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
+        };
+        let mut tx = pool.begin().await.expect("begin manifest transaction");
+        upsert_archive_batch_manifest_with_status(
+            tx.as_mut(),
+            &authoritative,
+            ARCHIVE_STATUS_MATERIALIZING,
+        )
+        .await
+        .expect("insert authoritative manifest");
+        upsert_archive_batch_manifest_with_status(
+            tx.as_mut(),
+            &live_mirror,
+            ARCHIVE_STATUS_MATERIALIZING,
+        )
+        .await
+        .expect("update manifest from live mirror");
+        tx.commit().await.expect("commit manifest transaction");
+
+        let manifest: (String, String, i64) = sqlx::query_as(
+            "SELECT summary_source_kind, sha256, row_count FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind("2026-01")
+        .bind(&authoritative.file_path)
+        .fetch_one(&pool)
+        .await
+        .expect("load merged manifest");
+        assert_eq!(manifest.0, SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE);
+        assert_eq!(manifest.1, "live-mirror-sha");
+        assert_eq!(manifest.2, 11);
+        pool.close().await;
     }
 
     #[tokio::test]

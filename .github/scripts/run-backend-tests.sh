@@ -309,7 +309,7 @@ run_profile() {
       test_threads="6"
       ;;
     archive-file-io)
-      filter_expr='test(/^(tests|upstream_accounts::tests)::archive_file_io::/)'
+      filter_expr='(test(/^(tests|upstream_accounts::tests)::archive_file_io::/)) or (test(/^maintenance::archive::archive_writers::tests::/)) or (test(/^maintenance::retention::retention_recovery_race_tests::/))'
       ;;
     *)
       echo "::error::unsupported backend test profile: $selected_profile" >&2
