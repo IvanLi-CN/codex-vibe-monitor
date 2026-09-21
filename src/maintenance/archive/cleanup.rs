@@ -2839,7 +2839,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     cursor_id: i64,
     max_elapsed: Duration,
 ) -> Result<LegacyDetailMirrorRecoveryWindowResult> {
-    let candidates = load_legacy_detail_mirror_recovery_candidates(
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(
         pool,
         cursor_id,
         None,
@@ -2847,6 +2847,11 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         true,
     )
     .await?;
+    candidates.retain(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_some_and(Path::exists)
+    });
     if candidates.is_empty() {
         return Ok(LegacyDetailMirrorRecoveryWindowResult {
             // Keep the completed-cycle cursor so an idle pass does not immediately scan the
@@ -2964,7 +2969,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
     high_watermark_id: i64,
     max_elapsed: Duration,
 ) -> Result<SummaryStartupLegacyDetailMirrorRecoveryWindowResult> {
-    let candidates = load_legacy_detail_mirror_recovery_candidates(
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(
         pool,
         cursor_id,
         Some(high_watermark_id),
@@ -2972,6 +2977,11 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
         false,
     )
     .await?;
+    candidates.retain(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_some_and(Path::exists)
+    });
     if candidates.is_empty() {
         return Ok(SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
             next_cursor_id: cursor_id,
@@ -3088,6 +3098,11 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         candidates = load_historical_rollup_startup_candidates(pool, 0).await?;
         wrapped = !candidates.is_empty();
     }
+    candidates.retain(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_some_and(Path::exists)
+    });
     if candidates.is_empty() {
         return Ok(HistoricalRollupStartupWindowResult {
             summary: HistoricalRollupMaterializationSummary::default(),
