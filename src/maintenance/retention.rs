@@ -1940,6 +1940,7 @@ async fn reconcile_retention_prepared_archives(
                 .unwrap_or_default()
                     != 0;
             if expired {
+                let _archive_lock = retention_archive_file_lock(path)?;
                 let Some(admission) =
                     acquire_retention_write_admission("retention_recovery_quarantine_cleanup")
                         .await
@@ -1965,7 +1966,6 @@ async fn reconcile_retention_prepared_archives(
                 .bind(&prepared_key)
                 .fetch_one(tx.as_mut())
                 .await?;
-                let _archive_lock = retention_archive_file_lock(path)?;
                 let artifact_matches = if path.is_file() {
                     artifact_sha256.as_deref().is_some_and(|expected| {
                         sha256_hex_file(path).ok().as_deref() == Some(expected)
@@ -4716,12 +4716,12 @@ pub(crate) async fn prune_old_invocation_details(
             retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
+            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let Some(admission) =
                 acquire_retention_write_admission("invocation_detail_prune").await
             else {
                 return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
@@ -5061,11 +5061,11 @@ pub(crate) async fn archive_old_invocations(
             archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
             retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
             let prepare_elapsed = prepare_started.elapsed();
+            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let Some(admission) = acquire_retention_write_admission("invocation_archive").await
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             // P2 normally advances this cursor before retention. Rows beyond it would be

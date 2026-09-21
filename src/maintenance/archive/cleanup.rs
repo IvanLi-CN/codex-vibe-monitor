@@ -483,6 +483,14 @@ async fn finalize_archive_batch_file_deletion_with_remove<F>(
 where
     F: FnOnce(&str) -> io::Result<()>,
 {
+    let _archive_lock = if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        Some(
+            super::super::retention::retention_archive_file_lock(Path::new(file_path))
+                .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?,
+        )
+    } else {
+        None
+    };
     // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
     // manifest and rename its file under the same lock, so they either win before this check or
     // wait until this identity has been fully finalized.
@@ -535,14 +543,6 @@ where
     .await?;
     let is_live_mirror = summary_source_kind.as_deref()
         == Some(crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
-    let _archive_lock = if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
-        Some(
-            super::super::retention::retention_archive_file_lock(Path::new(file_path))
-                .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?,
-        )
-    } else {
-        None
-    };
     if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && !is_live_mirror {
         let proof_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \

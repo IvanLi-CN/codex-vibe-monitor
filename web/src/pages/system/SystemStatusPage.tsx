@@ -674,6 +674,8 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
               <div
                 className="col-span-full border-t border-base-300/60 pt-3"
                 data-testid="system-status-retention-recovery"
+                aria-live="polite"
+                aria-atomic="true"
               >
                 <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                   <h4 className="text-sm font-semibold text-base-content">

@@ -738,6 +738,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     final_file_path: &Path,
     expected_existing_sha256: Option<&str>,
 ) -> Result<()> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
     // cannot interleave across processes.
@@ -753,7 +754,6 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .metadata()
         .map(|metadata| metadata.len() as usize)
         .unwrap_or_default();
-    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current_existing_sha256 = if final_file_path.exists() {
