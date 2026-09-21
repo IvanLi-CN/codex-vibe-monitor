@@ -2470,6 +2470,28 @@ enum SummaryStartupLegacyDetailMirrorProof {
     Unavailable,
 }
 
+fn retain_archive_directory_locks<'a, I>(
+    paths: I,
+) -> Result<Vec<super::super::retention::RetentionArchiveFileLock>>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut representatives = BTreeMap::<PathBuf, PathBuf>::new();
+    for path in paths {
+        let archive_path = Path::new(path);
+        let Some(parent) = archive_path.parent() else {
+            bail!("archive path has no parent directory: {path}");
+        };
+        representatives
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| archive_path.to_path_buf());
+    }
+    representatives
+        .into_values()
+        .map(|path| super::super::retention::retention_archive_file_lock(&path))
+        .collect()
+}
+
 async fn load_historical_rollup_startup_candidates(
     pool: &Pool<Sqlite>,
     cursor_id: i64,
@@ -2835,6 +2857,11 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         });
     }
 
+    let _archive_locks = retain_archive_directory_locks(
+        candidates
+            .iter()
+            .map(|candidate| candidate.file_path.as_str()),
+    )?;
     let started_at = Instant::now();
     let mut next_cursor_id = cursor_id;
     let mut inspected_path_count = 0_usize;
@@ -2954,6 +2981,11 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
         });
     }
 
+    let _archive_locks = retain_archive_directory_locks(
+        candidates
+            .iter()
+            .map(|candidate| candidate.file_path.as_str()),
+    )?;
     let started_at = Instant::now();
     let candidate_count = candidates.len();
     let mut proof_results = stream::iter(candidates.into_iter().enumerate().map(
@@ -3065,6 +3097,11 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         });
     }
 
+    let _archive_locks = retain_archive_directory_locks(
+        candidates
+            .iter()
+            .map(|candidate| candidate.file_path.as_str()),
+    )?;
     let started_at = Instant::now();
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_startup_replay",
@@ -3376,6 +3413,11 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         skip_pending_archives % pending_usage_breakdown_batches
     };
 
+    let _archive_locks = retain_archive_directory_locks(
+        pending_archive_files
+            .iter()
+            .map(|candidate| candidate.file_path.as_str()),
+    )?;
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_usage_breakdown",
     )
@@ -3467,6 +3509,14 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         });
     }
 
+    let pending_archive_paths = sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches WHERE status = ?1 AND historical_rollups_materialized_at IS NULL AND dataset IN ('codex_invocations', 'forward_proxy_attempts')",
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    let _archive_locks =
+        retain_archive_directory_locks(pending_archive_paths.iter().map(String::as_str))?;
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_materialization",
     )
