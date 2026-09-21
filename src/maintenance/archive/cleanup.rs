@@ -1225,6 +1225,14 @@ async fn store_summary_archive_snapshot_backfill_checkpoint(
     manifest_high_watermark_id: i64,
     completed: bool,
 ) -> Result<()> {
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("summary_snapshot_checkpoint")
+            .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_checkpoint",
+        ));
+    };
     sqlx::query(
         "INSERT INTO summary_archive_snapshot_backfill_checkpoint \
          (scope, next_archive_batch_id, manifest_high_watermark_id, completed, updated_at) \
@@ -1240,6 +1248,7 @@ async fn store_summary_archive_snapshot_backfill_checkpoint(
     .bind(i64::from(completed))
     .execute(pool)
     .await?;
+    drop(admission);
     Ok(())
 }
 
@@ -1378,6 +1387,15 @@ async fn promote_verified_summary_snapshot_page_sets(
         if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
             .await?
         {
+            let Some(admission) = super::super::retention::acquire_retention_write_admission(
+                "summary_snapshot_proof_promotion",
+            )
+            .await
+            else {
+                return Err(super::super::retention::retention_write_deferred(
+                    "summary_snapshot_proof_promotion",
+                ));
+            };
             sqlx::query(
                 "INSERT INTO summary_archive_snapshot_backfill_outcome \
                  (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
@@ -1393,6 +1411,7 @@ async fn promote_verified_summary_snapshot_page_sets(
             .execute(pool)
             .await
             .context("record promoted Summary Snapshot V2 outcome")?;
+            drop(admission);
             promoted += 1;
         }
     }
@@ -1593,6 +1612,15 @@ async fn record_summary_archive_snapshot_backfill_outcome(
     next_page_index: u32,
     next_row_id: i64,
 ) -> Result<()> {
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_snapshot_backfill_outcome",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_backfill_outcome",
+        ));
+    };
     let mut tx = pool.begin().await?;
     record_summary_archive_snapshot_backfill_outcome_tx(
         tx.as_mut(),
@@ -1610,10 +1638,39 @@ async fn record_summary_archive_snapshot_backfill_outcome(
     )
     .await?;
     tx.commit().await?;
+    drop(admission);
     Ok(())
 }
 
 async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    disposition: &str,
+    failure_kind: &str,
+    progress: SummaryArchiveSnapshotBackfillProgress,
+) -> Result<()> {
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_snapshot_backfill_outcome",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_backfill_outcome",
+        ));
+    };
+    record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
+        pool,
+        candidate,
+        disposition,
+        failure_kind,
+        progress,
+    )
+    .await?;
+    drop(admission);
+    Ok(())
+}
+
+async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
     pool: &Pool<Sqlite>,
     candidate: &HistoricalRollupStartupCandidateRow,
     disposition: &str,
@@ -1644,6 +1701,15 @@ async fn record_summary_coverage_obligation_terminal_gap(
     candidate: &HistoricalRollupStartupCandidateRow,
     reason: &str,
 ) -> Result<()> {
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_snapshot_coverage_obligation",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_coverage_obligation",
+        ));
+    };
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT OR IGNORE INTO summary_coverage_obligation \
@@ -1669,6 +1735,7 @@ async fn record_summary_coverage_obligation_terminal_gap(
     .await
     .context("persist Summary coverage terminal gap")?;
     tx.commit().await?;
+    drop(admission);
     Ok(())
 }
 
@@ -1964,7 +2031,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             SummaryArchiveHashAdvance::Deferred(progress) => {
                 // Hash state itself is committed progress. The outer scheduler records the
                 // bounded defer separately, preserving this state and applying its backoff.
-                record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+                record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
                     pool,
                     candidate,
                     "in_progress",
