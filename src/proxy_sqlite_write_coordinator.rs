@@ -142,8 +142,11 @@ impl CoordinatorState {
 
     fn can_admit_maintenance_fairness(&self, deadline: Instant, now: Instant) -> bool {
         // Fairness prevents perpetual maintenance starvation, but it never lets an
-        // already queued P1 terminal write lose to work that has not started yet.
-        self.active.is_none() && self.p1_waiters == 0 && now >= deadline
+        // already queued P1 or interactive write lose to work that has not started yet.
+        self.active.is_none()
+            && self.p1_waiters == 0
+            && self.interactive_waiters == 0
+            && now >= deadline
     }
 }
 
@@ -490,6 +493,20 @@ pub(crate) fn test_proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoord
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maintenance_fairness_does_not_bypass_interactive_waiters() {
+        let now = Instant::now();
+        let mut state = CoordinatorState {
+            interactive_waiters: 1,
+            ..CoordinatorState::default()
+        };
+
+        assert!(!state.can_admit_maintenance_fairness(now, now));
+
+        state.interactive_waiters = 0;
+        assert!(state.can_admit_maintenance_fairness(now, now));
+    }
 
     async fn wait_for_waiters(
         coordinator: &ProxySqliteWriteCoordinator,

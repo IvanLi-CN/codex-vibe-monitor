@@ -680,6 +680,32 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .expect("count resumed quarantined archives");
     assert_eq!(second_pass_count, 33);
 
+    let late_file = archive_dir.join("aaa-late.sqlite.gz");
+    fs::write(&late_file, b"late unverified legacy segment")
+        .expect("write lexically earlier segment after the cursor advanced");
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("tail scan should wrap the cursor after exhaustion");
+    let cursor_after_wrap: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load wrapped legacy cursor");
+    assert!(cursor_after_wrap.is_empty());
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("scan again from the beginning after cursor wrap");
+    let late_file_is_tracked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE file_path = ?1 AND state = 'quarantined'",
+    )
+    .bind(late_file.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("check the late legacy file was quarantined");
+    assert_eq!(late_file_is_tracked, 1);
+
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }

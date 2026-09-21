@@ -87,9 +87,9 @@ impl Default for RetentionWriteHealthSnapshot {
 pub(crate) struct RetentionRecoveryHealthSnapshot {
     pub(crate) state: String,
     pub(crate) stage: Option<String>,
-    pub(crate) prepared_count: usize,
-    pub(crate) quarantined_count: usize,
-    pub(crate) expired_backlog_count: usize,
+    pub(crate) prepared_count: Option<usize>,
+    pub(crate) quarantined_count: Option<usize>,
+    pub(crate) expired_backlog_count: Option<usize>,
     pub(crate) oldest_backlog_age_secs: Option<u64>,
     pub(crate) last_progress_at: Option<String>,
     pub(crate) next_retry_at: Option<String>,
@@ -102,9 +102,9 @@ impl Default for RetentionRecoveryHealthSnapshot {
         Self {
             state: "unknown".to_string(),
             stage: None,
-            prepared_count: 0,
-            quarantined_count: 0,
-            expired_backlog_count: 0,
+            prepared_count: None,
+            quarantined_count: None,
+            expired_backlog_count: None,
             oldest_backlog_age_secs: None,
             last_progress_at: None,
             next_retry_at: None,
@@ -177,9 +177,9 @@ fn retention_recovery_log_event(
                 message = message,
                 retention_recovery_state = %health.state,
                 retention_recovery_stage = ?health.stage,
-                retention_recovery_prepared_count = health.prepared_count,
-                retention_recovery_quarantined_count = health.quarantined_count,
-                retention_recovery_expired_backlog_count = health.expired_backlog_count,
+                retention_recovery_prepared_count = ?health.prepared_count,
+                retention_recovery_quarantined_count = ?health.quarantined_count,
+                retention_recovery_expired_backlog_count = ?health.expired_backlog_count,
                 retention_recovery_oldest_backlog_age_secs = ?health.oldest_backlog_age_secs,
                 retention_recovery_last_progress_at = ?health.last_progress_at,
                 retention_recovery_next_retry_at = ?health.next_retry_at,
@@ -1157,21 +1157,27 @@ async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConf
     let mut health = RETENTION_RECOVERY_HEALTH
         .lock()
         .expect("retention recovery health");
-    health.prepared_count = prepared_count.max(0) as usize;
-    health.quarantined_count = quarantined_count.max(0) as usize;
-    health.expired_backlog_count = expired_backlog_count.max(0) as usize;
+    health.prepared_count = Some(prepared_count.max(0) as usize);
+    health.quarantined_count = Some(quarantined_count.max(0) as usize);
+    health.expired_backlog_count = Some(expired_backlog_count.max(0) as usize);
     health.oldest_backlog_age_secs = oldest_backlog_age_secs;
     health.next_retry_at = next_retry_at;
-    if health.quarantined_count > 0 {
+    if health.quarantined_count.is_some_and(|count| count > 0) {
         health.state = "degraded".to_string();
-    } else if health.prepared_count > 0 || health.expired_backlog_count > 0 {
+    } else if health.prepared_count.is_some_and(|count| count > 0)
+        || health.expired_backlog_count.is_some_and(|count| count > 0)
+    {
         if !matches!(health.state.as_str(), "degraded" | "deferred") {
             health.state = "recovering".to_string();
         }
-    } else if matches!(
-        health.state.as_str(),
-        "unknown" | "recovering" | "deferred" | "degraded"
-    ) {
+    } else if health.prepared_count == Some(0)
+        && health.quarantined_count == Some(0)
+        && health.expired_backlog_count == Some(0)
+        && matches!(
+            health.state.as_str(),
+            "unknown" | "recovering" | "deferred" | "degraded"
+        )
+    {
         health.state = "healthy".to_string();
         health.failure_stage = None;
         health.failure_fingerprint = None;
@@ -1453,10 +1459,30 @@ async fn reconcile_retention_prepared_archives(
         r#"
         SELECT prepared_key, file_path, state, artifact_sha256, quarantined_at
         FROM retention_prepared_archives
-        ORDER BY updated_at ASC, prepared_key ASC
-        LIMIT ?1
+        WHERE (
+            state IN ('preparing', 'published')
+            AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+        ) OR (
+            state = 'quarantined'
+            AND quarantined_at IS NOT NULL
+            AND julianday('now') - julianday(quarantined_at) >= (?1 / 86400.0)
+            AND NOT EXISTS (
+                SELECT 1 FROM archive_batches
+                WHERE archive_batches.file_path = retention_prepared_archives.file_path
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM retention_prepared_archives AS active
+                WHERE active.file_path = retention_prepared_archives.file_path
+                  AND active.prepared_key <> retention_prepared_archives.prepared_key
+                  AND active.state IN ('preparing', 'published')
+            )
+        )
+        ORDER BY CASE WHEN state = 'published' THEN 0 ELSE 1 END,
+                 updated_at ASC, prepared_key ASC
+        LIMIT ?2
         "#,
     )
+    .bind(RETENTION_RECOVERY_QUARANTINE_GRACE_SECS)
     .bind(RETENTION_RECOVERY_LEGACY_SCAN_BATCH as i64)
     .fetch_all(pool)
     .await?;
@@ -1724,6 +1750,22 @@ async fn reconcile_legacy_retention_archive_segments(
             "#,
         )
         .bind(last.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
+        drop(admission);
+    } else if !cursor.is_empty() {
+        // Wrap when the tail is exhausted so earlier-arriving files are eventually revisited.
+        let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
+        else {
+            return Err(retention_write_deferred("retention_recovery_cursor"));
+        };
+        sqlx::query(
+            r#"
+            UPDATE retention_recovery_cursors
+            SET cursor = '', updated_at = datetime('now')
+            WHERE scope = 'legacy_archive_segments'
+            "#,
+        )
         .execute(pool)
         .await?;
         drop(admission);

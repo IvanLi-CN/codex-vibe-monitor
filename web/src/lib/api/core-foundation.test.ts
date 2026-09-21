@@ -59,6 +59,34 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     expect(recovery?.quarantinedCount).toBeUndefined();
     expect(recovery?.expiredBacklogCount).toBeUndefined();
   });
+
+  it("normalizes explicitly unavailable recovery counters to unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                retentionRecovery: {
+                  state: "unknown",
+                  preparedCount: null,
+                  quarantinedCount: null,
+                  expiredBacklogCount: null,
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const recovery = (await fetchSystemStatus()).runtimePressureHealth?.retentionRecovery;
+
+    expect(recovery?.preparedCount).toBeUndefined();
+    expect(recovery?.quarantinedCount).toBeUndefined();
+    expect(recovery?.expiredBacklogCount).toBeUndefined();
+  });
 });
 
 describe("normalizePoolRoutingSelectionAudit", () => {

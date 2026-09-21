@@ -4573,6 +4573,77 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
 }
 
 #[tokio::test]
+async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-recovery-actionable-queue").await;
+    for index in 0..32 {
+        sqlx::query(
+            r#"
+            INSERT INTO retention_prepared_archives (
+                prepared_key, dataset, month_key, file_path, source_ids_json,
+                source_identity_sha256, state, attempt_count, quarantined_at, updated_at
+            )
+            VALUES (?1, 'codex_invocations', '', ?2, '[]', 'legacy-unverified',
+                    'quarantined', 0, datetime('now'), datetime('now', '-2 days'))
+            "#,
+        )
+        .bind(format!("unexpired-quarantine-{index:02}"))
+        .bind(
+            temp_dir
+                .join(format!("unexpired-quarantine-{index:02}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .execute(&pool)
+        .await
+        .expect("seed unexpired quarantined journal row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, artifact_sha256, attempt_count, updated_at
+        )
+        VALUES ('due-published-row', 'codex_invocations', '', ?1, '[]',
+                'source-identity', 'published', 'expected-sha', 1, datetime('now'))
+        "#,
+    )
+    .bind(
+        temp_dir
+            .join("missing-published.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .expect("seed actionable published journal row");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("reconcile due published journal past unexpired quarantines");
+
+    let due_state: (String, Option<String>) = sqlx::query_as(
+        "SELECT state, last_failure_stage FROM retention_prepared_archives WHERE prepared_key = 'due-published-row'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load actionable journal state");
+    assert_eq!(due_state.0, "quarantined");
+    assert_eq!(due_state.1.as_deref(), Some("legacy_reconcile"));
+    let unexpired_quarantine_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined' AND prepared_key LIKE 'unexpired-quarantine-%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count untouched unexpired quarantines");
+    assert_eq!(unexpired_quarantine_count, 32);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_recovery_failure_persistence_waits_for_p1_admission() {
     let (pool, _config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-recovery-p1-admission").await;
