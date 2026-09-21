@@ -16,6 +16,7 @@
 
 - `/api/system/status` adds optional `runtimePressureHealth.retentionRecovery` diagnostics for health state, current stage, prepared/quarantined/expired backlog counts and age, last progress, next retry, and a sanitized failure fingerprint.
 - Older or incomplete responses normalize the recovery state to `unknown`. System Status exposes healthy, recovering, and degraded scenarios alongside Runtime Pressure details.
+- Missing or partial backlog/prepared/quarantined counters remain unknown in the UI rather than being presented as zero.
 - Status fields, UI copy, and recovery logs omit raw content, SQL/bindings, account identifiers, and complete paths.
 
 ## PR2 Boundary
@@ -31,9 +32,9 @@ PR1 does not implement the aggregate physical raw inventory or the raw-capture c
 ## Verification
 
 - `cargo fmt --all -- --check`, Linux `cargo check --locked --all-targets --all-features`, and Linux Clippy with `-D warnings` pass.
-- The `stateful-sqlite` profile passes 1303 tests, including transaction rollback/retry, prepared-schema re-entry, serialized status diagnostics, and the 32-file legacy reconciliation bound.
-- The `archive-file-io` profile passes 246 tests.
-- Web unit tests pass 1536 tests across 156 files, with 6 skipped. Type checking, Storybook recovery interactions (13 tests), lint, and production build pass. Repo-wide lint reports 86 existing warnings; the build reports the existing large-bundle warning.
+- The `stateful-sqlite` profile passes 1302 tests, including P1 admission for failure persistence, prepared-schema re-entry, and bounded status serialization.
+- The `archive-file-io` profile passes 248 tests, including publication rollback/retry, raw-owner retention, orphan cleanup after archive failure, sanitized failure fingerprints, and the 32-file reconciliation bound.
+- Web unit tests pass 1537 tests across 156 files, with 6 skipped. Type checking, Storybook recovery interactions (13 tests), lint, and production build pass. Repo-wide lint reports 86 existing warnings; the build reports the existing large-bundle warning.
 
 ## References
 

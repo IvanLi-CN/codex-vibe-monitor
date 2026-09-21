@@ -2321,9 +2321,9 @@ export interface RuntimePressureRetentionWriteHealth {
 export interface RuntimePressureRetentionRecoveryHealth {
   state: string;
   stage?: string;
-  preparedCount: number;
-  quarantinedCount: number;
-  expiredBacklogCount: number;
+  preparedCount?: number;
+  quarantinedCount?: number;
+  expiredBacklogCount?: number;
   oldestBacklogAgeSecs?: number;
   lastProgressAt?: string;
   nextRetryAt?: string;
@@ -4482,6 +4482,10 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const retentionRecovery = payload.retentionRecovery as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
+  const optionalCount = (value: unknown) => {
+    const normalized = normalizeFiniteNumber(value);
+    return normalized != null && normalized >= 0 ? Math.trunc(normalized) : undefined;
+  };
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
     const slice = (raw ?? {}) as Record<string, unknown>;
     return {
@@ -4595,9 +4599,9 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
     retentionRecovery: {
       state: optionalString(retentionRecovery?.state) ?? "unknown",
       stage: optionalString(retentionRecovery?.stage),
-      preparedCount: number(retentionRecovery?.preparedCount),
-      quarantinedCount: number(retentionRecovery?.quarantinedCount),
-      expiredBacklogCount: number(retentionRecovery?.expiredBacklogCount),
+      preparedCount: optionalCount(retentionRecovery?.preparedCount),
+      quarantinedCount: optionalCount(retentionRecovery?.quarantinedCount),
+      expiredBacklogCount: optionalCount(retentionRecovery?.expiredBacklogCount),
       oldestBacklogAgeSecs:
         normalizeFiniteNumber(retentionRecovery?.oldestBacklogAgeSecs) ?? undefined,
       lastProgressAt: optionalString(retentionRecovery?.lastProgressAt),

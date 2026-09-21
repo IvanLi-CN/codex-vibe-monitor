@@ -767,7 +767,10 @@ export const StatusRuntimePressureUnknown: Story = {
     await userEvent.click(await canvas.findByText("运行压力详情"));
     await expect(await canvas.findByText("Typed runtime 事件总线")).toBeVisible();
     await expect(canvas.getAllByText("未知").length).toBeGreaterThanOrEqual(2);
-    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("未知");
+    const recovery = canvas.getByTestId("system-status-retention-recovery");
+    await expect(recovery).toHaveTextContent("未知");
+    await expect(recovery).toHaveTextContent("未知 / 未知");
+    await expect(recovery).not.toHaveTextContent("0 / 0");
   },
 };
 

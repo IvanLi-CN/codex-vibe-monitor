@@ -684,7 +684,11 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                   />
                   <BreakdownRow
                     label={t("system.status.runtimePressure.retentionRecovery.backlog")}
-                    value={recovery?.expiredBacklogCount.toLocaleString() ?? "-"}
+                    value={
+                      recovery?.expiredBacklogCount != null
+                        ? recovery.expiredBacklogCount.toLocaleString()
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
                     hint={
                       recovery?.oldestBacklogAgeSecs != null
                         ? t("system.status.runtimePressure.retentionRecovery.backlogHint", {
@@ -695,11 +699,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                   />
                   <BreakdownRow
                     label={t("system.status.runtimePressure.retentionRecovery.prepared")}
-                    value={
-                      recovery
-                        ? `${recovery.preparedCount.toLocaleString()} / ${recovery.quarantinedCount.toLocaleString()}`
-                        : t("system.status.runtimePressure.states.unknown")
-                    }
+                    value={`${recovery?.preparedCount?.toLocaleString() ?? t("system.status.runtimePressure.states.unknown")} / ${recovery?.quarantinedCount?.toLocaleString() ?? t("system.status.runtimePressure.states.unknown")}`}
                     hint={t("system.status.runtimePressure.retentionRecovery.preparedHint")}
                   />
                   <BreakdownRow

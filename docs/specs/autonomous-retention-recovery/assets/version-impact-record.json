@@ -39,12 +39,12 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Stateful and archive-file-I/O regressions verify additive schema re-entry, transaction rollback/retry without source loss, bounded legacy reconciliation, and additive system-status serialization.",
-      "verified_at": "2026-09-21T13:59:40+08:00",
+      "reasoning": "Stateful and archive-file-I/O regressions verify additive schema re-entry, P1-gated failure persistence, transaction rollback/retry without source loss, bounded legacy reconciliation, sanitized diagnostics, and additive status serialization.",
+      "verified_at": "2026-09-21T14:45:44+08:00",
       "evidence": [
-        "stateful-sqlite profile: 1303 passed, including retention rollback/retry, schema re-entry, recovery status serialization, and 32-file reconciliation bound",
-        "archive-file-io profile: 246 passed",
-        "web/src/lib/api/core-foundation.test.ts: missing retentionRecovery normalizes to unknown"
+        "stateful-sqlite profile: 1302 passed, including P1 admission, schema re-entry, and recovery status serialization",
+        "archive-file-io profile: 248 passed, including retention rollback/retry, independent orphan cleanup, sanitized fingerprints, and 32-file reconciliation bound",
+        "web/src/lib/api/core-foundation.test.ts: missing and partial recovery fields remain unknown"
       ]
     }
   },

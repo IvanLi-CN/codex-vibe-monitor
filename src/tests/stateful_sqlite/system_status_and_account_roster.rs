@@ -509,6 +509,23 @@ async fn runtime_pressure_health_serializes_without_sql() {
     ));
     assert!(payload["retentionRecovery"]["preparedCount"].is_u64());
     assert!(payload["retentionRecovery"]["quarantinedCount"].is_u64());
+    let recovery_fields = payload["retentionRecovery"]
+        .as_object()
+        .expect("serialize retention recovery as a bounded object");
+    assert_eq!(recovery_fields.len(), 10);
+    for field in recovery_fields.keys() {
+        let normalized = field.to_ascii_lowercase();
+        assert!(
+            !["raw", "sql", "account", "path"]
+                .iter()
+                .any(|sensitive| normalized.contains(sensitive)),
+            "retention recovery status must not add sensitive field {field}"
+        );
+    }
+    if let Some(fingerprint) = recovery_fields["failureFingerprint"].as_str() {
+        assert_eq!(fingerprint.len(), 16);
+        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
 }
 
 #[tokio::test]

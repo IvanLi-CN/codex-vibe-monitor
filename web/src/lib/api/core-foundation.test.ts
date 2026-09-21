@@ -24,15 +24,40 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     expect(status.runtimePressureHealth?.retentionRecovery).toEqual({
       state: "unknown",
       stage: undefined,
-      preparedCount: 0,
-      quarantinedCount: 0,
-      expiredBacklogCount: 0,
+      preparedCount: undefined,
+      quarantinedCount: undefined,
+      expiredBacklogCount: undefined,
       oldestBacklogAgeSecs: undefined,
       lastProgressAt: undefined,
       nextRetryAt: undefined,
       failureStage: undefined,
       failureFingerprint: undefined,
     });
+  });
+
+  it("keeps omitted recovery counters unknown when a partial diagnostic arrives", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                retentionRecovery: { state: "recovering", preparedCount: 5 },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+    const recovery = status.runtimePressureHealth?.retentionRecovery;
+
+    expect(recovery?.state).toBe("recovering");
+    expect(recovery?.preparedCount).toBe(5);
+    expect(recovery?.quarantinedCount).toBeUndefined();
+    expect(recovery?.expiredBacklogCount).toBeUndefined();
   });
 });
 

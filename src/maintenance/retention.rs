@@ -1155,7 +1155,7 @@ async fn retention_recovery_record_preparing(
     Ok(())
 }
 
-async fn retention_recovery_persist_failure(
+pub(crate) async fn retention_recovery_persist_failure(
     pool: &Pool<Sqlite>,
     prepared_key: &str,
     stage: &'static str,
@@ -1167,6 +1167,12 @@ async fn retention_recovery_persist_failure(
         .unwrap_or_default();
     let quarantine = error.to_string().contains("identity collision")
         || error.to_string().contains("verification failed");
+    let Some(admission) = acquire_retention_write_admission("retention_recovery_failure").await
+    else {
+        retention_recovery_record_deferred(stage);
+        return Err(retention_write_deferred("retention_recovery_failure"));
+    };
+    let execute_started = Instant::now();
     let attempt_count = sqlx::query_scalar::<_, i64>(
         "SELECT attempt_count FROM retention_prepared_archives WHERE prepared_key = ?1",
     )
@@ -1198,6 +1204,19 @@ async fn retention_recovery_persist_failure(
     .bind(prepared_key)
     .execute(pool)
     .await?;
+    retention_record_commit!(
+        "retention_recovery_failure",
+        admission.admission_mode(),
+        1,
+        128,
+        Duration::ZERO,
+        admission.lock_wait(),
+        execute_started.elapsed(),
+        Duration::ZERO,
+        admission.p1_waiter_count,
+        0,
+    );
+    drop(admission);
     Ok(())
 }
 
