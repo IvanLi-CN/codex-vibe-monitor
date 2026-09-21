@@ -106,6 +106,14 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       p1WaiterCount: 0,
       candidateRemainingHint: 1,
     },
+    retentionRecovery: {
+      state: "healthy",
+      stage: "orphan_sweep",
+      preparedCount: 0,
+      quarantinedCount: 0,
+      expiredBacklogCount: 0,
+      lastProgressAt: "2026-06-22T08:00:00Z",
+    },
     dashboardProjection: {
       mode: "auto",
       state: "healthy",
@@ -580,6 +588,37 @@ function runtimePressureStatus(
   };
 }
 
+function retentionRecoveryStatus(
+  state: "healthy" | "recovering" | "degraded",
+): SystemStatusResponse {
+  const status = runtimePressureStatus(state === "healthy" ? "healthy" : "degraded");
+  const base = status.runtimePressureHealth!;
+  return {
+    ...status,
+    runtimePressureHealth: {
+      ...base,
+      state: state === "degraded" ? "degraded" : "healthy",
+      retentionRecovery: {
+        ...base.retentionRecovery!,
+        state,
+        stage:
+          state === "healthy"
+            ? "orphan_sweep"
+            : state === "recovering"
+              ? "publishing"
+              : "finalizing",
+        preparedCount: state === "healthy" ? 0 : 18,
+        quarantinedCount: state === "degraded" ? 3 : 1,
+        expiredBacklogCount: state === "healthy" ? 0 : 42,
+        oldestBacklogAgeSecs: state === "healthy" ? undefined : 86_400,
+        nextRetryAt: state === "healthy" ? undefined : "2026-06-22T08:05:00Z",
+        failureStage: state === "degraded" ? "finalizing" : undefined,
+        failureFingerprint: state === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+      },
+    },
+  };
+}
+
 function hotTopicStatus(
   scenario: "healthy" | "deferred" | "hot-db-read" | "cadence-miss",
 ): SystemStatusResponse {
@@ -719,6 +758,7 @@ export const StatusRuntimePressureUnknown: Story = {
         ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!,
         eventBus: undefined,
         backfill: undefined,
+        retentionRecovery: undefined,
       },
     } satisfies SystemStatusResponse,
   },
@@ -727,6 +767,54 @@ export const StatusRuntimePressureUnknown: Story = {
     await userEvent.click(await canvas.findByText("运行压力详情"));
     await expect(await canvas.findByText("Typed runtime 事件总线")).toBeVisible();
     await expect(canvas.getAllByText("未知").length).toBeGreaterThanOrEqual(2);
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("未知");
+  },
+};
+
+export const StatusRetentionRecoveryHealthy: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: retentionRecoveryStatus("healthy") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("健康");
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
+      "孤儿清扫",
+    );
+  },
+};
+
+export const StatusRetentionRecoveryRecovering: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: retentionRecoveryStatus("recovering") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
+      "恢复中",
+    );
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
+      "发布中",
+    );
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("42");
+  },
+};
+
+export const StatusRetentionRecoveryDegraded: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: retentionRecoveryStatus("degraded") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
+      "最终化",
+    );
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
+      "7d38a1c0b4c8e2f1",
+    );
   },
 };
 

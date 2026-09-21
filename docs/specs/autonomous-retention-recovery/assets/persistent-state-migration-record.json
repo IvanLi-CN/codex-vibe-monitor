@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Add durable prepared-archive recovery state and resumable legacy archive reconciliation cursor.",
+    "release_unit_description": "Autonomous retention recovery PR1.",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "Prepared archive identity, source IDs and identity digest, artifact digest/size, bounded retry/quarantine state, and legacy reconciliation cursor.",
+    "storage_implementation": "SQLite tables retention_prepared_archives and retention_recovery_cursors.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",
+      "to_program_version": "Candidate release from mainline v2.71.21.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Idempotently create retention_prepared_archives, its path/due-work indexes, and retention_recovery_cursors with the legacy scan cursor.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "Insert and update only bounded prepared archive, retry, quarantine, and cursor rows during normal maintenance.",
+        "order": 2,
+        "depends_on": [
+          "ddl-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No startup-wide historical backfill; legacy archive reconciliation advances at most 32 archive files per maintenance pass.",
+        "order": 3,
+        "depends_on": [
+          "ddl-001",
+          "dml-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-001",
+      "dml-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "retentionRecovery prepared/quarantined/backlog counts, stage, last progress, next retry, and failure fingerprint"
+    ],
+    "pause_points": [
+      "Between idempotent schema creation and maintenance-owned ledger writes.",
+      "Between each maintenance pass of at most 32 legacy archive files."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Earlier binaries ignore the additive recovery tables; they do not reverse or delete their state.",
+    "faulty_release_recovery": "A newer program version resumes or forward-repairs retained journal rows and quarantined artifacts.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "Public system-status API change is additive and optional for older clients.",
+        "Candidate creates and reuses recovery schema over an earlier v2.71.x database.",
+        "Schema creation is idempotent and a failed archive publication is retried without losing live rows or raw ownership."
+      ]
+    },
+    "minor": {
+      "required_test_evidence": [
+        "Public API remains compatible within the Major.",
+        "Candidate reads and writes supported earlier-Minor state.",
+        "Earlier-Minor programs are not required to read newly migrated state.",
+        "A forward-repair version handles state left by a stopped faulty release."
+      ]
+    },
+    "major": {
+      "required_test_evidence": [
+        "Current program upgrades and uses state from the immediately preceding Major.",
+        "Direct major skipping is rejected or routed through an explicit intermediate upgrade.",
+        "A forward-repair version handles state left by a stopped faulty release."
+      ]
+    }
+  }
+}

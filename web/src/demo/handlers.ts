@@ -2022,6 +2022,28 @@ function systemStatus() {
         p1WaiterCount: runtimeState === "degraded" ? 1 : 0,
         candidateRemainingHint: 1,
       },
+      retentionRecovery: {
+        state:
+          runtimeState === "degraded"
+            ? "degraded"
+            : runtimeState === "deferred"
+              ? "recovering"
+              : "healthy",
+        stage:
+          runtimeState === "degraded"
+            ? "finalizing"
+            : runtimeState === "deferred"
+              ? "publishing"
+              : "orphan_sweep",
+        preparedCount: runtimeState === "healthy" ? 0 : 18,
+        quarantinedCount: runtimeState === "degraded" ? 3 : 1,
+        expiredBacklogCount: runtimeState === "healthy" ? 0 : 42,
+        oldestBacklogAgeSecs: runtimeState === "healthy" ? undefined : 86_400,
+        lastProgressAt: "2026-09-21T03:00:00Z",
+        nextRetryAt: runtimeState === "healthy" ? undefined : "2026-09-21T03:05:00Z",
+        failureStage: runtimeState === "degraded" ? "finalizing" : undefined,
+        failureFingerprint: runtimeState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+      },
       dashboardProjection: {
         mode: "auto",
         state: runtimeState === "degraded" ? "degraded" : "healthy",

@@ -1,9 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptsRoutingStateVersion,
   compareRoutingStateVersion,
+  fetchSystemStatus,
   normalizePoolRoutingSelectionAudit,
 } from "./core-foundation";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("fetchSystemStatus retention recovery compatibility", () => {
+  it("normalizes a missing recovery diagnostic to unknown for older backends", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ runtimePressureHealth: {} }), { status: 200 }),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+
+    expect(status.runtimePressureHealth?.retentionRecovery).toEqual({
+      state: "unknown",
+      stage: undefined,
+      preparedCount: 0,
+      quarantinedCount: 0,
+      expiredBacklogCount: 0,
+      oldestBacklogAgeSecs: undefined,
+      lastProgressAt: undefined,
+      nextRetryAt: undefined,
+      failureStage: undefined,
+      failureFingerprint: undefined,
+    });
+  });
+});
 
 describe("normalizePoolRoutingSelectionAudit", () => {
   it("preserves the optional recovery trigger", () => {

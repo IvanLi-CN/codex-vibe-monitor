@@ -1743,6 +1743,7 @@ const baseTranslations = {
       "In-memory diagnostics for process memory, writer accounting, and the Dashboard live projection. These fields add no SQLite queries to the status refresh.",
     "system.status.runtimePressure.summary": "Runtime pressure: {{state}}",
     "system.status.runtimePressure.states.healthy": "Healthy",
+    "system.status.runtimePressure.states.recovering": "Recovering",
     "system.status.runtimePressure.states.deferred": "Deferred",
     "system.status.runtimePressure.states.degraded": "Degraded",
     "system.status.runtimePressure.states.accounting_error": "Accounting error",
@@ -1787,6 +1788,23 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionBudget": "Retention budget breaches / pending hint",
     "system.status.runtimePressure.retentionBudgetHint":
       "prepare {{prepare}}ms, starvation {{starvation}}ms, P1 waiters {{p1}}.",
+    "system.status.runtimePressure.retentionRecovery.title": "Retention recovery",
+    "system.status.runtimePressure.retentionRecovery.stage": "Recovery stage",
+    "system.status.runtimePressure.retentionRecovery.stages.preparing": "Preparing",
+    "system.status.runtimePressure.retentionRecovery.stages.publishing": "Publishing",
+    "system.status.runtimePressure.retentionRecovery.stages.finalizing": "Finalizing",
+    "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "Orphan sweep",
+    "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile":
+      "Legacy reconciliation",
+    "system.status.runtimePressure.retentionRecovery.backlog": "Expired backlog",
+    "system.status.runtimePressure.retentionRecovery.backlogHint": "Oldest backlog age {{age}}s.",
+    "system.status.runtimePressure.retentionRecovery.prepared": "Prepared / quarantined artifacts",
+    "system.status.runtimePressure.retentionRecovery.preparedHint":
+      "Prepared artifacts remain source-owned until final publication.",
+    "system.status.runtimePressure.retentionRecovery.progress": "Last progress",
+    "system.status.runtimePressure.retentionRecovery.retryHint": "Next retry {{retry}}.",
+    "system.status.runtimePressure.retentionRecovery.failureHint":
+      "Failure stage {{stage}} · {{fingerprint}}.",
     "system.status.runtimePressure.additiveUnknown":
       "The connected backend has not published this additive diagnostic.",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
@@ -4915,6 +4933,7 @@ const baseTranslations = {
       "只读取进程内存、写入队列核算与 Dashboard 实时投影诊断；这些字段不会为状态刷新新增 SQLite 查询。",
     "system.status.runtimePressure.summary": "运行压力：{{state}}",
     "system.status.runtimePressure.states.healthy": "健康",
+    "system.status.runtimePressure.states.recovering": "恢复中",
     "system.status.runtimePressure.states.deferred": "已延后",
     "system.status.runtimePressure.states.degraded": "已降级",
     "system.status.runtimePressure.states.accounting_error": "核算异常",
@@ -4958,6 +4977,22 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionBudget": "保留预算越线 / 待处理提示",
     "system.status.runtimePressure.retentionBudgetHint":
       "准备 {{prepare}}ms，饥饿 {{starvation}}ms，P1 等待者 {{p1}}。",
+    "system.status.runtimePressure.retentionRecovery.title": "保留恢复",
+    "system.status.runtimePressure.retentionRecovery.stage": "恢复阶段",
+    "system.status.runtimePressure.retentionRecovery.stages.preparing": "准备中",
+    "system.status.runtimePressure.retentionRecovery.stages.publishing": "发布中",
+    "system.status.runtimePressure.retentionRecovery.stages.finalizing": "最终化",
+    "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "孤儿清扫",
+    "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile": "遗留对账",
+    "system.status.runtimePressure.retentionRecovery.backlog": "过期积压",
+    "system.status.runtimePressure.retentionRecovery.backlogHint": "最旧积压已存在 {{age}} 秒。",
+    "system.status.runtimePressure.retentionRecovery.prepared": "已准备 / 已隔离产物",
+    "system.status.runtimePressure.retentionRecovery.preparedHint":
+      "准备中的产物在最终发布前仍由源记录持有。",
+    "system.status.runtimePressure.retentionRecovery.progress": "最近进展",
+    "system.status.runtimePressure.retentionRecovery.retryHint": "下次重试：{{retry}}。",
+    "system.status.runtimePressure.retentionRecovery.failureHint":
+      "失败阶段 {{stage}} · {{fingerprint}}。",
     "system.status.runtimePressure.additiveUnknown": "当前后端尚未发布这一 additive 诊断字段。",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "后台任务",

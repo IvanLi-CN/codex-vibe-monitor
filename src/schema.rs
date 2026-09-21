@@ -2404,6 +2404,78 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure summary archive source classification index")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS retention_prepared_archives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prepared_key TEXT NOT NULL UNIQUE,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            day_key TEXT,
+            part_key TEXT,
+            file_path TEXT NOT NULL,
+            source_ids_json TEXT NOT NULL,
+            source_identity_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL,
+            artifact_sha256 TEXT,
+            artifact_bytes INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT,
+            last_failure_stage TEXT,
+            last_failure_fingerprint TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            quarantined_at TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention prepared archive table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_prepared_archives_dataset_path
+        ON retention_prepared_archives (dataset, file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention prepared archive path index")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_retention_prepared_archives_due
+        ON retention_prepared_archives (state, next_retry_at, updated_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention prepared archive due index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS retention_recovery_cursors (
+            scope TEXT PRIMARY KEY,
+            cursor TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention recovery cursor table existence")?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO retention_recovery_cursors (scope, cursor)
+        VALUES ('legacy_archive_segments', '')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to seed retention recovery cursor")?;
+
     // A detail-prune archive duplicates records still retained in the live table. Segment keys
     // encode the exact inclusive ID bounds in hexadecimal; only a contiguous live range proves
     // that every archived record remains live. Unknown legacy manifests stay fail-closed.

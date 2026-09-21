@@ -91,6 +91,7 @@
 | -     | Dashboard Hot Topic 内存投影与 SSE 稳定性                                 | active    | `dashboard-hot-topic-projection/SPEC.md`                   | `dashboard-hot-topic-projection/IMPLEMENTATION.md`                   | topic anchor: dashboard / hot projection / SSE               |
 | -     | 上游账号模型映射                                                          | active    | `upstream-account-model-mapping/SPEC.md`                   | `upstream-account-model-mapping/IMPLEMENTATION.md`                   | topic anchor: account pool / model mapping / routing cache   |
 | -     | API Key 优先级迁移准入控制                                                | active    | `priority-handoff-admission/SPEC.md`                       | `priority-handoff-admission/IMPLEMENTATION.md`                       | topic anchor: API Key / routing / sticky priority handoff    |
+| -     | Autonomous Retention Recovery and Raw Capture Circuit Breaker             | active    | `autonomous-retention-recovery/SPEC.md`                    | `autonomous-retention-recovery/IMPLEMENTATION.md`                    | topic anchor: retention / raw storage / recovery             |
 
 ## Archived Sources
 

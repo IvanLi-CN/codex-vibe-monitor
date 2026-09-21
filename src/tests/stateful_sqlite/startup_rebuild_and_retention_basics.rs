@@ -4517,6 +4517,213 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
         );
     }
 
+    let prepared_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_prepared_archives")
+            .fetch_one(&pool)
+            .await
+            .expect("count completed retention preparation rows");
+    assert_eq!(
+        prepared_count, 0,
+        "published batches should retire their journal rows"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_recovery_journal() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-archive-recovery").await;
+    let occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
+    let raw_path = config.proxy_raw_dir.join("retention-recovery-response.bin");
+    fs::write(&raw_path, b"still-owned-until-publication").expect("write raw response");
+    let orphan_path = config.proxy_raw_dir.join("retention-recovery-orphan.bin");
+    fs::write(&orphan_path, b"safe-to-sweep").expect("write unreferenced raw file");
+    set_file_mtime_seconds_ago(&orphan_path, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
+    insert_retention_invocation(
+        &pool,
+        "retention-recovery-row",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        Some(&raw_path),
+        Some(12),
+        Some(0.12),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER retention_test_abort_archive_finalize
+        BEFORE UPDATE OF status ON archive_batches
+        WHEN NEW.status = 'completed'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected archive finalization failure');
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("install finalization failure trigger");
+
+    let error = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect_err("injected finalization failure should stop the archive batch");
+    assert!(
+        error
+            .to_string()
+            .contains("injected archive finalization failure")
+    );
+    let live_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'retention-recovery-row'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check live invocation after rollback");
+    assert_eq!(live_count, 1);
+    assert!(
+        raw_path.exists(),
+        "raw payload remains source-owned before publication"
+    );
+    let (journal_state, journal_sha): (String, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT state, artifact_sha256
+        FROM retention_prepared_archives
+        WHERE dataset = 'codex_invocations'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load prepared archive after rollback");
+    assert_eq!(journal_state, "published");
+    assert!(journal_sha.is_some());
+    let published_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load published recovery artifact path");
+    assert!(Path::new(&published_path).is_file());
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should continue after archive finalization failure");
+    assert_eq!(summary.orphan_raw_files_removed, 1);
+    assert!(!orphan_path.exists(), "safe orphan cleanup is independent");
+    assert!(raw_path.exists(), "source-owned raw data remains available");
+
+    sqlx::query("DROP TRIGGER retention_test_abort_archive_finalize")
+        .execute(&pool)
+        .await
+        .expect("remove finalization failure trigger");
+    sqlx::query(
+        "UPDATE retention_prepared_archives SET next_retry_at = NULL WHERE dataset = 'codex_invocations'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make the retained archive retry due");
+    let recovered = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("retry archive publication after removing injected failure");
+    assert_eq!(recovered.0, 1);
+    assert!(
+        !raw_path.exists(),
+        "raw payload is released only after publication"
+    );
+    let remaining_journal_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_prepared_archives")
+            .fetch_one(&pool)
+            .await
+            .expect("count recovery journal after successful retry");
+    assert_eq!(remaining_journal_count, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-recovery-schema-reentry").await;
+    sqlx::query("DROP TABLE retention_recovery_cursors")
+        .execute(&pool)
+        .await
+        .expect("remove cursor table to emulate an earlier schema");
+    sqlx::query("DROP TABLE retention_prepared_archives")
+        .execute(&pool)
+        .await
+        .expect("remove journal table to emulate an earlier schema");
+
+    ensure_schema(&pool)
+        .await
+        .expect("upgrade earlier schema with retention recovery tables");
+    ensure_schema(&pool)
+        .await
+        .expect("re-enter retention recovery schema upgrade");
+
+    for table in ["retention_prepared_archives", "retention_recovery_cursors"] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .expect("check recovery table");
+        assert_eq!(exists, 1, "schema re-entry should ensure {table}");
+    }
+    let cursor: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load initialized legacy recovery cursor");
+    assert!(cursor.is_empty());
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-legacy-scan-bound").await;
+    let archive_dir = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("2026")
+        .join("01")
+        .join("01");
+    fs::create_dir_all(&archive_dir).expect("create legacy segment directory");
+    for index in 0..33 {
+        let path = archive_dir.join(format!("part-{index:016x}-{index:016x}-legacy.sqlite.gz"));
+        fs::write(path, b"not a gzip archive").expect("write unverified legacy segment");
+    }
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run bounded legacy reconciliation pass");
+    let first_pass_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count first-pass quarantined archives");
+    assert_eq!(first_pass_count, 32);
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("resume bounded legacy reconciliation pass");
+    let second_pass_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count resumed quarantined archives");
+    assert_eq!(second_pass_count, 33);
+
+    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 

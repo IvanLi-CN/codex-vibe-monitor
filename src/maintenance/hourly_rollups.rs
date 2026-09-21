@@ -3438,7 +3438,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
         let age = match entry.metadata().and_then(|metadata| metadata.modified()) {
             Ok(modified) => modified.elapsed().unwrap_or_default(),
             Err(err) => {
-                warn!(path = %path.display(), error = %err, "failed to inspect orphan raw payload file age");
+                warn!(
+                    error_kind = %err.kind(),
+                    "failed to inspect orphan raw payload file age"
+                );
                 continue;
             }
         };
@@ -3457,7 +3460,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
             Ok(_) => removed += 1,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => {
-                warn!(path = %path.display(), error = %err, "failed to remove orphan raw payload file");
+                warn!(
+                    error_kind = %err.kind(),
+                    "failed to remove orphan raw payload file"
+                );
             }
         }
     }

@@ -503,6 +503,12 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert_eq!(payload["eventBus"]["businessPayloadCloneCount"], 0);
     assert_eq!(payload["eventBus"]["cursorRecoveryCount"], 1);
     assert!(payload["backfill"]["state"].is_string());
+    assert!(matches!(
+        payload["retentionRecovery"]["state"].as_str(),
+        Some("unknown" | "healthy" | "recovering" | "deferred" | "degraded")
+    ));
+    assert!(payload["retentionRecovery"]["preparedCount"].is_u64());
+    assert!(payload["retentionRecovery"]["quarantinedCount"].is_u64());
 }
 
 #[tokio::test]

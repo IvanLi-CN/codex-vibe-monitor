@@ -2318,6 +2318,19 @@ export interface RuntimePressureRetentionWriteHealth {
   lastError?: string;
 }
 
+export interface RuntimePressureRetentionRecoveryHealth {
+  state: string;
+  stage?: string;
+  preparedCount: number;
+  quarantinedCount: number;
+  expiredBacklogCount: number;
+  oldestBacklogAgeSecs?: number;
+  lastProgressAt?: string;
+  nextRetryAt?: string;
+  failureStage?: string;
+  failureFingerprint?: string;
+}
+
 export interface RuntimePressureDashboardProjectionHealth {
   mode: string;
   state: string;
@@ -2436,6 +2449,7 @@ export interface RuntimePressureHealth {
   promptCacheProjection?: RuntimePressurePromptCacheProjectionHealth;
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
   retentionWriteHealth?: RuntimePressureRetentionWriteHealth;
+  retentionRecovery?: RuntimePressureRetentionRecoveryHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
   dashboardHotTopics?: RuntimePressureDashboardHotTopicsHealth;
@@ -4465,6 +4479,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const backfill = payload.backfill as Record<string, unknown> | undefined;
   const dashboardHotTopics = payload.dashboardHotTopics as Record<string, unknown> | undefined;
   const retentionWriteHealth = payload.retentionWriteHealth as Record<string, unknown> | undefined;
+  const retentionRecovery = payload.retentionRecovery as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
@@ -4577,6 +4592,19 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           lastError: optionalString(retentionWriteHealth.lastError),
         }
       : undefined,
+    retentionRecovery: {
+      state: optionalString(retentionRecovery?.state) ?? "unknown",
+      stage: optionalString(retentionRecovery?.stage),
+      preparedCount: number(retentionRecovery?.preparedCount),
+      quarantinedCount: number(retentionRecovery?.quarantinedCount),
+      expiredBacklogCount: number(retentionRecovery?.expiredBacklogCount),
+      oldestBacklogAgeSecs:
+        normalizeFiniteNumber(retentionRecovery?.oldestBacklogAgeSecs) ?? undefined,
+      lastProgressAt: optionalString(retentionRecovery?.lastProgressAt),
+      nextRetryAt: optionalString(retentionRecovery?.nextRetryAt),
+      failureStage: optionalString(retentionRecovery?.failureStage),
+      failureFingerprint: optionalString(retentionRecovery?.failureFingerprint),
+    },
     dashboardProjection: {
       mode: optionalString(projection.mode) ?? "unknown",
       state: optionalString(projection.state) ?? "unknown",
