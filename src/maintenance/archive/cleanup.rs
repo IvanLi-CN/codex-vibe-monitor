@@ -3167,6 +3167,10 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         .iter()
         .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
     {
+        if started_at.elapsed() >= max_elapsed {
+            hit_budget = true;
+            break;
+        }
         if Path::new(&candidate.file_path)
             .parent()
             .is_none_or(|parent| !parent.exists())
