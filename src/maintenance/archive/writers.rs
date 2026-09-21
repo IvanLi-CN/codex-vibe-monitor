@@ -490,11 +490,20 @@ pub(crate) async fn archive_rows_into_month_batch(
     month_key: &str,
     ids: &[i64],
 ) -> Result<ArchiveBatchOutcome> {
+    let final_path = archive_batch_file_path(config, spec.dataset, month_key)?;
+    archive_rows_into_month_batch_at_path(pool, spec, month_key, ids, final_path).await
+}
+
+pub(crate) async fn archive_rows_into_month_batch_at_path(
+    pool: &Pool<Sqlite>,
+    spec: ArchiveTableSpec,
+    month_key: &str,
+    ids: &[i64],
+    final_path: PathBuf,
+) -> Result<ArchiveBatchOutcome> {
     if ids.is_empty() {
         bail!("archive batch requires at least one row id");
     }
-
-    let final_path = archive_batch_file_path(config, spec.dataset, month_key)?;
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
@@ -780,13 +789,6 @@ pub(crate) async fn archive_rows_into_segment_batch(
     day_key: &str,
     ids: &[i64],
 ) -> Result<ArchiveBatchOutcome> {
-    if ids.is_empty() {
-        bail!("archive segment requires at least one row id");
-    }
-    if spec.dataset != "codex_invocations" {
-        bail!("archive segment writer only supports codex_invocations");
-    }
-    let month_key = archive_month_key_from_day_key(day_key)?;
     let part_key = archive_segment_part_key_for_ids(ids)?;
     let final_path = archive_segment_file_path(
         config,
@@ -795,6 +797,25 @@ pub(crate) async fn archive_rows_into_segment_batch(
         &part_key,
         config.invocation_archive_codec,
     )?;
+    archive_rows_into_segment_batch_at_path(pool, config, spec, day_key, ids, final_path).await
+}
+
+pub(crate) async fn archive_rows_into_segment_batch_at_path(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    day_key: &str,
+    ids: &[i64],
+    final_path: PathBuf,
+) -> Result<ArchiveBatchOutcome> {
+    if ids.is_empty() {
+        bail!("archive segment requires at least one row id");
+    }
+    if spec.dataset != "codex_invocations" {
+        bail!("archive segment writer only supports codex_invocations");
+    }
+    let month_key = archive_month_key_from_day_key(day_key)?;
+    let part_key = archive_segment_part_key_for_ids(ids)?;
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
@@ -1051,13 +1072,12 @@ async fn upsert_archive_batch_manifest_with_status(
                 ELSE MAX(archive_batches.coverage_end_at, excluded.coverage_end_at)
             END,
             archive_expires_at = excluded.archive_expires_at,
-            summary_source_kind = CASE
-                WHEN archive_batches.summary_source_kind = 'authoritative'
-                    AND excluded.summary_source_kind = 'live_mirror'
-                    THEN archive_batches.summary_source_kind
-                ELSE excluded.summary_source_kind
-            END,
+            summary_source_kind = excluded.summary_source_kind,
             created_at = datetime('now')
+        WHERE NOT (
+            archive_batches.summary_source_kind = 'authoritative'
+            AND excluded.summary_source_kind = 'live_mirror'
+        )
         "#,
     )
     .bind(batch.dataset)
@@ -1337,8 +1357,8 @@ mod tests {
         .await
         .expect("load merged manifest");
         assert_eq!(manifest.0, SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE);
-        assert_eq!(manifest.1, "live-mirror-sha");
-        assert_eq!(manifest.2, 11);
+        assert_eq!(manifest.1, "authoritative-sha");
+        assert_eq!(manifest.2, 10);
         pool.close().await;
     }
 

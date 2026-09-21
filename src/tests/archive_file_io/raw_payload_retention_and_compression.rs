@@ -512,6 +512,21 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     .expect("load published recovery artifact path");
     assert!(Path::new(&published_path).is_file());
 
+    let published_recovery_summary =
+        run_data_retention_maintenance(&pool, &config, Some(false), None)
+            .await
+            .expect("retention should continue after valid published recovery reconciliation");
+    assert_eq!(published_recovery_summary.orphan_raw_files_removed, 1);
+    let published_reconciled_state: String = sqlx::query_scalar(
+        "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load published recovery journal state");
+    assert_eq!(published_reconciled_state, "published");
+    fs::write(&orphan_path, b"safe-to-sweep-again").expect("recreate orphan raw file");
+    set_file_mtime_seconds_ago(&orphan_path, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
+
     sqlx::query(
         "UPDATE retention_prepared_archives SET state = 'preparing', next_retry_at = NULL WHERE dataset = 'codex_invocations'",
     )

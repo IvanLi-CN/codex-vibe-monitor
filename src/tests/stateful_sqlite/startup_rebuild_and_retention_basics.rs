@@ -4124,6 +4124,13 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .expect("load prune archive batch");
     let file_path = PathBuf::from(batch.get::<String, _>("file_path"));
     assert!(file_path.exists());
+    assert!(
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("live-mirror")),
+        "detail-prune archives must use a mirror-only path"
+    );
     assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
     assert_eq!(
         batch.get::<String, _>("summary_source_kind"),
