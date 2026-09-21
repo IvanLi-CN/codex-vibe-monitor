@@ -1942,12 +1942,14 @@ async fn run_startup_backfill_task_if_due_outcome(
             .await
             .map(|outcome| (outcome, None));
         }
-        result = run_startup_backfill_task(
-            state,
-            task,
-            progress.cursor_id,
-            progress.zero_update_streak,
-            progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+        result = super::retention::retention_try_archive_locks_scope(
+            run_startup_backfill_task(
+                state,
+                task,
+                progress.cursor_id,
+                progress.zero_update_streak,
+                progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+            )
         ) => result,
     };
     let outcome = match task_result {
