@@ -7081,6 +7081,21 @@ async fn cleanup_expired_live_mirror_does_not_require_summary_proof() {
     .fetch_one(&pool)
     .await
     .expect("load live mirror manifest");
+    let source_kind: String =
+        sqlx::query_scalar("SELECT summary_source_kind FROM archive_batches WHERE id = ?1")
+            .bind(archive_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load live mirror source role");
+    assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    assert!(crate::maintenance::retention_archive_path_is_within_root(
+        &config,
+        Path::new(&archive_path)
+    ));
+    assert!(crate::maintenance::retention_archive_path_is_owned(
+        &config,
+        Path::new(&archive_path)
+    ));
     assert!(Path::new(&archive_path).exists());
     sqlx::query(
         "UPDATE archive_batches SET archive_expires_at = '2000-01-01 00:00:00' WHERE id = ?1",

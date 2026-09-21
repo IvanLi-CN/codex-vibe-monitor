@@ -30,6 +30,7 @@ fn sync_published_archive_file(final_file_path: &Path) -> Result<()> {
 }
 
 fn publish_prepared_archive_file(temporary_file_path: &Path, final_file_path: &Path) -> Result<()> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     match fs::hard_link(temporary_file_path, final_file_path) {
         Ok(()) => fs::remove_file(temporary_file_path).with_context(|| {
             format!(
@@ -752,6 +753,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .metadata()
         .map(|metadata| metadata.len() as usize)
         .unwrap_or_default();
+    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current_existing_sha256 = if final_file_path.exists() {
@@ -765,6 +767,23 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             "legacy archive changed while it was being prepared; retry required"
         ));
     }
+    let backup_path = if final_file_path.exists() {
+        let path = PathBuf::from(format!(
+            "{}.{}.restore",
+            final_file_path.display(),
+            retention_temp_suffix()
+        ));
+        fs::rename(final_file_path, &path).with_context(|| {
+            format!(
+                "failed to stage the previous archive before replacement: {} -> {}",
+                final_file_path.display(),
+                path.display()
+            )
+        })?;
+        Some(path)
+    } else {
+        None
+    };
     sqlx::query(
         r#"
         UPDATE archive_batches
@@ -791,14 +810,35 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         )
     }) {
         tx.rollback().await?;
+        if let Some(backup_path) = backup_path.as_deref() {
+            let _ = fs::rename(backup_path, final_file_path);
+        }
         return Err(error);
     }
     if let Err(error) = sync_published_archive_file(final_file_path) {
         tx.rollback().await?;
+        let _ = fs::remove_file(final_file_path);
+        if let Some(backup_path) = backup_path.as_deref() {
+            let _ = fs::rename(backup_path, final_file_path);
+        }
         return Err(error);
     }
     let commit_started = Instant::now();
-    tx.commit().await?;
+    if let Err(error) = tx.commit().await {
+        let _ = fs::remove_file(final_file_path);
+        if let Some(backup_path) = backup_path.as_deref() {
+            let _ = fs::rename(backup_path, final_file_path);
+        }
+        return Err(error.into());
+    }
+    if let Some(backup_path) = backup_path {
+        fs::remove_file(&backup_path).with_context(|| {
+            format!(
+                "failed to remove the replaced archive backup: {}",
+                backup_path.display()
+            )
+        })?;
+    }
     super::super::retention::retention_record_commit!(
         "legacy_archive_file_publish",
         admission.admission_mode(),

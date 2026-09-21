@@ -4,9 +4,13 @@ use futures_util::TryStreamExt;
 use sqlx::{FromRow, Row};
 use std::{
     cell::RefCell,
+    fs::File,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
@@ -41,6 +45,45 @@ tokio::task_local! {
 
 static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Advisory directory lock shared by archive publishers and cleanup finalizers. SQLite admission
+/// serializes database writers, while this lock also fences their filesystem rename/delete window.
+#[cfg(unix)]
+pub(crate) struct RetentionArchiveFileLock(File);
+
+#[cfg(unix)]
+pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("archive path has no parent directory"))?;
+    let file = File::open(parent).with_context(|| {
+        format!(
+            "failed to open archive directory lock: {}",
+            parent.display()
+        )
+    })?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to lock archive directory: {}", parent.display()));
+    }
+    Ok(RetentionArchiveFileLock(file))
+}
+
+#[cfg(unix)]
+impl Drop for RetentionArchiveFileLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) struct RetentionArchiveFileLock;
+
+#[cfg(not(unix))]
+pub(crate) fn retention_archive_file_lock(_path: &Path) -> Result<RetentionArchiveFileLock> {
+    Ok(RetentionArchiveFileLock)
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1685,7 +1728,7 @@ async fn quarantine_published_retention_archive_if_unchanged(
     Ok(result.rows_affected() == 1)
 }
 
-fn retention_archive_path_is_owned(config: &AppConfig, path: &Path) -> bool {
+pub(crate) fn retention_archive_path_is_within_root(config: &AppConfig, path: &Path) -> bool {
     let root = resolved_archive_dir(config).join("codex_invocations");
     let Ok(root) = fs::canonicalize(root) else {
         return false;
@@ -1694,6 +1737,26 @@ fn retention_archive_path_is_owned(config: &AppConfig, path: &Path) -> bool {
         .components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
     {
+        return false;
+    }
+    let candidates = if path.is_absolute() {
+        vec![path.to_path_buf()]
+    } else {
+        vec![path.to_path_buf(), root.join(path)]
+    };
+    candidates.into_iter().any(|candidate| {
+        candidate.starts_with(&root)
+            || fs::canonicalize(&candidate)
+                .map(|canonical| canonical.starts_with(&root))
+                .unwrap_or(false)
+    })
+}
+
+pub(crate) fn retention_archive_path_is_owned(config: &AppConfig, path: &Path) -> bool {
+    let Ok(root) = fs::canonicalize(resolved_archive_dir(config).join("codex_invocations")) else {
+        return false;
+    };
+    if !retention_archive_path_is_within_root(config, path) {
         return false;
     }
     let candidates = if path.is_absolute() {
@@ -1902,7 +1965,15 @@ async fn reconcile_retention_prepared_archives(
                 .bind(&prepared_key)
                 .fetch_one(tx.as_mut())
                 .await?;
-                if manifest_exists == 0 && active_prepared_exists == 0 {
+                let _archive_lock = retention_archive_file_lock(path)?;
+                let artifact_matches = if path.is_file() {
+                    artifact_sha256.as_deref().is_some_and(|expected| {
+                        sha256_hex_file(path).ok().as_deref() == Some(expected)
+                    })
+                } else {
+                    true
+                };
+                if manifest_exists == 0 && active_prepared_exists == 0 && artifact_matches {
                     if path.is_file() {
                         fs::remove_file(path).with_context(
                             || "failed to remove expired quarantined archive artifact",
@@ -1999,29 +2070,59 @@ async fn reconcile_legacy_retention_archive_segments(
             continue;
         }
         if let Some((descriptor, verified_sha)) = verified {
+            let source_ids_json = descriptor.source_ids_json.clone();
+            let (coverage_start_at, coverage_end_at): (Option<String>, Option<String>) =
+                sqlx::query_as(
+                    "SELECT MIN(occurred_at), MAX(occurred_at) FROM codex_invocations \
+                     WHERE id IN (SELECT value FROM json_each(?1))",
+                )
+                .bind(&source_ids_json)
+                .fetch_one(tx.as_mut())
+                .await?;
+            let archive_expires_at = coverage_end_at
+                .as_deref()
+                .map(|value| {
+                    shanghai_archive_expiry_from_reference_timestamp(
+                        value,
+                        config.invocation_archive_ttl_days,
+                    )
+                })
+                .transpose()?;
+            let row_count = serde_json::from_str::<Vec<i64>>(&source_ids_json)?.len() as i64;
             sqlx::query(
                 r#"
-                INSERT OR IGNORE INTO retention_prepared_archives (
-                    prepared_key, dataset, month_key, day_key, part_key, file_path,
-                    source_ids_json, source_identity_sha256, state, artifact_sha256,
-                    artifact_bytes, attempt_count
+                INSERT INTO archive_batches (
+                    dataset, month_key, day_key, part_key, file_path, sha256, row_count,
+                    status, layout, codec, writer_version, cleanup_state,
+                    coverage_start_at, coverage_end_at, archive_expires_at,
+                    summary_source_kind, historical_rollups_materialized_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                        ?13, ?14, ?15, ?16, datetime('now'))
                 "#,
             )
-            .bind(descriptor.prepared_key)
             .bind(descriptor.dataset)
-            .bind(descriptor.month_key)
-            .bind(descriptor.day_key)
-            .bind(descriptor.part_key)
-            .bind(descriptor.file_path)
-            .bind(descriptor.source_ids_json)
-            .bind(descriptor.source_identity_sha256)
-            .bind(RETENTION_RECOVERY_STATE_PUBLISHED)
+            .bind(&descriptor.month_key)
+            .bind(&descriptor.day_key)
+            .bind(&descriptor.part_key)
+            .bind(&descriptor.file_path)
             .bind(verified_sha)
-            .bind(metadata.len() as i64)
+            .bind(row_count)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+            .bind(ARCHIVE_FILE_CODEC_GZIP)
+            .bind(ARCHIVE_WRITER_VERSION_SEGMENT_V1)
+            .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+            .bind(coverage_start_at)
+            .bind(coverage_end_at)
+            .bind(archive_expires_at)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
             .execute(tx.as_mut())
             .await?;
+            sqlx::query("DELETE FROM retention_prepared_archives WHERE prepared_key = ?1")
+                .bind(&descriptor.prepared_key)
+                .execute(tx.as_mut())
+                .await?;
         } else {
             sqlx::query(
                 r#"
@@ -4620,6 +4721,7 @@ pub(crate) async fn prune_old_invocation_details(
             else {
                 return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
+            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
@@ -4963,6 +5065,7 @@ pub(crate) async fn archive_old_invocations(
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
+            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
             // P2 normally advances this cursor before retention. Rows beyond it would be

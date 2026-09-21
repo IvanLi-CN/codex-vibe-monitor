@@ -40,7 +40,7 @@
     "verified": {
       "impact": "patch",
       "reasoning": "Stateful and archive-file-I/O regressions verify additive schema re-entry, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, sanitized diagnostics, and additive status serialization.",
-      "verified_at": "2026-09-22T03:17:23+08:00",
+      "verified_at": "2026-09-22T04:05:04+08:00",
       "evidence": [
         "lightweight profile: 1120 passed, including interactive-writer precedence, authoritative-manifest preservation, republish-safe quarantine attribution, and stale legacy archive replacement rejection",
         "stateful-sqlite profile: 1304 passed, including default unknown counts, actionable-journal queue progress, P1 admission, and schema re-entry",

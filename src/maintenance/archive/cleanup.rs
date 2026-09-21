@@ -535,6 +535,14 @@ where
     .await?;
     let is_live_mirror = summary_source_kind.as_deref()
         == Some(crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    let _archive_lock = if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        Some(
+            super::super::retention::retention_archive_file_lock(Path::new(file_path))
+                .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?,
+        )
+    } else {
+        None
+    };
     if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && !is_live_mirror {
         let proof_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
@@ -770,6 +778,23 @@ pub(crate) async fn cleanup_expired_archive_batches(
             && candidate.summary_source_kind
                 == crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
         {
+            let mirror_path = Path::new(&candidate.file_path);
+            let owned = crate::maintenance::retention::retention_archive_path_is_within_root(
+                config,
+                mirror_path,
+            ) && (!mirror_path.exists()
+                || crate::maintenance::retention::retention_archive_path_is_owned(
+                    config,
+                    mirror_path,
+                ));
+            if !owned {
+                warn!(
+                    dataset = candidate.dataset,
+                    file_path = candidate.file_path,
+                    "retention live-mirror cleanup rejected an archive path outside its owned root"
+                );
+                continue;
+            }
             // A live mirror is deliberately outside Summary authority. Its TTL is sufficient
             // cleanup evidence once the completed manifest is staged; it has no rollup or
             // Snapshot proof to wait for.
