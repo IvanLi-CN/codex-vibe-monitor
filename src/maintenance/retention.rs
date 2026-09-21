@@ -59,19 +59,30 @@ static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
 /// Advisory directory lock shared by archive publishers and cleanup finalizers. SQLite admission
 /// serializes database writers, while this lock also fences their filesystem rename/delete window.
 #[cfg(unix)]
-pub(crate) struct RetentionArchiveFileLock(File);
+pub(crate) struct RetentionArchiveFileLock(Option<File>);
 
 #[cfg(unix)]
 pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("archive path has no parent directory"))?;
-    let file = File::open(parent).with_context(|| {
-        format!(
-            "failed to open archive directory lock: {}",
-            parent.display()
-        )
-    })?;
+    let file = match File::open(parent) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A cleanup candidate may already have lost its parent directory. There is no
+            // filesystem object left for a concurrent publisher to mutate, so let the caller
+            // reconcile the metadata under SQLite admission without a directory lock.
+            return Ok(RetentionArchiveFileLock(None));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to open archive directory lock: {}",
+                    parent.display()
+                )
+            });
+        }
+    };
     let lock_flags = if retention_archive_locks_are_try_only() {
         libc::LOCK_EX | libc::LOCK_NB
     } else {
@@ -88,13 +99,15 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
         return Err(std::io::Error::last_os_error())
             .with_context(|| format!("failed to lock archive directory: {}", parent.display()));
     }
-    Ok(RetentionArchiveFileLock(file))
+    Ok(RetentionArchiveFileLock(Some(file)))
 }
 
 #[cfg(unix)]
 impl Drop for RetentionArchiveFileLock {
     fn drop(&mut self) {
-        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        if let Some(file) = self.0.as_ref() {
+            let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+        }
     }
 }
 
@@ -1817,11 +1830,13 @@ async fn reconcile_retention_prepared_archives(
             Option<String>,
             String,
             String,
+            Option<String>,
         ),
     >(
         r#"
         SELECT prepared_key, file_path, state, artifact_sha256, quarantined_at,
-               month_key, day_key, part_key, source_ids_json, source_identity_sha256
+               month_key, day_key, part_key, source_ids_json, source_identity_sha256,
+               staged_file_path
         FROM retention_prepared_archives
         WHERE (
             state IN ('preparing', 'published')
@@ -1861,9 +1876,61 @@ async fn reconcile_retention_prepared_archives(
         part_key,
         source_ids_json,
         source_identity_sha256,
+        staged_file_path,
     ) in rows
     {
         let path = Path::new(&file_path);
+        if !retention_archive_path_is_within_root(config, path) {
+            if state == RETENTION_RECOVERY_STATE_PREPARING
+                || state == RETENTION_RECOVERY_STATE_PUBLISHED
+            {
+                let error = anyhow!("prepared archive path failed ownership verification");
+                retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
+                    .await?;
+            }
+            continue;
+        }
+        if let Some(staged_file_path) = staged_file_path.as_deref() {
+            let staged_path = Path::new(staged_file_path);
+            if !retention_archive_path_is_within_root(config, staged_path) {
+                let error = anyhow!("prepared archive staging path failed ownership verification");
+                retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
+                    .await?;
+                continue;
+            }
+            let manifest_sha = sqlx::query_scalar::<_, String>(
+                "SELECT sha256 FROM archive_batches WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(&file_path)
+            .fetch_optional(pool)
+            .await?;
+            let current_sha = if path.is_file() {
+                Some(sha256_hex_file(path)?)
+            } else {
+                None
+            };
+            if manifest_sha.is_some() && manifest_sha == current_sha {
+                if staged_path.is_file() {
+                    fs::remove_file(staged_path)
+                        .context("failed to remove committed legacy archive rollback copy")?;
+                }
+                if state == RETENTION_RECOVERY_STATE_PREPARING {
+                    clear_retention_staged_file_path(pool, &prepared_key, true).await?;
+                    // The replacement either committed before the journal transition or never
+                    // started. Re-run the normal writer from the durable manifest rather than
+                    // treating the current artifact as a completed prepared publication.
+                    continue;
+                }
+                clear_retention_staged_file_path(pool, &prepared_key, false).await?;
+            } else if staged_path.is_file() {
+                let _archive_lock = retention_archive_file_lock(path)?;
+                restore_staged_legacy_archive_file(staged_path, path)?;
+                clear_retention_staged_file_path(pool, &prepared_key, true).await?;
+                // The manifest still describes the previous artifact. Leave the prepared row in
+                // preparing state so the normal archive writer retries from the restored file.
+                continue;
+            }
+        }
         if !retention_archive_path_is_owned(config, path) {
             if state == RETENTION_RECOVERY_STATE_PREPARING
                 || state == RETENTION_RECOVERY_STATE_PUBLISHED
@@ -1961,6 +2028,13 @@ async fn reconcile_retention_prepared_archives(
                 .unwrap_or_default()
                     != 0;
             if expired {
+                let artifact_matches = if path.is_file() {
+                    artifact_sha256.as_deref().is_some_and(|expected| {
+                        sha256_hex_file(path).ok().as_deref() == Some(expected)
+                    })
+                } else {
+                    true
+                };
                 let _archive_lock = retention_archive_file_lock(path)?;
                 let Some(admission) =
                     acquire_retention_write_admission("retention_recovery_quarantine_cleanup")
@@ -1987,13 +2061,6 @@ async fn reconcile_retention_prepared_archives(
                 .bind(&prepared_key)
                 .fetch_one(tx.as_mut())
                 .await?;
-                let artifact_matches = if path.is_file() {
-                    artifact_sha256.as_deref().is_some_and(|expected| {
-                        sha256_hex_file(path).ok().as_deref() == Some(expected)
-                    })
-                } else {
-                    true
-                };
                 if manifest_exists == 0 && active_prepared_exists == 0 && artifact_matches {
                     if path.is_file() {
                         fs::remove_file(path).with_context(
@@ -2012,6 +2079,56 @@ async fn reconcile_retention_prepared_archives(
     }
     retention_recovery_refresh_counts(pool, config).await?;
     Ok(())
+}
+
+async fn clear_retention_staged_file_path(
+    pool: &Pool<Sqlite>,
+    prepared_key: &str,
+    reset_artifact: bool,
+) -> Result<()> {
+    let Some(_admission) =
+        acquire_retention_write_admission("retention_recovery_staged_path").await
+    else {
+        return Err(retention_write_deferred("retention_recovery_staged_path"));
+    };
+    let query = if reset_artifact {
+        "UPDATE retention_prepared_archives
+         SET state = 'preparing', artifact_sha256 = NULL, artifact_bytes = NULL,
+             staged_file_path = NULL, next_retry_at = NULL, updated_at = datetime('now')
+         WHERE prepared_key = ?1"
+    } else {
+        "UPDATE retention_prepared_archives
+         SET staged_file_path = NULL, updated_at = datetime('now')
+         WHERE prepared_key = ?1"
+    };
+    sqlx::query(query).bind(prepared_key).execute(pool).await?;
+    Ok(())
+}
+
+fn restore_staged_legacy_archive_file(staged_path: &Path, final_path: &Path) -> Result<()> {
+    match fs::rename(staged_path, final_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            fs::remove_file(final_path).with_context(|| {
+                format!(
+                    "failed to replace interrupted legacy archive {}",
+                    final_path.display()
+                )
+            })?;
+            fs::rename(staged_path, final_path).with_context(|| {
+                format!(
+                    "failed to restore interrupted legacy archive {}",
+                    final_path.display()
+                )
+            })
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to restore interrupted legacy archive {}",
+                final_path.display()
+            )
+        }),
+    }
 }
 
 async fn reconcile_legacy_retention_archive_segments(
@@ -4739,17 +4856,8 @@ pub(crate) async fn prune_old_invocation_details(
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
-            let Some(admission) =
-                acquire_retention_write_admission("invocation_detail_prune").await
-            else {
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
-            };
-            let execute_started = Instant::now();
-            let mut tx = pool.begin().await?;
             let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
             if actual_archive_sha256 != archive_outcome.sha256 {
-                tx.rollback().await?;
-                drop(admission);
                 let error =
                     anyhow!("retention prepared archive artifact digest verification failed");
                 retention_recovery_persist_failure(
@@ -4764,6 +4872,13 @@ pub(crate) async fn prune_old_invocation_details(
                     error,
                 ));
             }
+            let Some(admission) =
+                acquire_retention_write_admission("invocation_detail_prune").await
+            else {
+                return Ok((rows_pruned, archive_batches, raw_files_removed));
+            };
+            let execute_started = Instant::now();
+            let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx.as_mut(),
@@ -4803,24 +4918,6 @@ pub(crate) async fn prune_old_invocation_details(
                 record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
             }
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
-            let final_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
-            if final_archive_sha256 != archive_outcome.sha256 {
-                tx.rollback().await?;
-                drop(admission);
-                let error =
-                    anyhow!("retention prepared archive artifact changed before publication");
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "publishing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
             let commit_started = Instant::now();
             tx.commit().await?;
             retention_record_commit!(
@@ -5084,6 +5181,22 @@ pub(crate) async fn archive_old_invocations(
             retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
             let prepare_elapsed = prepare_started.elapsed();
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
+            if actual_archive_sha256 != archive_outcome.sha256 {
+                let error =
+                    anyhow!("retention prepared archive artifact changed before publication");
+                retention_recovery_persist_failure(
+                    pool,
+                    &descriptor.prepared_key,
+                    "publishing",
+                    &error,
+                )
+                .await?;
+                return Err(retention_recovery_failure_persisted(
+                    &descriptor.prepared_key,
+                    error,
+                ));
+            }
             let Some(admission) = acquire_retention_write_admission("invocation_archive").await
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
@@ -5192,10 +5305,6 @@ pub(crate) async fn archive_old_invocations(
                 &archive_outcome.sha256,
             )
             .await?;
-            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
-            if actual_archive_sha256 != archive_outcome.sha256 {
-                bail!("retention prepared archive artifact changed before publication");
-            }
             retention_recovery_verify_publication_tx(
                 tx.as_mut(),
                 &descriptor,
@@ -5419,6 +5528,13 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             let prepare_elapsed = prepare_started.elapsed();
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
+                Ok(value) => value,
+                Err(_) => return Ok((rows_archived, archive_batches)),
+            };
+            if actual_sha256 != archive_outcome.sha256 {
+                return Ok((rows_archived, archive_batches));
+            }
             let Some(admission) = acquire_retention_write_admission("timestamped_archive").await
             else {
                 return Ok((rows_archived, archive_batches));
@@ -5438,19 +5554,6 @@ pub(crate) async fn archive_timestamped_dataset(
                 .as_deref()
                 .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
             {
-                tx.rollback().await?;
-                drop(admission);
-                return Ok((rows_archived, archive_batches));
-            }
-            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
-                Ok(value) => value,
-                Err(_) => {
-                    tx.rollback().await?;
-                    drop(admission);
-                    return Ok((rows_archived, archive_batches));
-                }
-            };
-            if actual_sha256 != archive_outcome.sha256 {
                 tx.rollback().await?;
                 drop(admission);
                 return Ok((rows_archived, archive_batches));
@@ -5843,6 +5946,29 @@ mod retention_recovery_race_tests {
         .await
         .expect("load republished archive fixture");
         assert_eq!(row, ("published".to_string(), "new-sha".to_string()));
+    }
+
+    #[test]
+    fn staged_legacy_archive_restore_replaces_interrupted_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-staged-restore-{}-{}",
+            std::process::id(),
+            retention_temp_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create staged restore directory");
+        let final_path = root.join("archive.sqlite.gz");
+        let staged_path = root.join("archive.sqlite.gz.restore");
+        fs::write(&final_path, b"replacement artifact").expect("write replacement artifact");
+        fs::write(&staged_path, b"previous artifact").expect("write previous artifact");
+
+        restore_staged_legacy_archive_file(&staged_path, &final_path)
+            .expect("restore staged legacy archive");
+        assert_eq!(
+            fs::read(&final_path).expect("read restored archive"),
+            b"previous artifact"
+        );
+        assert!(!staged_path.exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

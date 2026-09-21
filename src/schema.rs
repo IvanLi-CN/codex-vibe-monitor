@@ -2423,6 +2423,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             next_retry_at TEXT,
             last_failure_stage TEXT,
             last_failure_fingerprint TEXT,
+            staged_file_path TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             quarantined_at TEXT
@@ -2432,6 +2433,15 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure retention prepared archive table existence")?;
+
+    let prepared_archive_columns =
+        load_sqlite_table_columns(pool, "retention_prepared_archives").await?;
+    if !prepared_archive_columns.contains("staged_file_path") {
+        sqlx::query("ALTER TABLE retention_prepared_archives ADD COLUMN staged_file_path TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add retention_prepared_archives.staged_file_path")?;
+    }
 
     sqlx::query(
         r#"

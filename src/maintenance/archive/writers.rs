@@ -735,6 +735,7 @@ pub(crate) async fn archive_rows_into_month_batch_at_path(
         &temp_gzip_path,
         &final_path,
         existing_final_sha256.as_deref(),
+        &sha256,
     )
     .await
     {
@@ -773,11 +774,22 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     temporary_file_path: &Path,
     final_file_path: &Path,
     expected_existing_sha256: Option<&str>,
+    replacement_sha256: &str,
 ) -> Result<()> {
     let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
     // cannot interleave across processes.
+    let current_existing_sha256 = if final_file_path.exists() {
+        Some(sha256_hex_file(final_file_path)?)
+    } else {
+        None
+    };
+    if current_existing_sha256.as_deref() != expected_existing_sha256 {
+        return Err(anyhow::anyhow!(
+            "legacy archive changed while it was being prepared; retry required"
+        ));
+    }
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("legacy_archive_file_publish")
             .await
@@ -790,48 +802,51 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .metadata()
         .map(|metadata| metadata.len() as usize)
         .unwrap_or_default();
-    let execute_started = Instant::now();
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let current_existing_sha256 = if final_file_path.exists() {
-        Some(sha256_hex_file(final_file_path)?)
-    } else {
-        None
-    };
-    if current_existing_sha256.as_deref() != expected_existing_sha256 {
-        tx.rollback().await?;
-        return Err(anyhow::anyhow!(
-            "legacy archive changed while it was being prepared; retry required"
-        ));
-    }
     let backup_path = if final_file_path.exists() {
         let path = PathBuf::from(format!(
             "{}.{}.restore",
             final_file_path.display(),
             retention_temp_suffix()
         ));
-        fs::rename(final_file_path, &path).with_context(|| {
-            format!(
-                "failed to stage the previous archive before replacement: {} -> {}",
-                final_file_path.display(),
-                path.display()
-            )
-        })?;
+        sqlx::query(
+            "UPDATE retention_prepared_archives
+             SET staged_file_path = ?1, updated_at = datetime('now')
+             WHERE dataset = ?2 AND file_path = ?3 AND state = 'preparing'",
+        )
+        .bind(path.to_string_lossy().to_string())
+        .bind(dataset)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
         Some(path)
     } else {
         None
     };
+    let execute_started = Instant::now();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(backup_path) = backup_path.as_deref() {
+        fs::rename(final_file_path, backup_path).with_context(|| {
+            format!(
+                "failed to stage the previous archive before replacement: {} -> {}",
+                final_file_path.display(),
+                backup_path.display()
+            )
+        })?;
+    }
     sqlx::query(
         r#"
         UPDATE archive_batches
         SET cleanup_state = ?1,
-            cleanup_source_safe_start_date = NULL
-        WHERE dataset = ?2
-          AND month_key = ?3
-          AND file_path = ?4
-          AND cleanup_state = ?5
+            cleanup_source_safe_start_date = NULL,
+            sha256 = ?2
+        WHERE dataset = ?3
+          AND month_key = ?4
+          AND file_path = ?5
+          AND cleanup_state = ?6
         "#,
     )
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(replacement_sha256)
     .bind(dataset)
     .bind(month_key)
     .bind(final_file_path.to_string_lossy().to_string())
@@ -868,12 +883,9 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         return Err(error.into());
     }
     if let Some(backup_path) = backup_path {
-        fs::remove_file(&backup_path).with_context(|| {
-            format!(
-                "failed to remove the replaced archive backup: {}",
-                backup_path.display()
-            )
-        })?;
+        // A committed replacement is authoritative. If cleanup of the durable rollback copy
+        // fails, the next recovery pass removes it after rechecking the manifest SHA.
+        let _ = fs::remove_file(&backup_path);
     }
     super::super::retention::retention_record_commit!(
         "legacy_archive_file_publish",
@@ -1578,6 +1590,7 @@ mod tests {
             &missing_temp_path,
             &final_path,
             None,
+            "replacement-sha",
         )
         .await
         .expect_err("missing replacement file must roll back pending reactivation");
@@ -1626,6 +1639,7 @@ mod tests {
             &temporary_path,
             &final_path,
             Some(&format!("{:x}", Sha256::digest(b"older archive"))),
+            "replacement-sha",
         )
         .await
         .expect_err("stale baseline must not overwrite a newer archive");

@@ -487,6 +487,22 @@ where
 {
     let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
         .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?;
+    let file_sha256 = if Path::new(file_path).exists() {
+        match sha256_hex_file(Path::new(file_path)) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                warn!(
+                    dataset,
+                    file_path,
+                    error = %error,
+                    "archive file identity could not be verified; retaining pending metadata"
+                );
+                return Ok(false);
+            }
+        }
+    } else {
+        None
+    };
     // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
     // manifest and rename its file under the same lock, so they either win before this check or
     // wait until this identity has been fully finalized.
@@ -582,31 +598,16 @@ where
         None => None,
     };
 
-    if Path::new(file_path).exists() {
-        let file_sha256 = match sha256_hex_file(Path::new(file_path)) {
-            Ok(value) => value,
-            Err(error) => {
-                warn!(
-                    dataset,
-                    file_path,
-                    error = %error,
-                    "archive file identity could not be verified; retaining pending metadata"
-                );
-                tx.rollback().await?;
-                return Ok(false);
-            }
-        };
-        if file_sha256 != expected_sha256 {
-            warn!(
-                dataset,
-                file_path,
-                expected_sha256,
-                file_sha256,
-                "archive file identity changed after deletion was staged; retaining reactivated manifest"
-            );
-            tx.rollback().await?;
-            return Ok(false);
-        }
+    if file_sha256.as_deref() != Some(expected_sha256) && file_sha256.is_some() {
+        warn!(
+            dataset,
+            file_path,
+            expected_sha256,
+            file_sha256 = ?file_sha256,
+            "archive file identity changed after deletion was staged; retaining reactivated manifest"
+        );
+        tx.rollback().await?;
+        return Ok(false);
     }
 
     match remove_file(file_path) {
@@ -4048,6 +4049,13 @@ pub(crate) async fn compact_old_quota_snapshots(
             let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(
                 &archive_outcome.file_path,
             ))?;
+            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
+                Ok(value) => value,
+                Err(_) => return Ok((rows_archived, archive_batches)),
+            };
+            if actual_sha256 != archive_outcome.sha256 {
+                return Ok((rows_archived, archive_batches));
+            }
             let Some(admission) =
                 super::super::retention::acquire_retention_write_admission("quota_compaction")
                     .await
@@ -4069,19 +4077,6 @@ pub(crate) async fn compact_old_quota_snapshots(
                 .as_deref()
                 .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
             {
-                tx.rollback().await?;
-                drop(admission);
-                return Ok((rows_archived, archive_batches));
-            }
-            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
-                Ok(value) => value,
-                Err(_) => {
-                    tx.rollback().await?;
-                    drop(admission);
-                    return Ok((rows_archived, archive_batches));
-                }
-            };
-            if actual_sha256 != archive_outcome.sha256 {
                 tx.rollback().await?;
                 drop(admission);
                 return Ok((rows_archived, archive_batches));
@@ -4925,6 +4920,59 @@ mod tests {
         assert_eq!(manifest.1, ARCHIVE_CLEANUP_STATE_ACTIVE);
 
         let _ = fs::remove_file(&archive_path);
+    }
+
+    #[tokio::test]
+    async fn finalization_retires_pending_metadata_when_archive_parent_is_missing() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let parent = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-missing-archive-parent-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::create_dir_all(&parent).expect("create archive parent");
+        let archive_path = parent.join("archive.sqlite.gz");
+        fs::write(&archive_path, b"pending archive content").expect("write pending archive");
+        let archive_sha256 = sha256_hex_file(&archive_path).expect("hash pending archive");
+        let archive_path_string = archive_path.to_string_lossy().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, cleanup_state, created_at
+            ) VALUES (1, 'codex_quota_snapshots', '2025-01', ?1, ?2, 1, 'completed', 'delete_pending', datetime('now'))
+            "#,
+        )
+        .bind(&archive_path_string)
+        .bind(&archive_sha256)
+        .execute(&pool)
+        .await
+        .expect("insert pending archive manifest");
+        fs::remove_file(&archive_path).expect("remove archive file");
+        fs::remove_dir(&parent).expect("remove archive parent");
+
+        let finalized = finalize_archive_batch_file_deletion(
+            &pool,
+            1,
+            "codex_quota_snapshots",
+            &archive_path_string,
+            &archive_sha256,
+        )
+        .await
+        .expect("missing archive parent remains retry-safe");
+        assert!(finalized);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("count finalized archive metadata");
+        assert_eq!(remaining, 0);
     }
 
     #[tokio::test]
