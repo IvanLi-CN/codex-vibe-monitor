@@ -57,6 +57,8 @@ tokio::task_local! {
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_ARCHIVE_IO:
@@ -71,10 +73,37 @@ fn retention_test_legacy_directory_entry_event() {
 }
 
 #[cfg(test)]
-fn retention_test_legacy_directory_heap_peak(size: usize) {
-    let _ = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK.try_with(|peak| {
-        peak.fetch_max(size, std::sync::atomic::Ordering::Relaxed);
-    });
+struct RetentionTestLegacyDirectoryHeapGuard {
+    size: usize,
+}
+
+#[cfg(test)]
+impl RetentionTestLegacyDirectoryHeapGuard {
+    fn new(size: usize) -> Self {
+        let applied = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE
+            .try_with(|live| {
+                let current = live.fetch_add(size, std::sync::atomic::Ordering::Relaxed) + size;
+                let _ = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK.try_with(|peak| {
+                    peak.fetch_max(current, std::sync::atomic::Ordering::Relaxed);
+                });
+            })
+            .is_ok();
+        Self {
+            size: if applied { size } else { 0 },
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for RetentionTestLegacyDirectoryHeapGuard {
+    fn drop(&mut self) {
+        if self.size == 0 {
+            return;
+        }
+        let _ = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE.try_with(|live| {
+            live.fetch_sub(self.size, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2689,7 +2718,7 @@ pub(crate) async fn reconcile_legacy_retention_archive_segments(
         .filter(|path| path.to_string_lossy().as_ref() > cursor.as_str());
     if let Some(progress) = progress_after_cursor {
         let progress = progress.to_string_lossy().to_string();
-        advance_retention_recovery_cursor(pool, &progress).await?;
+        advance_retention_recovery_cursor(pool, cursor.as_str(), &progress).await?;
     } else if !cursor.is_empty() {
         // Wrap when the tail is exhausted so earlier-arriving files are eventually revisited.
         let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
@@ -2714,6 +2743,7 @@ pub(crate) async fn reconcile_legacy_retention_archive_segments(
 
 pub(crate) async fn advance_retention_recovery_cursor(
     pool: &Pool<Sqlite>,
+    observed_cursor: &str,
     progress: &str,
 ) -> Result<()> {
     let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
@@ -2726,13 +2756,21 @@ pub(crate) async fn advance_retention_recovery_cursor(
         VALUES ('legacy_archive_segments', ?1, datetime('now'))
         ON CONFLICT(scope) DO UPDATE SET
             cursor = CASE
-                WHEN excluded.cursor > retention_recovery_cursors.cursor THEN excluded.cursor
+                WHEN retention_recovery_cursors.cursor = ?2
+                    AND excluded.cursor > retention_recovery_cursors.cursor
+                    THEN excluded.cursor
                 ELSE retention_recovery_cursors.cursor
             END,
-            updated_at = excluded.updated_at
+            updated_at = CASE
+                WHEN retention_recovery_cursors.cursor = ?2
+                    AND excluded.cursor > retention_recovery_cursors.cursor
+                    THEN excluded.updated_at
+                ELSE retention_recovery_cursors.updated_at
+            END
         "#,
     )
     .bind(progress)
+    .bind(observed_cursor)
     .execute(pool)
     .await?;
     drop(admission);
@@ -2784,38 +2822,84 @@ fn collect_retention_archive_candidates_after_cursor_inner(
         return Ok(false);
     }
 
-    let selection = collect_bounded_retention_archive_directory_entries(root, cursor, limit)?;
-    let truncated = selection.truncated;
-    let entries = selection.entries;
-    for entry in entries {
+    let mut directory_cursor = cursor.to_string();
+    let mut skip_path: Option<PathBuf> = None;
+    loop {
+        let selection = collect_bounded_retention_archive_directory_entries(
+            root,
+            &directory_cursor,
+            skip_path.as_deref(),
+            limit,
+        )?;
+        let RetentionArchiveDirectorySelection {
+            entries,
+            truncated,
+            #[cfg(test)]
+            heap_live,
+        } = selection;
+        let mut entries = entries.into_iter();
+        let mut next_directory = None;
+        while let Some(entry) = entries.next() {
+            if entry.is_dir {
+                next_directory = Some(entry);
+                break;
+            }
+            let path = entry.path;
+            let path_text = path.to_string_lossy();
+            if entry.is_file
+                && path_text.as_ref() > directory_cursor.as_str()
+                && (path_text.ends_with(".sqlite.gz") || path_text.ends_with(".sqlite.zst"))
+            {
+                scan.record_progress(&path);
+                scan.candidates.push(path);
+            } else if path_text.as_ref() > directory_cursor.as_str() {
+                scan.record_progress(&path);
+            }
+            if scan.candidates.len() >= limit {
+                break;
+            }
+        }
+        drop(entries);
+        #[cfg(test)]
+        drop(heap_live);
+
         if scan.candidates.len() >= limit {
             return Ok(true);
         }
+        let Some(entry) = next_directory else {
+            return Ok(truncated);
+        };
         let path = entry.path;
         let path_text = path.to_string_lossy();
-        if entry.is_dir {
-            let is_cursor_ancestor = !cursor.is_empty() && Path::new(cursor).starts_with(&path);
-            if cursor.is_empty() || path_text.as_ref() > cursor || is_cursor_ancestor {
-                if path_text.as_ref() > cursor {
-                    scan.record_progress(&path);
-                }
-                if collect_retention_archive_candidates_after_cursor_inner(
-                    &path, cursor, limit, scan,
-                )? {
-                    return Ok(true);
-                }
-            }
-        } else if entry.is_file
-            && path_text.as_ref() > cursor
-            && (path_text.ends_with(".sqlite.gz") || path_text.ends_with(".sqlite.zst"))
-        {
+        if path_text.as_ref() > directory_cursor.as_str() {
             scan.record_progress(&path);
-            scan.candidates.push(path);
-        } else if path_text.as_ref() > cursor {
-            scan.record_progress(&path);
+            directory_cursor = path_text.to_string();
+        }
+        let child_stopped = collect_retention_archive_candidates_after_cursor_inner(
+            &path,
+            &directory_cursor,
+            limit,
+            scan,
+        )?;
+        if child_stopped {
+            return Ok(true);
+        }
+        let boundary = retention_directory_boundary_cursor(&path);
+        if boundary.to_string_lossy().as_ref() > directory_cursor.as_str() {
+            scan.record_progress(&boundary);
+            directory_cursor = boundary.to_string_lossy().to_string();
+        }
+        skip_path = Some(path);
+        if truncated {
+            return Ok(true);
         }
     }
-    Ok(truncated)
+}
+
+fn retention_directory_boundary_cursor(path: &Path) -> PathBuf {
+    let mut boundary = path.to_path_buf();
+    boundary.push("\u{10ffff}");
+    boundary
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -2828,6 +2912,8 @@ struct RetentionArchiveDirectoryEntry {
 struct RetentionArchiveDirectorySelection {
     entries: Vec<RetentionArchiveDirectoryEntry>,
     truncated: bool,
+    #[cfg(test)]
+    heap_live: RetentionTestLegacyDirectoryHeapGuard,
 }
 
 impl Ord for RetentionArchiveDirectoryEntry {
@@ -2845,6 +2931,7 @@ impl PartialOrd for RetentionArchiveDirectoryEntry {
 fn collect_bounded_retention_archive_directory_entries(
     root: &Path,
     cursor: &str,
+    skip_path: Option<&Path>,
     limit: usize,
 ) -> Result<RetentionArchiveDirectorySelection> {
     // Stream the directory through a fixed-size max heap. This keeps allocation and comparison
@@ -2861,7 +2948,10 @@ fn collect_bounded_retention_archive_directory_entries(
         let path_text = path.to_string_lossy();
         let file_type = entry.file_type()?;
         let eligible = if file_type.is_dir() {
-            cursor.is_empty() || path_text.as_ref() > cursor || Path::new(cursor).starts_with(&path)
+            !skip_path.is_some_and(|skipped| skipped == path)
+                && (cursor.is_empty()
+                    || path_text.as_ref() > cursor
+                    || Path::new(cursor).starts_with(&path))
         } else {
             path_text.as_ref() > cursor
         };
@@ -2875,8 +2965,6 @@ fn collect_bounded_retention_archive_directory_entries(
         };
         if entries.len() < limit {
             entries.push(candidate);
-            #[cfg(test)]
-            retention_test_legacy_directory_heap_peak(entries.len());
         } else if entries
             .peek()
             .is_some_and(|largest| candidate.path < largest.path)
@@ -2884,15 +2972,18 @@ fn collect_bounded_retention_archive_directory_entries(
             truncated = true;
             entries.pop();
             entries.push(candidate);
-            #[cfg(test)]
-            retention_test_legacy_directory_heap_peak(entries.len());
         } else {
             truncated = true;
         }
     }
     let mut entries = entries.into_vec();
     entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    Ok(RetentionArchiveDirectorySelection { entries, truncated })
+    Ok(RetentionArchiveDirectorySelection {
+        #[cfg(test)]
+        heap_live: RetentionTestLegacyDirectoryHeapGuard::new(entries.len()),
+        entries,
+        truncated,
+    })
 }
 
 async fn verify_legacy_retention_archive_segment(

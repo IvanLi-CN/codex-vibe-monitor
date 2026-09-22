@@ -758,12 +758,16 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     }
 
     let heap_peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let heap_live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES
         .scope(
             std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK.scope(
                 heap_peak.clone(),
-                run_data_retention_maintenance(&pool, &config, Some(false), None),
+                crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE.scope(
+                    heap_live.clone(),
+                    run_data_retention_maintenance(&pool, &config, Some(false), None),
+                ),
             ),
         )
         .await
@@ -772,6 +776,12 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
         heap_peak.load(std::sync::atomic::Ordering::Relaxed) <= 32,
         "legacy discovery must retain no more than the 32-candidate heap bound"
     );
+    assert_eq!(
+        heap_peak.load(std::sync::atomic::Ordering::Relaxed),
+        32,
+        "legacy discovery should exercise the full bounded selection heap"
+    );
+    assert_eq!(heap_live.load(std::sync::atomic::Ordering::Relaxed), 0);
     let first_pass_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined'",
     )
@@ -913,7 +923,11 @@ async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
     crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
         .scope(
             coordinator,
-            crate::maintenance::advance_retention_recovery_cursor(&pool, &low.to_string_lossy()),
+            crate::maintenance::advance_retention_recovery_cursor(
+                &pool,
+                &high.to_string_lossy(),
+                &low.to_string_lossy(),
+            ),
         )
         .await
         .expect("stale cursor writer should complete");
@@ -924,6 +938,35 @@ async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
     .await
     .expect("load monotonic legacy cursor");
     assert_eq!(stored, high.to_string_lossy());
+
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET cursor = '' \
+         WHERE scope = 'legacy_archive_segments' AND cursor = ?1",
+    )
+    .bind(high.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("simulate a completed cursor wrap");
+    let later_progress = temp_dir.join("archives/codex_invocations/2026/01/01/part-z2.sqlite.gz");
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            coordinator,
+            crate::maintenance::advance_retention_recovery_cursor(
+                &pool,
+                &high.to_string_lossy(),
+                &later_progress.to_string_lossy(),
+            ),
+        )
+        .await
+        .expect("stale pre-wrap cursor writer should complete");
+    let after_wrap_stale_write: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load cursor after stale pre-wrap write");
+    assert!(after_wrap_stale_write.is_empty());
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
