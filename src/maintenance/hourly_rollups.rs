@@ -1949,7 +1949,9 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         }
         let _archive_lock = retention_archive_file_lock(&archive_path)?;
         if !archive_path.exists()
-            || sha256_hex_file(&archive_path).ok().as_deref() != Some(archive_file.sha256.as_str())
+            || archive_file.sha256.as_deref().is_none_or(|expected| {
+                sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
+            })
         {
             summary.blocked_batches += 1;
             continue;
@@ -2546,7 +2548,9 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         }
         let _archive_lock = retention_archive_file_lock(&archive_path)?;
         if !archive_path.exists()
-            || sha256_hex_file(&archive_path).ok().as_deref() != Some(archive_file.sha256.as_str())
+            || archive_file.sha256.as_deref().is_none_or(|expected| {
+                sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
+            })
         {
             summary.blocked_batches += 1;
             continue;
@@ -2714,6 +2718,20 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
 
     let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
     for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) || !archive_path.is_file() {
+            summary.scanned_batches += 1;
+            continue;
+        }
+        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+            summary.scanned_batches += 1;
+            continue;
+        };
+        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+            summary.scanned_batches += 1;
+            continue;
+        }
         let mut tx = pool.begin().await?;
         if !archive_batch_has_completed_manifest_sha_tx(
             tx.as_mut(),
@@ -2770,35 +2788,6 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             &archive_file.file_path,
         )
         .await?;
-
-        let archive_path = PathBuf::from(&archive_file.file_path);
-        if !archive_path.exists() {
-            warn!(
-                dataset = "pool_upstream_request_attempts",
-                file_path = archive_file.file_path,
-                "pool upstream node health cache backfill marking missing archive batch as replayed"
-            );
-            delete_pool_upstream_node_health_archive_rows_for_file_tx(
-                tx.as_mut(),
-                &archive_file.file_path,
-            )
-            .await?;
-            delete_hourly_rollup_archive_progress_tx(
-                tx.as_mut(),
-                "pool_upstream_request_attempts",
-                &archive_file.file_path,
-            )
-            .await?;
-            mark_hourly_rollup_archive_replayed_tx(
-                tx.as_mut(),
-                POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-                "pool_upstream_request_attempts",
-                &archive_file.file_path,
-            )
-            .await?;
-            tx.commit().await?;
-            continue;
-        }
 
         replay_started_any_pending_batch = true;
         let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);

@@ -62,6 +62,13 @@ static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
 pub(crate) struct RetentionArchiveFileLock(Option<File>);
 
 #[cfg(unix)]
+impl RetentionArchiveFileLock {
+    pub(crate) fn is_held(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+#[cfg(unix)]
 pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
     let parent = path
         .parent()
@@ -113,6 +120,13 @@ impl Drop for RetentionArchiveFileLock {
 
 #[cfg(not(unix))]
 pub(crate) struct RetentionArchiveFileLock;
+
+#[cfg(not(unix))]
+impl RetentionArchiveFileLock {
+    pub(crate) fn is_held(&self) -> bool {
+        true
+    }
+}
 
 #[cfg(not(unix))]
 pub(crate) fn retention_archive_file_lock(_path: &Path) -> Result<RetentionArchiveFileLock> {
@@ -1779,10 +1793,16 @@ pub(crate) fn retention_archive_path_is_within_root(config: &AppConfig, path: &P
         vec![path.to_path_buf(), root.join(path)]
     };
     candidates.into_iter().any(|candidate| {
-        candidate.starts_with(&root)
-            || fs::canonicalize(&candidate)
-                .map(|canonical| canonical.starts_with(&root))
-                .unwrap_or(false)
+        let mut current = candidate.as_path();
+        loop {
+            if let Ok(canonical) = fs::canonicalize(current) {
+                return canonical.starts_with(&root);
+            }
+            current = match current.parent() {
+                Some(parent) if parent != current => parent,
+                _ => return false,
+            };
+        }
     })
 }
 
@@ -1907,7 +1927,9 @@ async fn reconcile_retention_prepared_archives(
             };
             let state = current_state;
             let staged_path = Path::new(&staged_file_path);
-            if !retention_archive_path_is_within_root(config, staged_path) {
+            if !retention_archive_path_is_within_root(config, staged_path)
+                || !replacement_staging_path_is_owned(path, staged_path)
+            {
                 let error = anyhow!("prepared archive staging path failed ownership verification");
                 retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
                     .await?;
@@ -1940,7 +1962,31 @@ async fn reconcile_retention_prepared_archives(
                 clear_retention_staged_file_path(pool, &prepared_key, &staged_file_path, false)
                     .await?;
             } else if staged_path.is_file() {
-                restore_staged_legacy_archive_file(staged_path, path)?;
+                let Some(expected_sha) = manifest_sha.as_deref() else {
+                    let error = anyhow!(
+                        "prepared archive rollback cannot be verified without a manifest digest"
+                    );
+                    retention_recovery_persist_failure(
+                        pool,
+                        &prepared_key,
+                        "legacy_reconcile",
+                        &error,
+                    )
+                    .await?;
+                    continue;
+                };
+                if let Err(error) =
+                    restore_staged_legacy_archive_file(staged_path, path, expected_sha)
+                {
+                    retention_recovery_persist_failure(
+                        pool,
+                        &prepared_key,
+                        "legacy_reconcile",
+                        &error,
+                    )
+                    .await?;
+                    continue;
+                }
                 clear_retention_staged_file_path(pool, &prepared_key, &staged_file_path, true)
                     .await?;
                 // The manifest still describes the previous artifact. Leave the prepared row in
@@ -2045,13 +2091,9 @@ async fn reconcile_retention_prepared_archives(
                 .unwrap_or_default()
                     != 0;
             if expired {
-                let artifact_matches = if path.is_file() {
-                    artifact_sha256.as_deref().is_none_or(|expected| {
-                        sha256_hex_file(path).ok().as_deref() == Some(expected)
-                    })
-                } else {
-                    true
-                };
+                let artifact_matches = artifact_sha256.as_deref().is_some_and(|expected| {
+                    path.is_file() && sha256_hex_file(path).ok().as_deref() == Some(expected)
+                });
                 let _archive_lock = retention_archive_file_lock(path)?;
                 let Some(admission) =
                     acquire_retention_write_admission("retention_recovery_quarantine_cleanup")
@@ -2099,8 +2141,8 @@ async fn reconcile_retention_prepared_archives(
 }
 
 async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()> {
-    let rows = sqlx::query_as::<_, (i64, String, String, String)>(
-        "SELECT id, file_path, replacement_staged_path, sha256
+    let rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT id, file_path
          FROM archive_batches
          WHERE replacement_staged_path IS NOT NULL
          ORDER BY id ASC LIMIT ?1",
@@ -2108,10 +2150,47 @@ async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()
     .bind(RETENTION_RECOVERY_LEGACY_SCAN_BATCH as i64)
     .fetch_all(pool)
     .await?;
-    for (id, file_path, staged_file_path, manifest_sha) in rows {
+    for (id, file_path) in rows {
         let path = Path::new(&file_path);
+        let archive_lock = retention_archive_file_lock(path)?;
+        if !archive_lock.is_held() {
+            continue;
+        }
+        let Some((current_file_path, staged_file_path, manifest_sha)) =
+            sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                "SELECT file_path, replacement_staged_path, sha256
+                 FROM archive_batches
+                 WHERE id = ?1",
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+        else {
+            continue;
+        };
+        let Some(staged_file_path) = staged_file_path else {
+            continue;
+        };
+        if current_file_path != file_path {
+            continue;
+        }
         let staged_path = Path::new(&staged_file_path);
-        let _archive_lock = retention_archive_file_lock(path)?;
+        let Some(manifest_sha) = manifest_sha else {
+            retention_recovery_record_failure(
+                "legacy_reconcile",
+                &anyhow!(
+                    "archive replacement rollback cannot be verified without a manifest digest"
+                ),
+            );
+            continue;
+        };
+        if !replacement_staging_path_is_owned(path, staged_path) {
+            retention_recovery_record_failure(
+                "legacy_reconcile",
+                &anyhow!("archive replacement staging path failed ownership verification"),
+            );
+            continue;
+        }
         let current_sha = if path.is_file() {
             Some(sha256_hex_file(path)?)
         } else {
@@ -2126,7 +2205,11 @@ async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()
             continue;
         }
         if staged_path.is_file() {
-            restore_staged_legacy_archive_file(staged_path, path)?;
+            if let Err(error) = restore_staged_legacy_archive_file(staged_path, path, &manifest_sha)
+            {
+                retention_recovery_record_failure("legacy_reconcile", &error);
+                continue;
+            }
             clear_archive_batch_staged_path(pool, id, &staged_file_path).await?;
         } else {
             retention_recovery_record_failure(
@@ -2136,6 +2219,33 @@ async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()
         }
     }
     Ok(())
+}
+
+fn replacement_staging_path_is_owned(final_path: &Path, staged_path: &Path) -> bool {
+    let Some(final_parent) = final_path.parent() else {
+        return false;
+    };
+    let Some(staged_parent) = staged_path.parent() else {
+        return false;
+    };
+    if final_parent != staged_parent {
+        return false;
+    }
+    let Some(final_name) = final_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(staged_name) = staged_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !staged_name.starts_with(&format!("{final_name}.")) || !staged_name.ends_with(".restore") {
+        return false;
+    }
+    fs::canonicalize(final_parent).is_ok_and(|parent| {
+        !fs::symlink_metadata(final_path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && !fs::symlink_metadata(staged_path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && parent.is_dir()
+    })
 }
 
 async fn clear_archive_batch_staged_path(
@@ -2188,7 +2298,15 @@ async fn clear_retention_staged_file_path(
     Ok(())
 }
 
-fn restore_staged_legacy_archive_file(staged_path: &Path, final_path: &Path) -> Result<()> {
+fn restore_staged_legacy_archive_file(
+    staged_path: &Path,
+    final_path: &Path,
+    expected_sha256: &str,
+) -> Result<()> {
+    let staged_sha256 = sha256_hex_file(staged_path)?;
+    if staged_sha256 != expected_sha256 {
+        bail!("archive rollback artifact digest verification failed");
+    }
     match fs::rename(staged_path, final_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -2714,7 +2832,7 @@ struct RawPathReferenceCandidate {
 pub(crate) struct ArchiveBatchFileRow {
     pub(crate) id: i64,
     pub(crate) file_path: String,
-    pub(crate) sha256: String,
+    pub(crate) sha256: Option<String>,
     pub(crate) coverage_start_at: Option<String>,
     pub(crate) coverage_end_at: Option<String>,
 }
@@ -6053,8 +6171,9 @@ mod retention_recovery_race_tests {
         let staged_path = root.join("archive.sqlite.gz.restore");
         fs::write(&final_path, b"replacement artifact").expect("write replacement artifact");
         fs::write(&staged_path, b"previous artifact").expect("write previous artifact");
+        let expected_sha = sha256_hex_file(&staged_path).expect("hash previous artifact");
 
-        restore_staged_legacy_archive_file(&staged_path, &final_path)
+        restore_staged_legacy_archive_file(&staged_path, &final_path, &expected_sha)
             .expect("restore staged legacy archive");
         assert_eq!(
             fs::read(&final_path).expect("read restored archive"),
@@ -6118,6 +6237,122 @@ mod retention_recovery_race_tests {
                 .await
                 .expect("load cleared replacement staging path");
         assert!(staged.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn staged_archive_replacement_reconcile_keeps_unverified_rollback_pending() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect unverified staged replacement database");
+        sqlx::query(
+            "CREATE TABLE archive_batches (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                replacement_staged_path TEXT,
+                sha256 TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create unverified staged replacement manifest");
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-staged-unverified-{}-{}",
+            std::process::id(),
+            retention_temp_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create unverified staged directory");
+        let final_path = root.join("archive.sqlite.gz");
+        let staged_path = root.join("archive.sqlite.gz.restore");
+        fs::write(&final_path, b"replacement artifact").expect("write replacement artifact");
+        fs::write(&staged_path, b"corrupt rollback artifact").expect("write corrupt rollback");
+        let expected_old_path = root.join("expected-old-bytes");
+        fs::write(&expected_old_path, b"previous artifact").expect("write expected old bytes");
+        let old_sha = sha256_hex_file(&expected_old_path).expect("hash expected old bytes");
+        fs::remove_file(&expected_old_path).expect("remove expected old bytes");
+        let file_path = final_path.to_string_lossy().to_string();
+        let staged_path_string = staged_path.to_string_lossy().to_string();
+        sqlx::query(
+            "INSERT INTO archive_batches (id, file_path, replacement_staged_path, sha256) VALUES (1, ?1, ?2, ?3)",
+        )
+        .bind(&file_path)
+        .bind(&staged_path_string)
+        .bind(&old_sha)
+        .execute(&pool)
+        .await
+        .expect("seed corrupt staged replacement manifest");
+
+        reconcile_staged_archive_replacements(&pool)
+            .await
+            .expect("reconcile should retain unverified staged replacement");
+        assert_eq!(
+            fs::read(&final_path).expect("read unchanged replacement artifact"),
+            b"replacement artifact"
+        );
+        let staged: Option<String> =
+            sqlx::query_scalar("SELECT replacement_staged_path FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("load retained replacement staging path");
+        assert_eq!(staged.as_deref(), Some(staged_path_string.as_str()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn staged_archive_replacement_reconcile_does_not_decode_or_delete_null_digest() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect null digest replacement database");
+        sqlx::query(
+            "CREATE TABLE archive_batches (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                replacement_staged_path TEXT,
+                sha256 TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create null digest replacement manifest");
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-staged-null-{}-{}",
+            std::process::id(),
+            retention_temp_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create null digest staged directory");
+        let final_path = root.join("archive.sqlite.gz");
+        let staged_path = root.join("archive.sqlite.gz.restore");
+        fs::write(&final_path, b"current artifact").expect("write current artifact");
+        fs::write(&staged_path, b"unknown rollback artifact").expect("write unknown rollback");
+        let file_path = final_path.to_string_lossy().to_string();
+        let staged_path_string = staged_path.to_string_lossy().to_string();
+        sqlx::query(
+            "INSERT INTO archive_batches (id, file_path, replacement_staged_path, sha256) VALUES (1, ?1, ?2, NULL)",
+        )
+        .bind(&file_path)
+        .bind(&staged_path_string)
+        .execute(&pool)
+        .await
+        .expect("seed null digest replacement manifest");
+
+        reconcile_staged_archive_replacements(&pool)
+            .await
+            .expect("reconcile should retain null digest replacement");
+        assert_eq!(
+            fs::read(&final_path).expect("read unchanged current artifact"),
+            b"current artifact"
+        );
+        assert!(staged_path.exists());
+        let staged: Option<String> =
+            sqlx::query_scalar("SELECT replacement_staged_path FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("load retained null digest staging path");
+        assert_eq!(staged.as_deref(), Some(staged_path_string.as_str()));
         let _ = fs::remove_dir_all(&root);
     }
 }

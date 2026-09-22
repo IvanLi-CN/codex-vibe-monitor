@@ -349,39 +349,114 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             // retention admission again here would self-wait on that permit. Hash the prepared
             // artifact before entering the bounded publication transaction.
             let sha256 = sha256_hex_file(&temp_gzip_path)?;
+            let Some(expected_existing_sha256) = batch.sha256.as_deref() else {
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                continue;
+            };
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-            let current_sha256 = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT sha256 FROM archive_batches WHERE id = ?1 AND dataset = 'pool_upstream_request_attempts' AND file_path = ?2 AND status = ?3 AND cleanup_state = ?4",
+            let current_state = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT sha256, replacement_staged_path
+                 FROM archive_batches
+                 WHERE id = ?1 AND dataset = 'pool_upstream_request_attempts'
+                   AND file_path = ?2 AND status = ?3 AND cleanup_state = ?4",
             )
             .bind(batch.id)
             .bind(&batch.file_path)
             .bind(ARCHIVE_STATUS_COMPLETED)
             .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
             .fetch_optional(tx.as_mut())
-            .await?
-            .flatten();
-            if current_sha256 != batch.sha256 {
+            .await?;
+            let Some((current_sha256, existing_staged_path)) = current_state else {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                continue;
+            };
+            if current_sha256.as_deref() != Some(expected_existing_sha256)
+                || existing_staged_path.is_some()
+            {
                 tx.rollback().await?;
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
                 continue;
             }
-            fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
+            let backup_path = if archive_path.is_file() {
+                Some(PathBuf::from(format!(
+                    "{}.{}.restore",
+                    archive_path.display(),
+                    retention_temp_suffix()
+                )))
+            } else {
+                None
+            };
+            if let Some(backup_path) = backup_path.as_deref() {
+                sqlx::query(
+                    "UPDATE archive_batches SET replacement_staged_path = ?1 WHERE id = ?2",
+                )
+                .bind(backup_path.to_string_lossy().to_string())
+                .bind(batch.id)
+                .execute(tx.as_mut())
+                .await?;
+                fs::rename(&archive_path, backup_path).with_context(|| {
+                    format!(
+                        "failed to stage archive replacement rollback copy: {}",
+                        backup_path.display()
+                    )
+                })?;
+            }
+            if let Err(error) = fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
                 format!(
                     "failed to move pool_upstream_request_attempts archive batch into place: {} -> {}",
                     temp_gzip_path.display(),
                     archive_path.display()
                 )
-            })?;
-            sync_published_archive_file(&archive_path)?;
+            }) {
+                tx.rollback().await?;
+                if let Some(backup_path) = backup_path.as_deref() {
+                    let _ = fs::rename(backup_path, &archive_path);
+                }
+                return Err(error);
+            }
+            if let Err(error) = sync_published_archive_file(&archive_path) {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&archive_path);
+                if let Some(backup_path) = backup_path.as_deref() {
+                    let _ = fs::rename(backup_path, &archive_path);
+                }
+                return Err(error);
+            }
             let _ = fs::remove_file(&work_path);
 
-            sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
+            if let Err(error) = sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
                 .bind(&sha256)
                 .bind(batch.id)
                 .execute(tx.as_mut())
-                .await?;
-            tx.commit().await?;
+                .await
+            {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&archive_path);
+                if let Some(backup_path) = backup_path.as_deref() {
+                    let _ = fs::rename(backup_path, &archive_path);
+                }
+                return Err(error.into());
+            }
+            if let Err(error) = tx.commit().await {
+                return Err(anyhow::anyhow!(
+                    "archive public-id backfill commit outcome is unknown; recovery will reconcile: {error}"
+                ));
+            }
+            if let Some(backup_path) = backup_path {
+                let _ = fs::remove_file(&backup_path);
+                let _ = sqlx::query(
+                    "UPDATE archive_batches SET replacement_staged_path = NULL
+                     WHERE id = ?1 AND replacement_staged_path = ?2",
+                )
+                .bind(batch.id)
+                .bind(backup_path.to_string_lossy().to_string())
+                .execute(pool)
+                .await;
+            }
         }
     }
 

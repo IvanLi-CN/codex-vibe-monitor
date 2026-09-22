@@ -480,8 +480,9 @@ async fn finalize_archive_batch_file_deletion_with_remove<F>(
 where
     F: FnOnce(&str) -> io::Result<()>,
 {
-    let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
-        .context("failed to lock archive cleanup path")?;
+    let mut archive_lock =
+        super::super::retention::retention_archive_file_lock(Path::new(file_path))
+            .context("failed to lock archive cleanup path")?;
     let file_sha256 = if Path::new(file_path).exists() {
         match sha256_hex_file(Path::new(file_path)) {
             Ok(value) => Some(value),
@@ -533,6 +534,34 @@ where
         tx.rollback().await?;
         return Ok(false);
     };
+
+    // A missing parent cannot be fenced by the initial lock attempt. Re-check it after taking
+    // the SQLite writer lock and acquire the recreated directory before deleting anything.
+    if !archive_lock.is_held() {
+        let Some(parent) = Path::new(file_path).parent() else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+        if !parent.exists() {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
+            .context("failed to lock recreated archive cleanup path")?;
+        if !archive_lock.is_held() {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let current_sha256 = if Path::new(file_path).is_file() {
+            Some(sha256_hex_file(Path::new(file_path))?)
+        } else {
+            None
+        };
+        if current_sha256 != file_sha256 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
 
     let summary_source_kind = sqlx::query_scalar::<_, String>(
         "SELECT COALESCE(summary_source_kind, 'unknown') FROM archive_batches \
@@ -1093,7 +1122,7 @@ impl HistoricalRollupStartupCandidateRow {
         ArchiveBatchFileRow {
             id: self.id,
             file_path: self.file_path.clone(),
-            sha256: self.sha256.clone(),
+            sha256: Some(self.sha256.clone()),
             coverage_start_at: self.coverage_start_at.clone(),
             coverage_end_at: self.coverage_end_at.clone(),
         }
@@ -1278,6 +1307,8 @@ async fn load_summary_archive_snapshot_backfill_candidates(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.id > ?2
           AND NOT EXISTS (
@@ -1448,6 +1479,8 @@ async fn load_summary_archive_snapshot_backfill_due_candidates(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND (
                 (
@@ -2487,31 +2520,6 @@ enum SummaryStartupLegacyDetailMirrorProof {
     Unavailable,
 }
 
-fn retain_archive_directory_locks<'a, I>(
-    paths: I,
-) -> Result<Vec<super::super::retention::RetentionArchiveFileLock>>
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    let mut representatives = BTreeMap::<PathBuf, PathBuf>::new();
-    for path in paths {
-        let archive_path = Path::new(path);
-        let Some(parent) = archive_path.parent() else {
-            bail!("archive path has no parent directory: {path}");
-        };
-        if !parent.exists() {
-            continue;
-        }
-        representatives
-            .entry(parent.to_path_buf())
-            .or_insert_with(|| archive_path.to_path_buf());
-    }
-    representatives
-        .into_values()
-        .map(|path| super::super::retention::retention_archive_file_lock(&path))
-        .collect()
-}
-
 async fn load_historical_rollup_startup_candidates(
     pool: &Pool<Sqlite>,
     cursor_id: i64,
@@ -2529,6 +2537,8 @@ async fn load_historical_rollup_startup_candidates(
             batches.coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.status = ?4
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND batches.id > ?5
           AND (
                 (batches.dataset = 'codex_invocations'
@@ -2780,6 +2790,8 @@ async fn load_legacy_detail_mirror_recovery_candidates(
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND {role_filter}
           AND id > ?2
           AND (?3 IS NULL OR id <= ?3)
@@ -3168,10 +3180,6 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
             next_cursor_id = next_cursor_id.max(candidate.id);
             continue;
         }
-        // Re-open the current parent immediately before replay. The parent may have been
-        // deleted and recreated after candidate discovery; locking the current directory inode
-        // closes that replacement window under the startup try-only lock scope.
-        let _candidate_archive_lock = retention_archive_file_lock(Path::new(&candidate.file_path))?;
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 tx.as_mut(),
@@ -3463,11 +3471,6 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         skip_pending_archives % pending_usage_breakdown_batches
     };
 
-    let _archive_locks = retain_archive_directory_locks(
-        pending_archive_files
-            .iter()
-            .map(|candidate| candidate.file_path.as_str()),
-    )?;
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_usage_breakdown",
     )
@@ -3572,8 +3575,6 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     }) {
         return Ok(HistoricalRollupMaterializationSummary::default());
     }
-    let _archive_locks =
-        retain_archive_directory_locks(pending_archive_paths.iter().map(String::as_str))?;
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_materialization",
     )
