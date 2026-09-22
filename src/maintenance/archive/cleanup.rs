@@ -239,11 +239,7 @@ pub(crate) fn cleanup_stale_archive_temp_files(
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => {
-                warn!(
-                    file_path = %file_path.display(),
-                    error = %err,
-                    "failed to remove stale archive temp file"
-                );
+                warn!(error = %err, "failed to remove stale archive temp file");
             }
         }
     }
@@ -279,7 +275,6 @@ pub(crate) async fn verify_archive_storage(
                 archive_batch_id = row.id,
                 dataset = row.dataset,
                 layout = row.layout,
-                file_path = row.file_path,
                 "archive manifest points to a missing file"
             );
         }
@@ -308,6 +303,7 @@ pub(crate) struct ArchiveBatchCleanupCandidate {
     dataset: String,
     file_path: String,
     sha256: String,
+    summary_source_kind: String,
     cleanup_state: String,
     historical_rollups_materialized_at: Option<String>,
     coverage_end_at: Option<String>,
@@ -328,6 +324,8 @@ async fn stage_archive_batch_deletion(
     expected_sha256: &str,
     source_safe_start: Option<NaiveDate>,
 ) -> Result<bool> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
+        .context("failed to lock archive cleanup path")?;
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("archive_cleanup_stage").await
     else {
@@ -482,6 +480,26 @@ async fn finalize_archive_batch_file_deletion_with_remove<F>(
 where
     F: FnOnce(&str) -> io::Result<()>,
 {
+    let parent_identity =
+        super::super::retention::retention_archive_parent_identity(Path::new(file_path));
+    let mut archive_lock =
+        super::super::retention::retention_archive_file_lock(Path::new(file_path))
+            .context("failed to lock archive cleanup path")?;
+    let file_sha256 = if Path::new(file_path).exists() {
+        match sha256_hex_file(Path::new(file_path)) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                warn!(
+                    dataset,
+                    error_fingerprint = %super::super::retention::retention_error_fingerprint(&error),
+                    "archive file identity could not be verified; retaining pending metadata"
+                );
+                return Ok(false);
+            }
+        }
+    } else {
+        None
+    };
     // Take the SQLite writer lock before touching the file. Legacy writers reactivate a pending
     // manifest and rename its file under the same lock, so they either win before this check or
     // wait until this identity has been fully finalized.
@@ -519,7 +537,61 @@ where
         return Ok(false);
     };
 
-    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+    if parent_identity
+        != super::super::retention::retention_archive_parent_identity(Path::new(file_path))
+    {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    // A missing parent cannot be fenced by the initial lock attempt. Re-check it after taking
+    // the SQLite writer lock and acquire the recreated directory before deleting anything.
+    if !archive_lock.is_held() {
+        let Some(parent) = Path::new(file_path).parent() else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+        if parent.exists() {
+            archive_lock =
+                super::super::retention::retention_archive_file_lock(Path::new(file_path))
+                    .context("failed to lock recreated archive cleanup path")?;
+            if !archive_lock.is_held() {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            let current_sha256 = if Path::new(file_path).is_file() {
+                Some(sha256_hex_file(Path::new(file_path))?)
+            } else {
+                None
+            };
+            if current_sha256 != file_sha256 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+        } else {
+            // A missing parent cannot be fenced. Keep the manifest pending so a concurrent
+            // writer may recreate the directory and publish under its own directory lock.
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
+
+    let summary_source_kind = sqlx::query_scalar::<_, String>(
+        "SELECT COALESCE(summary_source_kind, 'unknown') FROM archive_batches \
+         WHERE id = ?1 AND dataset = ?2 AND file_path = ?3 AND sha256 = ?4 \
+           AND status = ?5 AND cleanup_state = ?6",
+    )
+    .bind(archive_batch_id)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(expected_sha256)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .fetch_optional(tx.as_mut())
+    .await?;
+    let is_live_mirror = summary_source_kind.as_deref()
+        == Some(crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && !is_live_mirror {
         let proof_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
@@ -550,7 +622,6 @@ where
             Err(error) => {
                 warn!(
                     dataset,
-                    file_path,
                     cleanup_source_safe_start_date = value,
                     error = %error,
                     "archive cleanup source boundary is invalid; retaining pending metadata"
@@ -562,31 +633,15 @@ where
         None => None,
     };
 
-    if Path::new(file_path).exists() {
-        let file_sha256 = match sha256_hex_file(Path::new(file_path)) {
-            Ok(value) => value,
-            Err(error) => {
-                warn!(
-                    dataset,
-                    file_path,
-                    error = %error,
-                    "archive file identity could not be verified; retaining pending metadata"
-                );
-                tx.rollback().await?;
-                return Ok(false);
-            }
-        };
-        if file_sha256 != expected_sha256 {
-            warn!(
-                dataset,
-                file_path,
-                expected_sha256,
-                file_sha256,
-                "archive file identity changed after deletion was staged; retaining reactivated manifest"
-            );
-            tx.rollback().await?;
-            return Ok(false);
-        }
+    if file_sha256.as_deref() != Some(expected_sha256) && file_sha256.is_some() {
+        warn!(
+            dataset,
+            expected_sha256,
+            file_sha256 = ?file_sha256,
+            "archive file identity changed after deletion was staged; retaining reactivated manifest"
+        );
+        tx.rollback().await?;
+        return Ok(false);
     }
 
     match remove_file(file_path) {
@@ -595,7 +650,6 @@ where
         Err(error) => {
             warn!(
                 dataset,
-                file_path,
                 error = %error,
                 "archive file deletion is pending; retaining metadata for a later retry"
             );
@@ -651,31 +705,52 @@ pub(crate) async fn cleanup_expired_archive_batches(
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let owner_facing_node_health_window_cutoff = shanghai_local_cutoff_string(7);
-    let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
+    let prepared_archive_guard = if sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'retention_prepared_archives')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0
+    {
+        "AND NOT EXISTS (
+              SELECT 1
+              FROM retention_prepared_archives AS prepared
+              WHERE prepared.file_path = archive_batches.file_path
+                AND prepared.state IN ('preparing', 'published')
+          )"
+    } else {
+        ""
+    };
+    let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(&format!(
         r#"
-        SELECT id, dataset, file_path, sha256, cleanup_state, historical_rollups_materialized_at, coverage_end_at
+        SELECT id, dataset, file_path, sha256,
+               COALESCE(summary_source_kind, 'unknown') AS summary_source_kind,
+               cleanup_state, historical_rollups_materialized_at, coverage_end_at
         FROM archive_batches
         WHERE status = ?1
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+          AND replacement_staged_path IS NULL
+          {prepared_archive_guard}
           AND archive_expires_at IS NOT NULL
           AND archive_expires_at < ?2
         ORDER BY archive_expires_at ASC, id ASC
         LIMIT ?3
         "#,
-    )
+    ))
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(&cutoff)
-    .bind(super::super::retention::retention_candidate_limit(
-        config,
-        "archive_cleanup",
-    ) as i64)
+    .bind(super::super::retention::retention_candidate_limit(config, "archive_cleanup") as i64)
     .fetch_all(pool)
     .await?;
-    let materialized_pool_upstream_cache_files = sqlx::query_scalar::<_, String>(
+    let materialized_pool_upstream_cache_files = sqlx::query_as::<_, (String, String)>(
         r#"
-        SELECT file_path
+        SELECT file_path, archive_sha256
         FROM hourly_rollup_archive_replay
         WHERE target = ?1
           AND dataset = 'pool_upstream_request_attempts'
+          AND archive_sha256 IS NOT NULL
+          AND TRIM(archive_sha256) <> ''
         "#,
     )
     .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
@@ -683,12 +758,14 @@ pub(crate) async fn cleanup_expired_archive_batches(
     .await?
     .into_iter()
     .collect::<HashSet<_>>();
-    let materialized_pool_upstream_hourly_files = sqlx::query_scalar::<_, String>(
+    let materialized_pool_upstream_hourly_files = sqlx::query_as::<_, (String, String)>(
         r#"
-        SELECT file_path
+        SELECT file_path, archive_sha256
         FROM hourly_rollup_archive_replay
         WHERE target = ?1
           AND dataset = 'pool_upstream_request_attempts'
+          AND archive_sha256 IS NOT NULL
+          AND TRIM(archive_sha256) <> ''
         "#,
     )
     .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
@@ -751,6 +828,32 @@ pub(crate) async fn cleanup_expired_archive_batches(
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate.summary_source_kind
+                == crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+        {
+            let mirror_path = Path::new(&candidate.file_path);
+            let owned = crate::maintenance::retention::retention_archive_path_is_within_root(
+                config,
+                mirror_path,
+            ) && (!mirror_path.exists()
+                || crate::maintenance::retention::retention_archive_path_is_owned(
+                    config,
+                    mirror_path,
+                ));
+            if !owned {
+                warn!(
+                    dataset = candidate.dataset,
+                    "retention live-mirror cleanup rejected an archive path outside its owned root"
+                );
+                continue;
+            }
+            // A live mirror is deliberately outside Summary authority. Its TTL is sufficient
+            // cleanup evidence once the completed manifest is staged; it has no rollup or
+            // Snapshot proof to wait for.
+            eligible_candidates.push(candidate);
+            continue;
+        }
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
                 && !summary_archive_snapshot_cleanup_gate_satisfied(
@@ -775,13 +878,21 @@ pub(crate) async fn cleanup_expired_archive_batches(
         }
         if candidate.dataset == "pool_upstream_request_attempts"
             && (candidate.historical_rollups_materialized_at.is_none()
-                || !materialized_pool_upstream_cache_files.contains(&candidate.file_path)
-                || !materialized_pool_upstream_hourly_files.contains(&candidate.file_path))
+                || !materialized_pool_upstream_cache_files
+                    .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
+                || !materialized_pool_upstream_hourly_files
+                    .contains(&(candidate.file_path.clone(), candidate.sha256.clone())))
         {
             continue;
         }
         if candidate.dataset == "pool_upstream_request_attempts"
             && !long_term_stats_attempt_archive_files
+                .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
+        {
+            continue;
+        }
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && !long_term_stats_archive_files
                 .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
         {
             continue;
@@ -845,7 +956,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
         for candidate in &eligible_candidates {
             info!(
                 dataset = candidate.dataset,
-                file_path = candidate.file_path,
+                archive_batch_id = candidate.id,
                 "retention dry-run planned archive batch cleanup"
             );
         }
@@ -868,13 +979,42 @@ pub(crate) async fn cleanup_expired_archive_batches(
             }
             continue;
         }
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate.summary_source_kind
+                == crate::maintenance::retention::SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+        {
+            // Mirrors do not own historical rollup boundaries. Stage and finalize them with no
+            // source-safe-start marker, while the finalizer still rechecks file identity.
+            let staged = stage_archive_batch_deletion(
+                pool,
+                candidate.id,
+                &candidate.dataset,
+                &candidate.file_path,
+                &candidate.sha256,
+                None,
+            )
+            .await?;
+            if staged
+                && finalize_archive_batch_file_deletion(
+                    pool,
+                    candidate.id,
+                    &candidate.dataset,
+                    &candidate.file_path,
+                    &candidate.sha256,
+                )
+                .await?
+            {
+                deleted += 1;
+            }
+            continue;
+        }
         let file_missing = match fs::metadata(&candidate.file_path) {
             Ok(_) => false,
             Err(error) if error.kind() == io::ErrorKind::NotFound => true,
             Err(error) => {
                 warn!(
                     dataset = candidate.dataset,
-                    file_path = candidate.file_path,
+                    archive_batch_id = candidate.id,
                     error = %error,
                     "could not inspect expired archive file; retaining metadata for a later retry"
                 );
@@ -922,7 +1062,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
                 Err(error) => {
                     warn!(
                         dataset = candidate.dataset,
-                        file_path = candidate.file_path,
+                        archive_batch_id = candidate.id,
                         error = %error,
                         "could not prove long-term source boundary; retaining expired archive batch"
                     );
@@ -978,7 +1118,20 @@ async fn summary_archive_snapshot_cleanup_gate_satisfied(
         // is admitted only after a final V2 proof exists.
         return Ok(false);
     }
-    summary_archive_snapshot_has_final_proof(pool, archive_batch_id, manifest_sha256).await
+    let proof_marker_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if !proof_marker_exists {
+        return Ok(false);
+    }
+    summary_archive_snapshot_has_final_proof_read_only(pool, archive_batch_id, manifest_sha256)
+        .await
 }
 
 #[derive(Debug, FromRow)]
@@ -1014,6 +1167,7 @@ impl HistoricalRollupStartupCandidateRow {
         ArchiveBatchFileRow {
             id: self.id,
             file_path: self.file_path.clone(),
+            sha256: Some(self.sha256.clone()),
             coverage_start_at: self.coverage_start_at.clone(),
             coverage_end_at: self.coverage_end_at.clone(),
         }
@@ -1150,6 +1304,14 @@ async fn store_summary_archive_snapshot_backfill_checkpoint(
     manifest_high_watermark_id: i64,
     completed: bool,
 ) -> Result<()> {
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("summary_snapshot_checkpoint")
+            .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_checkpoint",
+        ));
+    };
     sqlx::query(
         "INSERT INTO summary_archive_snapshot_backfill_checkpoint \
          (scope, next_archive_batch_id, manifest_high_watermark_id, completed, updated_at) \
@@ -1165,6 +1327,7 @@ async fn store_summary_archive_snapshot_backfill_checkpoint(
     .bind(i64::from(completed))
     .execute(pool)
     .await?;
+    drop(admission);
     Ok(())
 }
 
@@ -1189,6 +1352,8 @@ async fn load_summary_archive_snapshot_backfill_candidates(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.id > ?2
           AND NOT EXISTS (
@@ -1300,6 +1465,15 @@ async fn promote_verified_summary_snapshot_page_sets(
         if started_at.elapsed() >= max_elapsed {
             break;
         }
+        let Some(admission) = super::super::retention::acquire_retention_write_admission(
+            "summary_snapshot_proof_promotion",
+        )
+        .await
+        else {
+            return Err(super::super::retention::retention_write_deferred(
+                "summary_snapshot_proof_promotion",
+            ));
+        };
         if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
             .await?
         {
@@ -1320,6 +1494,7 @@ async fn promote_verified_summary_snapshot_page_sets(
             .context("record promoted Summary Snapshot V2 outcome")?;
             promoted += 1;
         }
+        drop(admission);
     }
     if promoted > 0 {
         tracing::info!(
@@ -1349,6 +1524,8 @@ async fn load_summary_archive_snapshot_backfill_due_candidates(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND (
                 (
@@ -1518,6 +1695,15 @@ async fn record_summary_archive_snapshot_backfill_outcome(
     next_page_index: u32,
     next_row_id: i64,
 ) -> Result<()> {
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_snapshot_backfill_outcome",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_backfill_outcome",
+        ));
+    };
     let mut tx = pool.begin().await?;
     record_summary_archive_snapshot_backfill_outcome_tx(
         tx.as_mut(),
@@ -1535,10 +1721,39 @@ async fn record_summary_archive_snapshot_backfill_outcome(
     )
     .await?;
     tx.commit().await?;
+    drop(admission);
     Ok(())
 }
 
 async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    disposition: &str,
+    failure_kind: &str,
+    progress: SummaryArchiveSnapshotBackfillProgress,
+) -> Result<()> {
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_snapshot_backfill_outcome",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_backfill_outcome",
+        ));
+    };
+    record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
+        pool,
+        candidate,
+        disposition,
+        failure_kind,
+        progress,
+    )
+    .await?;
+    drop(admission);
+    Ok(())
+}
+
+async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
     pool: &Pool<Sqlite>,
     candidate: &HistoricalRollupStartupCandidateRow,
     disposition: &str,
@@ -1569,6 +1784,15 @@ async fn record_summary_coverage_obligation_terminal_gap(
     candidate: &HistoricalRollupStartupCandidateRow,
     reason: &str,
 ) -> Result<()> {
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_snapshot_coverage_obligation",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_coverage_obligation",
+        ));
+    };
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT OR IGNORE INTO summary_coverage_obligation \
@@ -1594,6 +1818,7 @@ async fn record_summary_coverage_obligation_terminal_gap(
     .await
     .context("persist Summary coverage terminal gap")?;
     tx.commit().await?;
+    drop(admission);
     Ok(())
 }
 
@@ -1806,7 +2031,19 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     // A valid V2 page is already an exact authority and does not require reopening the raw
     // archive. Marking it complete here also upgrades V2 pages written by an older process into
     // the durable backfill outcome index.
-    if summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256).await? {
+    let proof_marker_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
+    )
+    .bind(candidate.id)
+    .bind(&candidate.sha256)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if proof_marker_exists
+        && summary_archive_snapshot_has_final_proof_read_only(pool, candidate.id, &candidate.sha256)
+            .await?
+    {
         return Ok("complete");
     }
     if candidate.row_count <= 0 {
@@ -1816,6 +2053,16 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
+    let _archive_lock = super::super::retention::retention_archive_file_lock(archive_path)?;
+    let Some(_admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_archive_snapshot_backfill",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_archive_snapshot_backfill",
+        ));
+    };
     let source_fingerprint = summary_archive_source_fingerprint(archive_path)?;
     let mut hash_progress =
         load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
@@ -1879,7 +2126,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             SummaryArchiveHashAdvance::Deferred(progress) => {
                 // Hash state itself is committed progress. The outer scheduler records the
                 // bounded defer separately, preserving this state and applying its backoff.
-                record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+                record_summary_archive_snapshot_backfill_outcome_preserving_progress_without_admission(
                     pool,
                     candidate,
                     "in_progress",
@@ -2306,6 +2553,7 @@ pub(crate) struct SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
 enum LegacyDetailMirrorProof {
     Proven,
     NotMirror,
+    Ambiguous,
     BudgetExhausted,
 }
 
@@ -2334,6 +2582,8 @@ async fn load_historical_rollup_startup_candidates(
             batches.coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.status = ?4
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND batches.id > ?5
           AND (
                 (batches.dataset = 'codex_invocations'
@@ -2481,28 +2731,37 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
             if started_at.elapsed() >= max_elapsed {
                 return Ok(LegacyDetailMirrorProof::BudgetExhausted);
             }
-            if live_rows.len() != archive_rows.len() {
-                return Ok(LegacyDetailMirrorProof::NotMirror);
-            }
+            let live_row_count = live_rows.len();
             let live_invoke_ids = live_rows.into_iter().collect::<HashMap<_, _>>();
-            if archive_rows
+            let matched_in_page = archive_rows
                 .iter()
-                .any(|(id, invoke_id)| live_invoke_ids.get(id) != Some(invoke_id))
+                .filter(|(id, invoke_id)| live_invoke_ids.get(id) == Some(invoke_id))
+                .count() as i64;
+            if live_row_count != archive_rows.len()
+                || matched_in_page != archive_rows.len() as i64
             {
-                return Ok(LegacyDetailMirrorProof::NotMirror);
+                return Ok(if matched_rows + matched_in_page > 0 {
+                    LegacyDetailMirrorProof::Ambiguous
+                } else {
+                    LegacyDetailMirrorProof::NotMirror
+                });
             }
-            matched_rows += archive_rows.len() as i64;
+            matched_rows += matched_in_page;
         }
         Ok(LegacyDetailMirrorProof::Proven)
     }
     .await;
     archive_pool.close().await;
     let proof = proof_result?;
-    if proof != LegacyDetailMirrorProof::Proven {
+    if !matches!(proof, LegacyDetailMirrorProof::Proven) {
         return Ok(proof);
     }
     if matched_rows != candidate.row_count {
-        return Ok(LegacyDetailMirrorProof::NotMirror);
+        return Ok(if matched_rows > 0 {
+            LegacyDetailMirrorProof::Ambiguous
+        } else {
+            LegacyDetailMirrorProof::NotMirror
+        });
     }
     let Some(sha256_after_read) =
         legacy_detail_mirror_sha256_with_budget(archive_path, started_at, max_elapsed)?
@@ -2555,8 +2814,14 @@ async fn load_legacy_detail_mirror_recovery_candidates(
     cursor_id: i64,
     high_watermark_id: Option<i64>,
     candidate_limit: i64,
+    include_authoritative_legacy_month: bool,
 ) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
-    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
+    let role_filter = if include_authoritative_legacy_month {
+        "(COALESCE(summary_source_kind, 'unknown') = 'unknown' OR (summary_source_kind = 'authoritative' AND layout = 'legacy_month'))"
+    } else {
+        "COALESCE(summary_source_kind, 'unknown') = 'unknown'"
+    };
+    let query = format!(
         r#"
         SELECT
             id,
@@ -2570,21 +2835,23 @@ async fn load_legacy_detail_mirror_recovery_candidates(
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
-          AND COALESCE(summary_source_kind, 'unknown') = ?2
-          AND id > ?3
-          AND (?4 IS NULL OR id <= ?4)
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+          AND {role_filter}
+          AND id > ?2
+          AND (?3 IS NULL OR id <= ?3)
         ORDER BY id ASC
-        LIMIT ?5
+        LIMIT ?4
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
-    .bind(cursor_id)
-    .bind(high_watermark_id)
-    .bind(candidate_limit)
-    .fetch_all(pool)
-    .await
-    .context("failed to load legacy detail mirror recovery candidates")
+    );
+    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(&query)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(cursor_id)
+        .bind(high_watermark_id)
+        .bind(candidate_limit)
+        .fetch_all(pool)
+        .await
+        .context("failed to load legacy detail mirror recovery candidates")
 }
 
 pub(crate) async fn summary_startup_legacy_detail_mirror_high_watermark(
@@ -2610,6 +2877,15 @@ async fn update_summary_startup_proven_legacy_detail_mirrors(
         return Ok(0);
     }
 
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "summary_legacy_detail_mirror_reconcile",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_legacy_detail_mirror_reconcile",
+        ));
+    };
     let mut changed_path_count = 0_usize;
     let mut tx = pool.begin().await?;
     for candidate in proven_mirrors {
@@ -2628,6 +2904,7 @@ async fn update_summary_startup_proven_legacy_detail_mirrors(
         .rows_affected() as usize;
     }
     tx.commit().await?;
+    drop(admission);
     Ok(changed_path_count)
 }
 
@@ -2636,18 +2913,33 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     cursor_id: i64,
     max_elapsed: Duration,
 ) -> Result<LegacyDetailMirrorRecoveryWindowResult> {
-    let candidates = load_legacy_detail_mirror_recovery_candidates(
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(
         pool,
         cursor_id,
         None,
         LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT,
+        true,
     )
     .await?;
+    let skipped_cursor_id = candidates
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_none_or(|parent| !parent.exists())
+        })
+        .map(|candidate| candidate.id)
+        .max();
+    candidates.retain(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_some_and(Path::exists)
+    });
     if candidates.is_empty() {
         return Ok(LegacyDetailMirrorRecoveryWindowResult {
             // Keep the completed-cycle cursor so an idle pass does not immediately scan the
             // same archive identities again.
-            next_cursor_id: cursor_id,
+            next_cursor_id: skipped_cursor_id.unwrap_or(cursor_id),
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
@@ -2657,10 +2949,11 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     }
 
     let started_at = Instant::now();
-    let mut next_cursor_id = cursor_id;
+    let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
     let mut inspected_path_count = 0_usize;
     let mut hit_budget = false;
     let mut proven_mirrors = Vec::new();
+    let mut ambiguous_mirrors = Vec::new();
     for candidate in candidates.iter() {
         if started_at.elapsed() >= max_elapsed {
             hit_budget = true;
@@ -2676,27 +2969,45 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         {
             LegacyDetailMirrorProof::Proven => proven_mirrors.push(candidate),
             LegacyDetailMirrorProof::NotMirror => {}
+            LegacyDetailMirrorProof::Ambiguous => ambiguous_mirrors.push(candidate),
             LegacyDetailMirrorProof::BudgetExhausted => {
                 hit_budget = true;
                 break;
             }
         }
         inspected_path_count += 1;
-        next_cursor_id = candidate.id;
+        next_cursor_id = next_cursor_id.max(candidate.id);
     }
 
     let mut changed_path_count = 0_usize;
-    if !proven_mirrors.is_empty() {
+    if !proven_mirrors.is_empty() || !ambiguous_mirrors.is_empty() {
+        // The startup-backfill caller holds the P2 SQLite write permit before entering this stage.
         let mut tx = pool.begin().await?;
         for candidate in proven_mirrors {
             changed_path_count += sqlx::query(
                 "UPDATE archive_batches SET summary_source_kind = ?1 \
-                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+                 WHERE id = ?2 AND status = ?3 \
+                   AND (summary_source_kind = ?4 OR summary_source_kind = ?5) AND sha256 = ?6",
             )
             .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
             .bind(candidate.id)
             .bind(ARCHIVE_STATUS_COMPLETED)
             .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+            .bind(&candidate.sha256)
+            .execute(tx.as_mut())
+            .await?
+            .rows_affected() as usize;
+        }
+        for candidate in ambiguous_mirrors {
+            changed_path_count += sqlx::query(
+                "UPDATE archive_batches SET summary_source_kind = ?1 \
+                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+            )
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(candidate.id)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
             .bind(&candidate.sha256)
             .execute(tx.as_mut())
             .await?
@@ -2727,16 +3038,31 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
     high_watermark_id: i64,
     max_elapsed: Duration,
 ) -> Result<SummaryStartupLegacyDetailMirrorRecoveryWindowResult> {
-    let candidates = load_legacy_detail_mirror_recovery_candidates(
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(
         pool,
         cursor_id,
         Some(high_watermark_id),
         SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT,
+        false,
     )
     .await?;
+    let skipped_cursor_id = candidates
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_none_or(|parent| !parent.exists())
+        })
+        .map(|candidate| candidate.id)
+        .max();
+    candidates.retain(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_some_and(Path::exists)
+    });
     if candidates.is_empty() {
         return Ok(SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
-            next_cursor_id: cursor_id,
+            next_cursor_id: skipped_cursor_id.unwrap_or(cursor_id),
             candidate_count: 0,
             inspected_path_count: 0,
             changed_path_count: 0,
@@ -2764,6 +3090,9 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
                 Ok(LegacyDetailMirrorProof::NotMirror) => {
                     SummaryStartupLegacyDetailMirrorProof::NotMirror
                 }
+                Ok(LegacyDetailMirrorProof::Ambiguous) => {
+                    SummaryStartupLegacyDetailMirrorProof::NotMirror
+                }
                 Ok(LegacyDetailMirrorProof::BudgetExhausted) => {
                     SummaryStartupLegacyDetailMirrorProof::BudgetExhausted
                 }
@@ -2780,7 +3109,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
     .await;
     proof_results.sort_unstable_by_key(|(index, _, _)| *index);
 
-    let mut next_cursor_id = cursor_id;
+    let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
     let mut inspected_path_count = 0_usize;
     let mut unavailable_path_count = 0_usize;
     let mut hit_budget = false;
@@ -2797,7 +3126,7 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
             }
         }
         inspected_path_count += 1;
-        next_cursor_id = candidate_id;
+        next_cursor_id = next_cursor_id.max(candidate_id);
     }
 
     let changed_path_count =
@@ -2854,9 +3183,26 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         });
     }
 
+    let candidate_batch = candidates
+        .iter()
+        .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
+        .collect::<Vec<_>>();
+    // Freeze the set of candidates whose parents were present when locks were collected. A
+    // directory recreated after this point must wait for the next bounded pass instead of being
+    // replayed without the lock that fenced its original file identity.
+    let processable_candidate_ids = candidate_batch
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_some_and(Path::exists)
+        })
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
     let started_at = Instant::now();
+    // The startup-backfill caller holds the P2 SQLite write permit before entering this stage.
     let mut tx = pool.begin().await?;
-    let mut next_cursor_id = cursor_id;
+    let mut next_cursor_id = if wrapped { 0 } else { cursor_id };
     let mut scanned_archive_batches = 0_usize;
     let mut skipped_archive_batches = 0_usize;
     let mut materialized_archive_batches = 0_usize;
@@ -2867,10 +3213,18 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
     let mut inspected_path_count = 0_usize;
     let mut hit_budget = false;
 
-    for candidate in candidates
-        .iter()
-        .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
-    {
+    for candidate in candidate_batch {
+        if started_at.elapsed() >= max_elapsed {
+            hit_budget = true;
+            break;
+        }
+        if !processable_candidate_ids.contains(&candidate.id) {
+            inspected_path_count += 1;
+            scanned_archive_batches += 1;
+            skipped_archive_batches += 1;
+            next_cursor_id = next_cursor_id.max(candidate.id);
+            continue;
+        }
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 tx.as_mut(),
@@ -2910,11 +3264,11 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         if candidate_summary.hit_budget {
             hit_budget = true;
             if candidate_summary.advance_cursor_after_unstarted_replay {
-                next_cursor_id = candidate.id;
+                next_cursor_id = next_cursor_id.max(candidate.id);
             }
             break;
         }
-        next_cursor_id = candidate.id;
+        next_cursor_id = next_cursor_id.max(candidate.id);
     }
     tx.commit().await?;
 
@@ -3148,6 +3502,13 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
     )
     .await?;
+    if pending_archive_files.iter().any(|candidate| {
+        Path::new(&candidate.file_path)
+            .parent()
+            .is_none_or(|parent| !parent.exists())
+    }) {
+        return Ok(HistoricalRollupMaterializationSummary::default());
+    }
     let pending_usage_breakdown_batches = pending_archive_files.len();
     let bounded_skip = if pending_usage_breakdown_batches == 0 {
         0
@@ -3155,6 +3516,15 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         skip_pending_archives % pending_usage_breakdown_batches
     };
 
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "historical_rollup_usage_breakdown",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "historical_rollup_usage_breakdown",
+        ));
+    };
     let mut tx = pool.begin().await?;
     let invocation_summary =
         replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
@@ -3166,6 +3536,7 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         )
         .await?;
     tx.commit().await?;
+    drop(admission);
 
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: invocation_summary.scanned_batches as usize,
@@ -3236,6 +3607,28 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         });
     }
 
+    let pending_archive_paths = sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches WHERE status = ?1 AND historical_rollups_materialized_at IS NULL AND dataset IN ('codex_invocations', 'forward_proxy_attempts')",
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    if pending_archive_paths.iter().any(|path| {
+        Path::new(path)
+            .parent()
+            .is_none_or(|parent| !parent.exists())
+    }) {
+        return Ok(HistoricalRollupMaterializationSummary::default());
+    }
+    let Some(admission) = super::super::retention::acquire_retention_write_admission(
+        "historical_rollup_materialization",
+    )
+    .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "historical_rollup_materialization",
+        ));
+    };
     let mut tx = pool.begin().await?;
     let invocation_summary = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         tx.as_mut(),
@@ -3275,6 +3668,7 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         }
     }
     tx.commit().await?;
+    drop(admission);
 
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: (invocation_summary.scanned_batches
@@ -3315,6 +3709,7 @@ pub(crate) async fn prune_legacy_archive_batches(
     query.push_bind(ARCHIVE_LAYOUT_LEGACY_MONTH);
     query.push(") = ");
     query.push_bind(ARCHIVE_LAYOUT_LEGACY_MONTH);
+    query.push(" AND sha256 IS NOT NULL AND TRIM(sha256) <> ''");
     query.push(" ORDER BY month_key ASC, id ASC");
     let candidates = query
         .build_query_as::<LegacyArchivePruneCandidateRow>()
@@ -3458,7 +3853,7 @@ pub(crate) async fn prune_legacy_archive_batches(
         if dry_run {
             info!(
                 dataset = candidate.dataset,
-                file_path = candidate.file_path,
+                archive_batch_id = candidate.id,
                 "maintenance dry-run planned legacy archive prune"
             );
             summary.deleted_archive_batches += 1;
@@ -3508,7 +3903,7 @@ pub(crate) async fn prune_legacy_archive_batches(
                 Err(error) => {
                     warn!(
                         dataset = candidate.dataset,
-                        file_path = candidate.file_path,
+                        archive_batch_id = candidate.id,
                         error = %error,
                         "could not prove long-term source boundary; retaining legacy archive batch"
                     );
@@ -3688,6 +4083,16 @@ pub(crate) async fn compact_old_quota_snapshots(
                     .map(|candidate| candidate.timestamp_value.as_str()),
             )?;
             let prepare_elapsed = prepare_started.elapsed();
+            let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(
+                &archive_outcome.file_path,
+            ))?;
+            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
+                Ok(value) => value,
+                Err(_) => return Ok((rows_archived, archive_batches)),
+            };
+            if actual_sha256 != archive_outcome.sha256 {
+                return Ok((rows_archived, archive_batches));
+            }
             let Some(admission) =
                 super::super::retention::acquire_retention_write_admission("quota_compaction")
                     .await
@@ -3696,6 +4101,23 @@ pub(crate) async fn compact_old_quota_snapshots(
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
+            let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+            )
+            .bind(spec.dataset)
+            .bind(&archive_outcome.month_key)
+            .bind(&archive_outcome.file_path)
+            .fetch_optional(tx.as_mut())
+            .await?
+            .flatten();
+            if cleanup_state
+                .as_deref()
+                .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
+            {
+                tx.rollback().await?;
+                drop(admission);
+                return Ok((rows_archived, archive_batches));
+            }
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             let commit_started = Instant::now();
@@ -4535,6 +4957,78 @@ mod tests {
         assert_eq!(manifest.1, ARCHIVE_CLEANUP_STATE_ACTIVE);
 
         let _ = fs::remove_file(&archive_path);
+    }
+
+    #[tokio::test]
+    async fn finalization_keeps_pending_metadata_when_archive_parent_is_missing() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let parent = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-missing-archive-parent-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::create_dir_all(&parent).expect("create archive parent");
+        let archive_path = parent.join("archive.sqlite.gz");
+        fs::write(&archive_path, b"pending archive content").expect("write pending archive");
+        let archive_sha256 = sha256_hex_file(&archive_path).expect("hash pending archive");
+        let archive_path_string = archive_path.to_string_lossy().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, cleanup_state, created_at
+            ) VALUES (1, 'codex_quota_snapshots', '2025-01', ?1, ?2, 1, 'completed', 'delete_pending', datetime('now'))
+            "#,
+        )
+        .bind(&archive_path_string)
+        .bind(&archive_sha256)
+        .execute(&pool)
+        .await
+        .expect("insert pending archive manifest");
+        fs::remove_file(&archive_path).expect("remove archive file");
+        fs::remove_dir(&parent).expect("remove archive parent");
+
+        let finalized = finalize_archive_batch_file_deletion(
+            &pool,
+            1,
+            "codex_quota_snapshots",
+            &archive_path_string,
+            &archive_sha256,
+        )
+        .await
+        .expect("missing archive parent remains retry-safe");
+        assert!(!finalized);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("count finalized archive metadata");
+        assert_eq!(remaining, 1);
+
+        fs::create_dir_all(&parent).expect("recreate archive parent for retry");
+        let retried = finalize_archive_batch_file_deletion(
+            &pool,
+            1,
+            "codex_quota_snapshots",
+            &archive_path_string,
+            &archive_sha256,
+        )
+        .await
+        .expect("retry pending archive metadata after parent recreation");
+        assert!(retried);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("count retried archive metadata");
+        assert_eq!(remaining, 0);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[tokio::test]

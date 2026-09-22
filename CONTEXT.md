@@ -852,3 +852,29 @@ _Avoid_: fixture workspace, shared test database, custom content-addressed cache
 **Production-copy Runtime Workspace**:
 The disposable directory created by the production-copy validator for the service process, response captures, logs, and default Cargo directories. It is separate from the staged production copy and from any externally provided Cargo cache.
 _Avoid_: runner scratch path, staged production data, durable cache, source snapshot
+
+## Autonomous Retention Recovery
+
+**Verified Archive**:
+An immutable invocation archive whose artifact, manifest, Summary proof, and source-row transition have committed as one durable publication. It is the sole authority that permits removal of its corresponding live detail and raw payload files.
+_Avoid_: Written archive, prepared archive
+
+**Retention Backlog**:
+Expired live invocation detail or raw payloads that remain because the automated retention workflow has not yet completed their Verified Archive transition.
+_Avoid_: Disk leak, stale data
+
+**Raw Capture Circuit Breaker**:
+An automatic protective state that stops persisting new raw request and response bodies when retention cannot keep the diagnostic store within its budget, while preserving proxy delivery and structured invocation facts.
+_Avoid_: Proxy shutdown, data-loss mode
+
+**Physical Raw Inventory**:
+The durable, incrementally reconciled count of bytes physically owned by the raw payload store, including bounded in-flight reservations. It is the authority for raw-storage watermarks, not a logical payload-byte estimate or an on-request directory scan.
+_Avoid_: Raw metric, file walk
+
+**Prepared Archive**:
+An immutable archive artifact whose source identities and digest are recorded for recovery but whose source rows and raw-owner links remain live. It may become a Verified Archive only after the final atomic publication transaction succeeds.
+_Avoid_: Completed archive, orphan archive
+
+**Retention Recovery**:
+The autonomous, pressure-aware background process that resumes a Retention Backlog without an operator CLI, restart, or manual database repair.
+_Avoid_: Manual cleanup, maintenance window

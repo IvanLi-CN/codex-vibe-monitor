@@ -1,9 +1,93 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptsRoutingStateVersion,
   compareRoutingStateVersion,
+  fetchSystemStatus,
   normalizePoolRoutingSelectionAudit,
 } from "./core-foundation";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("fetchSystemStatus retention recovery compatibility", () => {
+  it("normalizes a missing recovery diagnostic to unknown for older backends", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ runtimePressureHealth: {} }), { status: 200 }),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+
+    expect(status.runtimePressureHealth?.retentionRecovery).toEqual({
+      state: "unknown",
+      stage: undefined,
+      preparedCount: undefined,
+      quarantinedCount: undefined,
+      expiredBacklogCount: undefined,
+      oldestBacklogAgeSecs: undefined,
+      lastProgressAt: undefined,
+      nextRetryAt: undefined,
+      failureStage: undefined,
+      failureFingerprint: undefined,
+    });
+  });
+
+  it("keeps omitted recovery counters unknown when a partial diagnostic arrives", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                retentionRecovery: { state: "recovering", preparedCount: 5 },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+    const recovery = status.runtimePressureHealth?.retentionRecovery;
+
+    expect(recovery?.state).toBe("recovering");
+    expect(recovery?.preparedCount).toBe(5);
+    expect(recovery?.quarantinedCount).toBeUndefined();
+    expect(recovery?.expiredBacklogCount).toBeUndefined();
+  });
+
+  it("normalizes explicitly unavailable recovery counters to unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                retentionRecovery: {
+                  state: "unknown",
+                  preparedCount: null,
+                  quarantinedCount: null,
+                  expiredBacklogCount: null,
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const recovery = (await fetchSystemStatus()).runtimePressureHealth?.retentionRecovery;
+
+    expect(recovery?.preparedCount).toBeUndefined();
+    expect(recovery?.quarantinedCount).toBeUndefined();
+    expect(recovery?.expiredBacklogCount).toBeUndefined();
+  });
+});
 
 describe("normalizePoolRoutingSelectionAudit", () => {
   it("preserves the optional recovery trigger", () => {

@@ -4471,7 +4471,7 @@ pub(crate) struct InvocationHourlyRollupReconciliation {
 #[derive(Debug, Clone, FromRow)]
 struct InvocationArchiveIntegrityFileRow {
     file_path: String,
-    sha256: String,
+    sha256: Option<String>,
 }
 
 async fn load_long_term_integrity_source_start_date(
@@ -4581,6 +4581,19 @@ where
     let mut unavailable_archive_file_paths = Vec::new();
 
     for archive_file in archive_files {
+        let Some(expected_sha256) = archive_file
+            .sha256
+            .as_deref()
+            .filter(|sha| !sha.trim().is_empty())
+        else {
+            source_incomplete = true;
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                "skipping archive batch with missing identity during invocation hourly rollup proof reconciliation"
+            );
+            continue;
+        };
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
             warn!(
@@ -4606,11 +4619,10 @@ where
                 continue;
             }
         };
-        if actual_sha256 != archive_file.sha256 {
+        if expected_sha256 != actual_sha256 {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                file_path = %archive_path.display(),
-                expected_sha256 = archive_file.sha256,
+                expected_sha256_present = true,
                 actual_sha256,
                 "archive batch identity does not match its manifest during invocation hourly rollup proof reconciliation"
             );
@@ -4957,7 +4969,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 ) -> Result<(usize, usize)> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -4973,12 +4985,20 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 
     for archive_file in archive_files {
         let archive_path = PathBuf::from(&archive_file.file_path);
-        if !archive_path.exists() {
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) || !archive_path.is_file() {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                file_path = archive_file.file_path,
                 "skipping missing archive batch during upstream account stats rollup rebuild"
             );
+            source_incomplete = true;
+            continue;
+        }
+        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+            source_incomplete = true;
+            continue;
+        };
+        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
             source_incomplete = true;
             continue;
         }
@@ -5439,6 +5459,7 @@ mod upstream_host_network_minute_tests {
             CREATE TABLE archive_batches (
                 id INTEGER PRIMARY KEY,
                 file_path TEXT NOT NULL,
+                sha256 TEXT,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
                 dataset TEXT NOT NULL,

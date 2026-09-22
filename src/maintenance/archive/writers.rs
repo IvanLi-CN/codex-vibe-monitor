@@ -30,6 +30,7 @@ fn sync_published_archive_file(final_file_path: &Path) -> Result<()> {
 }
 
 fn publish_prepared_archive_file(temporary_file_path: &Path, final_file_path: &Path) -> Result<()> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     match fs::hard_link(temporary_file_path, final_file_path) {
         Ok(()) => fs::remove_file(temporary_file_path).with_context(|| {
             format!(
@@ -235,6 +236,7 @@ pub(crate) struct PoolAttemptPublicIdArchiveBackfillSummary {
 struct PoolAttemptPublicIdArchiveBatchRow {
     id: i64,
     file_path: String,
+    sha256: Option<String>,
 }
 
 pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_from_batch_cursor(
@@ -262,10 +264,11 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
 
         let rows = sqlx::query_as::<_, PoolAttemptPublicIdArchiveBatchRow>(
             r#"
-            SELECT id, file_path
+            SELECT id, file_path, sha256
             FROM archive_batches
             WHERE dataset = 'pool_upstream_request_attempts'
               AND status = ?1
+              AND cleanup_state = ?4
               AND id > ?2
             ORDER BY id ASC
             LIMIT ?3
@@ -277,6 +280,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             summary.scanned_batches,
             scan_limit,
         ))
+        .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
         .fetch_all(pool)
         .await?;
 
@@ -285,9 +289,30 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
         }
 
         for batch in rows {
+            let Some(expected_existing_sha256) =
+                batch.sha256.as_deref().filter(|sha| !sha.trim().is_empty())
+            else {
+                last_seen_batch_id = batch.id;
+                summary.scanned_batches += 1;
+                hit_budget = true;
+                push_backfill_sample(
+                    &mut samples,
+                    format!("batch_id={} sha256_missing", batch.id),
+                );
+                continue;
+            };
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
+            let _archive_lock =
+                super::super::retention::retention_archive_file_lock(&archive_path)?;
+            if !archive_path.is_file()
+                || sha256_hex_file(&archive_path)? != expected_existing_sha256
+            {
+                return Err(anyhow::anyhow!(
+                    "pool archive identity verification failed before public-id backfill"
+                ));
+            }
             let suffix = retention_temp_suffix();
             let work_path = PathBuf::from(format!("{}.{}.sqlite", batch.file_path, suffix));
             let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", batch.file_path, suffix));
@@ -339,22 +364,138 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 let _ = fs::remove_file(&temp_gzip_path);
                 return Err(err);
             }
-            fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
+            // The startup caller already owns the coordinated P2 write permit. Acquiring the
+            // retention admission again here would self-wait on that permit. Hash the prepared
+            // artifact before entering the bounded publication transaction.
+            let sha256 = sha256_hex_file(&temp_gzip_path)?;
+            let had_existing_file = archive_path.is_file();
+            let backup_path = PathBuf::from(format!(
+                "{}.{}.restore",
+                archive_path.display(),
+                retention_temp_suffix()
+            ));
+            let staged_path_string = backup_path.to_string_lossy().to_string();
+            let staged = sqlx::query(
+                "UPDATE archive_batches
+                 SET replacement_staged_path = ?1
+                 WHERE id = ?2 AND sha256 = ?3 AND replacement_staged_path IS NULL",
+            )
+            .bind(&staged_path_string)
+            .bind(batch.id)
+            .bind(expected_existing_sha256)
+            .execute(pool)
+            .await?;
+            if staged.rows_affected() != 1 {
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                continue;
+            }
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+            let current_state = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT sha256, replacement_staged_path
+                 FROM archive_batches
+                 WHERE id = ?1 AND dataset = 'pool_upstream_request_attempts'
+                   AND file_path = ?2 AND status = ?3 AND cleanup_state = ?4",
+            )
+            .bind(batch.id)
+            .bind(&batch.file_path)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+            .fetch_optional(tx.as_mut())
+            .await?;
+            let Some((current_sha256, existing_staged_path)) = current_state else {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                continue;
+            };
+            if current_sha256.as_deref() != Some(expected_existing_sha256)
+                || existing_staged_path.as_deref() != Some(staged_path_string.as_str())
+            {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&work_path);
+                let _ = fs::remove_file(&temp_gzip_path);
+                continue;
+            }
+            if had_existing_file {
+                fs::rename(&archive_path, &backup_path).with_context(|| {
+                    format!(
+                        "failed to stage archive replacement rollback copy: {}",
+                        backup_path.display()
+                    )
+                })?;
+            } else {
+                fs::copy(&temp_gzip_path, &backup_path).with_context(|| {
+                    format!(
+                        "failed to stage archive replacement recovery copy: {}",
+                        backup_path.display()
+                    )
+                })?;
+            }
+            if let Err(error) = fs::rename(&temp_gzip_path, &archive_path).with_context(|| {
                 format!(
                     "failed to move pool_upstream_request_attempts archive batch into place: {} -> {}",
                     temp_gzip_path.display(),
                     archive_path.display()
                 )
-            })?;
-            sync_published_archive_file(&archive_path)?;
+            }) {
+                tx.rollback().await?;
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
+                }
+                return Err(error);
+            }
+            if let Err(error) = sync_published_archive_file(&archive_path) {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&archive_path);
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
+                    let _ = sqlx::query(
+                        "UPDATE archive_batches SET replacement_staged_path = NULL
+                         WHERE id = ?1 AND replacement_staged_path = ?2",
+                    )
+                    .bind(batch.id)
+                    .bind(&staged_path_string)
+                    .execute(pool)
+                    .await;
+                }
+                return Err(error);
+            }
             let _ = fs::remove_file(&work_path);
 
-            let sha256 = sha256_hex_file(&archive_path)?;
-            sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
+            if let Err(error) = sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
                 .bind(&sha256)
                 .bind(batch.id)
-                .execute(pool)
-                .await?;
+                .execute(tx.as_mut())
+                .await
+            {
+                tx.rollback().await?;
+                let _ = fs::remove_file(&archive_path);
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
+                }
+                return Err(error.into());
+            }
+            if let Err(error) = tx.commit().await {
+                return Err(anyhow::anyhow!(
+                    "archive public-id backfill commit outcome is unknown; recovery will reconcile: {error}"
+                ));
+            }
+            let _ = fs::remove_file(&backup_path);
+            let _ = sqlx::query(
+                "UPDATE archive_batches SET replacement_staged_path = NULL
+                 WHERE id = ?1 AND replacement_staged_path = ?2",
+            )
+            .bind(batch.id)
+            .bind(backup_path.to_string_lossy().to_string())
+            .execute(pool)
+            .await;
         }
     }
 
@@ -490,11 +631,20 @@ pub(crate) async fn archive_rows_into_month_batch(
     month_key: &str,
     ids: &[i64],
 ) -> Result<ArchiveBatchOutcome> {
+    let final_path = archive_batch_file_path(config, spec.dataset, month_key)?;
+    archive_rows_into_month_batch_at_path(pool, spec, month_key, ids, final_path).await
+}
+
+pub(crate) async fn archive_rows_into_month_batch_at_path(
+    pool: &Pool<Sqlite>,
+    spec: ArchiveTableSpec,
+    month_key: &str,
+    ids: &[i64],
+    final_path: PathBuf,
+) -> Result<ArchiveBatchOutcome> {
     if ids.is_empty() {
         bail!("archive batch requires at least one row id");
     }
-
-    let final_path = archive_batch_file_path(config, spec.dataset, month_key)?;
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
@@ -503,6 +653,43 @@ pub(crate) async fn archive_rows_into_month_batch(
     let suffix = retention_temp_suffix();
     let work_path = PathBuf::from(format!("{}.{}.sqlite", final_path.display(), suffix));
     let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", final_path.display(), suffix));
+    let existing_final_sha256 = if final_path.exists() {
+        Some(sha256_hex_file(&final_path)?)
+    } else {
+        None
+    };
+    if spec.dataset == "codex_invocations"
+        && let Some(existing_sha256) = existing_final_sha256.as_deref()
+    {
+        let known_manifest_sha256 = sqlx::query_scalar::<_, String>(
+            "SELECT sha256 FROM archive_batches \
+                 WHERE dataset = ?1 AND file_path = ?2 AND sha256 IS NOT NULL AND sha256 <> '' \
+                 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(spec.dataset)
+        .bind(final_path.to_string_lossy().to_string())
+        .fetch_optional(pool)
+        .await?;
+        let known_prepared_sha256 = sqlx::query_scalar::<_, String>(
+            "SELECT artifact_sha256 FROM retention_prepared_archives \
+                 WHERE dataset = ?1 AND file_path = ?2 AND artifact_sha256 IS NOT NULL \
+                 ORDER BY updated_at DESC, id DESC LIMIT 1",
+        )
+        .bind(spec.dataset)
+        .bind(final_path.to_string_lossy().to_string())
+        .fetch_optional(pool)
+        .await?;
+        for known_sha256 in [known_manifest_sha256, known_prepared_sha256]
+            .into_iter()
+            .flatten()
+        {
+            if known_sha256 != existing_sha256 {
+                bail!(
+                    "legacy archive existing artifact digest does not match its recorded identity"
+                );
+            }
+        }
+    }
 
     if work_path.exists() {
         let _ = fs::remove_file(&work_path);
@@ -519,6 +706,7 @@ pub(crate) async fn archive_rows_into_month_batch(
     let row_count = if spec.dataset == "pool_upstream_request_attempts" {
         archive_pool_upstream_request_attempt_rows_into_month_batch(pool, spec, ids, &work_path)
             .await
+            .map(|(count, upstream_last_activity)| (count, upstream_last_activity, None))
     } else {
         async {
         let mut conn = pool.acquire().await?;
@@ -599,16 +787,32 @@ pub(crate) async fn archive_rows_into_month_batch(
             .fetch_one(&mut *conn)
             .await
             .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
+        let source_identity_sha256 = if spec.dataset == "codex_invocations" {
+            Some(
+                super::super::retention::invocation_archive_source_identity_sha256(
+                    &mut conn,
+                    super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+                    ids,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         sqlx::query("DETACH DATABASE archive_db")
             .execute(&mut *conn)
             .await
             .context("failed to detach archive database")?;
-        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
+        Ok::<(i64, Vec<(i64, String)>, Option<String>), anyhow::Error>((
+            row_count,
+            upstream_last_activity,
+            source_identity_sha256,
+        ))
     }
         .await
     };
 
-    let (result, upstream_last_activity) = match row_count {
+    let (result, upstream_last_activity, source_identity_sha256) = match row_count {
         Ok(values) => values,
         Err(err) => {
             let _ = fs::remove_file(&work_path);
@@ -634,6 +838,8 @@ pub(crate) async fn archive_rows_into_month_batch(
         month_key,
         &temp_gzip_path,
         &final_path,
+        existing_final_sha256.as_deref(),
+        &sha256,
     )
     .await
     {
@@ -650,6 +856,7 @@ pub(crate) async fn archive_rows_into_month_batch(
         part_key: None,
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
+        source_identity_sha256,
         row_count: result,
         upstream_last_activity,
         coverage_start_at: None,
@@ -664,16 +871,66 @@ pub(crate) async fn archive_rows_into_month_batch(
     })
 }
 
+async fn clear_legacy_archive_replacement_journal(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    month_key: &str,
+    final_file_path: &Path,
+    staged_file_path: Option<&Path>,
+) {
+    let Some(staged_file_path) = staged_file_path else {
+        return;
+    };
+    let final_file_path = final_file_path.to_string_lossy().to_string();
+    let staged_file_path = staged_file_path.to_string_lossy().to_string();
+    let _ = sqlx::query(
+        "UPDATE retention_prepared_archives
+         SET staged_file_path = NULL, updated_at = datetime('now')
+         WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'
+           AND staged_file_path = ?3",
+    )
+    .bind(dataset)
+    .bind(&final_file_path)
+    .bind(&staged_file_path)
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE archive_batches
+         SET replacement_staged_path = NULL
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+           AND replacement_staged_path = ?4",
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(&final_file_path)
+    .bind(&staged_file_path)
+    .execute(pool)
+    .await;
+}
+
 async fn replace_legacy_archive_file_with_cleanup_serialization(
     pool: &Pool<Sqlite>,
     dataset: &str,
     month_key: &str,
     temporary_file_path: &Path,
     final_file_path: &Path,
+    expected_existing_sha256: Option<&str>,
+    replacement_sha256: &str,
 ) -> Result<()> {
+    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
     // cannot interleave across processes.
+    let current_existing_sha256 = if final_file_path.exists() {
+        Some(sha256_hex_file(final_file_path)?)
+    } else {
+        None
+    };
+    if current_existing_sha256.as_deref() != expected_existing_sha256 {
+        return Err(anyhow::anyhow!(
+            "legacy archive changed while it was being prepared; retry required"
+        ));
+    }
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("legacy_archive_file_publish")
             .await
@@ -682,28 +939,104 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             "legacy_archive_file_publish",
         ));
     };
+    let existing_staged_path = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT staged_file_path FROM retention_prepared_archives
+         WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'",
+    )
+    .bind(dataset)
+    .bind(final_file_path.to_string_lossy().to_string())
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(value) => value.flatten(),
+        Err(error) if error.to_string().contains("no such table") => None,
+        Err(error) => return Err(error.into()),
+    };
+    if existing_staged_path.is_some() {
+        return Err(anyhow::anyhow!(
+            "legacy archive replacement recovery is still pending"
+        ));
+    }
+    let existing_archive_staged_path = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT replacement_staged_path FROM archive_batches
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(final_file_path.to_string_lossy().to_string())
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    if existing_archive_staged_path.is_some() {
+        return Err(anyhow::anyhow!(
+            "archive replacement recovery is still pending"
+        ));
+    }
     let prepared_bytes = temporary_file_path
         .metadata()
         .map(|metadata| metadata.len() as usize)
         .unwrap_or_default();
+    let backup_path = if final_file_path.exists() {
+        let path = PathBuf::from(format!(
+            "{}.{}.restore",
+            final_file_path.display(),
+            retention_temp_suffix()
+        ));
+        sqlx::query(
+            "UPDATE retention_prepared_archives
+             SET staged_file_path = ?1, updated_at = datetime('now')
+             WHERE dataset = ?2 AND file_path = ?3 AND state = 'preparing'",
+        )
+        .bind(path.to_string_lossy().to_string())
+        .bind(dataset)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE archive_batches
+             SET replacement_staged_path = ?1
+             WHERE dataset = ?2 AND month_key = ?3 AND file_path = ?4",
+        )
+        .bind(path.to_string_lossy().to_string())
+        .bind(dataset)
+        .bind(month_key)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
+        Some(path)
+    } else {
+        None
+    };
     let execute_started = Instant::now();
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(backup_path) = backup_path.as_deref() {
+        fs::rename(final_file_path, backup_path).with_context(|| {
+            format!(
+                "failed to stage the previous archive before replacement: {} -> {}",
+                final_file_path.display(),
+                backup_path.display()
+            )
+        })?;
+    }
     sqlx::query(
         r#"
         UPDATE archive_batches
         SET cleanup_state = ?1,
-            cleanup_source_safe_start_date = NULL
-        WHERE dataset = ?2
-          AND month_key = ?3
-          AND file_path = ?4
-          AND cleanup_state = ?5
+            cleanup_source_safe_start_date = NULL,
+            sha256 = ?2
+        WHERE dataset = ?3
+          AND month_key = ?4
+          AND file_path = ?5
+          AND cleanup_state IN (?6, ?7)
         "#,
     )
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind(replacement_sha256)
     .bind(dataset)
     .bind(month_key)
     .bind(final_file_path.to_string_lossy().to_string())
     .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
     .execute(tx.as_mut())
     .await?;
     if let Err(error) = fs::rename(temporary_file_path, final_file_path).with_context(|| {
@@ -714,14 +1047,78 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         )
     }) {
         tx.rollback().await?;
+        if let Some(backup_path) = backup_path.as_deref() {
+            let _ = fs::rename(backup_path, final_file_path);
+        }
+        clear_legacy_archive_replacement_journal(
+            pool,
+            dataset,
+            month_key,
+            final_file_path,
+            backup_path.as_deref(),
+        )
+        .await;
         return Err(error);
     }
     if let Err(error) = sync_published_archive_file(final_file_path) {
         tx.rollback().await?;
+        let _ = fs::remove_file(final_file_path);
+        if let Some(backup_path) = backup_path.as_deref() {
+            let _ = fs::rename(backup_path, final_file_path);
+        }
+        clear_legacy_archive_replacement_journal(
+            pool,
+            dataset,
+            month_key,
+            final_file_path,
+            backup_path.as_deref(),
+        )
+        .await;
         return Err(error);
     }
     let commit_started = Instant::now();
-    tx.commit().await?;
+    if let Err(error) = tx.commit().await {
+        // SQLite commit outcome is ambiguous. Leave the new file and durable rollback path in
+        // place; retention recovery will compare the manifest SHA and either remove the stale
+        // rollback copy or restore it before retrying.
+        return Err(anyhow::anyhow!(
+            "legacy archive replacement commit outcome is unknown; recovery will reconcile: {error}"
+        ));
+    }
+    if let Some(backup_path) = backup_path {
+        // A committed replacement is authoritative. If cleanup of the durable rollback copy
+        // fails, the next recovery pass removes it after rechecking the manifest SHA.
+        if let Err(error) = fs::remove_file(&backup_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(anyhow::anyhow!(
+                "legacy archive rollback cleanup deferred: {error}"
+            ));
+        }
+        sqlx::query(
+            "UPDATE retention_prepared_archives
+             SET staged_file_path = NULL, updated_at = datetime('now')
+             WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'
+               AND staged_file_path = ?3",
+        )
+        .bind(dataset)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .bind(backup_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "UPDATE archive_batches
+             SET replacement_staged_path = NULL
+             WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+               AND replacement_staged_path = ?4",
+        )
+        .bind(dataset)
+        .bind(month_key)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .bind(backup_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
+    }
     super::super::retention::retention_record_commit!(
         "legacy_archive_file_publish",
         admission.admission_mode(),
@@ -744,13 +1141,6 @@ pub(crate) async fn archive_rows_into_segment_batch(
     day_key: &str,
     ids: &[i64],
 ) -> Result<ArchiveBatchOutcome> {
-    if ids.is_empty() {
-        bail!("archive segment requires at least one row id");
-    }
-    if spec.dataset != "codex_invocations" {
-        bail!("archive segment writer only supports codex_invocations");
-    }
-    let month_key = archive_month_key_from_day_key(day_key)?;
     let part_key = archive_segment_part_key_for_ids(ids)?;
     let final_path = archive_segment_file_path(
         config,
@@ -759,6 +1149,25 @@ pub(crate) async fn archive_rows_into_segment_batch(
         &part_key,
         config.invocation_archive_codec,
     )?;
+    archive_rows_into_segment_batch_at_path(pool, config, spec, day_key, ids, final_path).await
+}
+
+pub(crate) async fn archive_rows_into_segment_batch_at_path(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    day_key: &str,
+    ids: &[i64],
+    final_path: PathBuf,
+) -> Result<ArchiveBatchOutcome> {
+    if ids.is_empty() {
+        bail!("archive segment requires at least one row id");
+    }
+    if spec.dataset != "codex_invocations" {
+        bail!("archive segment writer only supports codex_invocations");
+    }
+    let month_key = archive_month_key_from_day_key(day_key)?;
+    let part_key = archive_segment_part_key_for_ids(ids)?;
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
@@ -846,11 +1255,21 @@ pub(crate) async fn archive_rows_into_segment_batch(
             .fetch_one(&mut *conn)
             .await
             .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
+        let source_identity_sha256 = super::super::retention::invocation_archive_source_identity_sha256(
+            &mut conn,
+            super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+            ids,
+        )
+        .await?;
         sqlx::query("DETACH DATABASE archive_db")
             .execute(&mut *conn)
             .await
             .context("failed to detach archive database")?;
-        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
+        Ok::<(i64, Vec<(i64, String)>, String), anyhow::Error>((
+            row_count,
+            upstream_last_activity,
+            source_identity_sha256,
+        ))
     }
     .await?;
 
@@ -867,6 +1286,7 @@ pub(crate) async fn archive_rows_into_segment_batch(
         part_key: Some(part_key),
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
+        source_identity_sha256: Some(row_count.2),
         row_count: row_count.0,
         upstream_last_activity: row_count.1,
         coverage_start_at: None,
@@ -1006,6 +1426,10 @@ async fn upsert_archive_batch_manifest_with_status(
             archive_expires_at = excluded.archive_expires_at,
             summary_source_kind = excluded.summary_source_kind,
             created_at = datetime('now')
+        WHERE NOT (
+            archive_batches.summary_source_kind = 'authoritative'
+            AND excluded.summary_source_kind = 'live_mirror'
+        )
         "#,
     )
     .bind(batch.dataset)
@@ -1209,6 +1633,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_mirror_manifest_does_not_downgrade_authoritative_manifest() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let authoritative = ArchiveBatchOutcome {
+            dataset: HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            month_key: "2026-01".to_string(),
+            day_key: None,
+            part_key: None,
+            file_path: "/tmp/codex-invocations-2026-01.sqlite.gz".to_string(),
+            sha256: "authoritative-sha".to_string(),
+            source_identity_sha256: None,
+            row_count: 10,
+            upstream_last_activity: Vec::new(),
+            coverage_start_at: None,
+            coverage_end_at: None,
+            archive_expires_at: None,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
+        };
+        let live_mirror = ArchiveBatchOutcome {
+            dataset: HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            month_key: "2026-01".to_string(),
+            day_key: None,
+            part_key: None,
+            file_path: authoritative.file_path.clone(),
+            sha256: "live-mirror-sha".to_string(),
+            source_identity_sha256: None,
+            row_count: 11,
+            upstream_last_activity: Vec::new(),
+            coverage_start_at: None,
+            coverage_end_at: None,
+            archive_expires_at: None,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
+        };
+        let mut tx = pool.begin().await.expect("begin manifest transaction");
+        upsert_archive_batch_manifest_with_status(
+            tx.as_mut(),
+            &authoritative,
+            ARCHIVE_STATUS_MATERIALIZING,
+        )
+        .await
+        .expect("insert authoritative manifest");
+        upsert_archive_batch_manifest_with_status(
+            tx.as_mut(),
+            &live_mirror,
+            ARCHIVE_STATUS_MATERIALIZING,
+        )
+        .await
+        .expect("update manifest from live mirror");
+        tx.commit().await.expect("commit manifest transaction");
+
+        let manifest: (String, String, i64) = sqlx::query_as(
+            "SELECT summary_source_kind, sha256, row_count FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind("2026-01")
+        .bind(&authoritative.file_path)
+        .fetch_one(&pool)
+        .await
+        .expect("load merged manifest");
+        assert_eq!(manifest.0, SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE);
+        assert_eq!(manifest.1, "authoritative-sha");
+        assert_eq!(manifest.2, 10);
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn archive_finalization_skips_full_vacuum() {
         let root = std::env::temp_dir().join(format!(
             "codex-vibe-monitor-archive-finalization-{}",
@@ -1315,6 +1821,8 @@ mod tests {
             "2025-01",
             &missing_temp_path,
             &final_path,
+            None,
+            "replacement-sha",
         )
         .await
         .expect_err("missing replacement file must roll back pending reactivation");
@@ -1333,5 +1841,50 @@ mod tests {
         assert_eq!(manifest.1.as_deref(), Some("2025-01-04"));
 
         let _ = fs::remove_file(&final_path);
+    }
+
+    #[tokio::test]
+    async fn legacy_archive_replacement_rejects_a_stale_preparation_baseline() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-legacy-archive-baseline-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        fs::create_dir_all(&root).expect("create archive test directory");
+        let final_path = root.join("archive.sqlite.gz");
+        let temporary_path = root.join("archive.next.tmp");
+        fs::write(&final_path, b"newer archive").expect("write newer archive");
+        fs::write(&temporary_path, b"stale prepared archive").expect("write stale archive");
+
+        let error = replace_legacy_archive_file_with_cleanup_serialization(
+            &pool,
+            "codex_invocations",
+            "2026-01",
+            &temporary_path,
+            &final_path,
+            Some(&format!("{:x}", Sha256::digest(b"older archive"))),
+            "replacement-sha",
+        )
+        .await
+        .expect_err("stale baseline must not overwrite a newer archive");
+        assert!(error.to_string().contains("retry required"));
+        assert_eq!(
+            fs::read(&final_path).expect("read newer archive"),
+            b"newer archive"
+        );
+        assert!(
+            temporary_path.exists(),
+            "caller retains stale staging for retry cleanup"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

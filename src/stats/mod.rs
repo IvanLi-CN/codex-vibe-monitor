@@ -1440,6 +1440,7 @@ pub(crate) async fn load_completed_archive_paths_for_dataset(
     );
     query.push_bind(dataset).push(" AND status = ");
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(" AND sha256 IS NOT NULL AND TRIM(sha256) <> ''");
     if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
         query.push(" AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'");
     }
@@ -1621,6 +1622,7 @@ async fn load_completed_archive_paths_for_dataset_in_range_with_limit(
         "#,
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(" AND sha256 IS NOT NULL AND TRIM(sha256) <> ''");
     if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
         // Detail mirrors preserve payload observability while the canonical invocation remains
         // live. They are not Summary sources and must not consume archive admission capacity.

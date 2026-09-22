@@ -439,7 +439,7 @@ struct LongTermSourceTimingRow {
 #[derive(Debug, Clone, FromRow)]
 struct LongTermAttemptArchivePath {
     file_path: String,
-    sha256: String,
+    sha256: Option<String>,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -448,12 +448,22 @@ async fn load_long_term_archive_attempt_accounts(
     pool: &Pool<Sqlite>,
     date_range: Option<(NaiveDate, NaiveDate)>,
 ) -> Result<(HashMap<(String, String), i64>, HashSet<(String, String)>)> {
-    let paths = match sqlx::query_as::<_, LongTermAttemptArchivePath>(
-        "SELECT file_path, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND status = ?1 ORDER BY month_key ASC, created_at ASC, id ASC",
+    let has_manifest_sha = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('archive_batches') WHERE name = 'sha256')",
     )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(pool)
+    .fetch_one(pool)
     .await
+    .unwrap_or_default()
+        != 0;
+    let archive_query = if has_manifest_sha {
+        "SELECT file_path, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND status = ?1 AND sha256 IS NOT NULL AND TRIM(sha256) <> '' ORDER BY month_key ASC, created_at ASC, id ASC"
+    } else {
+        "SELECT file_path, NULL AS sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND status = ?1 ORDER BY month_key ASC, created_at ASC, id ASC"
+    };
+    let paths = match sqlx::query_as::<_, LongTermAttemptArchivePath>(archive_query)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .fetch_all(pool)
+        .await
     {
         Ok(paths) => paths,
         Err(error) if error.to_string().contains("no such table") => {
@@ -480,11 +490,14 @@ async fn load_long_term_archive_attempt_accounts(
             path_end >= start && path_start <= end
         })
     }) {
+        let Some(manifest_sha) = archive_path.sha256.clone() else {
+            continue;
+        };
         ensure_long_term_archive_source_identity(
             pool,
             "pool_upstream_request_attempts",
             &archive_path.file_path,
-            &archive_path.sha256,
+            &manifest_sha,
         )
         .await
         .with_context(|| {
@@ -534,7 +547,7 @@ async fn load_long_term_archive_attempt_accounts(
             pool,
             "pool_upstream_request_attempts",
             &archive_path.file_path,
-            &archive_path.sha256,
+            &manifest_sha,
         )
         .await
         .with_context(|| {
@@ -550,10 +563,10 @@ async fn load_long_term_archive_attempt_accounts(
                         accounts.insert((row.invoke_id, row.occurred_at), account_id);
                     }
                 }
-                consumed_archives.insert((archive_path.file_path, archive_path.sha256));
+                consumed_archives.insert((archive_path.file_path, manifest_sha.to_string()));
             }
             Err(error) if error.to_string().contains("no such table") => {
-                consumed_archives.insert((archive_path.file_path, archive_path.sha256));
+                consumed_archives.insert((archive_path.file_path, manifest_sha.to_string()));
             }
             Err(error) => {
                 bail!(

@@ -3267,6 +3267,12 @@ async fn materialize_historical_rollups_backfills_usage_breakdown_prefix_behind_
     archive_pool.close().await;
     deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
         .expect("refresh archive gzip with usage breakdown detail fields");
+    sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+        .bind(sha256_hex_file(&archive_path).expect("hash refreshed usage breakdown archive"))
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("refresh usage breakdown archive manifest hash");
 
     sqlx::query(
         r#"
@@ -5091,6 +5097,45 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
     assert_eq!(recovered.summary.materialized_invocation_batches, 0);
 
+    // Older releases could leave a LegacyMonth detail mirror classified as authoritative after
+    // reusing the deterministic month path. The bounded recovery pass must re-prove and repair
+    // that role before Summary treats it as authority again.
+    sqlx::query("DROP TRIGGER trg_update_authoritative_invocation_archive_requires_summary_proof")
+        .execute(&pool)
+        .await
+        .expect("temporarily remove publication guard for legacy fixture");
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = ?1, layout = ?2 \
+         WHERE dataset = ?3 AND file_path = ?4",
+    )
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+    .bind(ARCHIVE_LAYOUT_LEGACY_MONTH)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed an older authoritative LegacyMonth detail mirror");
+    let legacy_role_recovery =
+        reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
+            .await
+            .expect("reconcile older authoritative LegacyMonth detail mirror");
+    let repaired_source_kind: String = sqlx::query_scalar(
+        "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired legacy source role");
+    assert_eq!(legacy_role_recovery.changed_path_count, 1);
+    assert_eq!(
+        repaired_source_kind,
+        SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+    );
+    ensure_schema(&pool)
+        .await
+        .expect("restore publication guard after legacy fixture");
+
     let recovered_archive_path = temp_dir.join("sparse-legacy-detail-mirror-recovered.sqlite.gz");
     fs::copy(&archive_path, &recovered_archive_path)
         .expect("copy an independently provable legacy detail mirror");
@@ -6022,6 +6067,7 @@ async fn same_path_invocation_archive_append_preserves_coverage_for_stale_rebuil
         part_key: None,
         file_path: archive_file_path.clone(),
         sha256: replacement_sha.clone(),
+        source_identity_sha256: None,
         row_count: 3,
         upstream_last_activity: Vec::new(),
         coverage_start_at: Some(appended_occurred_at.clone()),
@@ -7007,6 +7053,76 @@ async fn prune_legacy_archive_batches_keeps_detail_prune_backups_within_live_win
         Path::new(&archive_path).exists(),
         "detail backup archive must remain"
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_live_mirror_does_not_require_summary_proof() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-prune-expired-detail-mirror").await;
+    config.invocation_archive_ttl_days = 365;
+    let occurred_at = shanghai_local_days_ago(31, 14, 30, 0);
+    insert_retention_invocation(
+        &pool,
+        "expired-detail-mirror",
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"expired-detail-mirror\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(11),
+        Some(0.11),
+    )
+    .await;
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention detail prune");
+    let (archive_id, archive_path): (i64, String) = sqlx::query_as(
+        "SELECT id, file_path FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load live mirror manifest");
+    let source_kind: String =
+        sqlx::query_scalar("SELECT summary_source_kind FROM archive_batches WHERE id = ?1")
+            .bind(archive_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load live mirror source role");
+    assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    assert!(crate::maintenance::retention_archive_path_is_within_root(
+        &config,
+        Path::new(&archive_path)
+    ));
+    assert!(crate::maintenance::retention_archive_path_is_owned(
+        &config,
+        Path::new(&archive_path)
+    ));
+    assert!(Path::new(&archive_path).exists());
+    sqlx::query(
+        "UPDATE archive_batches SET archive_expires_at = '2000-01-01 00:00:00' WHERE id = ?1",
+    )
+    .bind(archive_id)
+    .execute(&pool)
+    .await
+    .expect("expire live mirror manifest");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup expired live mirror");
+    assert_eq!(deleted, 1);
+    assert!(!Path::new(&archive_path).exists());
+    let manifest_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = ?1")
+            .bind(archive_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count expired live mirror manifest");
+    assert_eq!(manifest_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -8290,7 +8406,7 @@ async fn node_health_archives_with_blank_manifest_sha_stay_quarantined() {
 }
 
 #[tokio::test]
-async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_marking_replayed() {
+async fn missing_pool_node_health_archives_remain_pending_with_stale_cached_rows() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-missing-archive-clears-cache").await;
     let archive_file_path = temp_dir
@@ -8360,8 +8476,8 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
 
     let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
         .await
-        .expect("backfill should clear stale cached rows for missing archives");
-    assert_eq!(summary.pending_batches, 0);
+        .expect("backfill should retain missing archives pending");
+    assert_eq!(summary.pending_batches, 1);
 
     let cached_rows: i64 = sqlx::query_scalar(
         r#"
@@ -8374,7 +8490,7 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
     .fetch_one(&pool)
     .await
     .expect("count cached rows after missing archive replay");
-    assert_eq!(cached_rows, 0);
+    assert_eq!(cached_rows, 1);
 
     let replayed: i64 = sqlx::query_scalar(
         r#"
@@ -8390,7 +8506,7 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
     .fetch_one(&pool)
     .await
     .expect("count replay marker for missing archive");
-    assert_eq!(replayed, 1);
+    assert_eq!(replayed, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -8690,7 +8806,7 @@ async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_b
 }
 
 #[tokio::test]
-async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_replayed() {
+async fn pool_upstream_node_health_archive_backfill_keeps_missing_archives_pending() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-missing-archive").await;
     let missing_occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
@@ -8734,9 +8850,9 @@ async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_repla
 
     let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
         .await
-        .expect("missing pool node health archive should be marked replayed");
+        .expect("missing pool node health archive should remain pending");
     assert!(!summary.hit_budget);
-    assert_eq!(summary.pending_batches, 0);
+    assert_eq!(summary.pending_batches, 1);
 
     let replay_marked: i64 = sqlx::query_scalar(
         r#"
@@ -8752,7 +8868,7 @@ async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_repla
     .fetch_one(&pool)
     .await
     .expect("count replay markers for missing pool node health archive");
-    assert_eq!(replay_marked, 1);
+    assert_eq!(replay_marked, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

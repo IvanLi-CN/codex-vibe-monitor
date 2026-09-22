@@ -503,6 +503,47 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert_eq!(payload["eventBus"]["businessPayloadCloneCount"], 0);
     assert_eq!(payload["eventBus"]["cursorRecoveryCount"], 1);
     assert!(payload["backfill"]["state"].is_string());
+    assert!(matches!(
+        payload["retentionRecovery"]["state"].as_str(),
+        Some("unknown" | "healthy" | "recovering" | "deferred" | "degraded")
+    ));
+    assert!(
+        payload["retentionRecovery"]["preparedCount"].is_null()
+            || payload["retentionRecovery"]["preparedCount"].is_u64()
+    );
+    assert!(
+        payload["retentionRecovery"]["quarantinedCount"].is_null()
+            || payload["retentionRecovery"]["quarantinedCount"].is_u64()
+    );
+    let recovery_fields = payload["retentionRecovery"]
+        .as_object()
+        .expect("serialize retention recovery as a bounded object");
+    assert_eq!(recovery_fields.len(), 10);
+    for field in recovery_fields.keys() {
+        let normalized = field.to_ascii_lowercase();
+        assert!(
+            !["raw", "sql", "account", "path"]
+                .iter()
+                .any(|sensitive| normalized.contains(sensitive)),
+            "retention recovery status must not add sensitive field {field}"
+        );
+    }
+    if let Some(fingerprint) = recovery_fields["failureFingerprint"].as_str() {
+        assert_eq!(fingerprint.len(), 16);
+        assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+}
+
+#[test]
+fn default_retention_recovery_snapshot_serializes_unmeasured_counts_as_null() {
+    let payload =
+        serde_json::to_value(crate::maintenance::RetentionRecoveryHealthSnapshot::default())
+            .expect("serialize default retention recovery health");
+
+    assert_eq!(payload["state"], "unknown");
+    assert!(payload["preparedCount"].is_null());
+    assert!(payload["quarantinedCount"].is_null());
+    assert!(payload["expiredBacklogCount"].is_null());
 }
 
 #[tokio::test]

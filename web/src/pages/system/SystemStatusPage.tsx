@@ -5,6 +5,14 @@ import { useTranslation } from "../../i18n";
 import { fetchSystemStatus, type SystemStatusResponse } from "../../lib/api";
 
 const REFRESH_INTERVAL_MS = 60_000;
+const RETENTION_RECOVERY_STAGES = new Set([
+  "preparing",
+  "publishing",
+  "finalizing",
+  "orphan_sweep",
+  "legacy_reconcile",
+  "status_refresh",
+]);
 
 function formatBytes(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -16,6 +24,19 @@ function formatBytes(value: number): string {
     index += 1;
   }
   return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
+}
+
+function formatRecoveryTimestamp(value?: string): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 type MetricCellProps = {
@@ -57,9 +78,10 @@ type BreakdownRowProps = {
   label: string;
   value: string;
   hint?: string;
+  valueTitle?: string;
 };
 
-function BreakdownRow({ label, value, hint }: BreakdownRowProps) {
+function BreakdownRow({ label, value, hint, valueTitle }: BreakdownRowProps) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
       <div className="min-w-0">
@@ -68,7 +90,12 @@ function BreakdownRow({ label, value, hint }: BreakdownRowProps) {
           <div className="mt-1 text-xs leading-relaxed text-base-content/65">{hint}</div>
         ) : null}
       </div>
-      <div className="shrink-0 text-right text-lg font-semibold tabular-nums text-base-content sm:text-xl">
+      <div
+        className={`text-right text-lg font-semibold tabular-nums text-base-content sm:text-xl ${
+          valueTitle ? "max-w-[55%] break-words" : "shrink-0"
+        }`}
+        title={valueTitle}
+      >
         {value}
       </div>
     </div>
@@ -363,6 +390,28 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const retention = health?.retentionWriteHealth;
   const eventBusState = eventBus?.state ?? "unknown";
   const backfillState = backfill?.state ?? "unknown";
+  const recovery = health?.retentionRecovery;
+  const recoveryStageLabel = (stage?: string | null) =>
+    stage && RETENTION_RECOVERY_STAGES.has(stage)
+      ? t(`system.status.runtimePressure.retentionRecovery.stages.${stage}`)
+      : t("system.status.runtimePressure.states.unknown");
+  const recoveryHints = recovery
+    ? [
+        recovery.nextRetryAt
+          ? t("system.status.runtimePressure.retentionRecovery.retryHint", {
+              retry: formatRecoveryTimestamp(recovery.nextRetryAt),
+            })
+          : undefined,
+        recovery.failureFingerprint
+          ? t("system.status.runtimePressure.retentionRecovery.failureHint", {
+              stage: recoveryStageLabel(recovery.failureStage),
+              fingerprint: recovery.failureFingerprint,
+            })
+          : undefined,
+      ]
+        .filter((hint): hint is string => hint != null)
+        .join(" · ")
+    : "";
   const slices = health?.dashboardProjection.sliceCounters;
   const deliveryTopics = health
     ? [
@@ -622,6 +671,55 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     : t("system.status.runtimePressure.additiveUnknown")
                 }
               />
+              <div
+                className="col-span-full border-t border-base-300/60 pt-3"
+                data-testid="system-status-retention-recovery"
+              >
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                  <h4 className="text-sm font-semibold text-base-content">
+                    {t("system.status.runtimePressure.retentionRecovery.title")}
+                  </h4>
+                  <span
+                    className="text-xs font-medium text-base-content/70"
+                    aria-live="polite"
+                    aria-atomic="true"
+                  >
+                    {t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`)}
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.retentionRecovery.stage")}
+                    value={recoveryStageLabel(recovery?.stage)}
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.retentionRecovery.backlog")}
+                    value={
+                      recovery?.expiredBacklogCount != null
+                        ? recovery.expiredBacklogCount.toLocaleString()
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                    hint={
+                      recovery?.oldestBacklogAgeSecs != null
+                        ? t("system.status.runtimePressure.retentionRecovery.backlogHint", {
+                            age: recovery.oldestBacklogAgeSecs.toLocaleString(),
+                          })
+                        : t("system.status.runtimePressure.additiveUnknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.retentionRecovery.prepared")}
+                    value={`${recovery?.preparedCount?.toLocaleString() ?? t("system.status.runtimePressure.states.unknown")} / ${recovery?.quarantinedCount?.toLocaleString() ?? t("system.status.runtimePressure.states.unknown")}`}
+                    hint={t("system.status.runtimePressure.retentionRecovery.preparedHint")}
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.retentionRecovery.progress")}
+                    value={formatRecoveryTimestamp(recovery?.lastProgressAt)}
+                    valueTitle={recovery?.lastProgressAt}
+                    hint={recoveryHints || t("system.status.runtimePressure.additiveUnknown")}
+                  />
+                </div>
+              </div>
               <BreakdownRow
                 label={t("system.status.runtimePressure.allocatorArenas")}
                 value={health.allocator.mallocArenaMax}

@@ -624,6 +624,25 @@ pub(crate) async fn summary_archive_snapshot_has_final_proof(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
+    summary_archive_snapshot_has_final_proof_inner(pool, archive_batch_id, manifest_sha256, true)
+        .await
+}
+
+pub(crate) async fn summary_archive_snapshot_has_final_proof_read_only(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<bool> {
+    summary_archive_snapshot_has_final_proof_inner(pool, archive_batch_id, manifest_sha256, false)
+        .await
+}
+
+async fn summary_archive_snapshot_has_final_proof_inner(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+    promote_missing: bool,
+) -> Result<bool> {
     let marker = sqlx::query_as::<_, (i64, i64, String)>(
         "SELECT page_count, row_count, semantic_sha256 \
          FROM summary_archive_snapshot_v2_proof \
@@ -635,12 +654,15 @@ pub(crate) async fn summary_archive_snapshot_has_final_proof(
     .await
     .context("load Summary Snapshot V2 final proof marker")?;
     let Some((marker_page_count, marker_row_count, marker_semantic_sha256)) = marker else {
-        return ensure_summary_archive_snapshot_v2_final_proof(
-            pool,
-            archive_batch_id,
-            manifest_sha256,
-        )
-        .await;
+        if promote_missing {
+            return ensure_summary_archive_snapshot_v2_final_proof(
+                pool,
+                archive_batch_id,
+                manifest_sha256,
+            )
+            .await;
+        }
+        return Ok(false);
     };
     if !summary_archive_snapshot_has_proof(pool, archive_batch_id, manifest_sha256).await? {
         return Ok(false);

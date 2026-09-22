@@ -353,6 +353,8 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
@@ -436,6 +438,8 @@ async fn load_completed_forward_proxy_archives_overlapping_buckets_tx(
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
           AND coverage_end_at >= ?3
@@ -553,10 +557,13 @@ async fn invocation_archive_has_stale_replay_marker_tx(
            AND batches.status = 'completed'
         WHERE replay.dataset = ?1
           AND replay.file_path = ?2
-          AND replay.archive_sha256 IS NOT NULL
+          AND (
+              replay.archive_sha256 IS NULL
+              OR TRIM(replay.archive_sha256) = ''
+              OR replay.archive_sha256 <> batches.sha256
+          )
           AND batches.sha256 IS NOT NULL
           AND TRIM(batches.sha256) <> ''
-          AND replay.archive_sha256 <> batches.sha256
         LIMIT 1
         "#,
     )
@@ -1369,7 +1376,7 @@ pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
 ) -> Result<Vec<ArchiveBatchFileRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'pool_upstream_request_attempts'
           AND batches.status = "#,
@@ -1429,7 +1436,7 @@ pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
 ) -> Result<Vec<ArchiveBatchFileRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'pool_upstream_request_attempts'
           AND batches.status = "#,
@@ -1477,7 +1484,7 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
 ) -> Result<Vec<ArchiveBatchFileRow>> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
@@ -1942,6 +1949,31 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             break;
         }
         summary.scanned_batches += 1;
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            summary.blocked_batches += 1;
+            continue;
+        }
+        let _archive_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_lock(&archive_path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if error.to_string().contains("archive directory lock busy") => {
+                summary.blocked_batches += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if !archive_path.exists()
+            || archive_file.sha256.as_deref().is_none_or(|expected| {
+                sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
+            })
+        {
+            summary.blocked_batches += 1;
+            continue;
+        }
         if !archive_batch_has_completed_manifest_sha_tx(
             tx,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -2060,7 +2092,6 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             0
         };
 
-        let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -2398,7 +2429,7 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -2460,7 +2491,7 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT batches.id, batches.file_path, batches.coverage_start_at, batches.coverage_end_at
+        SELECT batches.id, batches.file_path, batches.sha256, batches.coverage_start_at, batches.coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'forward_proxy_attempts'
           AND batches.status = ?1
@@ -2528,6 +2559,31 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             break;
         }
         summary.scanned_batches += 1;
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            summary.blocked_batches += 1;
+            continue;
+        }
+        let _archive_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_lock(&archive_path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if error.to_string().contains("archive directory lock busy") => {
+                summary.blocked_batches += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if !archive_path.exists()
+            || archive_file.sha256.as_deref().is_none_or(|expected| {
+                sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
+            })
+        {
+            summary.blocked_batches += 1;
+            continue;
+        }
         if !archive_batch_has_completed_manifest_sha_tx(
             tx,
             HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
@@ -2575,7 +2631,6 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         )
         .await?;
 
-        let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
@@ -2692,6 +2747,20 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
 
     let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
     for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) || !archive_path.is_file() {
+            summary.scanned_batches += 1;
+            continue;
+        }
+        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+            summary.scanned_batches += 1;
+            continue;
+        };
+        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+            summary.scanned_batches += 1;
+            continue;
+        }
         let mut tx = pool.begin().await?;
         if !archive_batch_has_completed_manifest_sha_tx(
             tx.as_mut(),
@@ -2748,35 +2817,6 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             &archive_file.file_path,
         )
         .await?;
-
-        let archive_path = PathBuf::from(&archive_file.file_path);
-        if !archive_path.exists() {
-            warn!(
-                dataset = "pool_upstream_request_attempts",
-                file_path = archive_file.file_path,
-                "pool upstream node health cache backfill marking missing archive batch as replayed"
-            );
-            delete_pool_upstream_node_health_archive_rows_for_file_tx(
-                tx.as_mut(),
-                &archive_file.file_path,
-            )
-            .await?;
-            delete_hourly_rollup_archive_progress_tx(
-                tx.as_mut(),
-                "pool_upstream_request_attempts",
-                &archive_file.file_path,
-            )
-            .await?;
-            mark_hourly_rollup_archive_replayed_tx(
-                tx.as_mut(),
-                POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-                "pool_upstream_request_attempts",
-                &archive_file.file_path,
-            )
-            .await?;
-            tx.commit().await?;
-            continue;
-        }
 
         replay_started_any_pending_batch = true;
         let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
@@ -3438,7 +3478,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
         let age = match entry.metadata().and_then(|metadata| metadata.modified()) {
             Ok(modified) => modified.elapsed().unwrap_or_default(),
             Err(err) => {
-                warn!(path = %path.display(), error = %err, "failed to inspect orphan raw payload file age");
+                warn!(
+                    error_kind = %err.kind(),
+                    "failed to inspect orphan raw payload file age"
+                );
                 continue;
             }
         };
@@ -3457,7 +3500,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
             Ok(_) => removed += 1,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => {
-                warn!(path = %path.display(), error = %err, "failed to remove orphan raw payload file");
+                warn!(
+                    error_kind = %err.kind(),
+                    "failed to remove orphan raw payload file"
+                );
             }
         }
     }
@@ -4339,9 +4385,26 @@ pub(crate) async fn ensure_pool_upstream_request_attempts_archive_schema_in_plac
 pub(crate) async fn ensure_codex_invocations_archive_schema(
     conn: &mut SqliteConnection,
 ) -> Result<()> {
-    let archive_columns =
-        load_sqlite_table_columns_from_connection(conn, Some("archive_db"), "codex_invocations")
-            .await?;
+    ensure_codex_invocations_archive_schema_in_schema(conn, "archive_db").await
+}
+
+pub(crate) async fn ensure_codex_invocations_archive_schema_direct(
+    conn: &mut SqliteConnection,
+) -> Result<()> {
+    ensure_codex_invocations_archive_schema_in_schema(conn, "main").await
+}
+
+async fn ensure_codex_invocations_archive_schema_in_schema(
+    conn: &mut SqliteConnection,
+    schema: &str,
+) -> Result<()> {
+    let table_prefix = if schema == "main" { "" } else { "archive_db." };
+    let archive_columns = load_sqlite_table_columns_from_connection(
+        conn,
+        (schema != "main").then_some(schema),
+        "codex_invocations",
+    )
+    .await?;
     for (column, ty) in [
         ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
@@ -4355,18 +4418,18 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
     ] {
         if !archive_columns.contains(column) {
             let statement =
-                format!("ALTER TABLE archive_db.codex_invocations ADD COLUMN {column} {ty}");
+                format!("ALTER TABLE {table_prefix}codex_invocations ADD COLUMN {column} {ty}");
             sqlx::query(&statement)
                 .execute(&mut *conn)
                 .await
                 .with_context(|| {
-                    format!("failed to add archive_db.codex_invocations column {column}")
+                    format!("failed to add {table_prefix}codex_invocations column {column}")
                 })?;
         }
     }
-    sqlx::query(
+    sqlx::query(&format!(
         r#"
-        UPDATE archive_db.codex_invocations
+        UPDATE {table_prefix}codex_invocations
         SET request_raw_codec = CASE
                 WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
                 ELSE 'identity'
@@ -4374,13 +4437,13 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
         WHERE COALESCE(TRIM(request_raw_codec), '') = ''
            OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
         "#,
-    )
+    ))
     .execute(&mut *conn)
     .await
     .context("failed to backfill archive_db.codex_invocations request_raw_codec")?;
-    sqlx::query(
+    sqlx::query(&format!(
         r#"
-        UPDATE archive_db.codex_invocations
+        UPDATE {table_prefix}codex_invocations
         SET response_raw_codec = CASE
                 WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
                 ELSE 'identity'
@@ -4388,7 +4451,7 @@ pub(crate) async fn ensure_codex_invocations_archive_schema(
         WHERE COALESCE(TRIM(response_raw_codec), '') = ''
            OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
         "#,
-    )
+    ))
     .execute(&mut *conn)
     .await
     .context("failed to backfill archive_db.codex_invocations response_raw_codec")?;

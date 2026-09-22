@@ -4124,12 +4124,29 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .expect("load prune archive batch");
     let file_path = PathBuf::from(batch.get::<String, _>("file_path"));
     assert!(file_path.exists());
+    assert!(
+        file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("live-mirror")),
+        "detail-prune archives must use a mirror-only path"
+    );
     assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
     assert_eq!(
         batch.get::<String, _>("summary_source_kind"),
         SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
     );
     assert_eq!(batch.get::<i64, _>("row_count"), 1);
+    let prepared_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count detail-prune recovery ledger rows");
+    assert_eq!(
+        prepared_count, 0,
+        "successful detail prune retires its ledger"
+    );
     assert!(
         crate::stats::load_completed_invocation_archive_paths(&pool)
             .await
@@ -4517,6 +4534,292 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
         );
     }
 
+    let prepared_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_prepared_archives")
+            .fetch_one(&pool)
+            .await
+            .expect("count completed retention preparation rows");
+    assert_eq!(
+        prepared_count, 0,
+        "published batches should retire their journal rows"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-recovery-schema-reentry").await;
+    sqlx::query("DROP TABLE retention_recovery_cursors")
+        .execute(&pool)
+        .await
+        .expect("remove cursor table to emulate an earlier schema");
+    sqlx::query("DROP TABLE retention_prepared_archives")
+        .execute(&pool)
+        .await
+        .expect("remove journal table to emulate an earlier schema");
+
+    ensure_schema(&pool)
+        .await
+        .expect("upgrade earlier schema with retention recovery tables");
+    ensure_schema(&pool)
+        .await
+        .expect("re-enter retention recovery schema upgrade");
+
+    for table in ["retention_prepared_archives", "retention_recovery_cursors"] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .expect("check recovery table");
+        assert_eq!(exists, 1, "schema re-entry should ensure {table}");
+    }
+    let cursor: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load initialized legacy recovery cursor");
+    assert!(cursor.is_empty());
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_migrates_staged_archive_path_without_dropping_journal_rows() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-staged-path-migration").await;
+    sqlx::query("DROP TABLE retention_prepared_archives")
+        .execute(&pool)
+        .await
+        .expect("remove current prepared archive table");
+    sqlx::query(
+        r#"
+        CREATE TABLE retention_prepared_archives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prepared_key TEXT NOT NULL UNIQUE,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            day_key TEXT,
+            part_key TEXT,
+            file_path TEXT NOT NULL,
+            source_ids_json TEXT NOT NULL,
+            source_identity_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL,
+            artifact_sha256 TEXT,
+            artifact_bytes INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT,
+            last_failure_stage TEXT,
+            last_failure_fingerprint TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            quarantined_at TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy prepared archive table shape");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state
+        ) VALUES ('legacy-staged-row', 'codex_invocations', '2026-01', '/tmp/legacy.sqlite.gz', '[]', 'identity', 'preparing')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy prepared archive row");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate staged archive path column");
+    let staged_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('retention_prepared_archives') WHERE name = 'staged_file_path'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check staged archive path column");
+    assert_eq!(staged_column, 1);
+    let replacement_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('archive_batches') WHERE name = 'replacement_staged_path'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check replacement staging column");
+    assert_eq!(replacement_column, 1);
+    let preserved: (String, String) = sqlx::query_as(
+        "SELECT prepared_key, state FROM retention_prepared_archives WHERE prepared_key = 'legacy-staged-row'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved legacy prepared archive row");
+    assert_eq!(
+        preserved,
+        ("legacy-staged-row".to_string(), "preparing".to_string())
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-recovery-actionable-queue").await;
+    let recovery_archive_root = config.archive_dir.join("codex_invocations");
+    std::fs::create_dir_all(&recovery_archive_root).expect("create recovery archive root");
+    for index in 0..32 {
+        sqlx::query(
+            r#"
+            INSERT INTO retention_prepared_archives (
+                prepared_key, dataset, month_key, file_path, source_ids_json,
+                source_identity_sha256, state, attempt_count, quarantined_at, updated_at
+            )
+            VALUES (?1, 'codex_invocations', '', ?2, '[]', 'legacy-unverified',
+                    'quarantined', 0, datetime('now'), datetime('now', '-2 days'))
+            "#,
+        )
+        .bind(format!("unexpired-quarantine-{index:02}"))
+        .bind(
+            recovery_archive_root
+                .join(format!("unexpired-quarantine-{index:02}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .execute(&pool)
+        .await
+        .expect("seed unexpired quarantined journal row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, artifact_sha256, attempt_count, updated_at
+        )
+        VALUES ('due-published-row', 'codex_invocations', '', ?1, '[]',
+                'source-identity', 'published', 'expected-sha', 1, datetime('now'))
+        "#,
+    )
+    .bind(
+        recovery_archive_root
+            .join("missing-published.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .expect("seed actionable published journal row");
+    std::fs::write(
+        recovery_archive_root.join("missing-published.sqlite.gz"),
+        b"not a valid archive",
+    )
+    .expect("write actionable published artifact");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("reconcile due published journal past unexpired quarantines");
+
+    let due_state: (String, Option<String>) = sqlx::query_as(
+        "SELECT state, last_failure_stage FROM retention_prepared_archives WHERE prepared_key = 'due-published-row'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load actionable journal state");
+    assert_eq!(due_state.0, "quarantined");
+    assert_eq!(due_state.1.as_deref(), Some("legacy_reconcile"));
+    let unexpired_quarantine_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined' AND prepared_key LIKE 'unexpired-quarantine-%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count untouched unexpired quarantines");
+    assert_eq!(unexpired_quarantine_count, 32);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_recovery_failure_persistence_waits_for_p1_admission() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-recovery-p1-admission").await;
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, attempt_count
+        )
+        VALUES ('p1-admission-test', 'codex_invocations', '', '/private/test/archive',
+                '[]', 'identity-digest', 'published', 1)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert prepared archive failure fixture");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let p1_permit = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let maintenance_waiters_before = coordinator.snapshot().await.maintenance_waiter_count;
+    let failure_pool = pool.clone();
+    let failure_coordinator = coordinator.clone();
+    let persist = tokio::spawn(async move {
+        crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+            .scope(
+                failure_coordinator,
+                crate::maintenance::retention_recovery_persist_failure(
+                    &failure_pool,
+                    "p1-admission-test",
+                    "finalizing",
+                    &anyhow::anyhow!("simulated archive failure"),
+                ),
+            )
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if coordinator.snapshot().await.maintenance_waiter_count
+                == maintenance_waiters_before + 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failure persistence must queue for maintenance admission while P1 is active");
+    let retry_before_p1_release: Option<String> = sqlx::query_scalar(
+        "SELECT next_retry_at FROM retention_prepared_archives WHERE prepared_key = 'p1-admission-test'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect retry deadline while P1 owns admission");
+    assert_eq!(retry_before_p1_release, None);
+
+    drop(p1_permit);
+    persist
+        .await
+        .expect("failure persistence task should finish")
+        .expect("persist failure after P1 releases admission");
+    let retry_after_p1_release: Option<String> = sqlx::query_scalar(
+        "SELECT next_retry_at FROM retention_prepared_archives WHERE prepared_key = 'p1-admission-test'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load retry deadline after P1 release");
+    assert!(retry_after_p1_release.is_some());
+
+    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 
@@ -5341,6 +5644,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             part_key: None,
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            source_identity_sha256: None,
             row_count: 1,
             upstream_last_activity: vec![(account_id, occurred_at.to_string())],
             coverage_start_at: None,
@@ -5441,6 +5745,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             part_key: None,
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
+            source_identity_sha256: None,
             row_count: 1,
             upstream_last_activity: vec![(account_id, occurred_at.to_string())],
             coverage_start_at: None,
