@@ -289,6 +289,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
         }
 
         for batch in rows {
+            if batch.sha256.is_none() {
+                hit_budget = true;
+                break;
+            }
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
@@ -349,11 +353,29 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             // retention admission again here would self-wait on that permit. Hash the prepared
             // artifact before entering the bounded publication transaction.
             let sha256 = sha256_hex_file(&temp_gzip_path)?;
-            let Some(expected_existing_sha256) = batch.sha256.as_deref() else {
+            let expected_existing_sha256 = batch.sha256.as_deref().expect("checked above");
+            let had_existing_file = archive_path.is_file();
+            let backup_path = PathBuf::from(format!(
+                "{}.{}.restore",
+                archive_path.display(),
+                retention_temp_suffix()
+            ));
+            let staged_path_string = backup_path.to_string_lossy().to_string();
+            let staged = sqlx::query(
+                "UPDATE archive_batches
+                 SET replacement_staged_path = ?1
+                 WHERE id = ?2 AND sha256 = ?3 AND replacement_staged_path IS NULL",
+            )
+            .bind(&staged_path_string)
+            .bind(batch.id)
+            .bind(expected_existing_sha256)
+            .execute(pool)
+            .await?;
+            if staged.rows_affected() != 1 {
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
                 continue;
-            };
+            }
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let current_state = sqlx::query_as::<_, (Option<String>, Option<String>)>(
                 "SELECT sha256, replacement_staged_path
@@ -374,24 +396,13 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 continue;
             };
             if current_sha256.as_deref() != Some(expected_existing_sha256)
-                || existing_staged_path.is_some()
+                || existing_staged_path.as_deref() != Some(staged_path_string.as_str())
             {
                 tx.rollback().await?;
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
                 continue;
             }
-            let had_existing_file = archive_path.is_file();
-            let backup_path = PathBuf::from(format!(
-                "{}.{}.restore",
-                archive_path.display(),
-                retention_temp_suffix()
-            ));
-            sqlx::query("UPDATE archive_batches SET replacement_staged_path = ?1 WHERE id = ?2")
-                .bind(backup_path.to_string_lossy().to_string())
-                .bind(batch.id)
-                .execute(tx.as_mut())
-                .await?;
             if had_existing_file {
                 fs::rename(&archive_path, &backup_path).with_context(|| {
                     format!(
@@ -998,6 +1009,17 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         // A committed replacement is authoritative. If cleanup of the durable rollback copy
         // fails, the next recovery pass removes it after rechecking the manifest SHA.
         let _ = fs::remove_file(&backup_path);
+        let _ = sqlx::query(
+            "UPDATE retention_prepared_archives
+             SET staged_file_path = NULL, updated_at = datetime('now')
+             WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'
+               AND staged_file_path = ?3",
+        )
+        .bind(dataset)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .bind(backup_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await;
         let _ = sqlx::query(
             "UPDATE archive_batches
              SET replacement_staged_path = NULL

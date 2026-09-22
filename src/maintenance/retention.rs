@@ -2280,7 +2280,7 @@ async fn reconcile_staged_archive_replacements(
                 };
                 sqlx::query(
                     "UPDATE archive_batches
-                     SET sha256 = ?1, replacement_staged_path = NULL
+                     SET sha256 = ?1
                      WHERE id = ?2 AND replacement_staged_path = ?3",
                 )
                 .bind(&staged_sha)
@@ -2288,8 +2288,17 @@ async fn reconcile_staged_archive_replacements(
                 .bind(&staged_file_path)
                 .execute(pool)
                 .await?;
-                fs::remove_file(staged_path)
-                    .context("failed to remove adopted archive recovery copy")?;
+                match fs::remove_file(staged_path) {
+                    Ok(()) => {
+                        clear_archive_batch_staged_path(pool, id, &staged_file_path).await?;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        clear_archive_batch_staged_path(pool, id, &staged_file_path).await?;
+                    }
+                    Err(error) => {
+                        retention_recovery_record_failure("legacy_reconcile", &error.into());
+                    }
+                }
                 continue;
             }
             if let Err(error) = restore_staged_legacy_archive_file(staged_path, path, &manifest_sha)

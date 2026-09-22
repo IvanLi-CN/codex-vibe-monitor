@@ -342,6 +342,8 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND (coverage_end_at IS NULL OR coverage_end_at >= ?2)
           AND (coverage_start_at IS NULL OR coverage_start_at <= ?3)
         ORDER BY month_key DESC, day_key DESC, part_key DESC, created_at DESC, id DESC
@@ -358,9 +360,23 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
         let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
         if !archive_path.exists() {
             warn!(
-                file_path = %archive_path.display(),
                 "skipping missing invocation archive batch while calculating account window usage"
             );
+            continue;
+        }
+        let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+            continue;
+        };
+        let _archive_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_lock(&archive_path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if error.to_string().contains("archive directory lock busy") => continue,
+            Err(error) => return Err(error),
+        };
+        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
             continue;
         }
 
