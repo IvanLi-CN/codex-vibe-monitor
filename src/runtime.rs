@@ -263,6 +263,9 @@ pub(crate) async fn run() -> Result<()> {
         return Ok(());
     }
     if cli.retention_run_once {
+        if !cli.retention_dry_run {
+            let _ = mark_system_raw_payload_metrics_inventory_reset_pending(&pool, 128).await?;
+        }
         let summary =
             run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
                 .await?;

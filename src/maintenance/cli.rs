@@ -9,6 +9,10 @@ pub(crate) async fn run_cli_command(
     match command {
         CliCommand::Maintenance(args) => match &args.command {
             MaintenanceCommand::RawCompression(opts) => {
+                if !opts.dry_run {
+                    let _ =
+                        mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+                }
                 let summary = compress_cold_proxy_raw_payloads_with_budget(
                     pool,
                     config,

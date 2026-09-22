@@ -133,20 +133,25 @@ impl RawCaptureCircuitBreaker {
             .lock()
             .expect("raw capture circuit mutex poisoned");
         state.inventory_state = inventory_state.to_string();
+        state.updated_at = updated_at;
+        if inventory_state != "ready" {
+            state.raw_bytes = None;
+            state.available_bytes = None;
+            state.expired_backlog_count = None;
+            state.backlog_non_growing = None;
+            state.state = CIRCUIT_STATE_UNKNOWN;
+            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+            state.admission_initialized = false;
+            return;
+        }
         state.raw_bytes = Some(raw_bytes);
         state.available_bytes = if cfg!(test) {
-            available_bytes.or(state.available_bytes)
+            available_bytes.or(state.available_bytes).or(Some(u64::MAX))
         } else {
             filesystem_available_bytes(&self.raw_root)
         };
         state.expired_backlog_count = expired_backlog_count;
         state.backlog_non_growing = backlog_non_growing;
-        state.updated_at = updated_at;
-        if inventory_state != "ready" {
-            state.state = CIRCUIT_STATE_UNKNOWN;
-            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
-            return;
-        }
         let Some(persisted_state) = circuit_state
             .filter(|value| matches!(*value, CIRCUIT_STATE_SUPPRESSED | CIRCUIT_STATE_CAPTURING))
         else {
@@ -176,6 +181,18 @@ impl RawCaptureCircuitBreaker {
             .state
             .lock()
             .expect("raw capture circuit mutex poisoned");
+        state.inventory_state = inventory_state.to_string();
+        state.updated_at = Some(Utc::now().to_rfc3339());
+        if inventory_state != "ready" {
+            state.raw_bytes = None;
+            state.available_bytes = None;
+            state.expired_backlog_count = None;
+            state.backlog_non_growing = None;
+            state.admission_initialized = false;
+            state.state = CIRCUIT_STATE_UNKNOWN;
+            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+            return;
+        }
         if let (Some(previous), Some(current)) =
             (state.expired_backlog_count, expired_backlog_count)
         {
@@ -184,20 +201,13 @@ impl RawCaptureCircuitBreaker {
             state.backlog_non_growing = None;
         }
         state.expired_backlog_count = expired_backlog_count;
-        state.inventory_state = inventory_state.to_string();
         state.admission_initialized = true;
         state.raw_bytes = Some(raw_bytes);
         state.available_bytes = if cfg!(test) {
-            available_bytes.or(state.available_bytes)
+            available_bytes.or(state.available_bytes).or(Some(u64::MAX))
         } else {
             filesystem_available_bytes(&self.raw_root)
         };
-        state.updated_at = Some(Utc::now().to_rfc3339());
-        if inventory_state != "ready" {
-            state.state = CIRCUIT_STATE_UNKNOWN;
-            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
-            return;
-        }
         evaluate_locked(&mut state, 0, false);
     }
 

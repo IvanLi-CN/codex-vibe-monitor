@@ -4000,6 +4000,17 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 || summary.orphan_raw_files_removed > 0
                 || reset_pending
             {
+                if let Err(error) =
+                    mark_system_raw_payload_metrics_inventory_reset_pending(&state.pool, 128).await
+                {
+                    warn!(
+                        trigger,
+                        error = %error,
+                        "failed to persist system raw metrics inventory reset intent"
+                    );
+                    invalidate_system_status_cache(state.as_ref()).await;
+                    return false;
+                }
                 match reset_retention_raw_payload_metrics_inventory(state.as_ref()).await {
                     Ok(true) => {}
                     Ok(false) => {
