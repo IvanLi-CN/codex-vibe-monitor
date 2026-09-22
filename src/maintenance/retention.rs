@@ -1554,7 +1554,7 @@ pub(crate) async fn retention_recovery_persist_failure(
             attempt_count = attempt_count + 1,
             updated_at = datetime('now')
         WHERE prepared_key = ?6
-          AND state IN ('preparing', 'published')
+          AND (state = 'preparing' OR (state = 'published' AND artifact_sha256 IS NULL))
         "#,
     )
     .bind(quarantine)

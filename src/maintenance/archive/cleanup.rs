@@ -720,9 +720,9 @@ pub(crate) async fn cleanup_expired_archive_batches(
     .bind(super::super::retention::retention_candidate_limit(config, "archive_cleanup") as i64)
     .fetch_all(pool)
     .await?;
-    let materialized_pool_upstream_cache_files = sqlx::query_scalar::<_, String>(
+    let materialized_pool_upstream_cache_files = sqlx::query_as::<_, (String, String)>(
         r#"
-        SELECT file_path
+        SELECT file_path, archive_sha256
         FROM hourly_rollup_archive_replay
         WHERE target = ?1
           AND dataset = 'pool_upstream_request_attempts'
@@ -733,9 +733,9 @@ pub(crate) async fn cleanup_expired_archive_batches(
     .await?
     .into_iter()
     .collect::<HashSet<_>>();
-    let materialized_pool_upstream_hourly_files = sqlx::query_scalar::<_, String>(
+    let materialized_pool_upstream_hourly_files = sqlx::query_as::<_, (String, String)>(
         r#"
-        SELECT file_path
+        SELECT file_path, archive_sha256
         FROM hourly_rollup_archive_replay
         WHERE target = ?1
           AND dataset = 'pool_upstream_request_attempts'
@@ -851,13 +851,21 @@ pub(crate) async fn cleanup_expired_archive_batches(
         }
         if candidate.dataset == "pool_upstream_request_attempts"
             && (candidate.historical_rollups_materialized_at.is_none()
-                || !materialized_pool_upstream_cache_files.contains(&candidate.file_path)
-                || !materialized_pool_upstream_hourly_files.contains(&candidate.file_path))
+                || !materialized_pool_upstream_cache_files
+                    .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
+                || !materialized_pool_upstream_hourly_files
+                    .contains(&(candidate.file_path.clone(), candidate.sha256.clone())))
         {
             continue;
         }
         if candidate.dataset == "pool_upstream_request_attempts"
             && !long_term_stats_attempt_archive_files
+                .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
+        {
+            continue;
+        }
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && !long_term_stats_archive_files
                 .contains(&(candidate.file_path.clone(), candidate.sha256.clone()))
         {
             continue;

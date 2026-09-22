@@ -10458,6 +10458,7 @@ async fn load_summary_projection_current_archive_admission(
          historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
          FROM archive_batches \
          WHERE dataset = ?1 AND status = ?2 \
+           AND sha256 IS NOT NULL AND TRIM(sha256) <> '' \
            AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
            AND (COALESCE(coverage_start_epoch, CAST(strftime('%s', coverage_start_at) AS INTEGER)) IS NULL \
                 OR COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) IS NULL \
@@ -10820,6 +10821,7 @@ async fn load_summary_projection_snapshot_records(
             "SELECT id, sha256, row_count, coverage_start_at, coverage_end_at \
              FROM archive_batches WHERE dataset = 'codex_invocations' \
              AND status = 'completed' \
+             AND sha256 IS NOT NULL AND TRIM(sha256) <> '' \
              AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
              AND file_path = ?1 ORDER BY id DESC LIMIT 1",
         )
@@ -13382,6 +13384,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
          AND batches.status = 'completed' \
+         AND batches.sha256 IS NOT NULL AND TRIM(batches.sha256) <> '' \
          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
          AND (NOT EXISTS ( \
                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \

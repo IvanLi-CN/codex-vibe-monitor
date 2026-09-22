@@ -1013,8 +1013,14 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     if let Some(backup_path) = backup_path {
         // A committed replacement is authoritative. If cleanup of the durable rollback copy
         // fails, the next recovery pass removes it after rechecking the manifest SHA.
-        let _ = fs::remove_file(&backup_path);
-        let _ = sqlx::query(
+        if let Err(error) = fs::remove_file(&backup_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(anyhow::anyhow!(
+                "legacy archive rollback cleanup deferred: {error}"
+            ));
+        }
+        sqlx::query(
             "UPDATE retention_prepared_archives
              SET staged_file_path = NULL, updated_at = datetime('now')
              WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'
@@ -1024,8 +1030,8 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(backup_path.to_string_lossy().to_string())
         .execute(pool)
-        .await;
-        let _ = sqlx::query(
+        .await?;
+        sqlx::query(
             "UPDATE archive_batches
              SET replacement_staged_path = NULL
              WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
@@ -1036,7 +1042,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(backup_path.to_string_lossy().to_string())
         .execute(pool)
-        .await;
+        .await?;
     }
     super::super::retention::retention_record_commit!(
         "legacy_archive_file_publish",
