@@ -904,6 +904,47 @@ async fn legacy_retention_reconciliation_does_not_starve_after_a_truncated_refer
 }
 
 #[tokio::test]
+async fn legacy_retention_reconciliation_reaches_siblings_after_a_truncated_directory() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-legacy-truncated-directory-sibling")
+            .await;
+    let archive_dir = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("2026")
+        .join("01")
+        .join("01");
+    fs::create_dir_all(archive_dir.join("a")).expect("create first empty legacy directory");
+    fs::create_dir_all(archive_dir.join("z")).expect("create later legacy directory");
+    for index in 0..31 {
+        fs::write(
+            archive_dir.join(format!("c{index:02}-noise.txt")),
+            b"not an archive candidate",
+        )
+        .expect("write sibling selection noise");
+    }
+    let sibling_archive = archive_dir
+        .join("z")
+        .join("part-0000000000000000-0000000000000000-sibling.sqlite.gz");
+    fs::write(&sibling_archive, b"unreferenced sibling archive")
+        .expect("write later sibling archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run truncated parent-directory reconciliation pass");
+    let sibling_state: Option<String> =
+        sqlx::query_scalar("SELECT state FROM retention_prepared_archives WHERE file_path = ?1")
+            .bind(sibling_archive.to_string_lossy().to_string())
+            .fetch_optional(&pool)
+            .await
+            .expect("load later sibling archive state");
+    assert_eq!(sibling_state.as_deref(), Some("quarantined"));
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
     let (pool, _config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-legacy-cursor-monotonic").await;

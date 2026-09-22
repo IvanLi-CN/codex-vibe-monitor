@@ -2824,6 +2824,7 @@ fn collect_retention_archive_candidates_after_cursor_inner(
 
     let mut directory_cursor = cursor.to_string();
     let mut skip_path: Option<PathBuf> = None;
+    let mut pause_at: Option<String> = None;
     loop {
         let selection = collect_bounded_retention_archive_directory_entries(
             root,
@@ -2837,6 +2838,11 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             #[cfg(test)]
             heap_live,
         } = selection;
+        if pause_at.is_none() && truncated {
+            pause_at = entries
+                .last()
+                .map(|entry| entry.path.to_string_lossy().to_string());
+        }
         let mut entries = entries.into_iter();
         let mut next_directory = None;
         while let Some(entry) = entries.next() {
@@ -2846,14 +2852,16 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             }
             let path = entry.path;
             let path_text = path.to_string_lossy();
+            let is_after_cursor = path_text.as_ref() > directory_cursor.as_str();
+            if is_after_cursor {
+                scan.record_progress(&path);
+                directory_cursor = path_text.to_string();
+            }
             if entry.is_file
-                && path_text.as_ref() > directory_cursor.as_str()
+                && is_after_cursor
                 && (path_text.ends_with(".sqlite.gz") || path_text.ends_with(".sqlite.zst"))
             {
-                scan.record_progress(&path);
                 scan.candidates.push(path);
-            } else if path_text.as_ref() > directory_cursor.as_str() {
-                scan.record_progress(&path);
             }
             if scan.candidates.len() >= limit {
                 break;
@@ -2867,6 +2875,12 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             return Ok(true);
         }
         let Some(entry) = next_directory else {
+            if pause_at
+                .as_deref()
+                .is_some_and(|boundary| directory_cursor.as_str() >= boundary)
+            {
+                return Ok(true);
+            }
             return Ok(truncated);
         };
         let path = entry.path;
@@ -2891,7 +2905,12 @@ fn collect_retention_archive_candidates_after_cursor_inner(
         }
         skip_path = Some(path);
         if truncated {
-            return Ok(true);
+            if pause_at
+                .as_deref()
+                .is_some_and(|boundary| directory_cursor.as_str() >= boundary)
+            {
+                return Ok(true);
+            }
         }
     }
 }
