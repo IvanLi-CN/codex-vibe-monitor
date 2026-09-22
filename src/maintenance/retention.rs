@@ -1544,8 +1544,10 @@ pub(crate) async fn retention_recovery_persist_failure(
             last_failure_stage = ?3,
             last_failure_fingerprint = ?4,
             next_retry_at = CASE WHEN ?1 THEN NULL ELSE datetime('now', ?5) END,
+            attempt_count = attempt_count + 1,
             updated_at = datetime('now')
         WHERE prepared_key = ?6
+          AND state = 'preparing'
         "#,
     )
     .bind(quarantine)
@@ -1799,7 +1801,20 @@ async fn quarantine_published_retention_archive_if_unchanged(
 }
 
 pub(crate) fn retention_archive_path_is_within_root(config: &AppConfig, path: &Path) -> bool {
-    let root = resolved_archive_dir(config).join("codex_invocations");
+    retention_archive_path_is_within(
+        &resolved_archive_dir(config).join("codex_invocations"),
+        path,
+    )
+}
+
+pub(crate) fn retention_archive_path_is_within_archive_root(
+    config: &AppConfig,
+    path: &Path,
+) -> bool {
+    retention_archive_path_is_within(&resolved_archive_dir(config), path)
+}
+
+fn retention_archive_path_is_within(root: &Path, path: &Path) -> bool {
     let Ok(root) = fs::canonicalize(root) else {
         return false;
     };
@@ -1957,12 +1972,13 @@ async fn reconcile_retention_prepared_archives(
                     .await?;
                 continue;
             }
-            let manifest_sha = sqlx::query_scalar::<_, String>(
+            let manifest_sha = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT sha256 FROM archive_batches WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
             )
             .bind(&file_path)
             .fetch_optional(pool)
-            .await?;
+            .await?
+            .flatten();
             let current_sha = if path.is_file() {
                 Some(sha256_hex_file(path)?)
             } else {
@@ -2016,7 +2032,9 @@ async fn reconcile_retention_prepared_archives(
                 continue;
             }
         }
-        if !retention_archive_path_is_owned(config, path) {
+        if !retention_archive_path_is_owned(config, path)
+            && state != RETENTION_RECOVERY_STATE_QUARANTINED
+        {
             if state == RETENTION_RECOVERY_STATE_PREPARING
                 || state == RETENTION_RECOVERY_STATE_PUBLISHED
             {
@@ -2216,8 +2234,8 @@ async fn reconcile_staged_archive_replacements(
             continue;
         };
         if config.is_some_and(|config| {
-            !retention_archive_path_is_within_root(config, path)
-                || !retention_archive_path_is_within_root(config, staged_path)
+            !retention_archive_path_is_within_archive_root(config, path)
+                || !retention_archive_path_is_within_archive_root(config, staged_path)
         }) || !replacement_staging_path_is_owned(path, staged_path)
         {
             retention_recovery_record_failure(

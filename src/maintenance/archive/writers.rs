@@ -869,6 +869,20 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             "legacy_archive_file_publish",
         ));
     };
+    let existing_staged_path = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT staged_file_path FROM retention_prepared_archives
+         WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'",
+    )
+    .bind(dataset)
+    .bind(final_file_path.to_string_lossy().to_string())
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    if existing_staged_path.is_some() {
+        return Err(anyhow::anyhow!(
+            "legacy archive replacement recovery is still pending"
+        ));
+    }
     let prepared_bytes = temporary_file_path
         .metadata()
         .map(|metadata| metadata.len() as usize)

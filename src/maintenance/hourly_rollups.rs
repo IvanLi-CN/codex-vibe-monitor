@@ -1951,9 +1951,18 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             summary.blocked_batches += 1;
             continue;
         }
-        let _archive_lock =
-            retention_try_archive_locks_scope(async { retention_archive_file_lock(&archive_path) })
-                .await?;
+        let _archive_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_lock(&archive_path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if error.to_string().contains("archive directory lock busy") => {
+                summary.blocked_batches += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if !archive_path.exists()
             || archive_file.sha256.as_deref().is_none_or(|expected| {
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
@@ -2552,9 +2561,18 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             summary.blocked_batches += 1;
             continue;
         }
-        let _archive_lock =
-            retention_try_archive_locks_scope(async { retention_archive_file_lock(&archive_path) })
-                .await?;
+        let _archive_lock = match retention_try_archive_locks_scope(async {
+            retention_archive_file_lock(&archive_path)
+        })
+        .await
+        {
+            Ok(lock) => lock,
+            Err(error) if error.to_string().contains("archive directory lock busy") => {
+                summary.blocked_batches += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if !archive_path.exists()
             || archive_file.sha256.as_deref().is_none_or(|expected| {
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)

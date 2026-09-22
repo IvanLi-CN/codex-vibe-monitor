@@ -639,6 +639,29 @@ where
         return Ok(false);
     }
 
+    // Reacquire the current parent immediately before removal. The original directory fd may
+    // refer to an inode that was renamed away while SQLite proof checks were running.
+    drop(archive_lock);
+    let fresh_parent_identity =
+        super::super::retention::retention_archive_parent_identity(Path::new(file_path));
+    if fresh_parent_identity != parent_identity {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
+        .context("failed to relock current archive cleanup path")?;
+    if archive_lock.is_held() {
+        let fresh_sha256 = if Path::new(file_path).is_file() {
+            Some(sha256_hex_file(Path::new(file_path))?)
+        } else {
+            None
+        };
+        if fresh_sha256 != file_sha256 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
+
     match remove_file(file_path) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -2015,9 +2038,6 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         return Ok("unavailable:empty_archive");
     }
     let archive_path = Path::new(&candidate.file_path);
-    let _archive_lock =
-        retention_try_archive_locks_scope(async { retention_archive_file_lock(archive_path) })
-            .await?;
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
