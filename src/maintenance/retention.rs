@@ -1890,8 +1890,23 @@ async fn reconcile_retention_prepared_archives(
             }
             continue;
         }
-        if let Some(staged_file_path) = staged_file_path.as_deref() {
-            let staged_path = Path::new(staged_file_path);
+        if staged_file_path.is_some() {
+            // The restore decision and the cleanup of its journal pointer must share the same
+            // directory fence as the publisher. A pre-lock snapshot could otherwise overwrite a
+            // newer retry artifact or clear a newly written staging path.
+            let _archive_lock = retention_archive_file_lock(path)?;
+            let Some((current_state, Some(staged_file_path))) =
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "SELECT state, staged_file_path FROM retention_prepared_archives WHERE prepared_key = ?1",
+                )
+                .bind(&prepared_key)
+                .fetch_optional(pool)
+                .await?
+            else {
+                continue;
+            };
+            let state = current_state;
+            let staged_path = Path::new(&staged_file_path);
             if !retention_archive_path_is_within_root(config, staged_path) {
                 let error = anyhow!("prepared archive staging path failed ownership verification");
                 retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
@@ -1915,17 +1930,19 @@ async fn reconcile_retention_prepared_archives(
                         .context("failed to remove committed legacy archive rollback copy")?;
                 }
                 if state == RETENTION_RECOVERY_STATE_PREPARING {
-                    clear_retention_staged_file_path(pool, &prepared_key, true).await?;
+                    clear_retention_staged_file_path(pool, &prepared_key, &staged_file_path, true)
+                        .await?;
                     // The replacement either committed before the journal transition or never
                     // started. Re-run the normal writer from the durable manifest rather than
                     // treating the current artifact as a completed prepared publication.
                     continue;
                 }
-                clear_retention_staged_file_path(pool, &prepared_key, false).await?;
+                clear_retention_staged_file_path(pool, &prepared_key, &staged_file_path, false)
+                    .await?;
             } else if staged_path.is_file() {
-                let _archive_lock = retention_archive_file_lock(path)?;
                 restore_staged_legacy_archive_file(staged_path, path)?;
-                clear_retention_staged_file_path(pool, &prepared_key, true).await?;
+                clear_retention_staged_file_path(pool, &prepared_key, &staged_file_path, true)
+                    .await?;
                 // The manifest still describes the previous artifact. Leave the prepared row in
                 // preparing state so the normal archive writer retries from the restored file.
                 continue;
@@ -2029,7 +2046,7 @@ async fn reconcile_retention_prepared_archives(
                     != 0;
             if expired {
                 let artifact_matches = if path.is_file() {
-                    artifact_sha256.as_deref().is_some_and(|expected| {
+                    artifact_sha256.as_deref().is_none_or(|expected| {
                         sha256_hex_file(path).ok().as_deref() == Some(expected)
                     })
                 } else {
@@ -2081,9 +2098,71 @@ async fn reconcile_retention_prepared_archives(
     Ok(())
 }
 
+async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()> {
+    let rows = sqlx::query_as::<_, (i64, String, String, String)>(
+        "SELECT id, file_path, replacement_staged_path, sha256
+         FROM archive_batches
+         WHERE replacement_staged_path IS NOT NULL
+         ORDER BY id ASC LIMIT ?1",
+    )
+    .bind(RETENTION_RECOVERY_LEGACY_SCAN_BATCH as i64)
+    .fetch_all(pool)
+    .await?;
+    for (id, file_path, staged_file_path, manifest_sha) in rows {
+        let path = Path::new(&file_path);
+        let staged_path = Path::new(&staged_file_path);
+        let _archive_lock = retention_archive_file_lock(path)?;
+        let current_sha = if path.is_file() {
+            Some(sha256_hex_file(path)?)
+        } else {
+            None
+        };
+        if current_sha.as_deref() == Some(manifest_sha.as_str()) {
+            if staged_path.is_file() {
+                fs::remove_file(staged_path)
+                    .context("failed to remove committed archive rollback copy")?;
+            }
+            clear_archive_batch_staged_path(pool, id, &staged_file_path).await?;
+            continue;
+        }
+        if staged_path.is_file() {
+            restore_staged_legacy_archive_file(staged_path, path)?;
+            clear_archive_batch_staged_path(pool, id, &staged_file_path).await?;
+        } else {
+            retention_recovery_record_failure(
+                "legacy_reconcile",
+                &anyhow!("archive replacement staging artifact is missing"),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn clear_archive_batch_staged_path(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    expected_staged_file_path: &str,
+) -> Result<()> {
+    let Some(_admission) =
+        acquire_retention_write_admission("retention_recovery_staged_path").await
+    else {
+        return Err(retention_write_deferred("retention_recovery_staged_path"));
+    };
+    sqlx::query(
+        "UPDATE archive_batches SET replacement_staged_path = NULL
+         WHERE id = ?1 AND replacement_staged_path = ?2",
+    )
+    .bind(archive_batch_id)
+    .bind(expected_staged_file_path)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn clear_retention_staged_file_path(
     pool: &Pool<Sqlite>,
     prepared_key: &str,
+    expected_staged_file_path: &str,
     reset_artifact: bool,
 ) -> Result<()> {
     let Some(_admission) =
@@ -2095,13 +2174,17 @@ async fn clear_retention_staged_file_path(
         "UPDATE retention_prepared_archives
          SET state = 'preparing', artifact_sha256 = NULL, artifact_bytes = NULL,
              staged_file_path = NULL, next_retry_at = NULL, updated_at = datetime('now')
-         WHERE prepared_key = ?1"
+         WHERE prepared_key = ?1 AND staged_file_path = ?2"
     } else {
         "UPDATE retention_prepared_archives
          SET staged_file_path = NULL, updated_at = datetime('now')
-         WHERE prepared_key = ?1"
+         WHERE prepared_key = ?1 AND staged_file_path = ?2"
     };
-    sqlx::query(query).bind(prepared_key).execute(pool).await?;
+    sqlx::query(query)
+        .bind(prepared_key)
+        .bind(expected_staged_file_path)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -2631,6 +2714,7 @@ struct RawPathReferenceCandidate {
 pub(crate) struct ArchiveBatchFileRow {
     pub(crate) id: i64,
     pub(crate) file_path: String,
+    pub(crate) sha256: String,
     pub(crate) coverage_start_at: Option<String>,
     pub(crate) coverage_end_at: Option<String>,
 }
@@ -3483,6 +3567,15 @@ async fn run_data_retention_maintenance_inner(
             info!(
                 ?janitor,
                 "archive temp janitor removed stale files before retention"
+            );
+        }
+        if let Err(error) = reconcile_staged_archive_replacements(pool).await {
+            retention_recovery_persist_latest_failure_best_effort(pool, "legacy_reconcile", &error)
+                .await;
+            retention_recovery_log_event(
+                tracing::Level::WARN,
+                "staged_replacement_reconcile",
+                "staged archive replacement reconciliation deferred",
             );
         }
         if let Err(error) = reconcile_retention_prepared_archives(pool, config).await {
@@ -5968,6 +6061,63 @@ mod retention_recovery_race_tests {
             b"previous artifact"
         );
         assert!(!staged_path.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn staged_archive_replacement_reconcile_restores_manifest_old_bytes() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect staged replacement database");
+        sqlx::query(
+            "CREATE TABLE archive_batches (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                replacement_staged_path TEXT,
+                sha256 TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create staged replacement manifest");
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-staged-reconcile-{}-{}",
+            std::process::id(),
+            retention_temp_suffix()
+        ));
+        fs::create_dir_all(&root).expect("create staged reconcile directory");
+        let final_path = root.join("archive.sqlite.gz");
+        let staged_path = root.join("archive.sqlite.gz.restore");
+        fs::write(&final_path, b"replacement artifact").expect("write replacement artifact");
+        fs::write(&staged_path, b"previous artifact").expect("write previous artifact");
+        let old_sha = sha256_hex_file(&staged_path).expect("hash previous artifact");
+        let file_path = final_path.to_string_lossy().to_string();
+        let staged_path_string = staged_path.to_string_lossy().to_string();
+        sqlx::query(
+            "INSERT INTO archive_batches (id, file_path, replacement_staged_path, sha256) VALUES (1, ?1, ?2, ?3)",
+        )
+        .bind(&file_path)
+        .bind(&staged_path_string)
+        .bind(&old_sha)
+        .execute(&pool)
+        .await
+        .expect("seed staged replacement manifest");
+
+        reconcile_staged_archive_replacements(&pool)
+            .await
+            .expect("reconcile staged replacement");
+        assert_eq!(
+            fs::read(&final_path).expect("read restored manifest file"),
+            b"previous artifact"
+        );
+        let staged: Option<String> =
+            sqlx::query_scalar("SELECT replacement_staged_path FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("load cleared replacement staging path");
+        assert!(staged.is_none());
         let _ = fs::remove_dir_all(&root);
     }
 }

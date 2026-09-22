@@ -623,6 +623,8 @@ async fn retention_finalization_rejects_source_content_changed_after_archive_cop
         BEGIN
             UPDATE codex_invocations
             SET payload = '{"error":"changed-during-finalization"}'
+                , input_tokens = NULL
+                , raw_response = CAST('changed-storage-class' AS BLOB)
             WHERE invoke_id = 'retention-source-content-identity';
         END
         "#,

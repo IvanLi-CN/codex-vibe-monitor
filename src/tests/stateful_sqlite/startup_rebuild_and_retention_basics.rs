@@ -4590,6 +4590,86 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
 }
 
 #[tokio::test]
+async fn ensure_schema_migrates_staged_archive_path_without_dropping_journal_rows() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-staged-path-migration").await;
+    sqlx::query("DROP TABLE retention_prepared_archives")
+        .execute(&pool)
+        .await
+        .expect("remove current prepared archive table");
+    sqlx::query(
+        r#"
+        CREATE TABLE retention_prepared_archives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prepared_key TEXT NOT NULL UNIQUE,
+            dataset TEXT NOT NULL,
+            month_key TEXT NOT NULL,
+            day_key TEXT,
+            part_key TEXT,
+            file_path TEXT NOT NULL,
+            source_ids_json TEXT NOT NULL,
+            source_identity_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL,
+            artifact_sha256 TEXT,
+            artifact_bytes INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT,
+            last_failure_stage TEXT,
+            last_failure_fingerprint TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            quarantined_at TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy prepared archive table shape");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state
+        ) VALUES ('legacy-staged-row', 'codex_invocations', '2026-01', '/tmp/legacy.sqlite.gz', '[]', 'identity', 'preparing')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy prepared archive row");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate staged archive path column");
+    let staged_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('retention_prepared_archives') WHERE name = 'staged_file_path'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check staged archive path column");
+    assert_eq!(staged_column, 1);
+    let replacement_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('archive_batches') WHERE name = 'replacement_staged_path'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check replacement staging column");
+    assert_eq!(replacement_column, 1);
+    let preserved: (String, String) = sqlx::query_as(
+        "SELECT prepared_key, state FROM retention_prepared_archives WHERE prepared_key = 'legacy-staged-row'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved legacy prepared archive row");
+    assert_eq!(
+        preserved,
+        ("legacy-staged-row".to_string(), "preparing".to_string())
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-recovery-actionable-queue").await;

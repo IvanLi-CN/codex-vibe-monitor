@@ -345,17 +345,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 let _ = fs::remove_file(&temp_gzip_path);
                 return Err(err);
             }
-            let Some(admission) = super::super::retention::acquire_retention_write_admission(
-                "archive_public_id_backfill",
-            )
-            .await
-            else {
-                let _ = fs::remove_file(&work_path);
-                let _ = fs::remove_file(&temp_gzip_path);
-                return Err(super::super::retention::retention_write_deferred(
-                    "archive_public_id_backfill",
-                ));
-            };
+            // The startup caller already owns the coordinated P2 write permit. Acquiring the
+            // retention admission again here would self-wait on that permit. Hash the prepared
+            // artifact before entering the bounded publication transaction.
+            let sha256 = sha256_hex_file(&temp_gzip_path)?;
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let current_sha256 = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT sha256 FROM archive_batches WHERE id = ?1 AND dataset = 'pool_upstream_request_attempts' AND file_path = ?2 AND status = ?3 AND cleanup_state = ?4",
@@ -369,7 +362,6 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             .flatten();
             if current_sha256 != batch.sha256 {
                 tx.rollback().await?;
-                drop(admission);
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
                 continue;
@@ -384,14 +376,12 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             sync_published_archive_file(&archive_path)?;
             let _ = fs::remove_file(&work_path);
 
-            let sha256 = sha256_hex_file(&archive_path)?;
             sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = ?2")
                 .bind(&sha256)
                 .bind(batch.id)
                 .execute(tx.as_mut())
                 .await?;
             tx.commit().await?;
-            drop(admission);
         }
     }
 
@@ -818,6 +808,17 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(final_file_path.to_string_lossy().to_string())
         .execute(pool)
         .await?;
+        sqlx::query(
+            "UPDATE archive_batches
+             SET replacement_staged_path = ?1
+             WHERE dataset = ?2 AND month_key = ?3 AND file_path = ?4",
+        )
+        .bind(path.to_string_lossy().to_string())
+        .bind(dataset)
+        .bind(month_key)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await?;
         Some(path)
     } else {
         None
@@ -876,16 +877,29 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     }
     let commit_started = Instant::now();
     if let Err(error) = tx.commit().await {
-        let _ = fs::remove_file(final_file_path);
-        if let Some(backup_path) = backup_path.as_deref() {
-            let _ = fs::rename(backup_path, final_file_path);
-        }
-        return Err(error.into());
+        // SQLite commit outcome is ambiguous. Leave the new file and durable rollback path in
+        // place; retention recovery will compare the manifest SHA and either remove the stale
+        // rollback copy or restore it before retrying.
+        return Err(anyhow::anyhow!(
+            "legacy archive replacement commit outcome is unknown; recovery will reconcile: {error}"
+        ));
     }
     if let Some(backup_path) = backup_path {
         // A committed replacement is authoritative. If cleanup of the durable rollback copy
         // fails, the next recovery pass removes it after rechecking the manifest SHA.
         let _ = fs::remove_file(&backup_path);
+        let _ = sqlx::query(
+            "UPDATE archive_batches
+             SET replacement_staged_path = NULL
+             WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+               AND replacement_staged_path = ?4",
+        )
+        .bind(dataset)
+        .bind(month_key)
+        .bind(final_file_path.to_string_lossy().to_string())
+        .bind(backup_path.to_string_lossy().to_string())
+        .execute(pool)
+        .await;
     }
     super::super::retention::retention_record_commit!(
         "legacy_archive_file_publish",

@@ -1369,7 +1369,7 @@ pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
 ) -> Result<Vec<ArchiveBatchFileRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'pool_upstream_request_attempts'
           AND batches.status = "#,
@@ -1429,7 +1429,7 @@ pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
 ) -> Result<Vec<ArchiveBatchFileRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'pool_upstream_request_attempts'
           AND batches.status = "#,
@@ -1477,7 +1477,7 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
 ) -> Result<Vec<ArchiveBatchFileRow>> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
@@ -1942,6 +1942,18 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             break;
         }
         summary.scanned_batches += 1;
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            summary.blocked_batches += 1;
+            continue;
+        }
+        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        if !archive_path.exists()
+            || sha256_hex_file(&archive_path).ok().as_deref() != Some(archive_file.sha256.as_str())
+        {
+            summary.blocked_batches += 1;
+            continue;
+        }
         if !archive_batch_has_completed_manifest_sha_tx(
             tx,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -2060,7 +2072,6 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             0
         };
 
-        let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -2398,7 +2409,7 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -2460,7 +2471,7 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT batches.id, batches.file_path, batches.coverage_start_at, batches.coverage_end_at
+        SELECT batches.id, batches.file_path, batches.sha256, batches.coverage_start_at, batches.coverage_end_at
         FROM archive_batches AS batches
         WHERE batches.dataset = 'forward_proxy_attempts'
           AND batches.status = ?1
@@ -2528,6 +2539,18 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             break;
         }
         summary.scanned_batches += 1;
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            summary.blocked_batches += 1;
+            continue;
+        }
+        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        if !archive_path.exists()
+            || sha256_hex_file(&archive_path).ok().as_deref() != Some(archive_file.sha256.as_str())
+        {
+            summary.blocked_batches += 1;
+            continue;
+        }
         if !archive_batch_has_completed_manifest_sha_tx(
             tx,
             HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
@@ -2575,7 +2598,6 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         )
         .await?;
 
-        let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,

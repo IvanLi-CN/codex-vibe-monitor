@@ -4957,7 +4957,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
 ) -> Result<(usize, usize)> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1

@@ -239,11 +239,7 @@ pub(crate) fn cleanup_stale_archive_temp_files(
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => {
-                warn!(
-                    file_path = %file_path.display(),
-                    error = %err,
-                    "failed to remove stale archive temp file"
-                );
+                warn!(error = %err, "failed to remove stale archive temp file");
             }
         }
     }
@@ -279,7 +275,6 @@ pub(crate) async fn verify_archive_storage(
                 archive_batch_id = row.id,
                 dataset = row.dataset,
                 layout = row.layout,
-                file_path = row.file_path,
                 "archive manifest points to a missing file"
             );
         }
@@ -330,7 +325,7 @@ async fn stage_archive_batch_deletion(
     source_safe_start: Option<NaiveDate>,
 ) -> Result<bool> {
     let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
-        .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?;
+        .context("failed to lock archive cleanup path")?;
     let Some(admission) =
         super::super::retention::acquire_retention_write_admission("archive_cleanup_stage").await
     else {
@@ -486,14 +481,13 @@ where
     F: FnOnce(&str) -> io::Result<()>,
 {
     let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
-        .with_context(|| format!("failed to lock archive cleanup path: {file_path}"))?;
+        .context("failed to lock archive cleanup path")?;
     let file_sha256 = if Path::new(file_path).exists() {
         match sha256_hex_file(Path::new(file_path)) {
             Ok(value) => Some(value),
             Err(error) => {
                 warn!(
                     dataset,
-                    file_path,
                     error = %error,
                     "archive file identity could not be verified; retaining pending metadata"
                 );
@@ -586,7 +580,6 @@ where
             Err(error) => {
                 warn!(
                     dataset,
-                    file_path,
                     cleanup_source_safe_start_date = value,
                     error = %error,
                     "archive cleanup source boundary is invalid; retaining pending metadata"
@@ -601,7 +594,6 @@ where
     if file_sha256.as_deref() != Some(expected_sha256) && file_sha256.is_some() {
         warn!(
             dataset,
-            file_path,
             expected_sha256,
             file_sha256 = ?file_sha256,
             "archive file identity changed after deletion was staged; retaining reactivated manifest"
@@ -616,7 +608,6 @@ where
         Err(error) => {
             warn!(
                 dataset,
-                file_path,
                 error = %error,
                 "archive file deletion is pending; retaining metadata for a later retry"
             );
@@ -787,7 +778,6 @@ pub(crate) async fn cleanup_expired_archive_batches(
             if !owned {
                 warn!(
                     dataset = candidate.dataset,
-                    file_path = candidate.file_path,
                     "retention live-mirror cleanup rejected an archive path outside its owned root"
                 );
                 continue;
@@ -892,7 +882,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
         for candidate in &eligible_candidates {
             info!(
                 dataset = candidate.dataset,
-                file_path = candidate.file_path,
+                archive_batch_id = candidate.id,
                 "retention dry-run planned archive batch cleanup"
             );
         }
@@ -950,7 +940,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
             Err(error) => {
                 warn!(
                     dataset = candidate.dataset,
-                    file_path = candidate.file_path,
+                    archive_batch_id = candidate.id,
                     error = %error,
                     "could not inspect expired archive file; retaining metadata for a later retry"
                 );
@@ -998,7 +988,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
                 Err(error) => {
                     warn!(
                         dataset = candidate.dataset,
-                        file_path = candidate.file_path,
+                        archive_batch_id = candidate.id,
                         error = %error,
                         "could not prove long-term source boundary; retaining expired archive batch"
                     );
@@ -1103,6 +1093,7 @@ impl HistoricalRollupStartupCandidateRow {
         ArchiveBatchFileRow {
             id: self.id,
             file_path: self.file_path.clone(),
+            sha256: self.sha256.clone(),
             coverage_start_at: self.coverage_start_at.clone(),
             coverage_end_at: self.coverage_end_at.clone(),
         }
@@ -2900,11 +2891,6 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         });
     }
 
-    let _archive_locks = retain_archive_directory_locks(
-        candidates
-            .iter()
-            .map(|candidate| candidate.file_path.as_str()),
-    )?;
     let started_at = Instant::now();
     let mut next_cursor_id = skipped_cursor_id.unwrap_or(cursor_id);
     let mut inspected_path_count = 0_usize;
@@ -3029,11 +3015,6 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
         });
     }
 
-    let _archive_locks = retain_archive_directory_locks(
-        candidates
-            .iter()
-            .map(|candidate| candidate.file_path.as_str()),
-    )?;
     let started_at = Instant::now();
     let candidate_count = candidates.len();
     let mut proof_results = stream::iter(candidates.into_iter().enumerate().map(
@@ -3145,11 +3126,22 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         });
     }
 
-    let _archive_locks = retain_archive_directory_locks(
-        candidates
-            .iter()
-            .map(|candidate| candidate.file_path.as_str()),
-    )?;
+    let candidate_batch = candidates
+        .iter()
+        .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
+        .collect::<Vec<_>>();
+    // Freeze the set of candidates whose parents were present when locks were collected. A
+    // directory recreated after this point must wait for the next bounded pass instead of being
+    // replayed without the lock that fenced its original file identity.
+    let processable_candidate_ids = candidate_batch
+        .iter()
+        .filter(|candidate| {
+            Path::new(&candidate.file_path)
+                .parent()
+                .is_some_and(Path::exists)
+        })
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
     let started_at = Instant::now();
     // The startup-backfill caller holds the P2 SQLite write permit before entering this stage.
     let mut tx = pool.begin().await?;
@@ -3164,24 +3156,22 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
     let mut inspected_path_count = 0_usize;
     let mut hit_budget = false;
 
-    for candidate in candidates
-        .iter()
-        .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
-    {
+    for candidate in candidate_batch {
         if started_at.elapsed() >= max_elapsed {
             hit_budget = true;
             break;
         }
-        if Path::new(&candidate.file_path)
-            .parent()
-            .is_none_or(|parent| !parent.exists())
-        {
+        if !processable_candidate_ids.contains(&candidate.id) {
             inspected_path_count += 1;
             scanned_archive_batches += 1;
             skipped_archive_batches += 1;
             next_cursor_id = next_cursor_id.max(candidate.id);
             continue;
         }
+        // Re-open the current parent immediately before replay. The parent may have been
+        // deleted and recreated after candidate discovery; locking the current directory inode
+        // closes that replacement window under the startup try-only lock scope.
+        let _candidate_archive_lock = retention_archive_file_lock(Path::new(&candidate.file_path))?;
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 tx.as_mut(),
@@ -3816,7 +3806,7 @@ pub(crate) async fn prune_legacy_archive_batches(
         if dry_run {
             info!(
                 dataset = candidate.dataset,
-                file_path = candidate.file_path,
+                archive_batch_id = candidate.id,
                 "maintenance dry-run planned legacy archive prune"
             );
             summary.deleted_archive_batches += 1;
@@ -3866,7 +3856,7 @@ pub(crate) async fn prune_legacy_archive_batches(
                 Err(error) => {
                     warn!(
                         dataset = candidate.dataset,
-                        file_path = candidate.file_path,
+                        archive_batch_id = candidate.id,
                         error = %error,
                         "could not prove long-term source boundary; retaining legacy archive batch"
                     );
