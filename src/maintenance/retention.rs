@@ -57,6 +57,8 @@ tokio::task_local! {
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_ARCHIVE_IO:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
 }
@@ -65,6 +67,13 @@ tokio::task_local! {
 fn retention_test_legacy_directory_entry_event() {
     let _ = RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES.try_with(|counter| {
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+#[cfg(test)]
+fn retention_test_legacy_directory_heap_peak(size: usize) {
+    let _ = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK.try_with(|peak| {
+        peak.fetch_max(size, std::sync::atomic::Ordering::Relaxed);
     });
 }
 
@@ -2679,21 +2688,8 @@ pub(crate) async fn reconcile_legacy_retention_archive_segments(
         .as_ref()
         .filter(|path| path.to_string_lossy().as_ref() > cursor.as_str());
     if let Some(progress) = progress_after_cursor {
-        let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
-        else {
-            return Err(retention_write_deferred("retention_recovery_cursor"));
-        };
-        sqlx::query(
-            r#"
-            INSERT INTO retention_recovery_cursors (scope, cursor, updated_at)
-            VALUES ('legacy_archive_segments', ?1, datetime('now'))
-            ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(progress.to_string_lossy().to_string())
-        .execute(pool)
-        .await?;
-        drop(admission);
+        let progress = progress.to_string_lossy().to_string();
+        advance_retention_recovery_cursor(pool, &progress).await?;
     } else if !cursor.is_empty() {
         // Wrap when the tail is exhausted so earlier-arriving files are eventually revisited.
         let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
@@ -2704,14 +2700,42 @@ pub(crate) async fn reconcile_legacy_retention_archive_segments(
             r#"
             UPDATE retention_recovery_cursors
             SET cursor = '', updated_at = datetime('now')
-            WHERE scope = 'legacy_archive_segments'
+            WHERE scope = 'legacy_archive_segments' AND cursor = ?1
             "#,
         )
+        .bind(&cursor)
         .execute(pool)
         .await?;
         drop(admission);
     }
     retention_recovery_refresh_counts(pool, config).await?;
+    Ok(())
+}
+
+pub(crate) async fn advance_retention_recovery_cursor(
+    pool: &Pool<Sqlite>,
+    progress: &str,
+) -> Result<()> {
+    let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
+    else {
+        return Err(retention_write_deferred("retention_recovery_cursor"));
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO retention_recovery_cursors (scope, cursor, updated_at)
+        VALUES ('legacy_archive_segments', ?1, datetime('now'))
+        ON CONFLICT(scope) DO UPDATE SET
+            cursor = CASE
+                WHEN excluded.cursor > retention_recovery_cursors.cursor THEN excluded.cursor
+                ELSE retention_recovery_cursors.cursor
+            END,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(progress)
+    .execute(pool)
+    .await?;
+    drop(admission);
     Ok(())
 }
 
@@ -2752,15 +2776,20 @@ fn collect_retention_archive_candidates_after_cursor_inner(
     cursor: &str,
     limit: usize,
     scan: &mut RetentionArchiveCandidateScan,
-) -> Result<()> {
-    if scan.candidates.len() >= limit || limit == 0 || !root.is_dir() {
-        return Ok(());
+) -> Result<bool> {
+    if scan.candidates.len() >= limit {
+        return Ok(true);
+    }
+    if limit == 0 || !root.is_dir() {
+        return Ok(false);
     }
 
-    let entries = collect_bounded_retention_archive_directory_entries(root, cursor, limit)?;
+    let selection = collect_bounded_retention_archive_directory_entries(root, cursor, limit)?;
+    let truncated = selection.truncated;
+    let entries = selection.entries;
     for entry in entries {
         if scan.candidates.len() >= limit {
-            break;
+            return Ok(true);
         }
         let path = entry.path;
         let path_text = path.to_string_lossy();
@@ -2770,9 +2799,11 @@ fn collect_retention_archive_candidates_after_cursor_inner(
                 if path_text.as_ref() > cursor {
                     scan.record_progress(&path);
                 }
-                collect_retention_archive_candidates_after_cursor_inner(
+                if collect_retention_archive_candidates_after_cursor_inner(
                     &path, cursor, limit, scan,
-                )?;
+                )? {
+                    return Ok(true);
+                }
             }
         } else if entry.is_file
             && path_text.as_ref() > cursor
@@ -2784,7 +2815,7 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             scan.record_progress(&path);
         }
     }
-    Ok(())
+    Ok(truncated)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -2792,6 +2823,11 @@ struct RetentionArchiveDirectoryEntry {
     path: PathBuf,
     is_dir: bool,
     is_file: bool,
+}
+
+struct RetentionArchiveDirectorySelection {
+    entries: Vec<RetentionArchiveDirectoryEntry>,
+    truncated: bool,
 }
 
 impl Ord for RetentionArchiveDirectoryEntry {
@@ -2810,10 +2846,11 @@ fn collect_bounded_retention_archive_directory_entries(
     root: &Path,
     cursor: &str,
     limit: usize,
-) -> Result<Vec<RetentionArchiveDirectoryEntry>> {
+) -> Result<RetentionArchiveDirectorySelection> {
     // Stream the directory through a fixed-size max heap. This keeps allocation and comparison
     // work per entry bounded by the scan batch without materializing or sorting the full listing.
     let mut entries = std::collections::BinaryHeap::with_capacity(limit);
+    let mut truncated = false;
     for entry in fs::read_dir(root)
         .with_context(|| format!("failed to read archive directory {}", root.display()))?
     {
@@ -2838,17 +2875,24 @@ fn collect_bounded_retention_archive_directory_entries(
         };
         if entries.len() < limit {
             entries.push(candidate);
+            #[cfg(test)]
+            retention_test_legacy_directory_heap_peak(entries.len());
         } else if entries
             .peek()
             .is_some_and(|largest| candidate.path < largest.path)
         {
+            truncated = true;
             entries.pop();
             entries.push(candidate);
+            #[cfg(test)]
+            retention_test_legacy_directory_heap_peak(entries.len());
+        } else {
+            truncated = true;
         }
     }
     let mut entries = entries.into_vec();
     entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    Ok(entries)
+    Ok(RetentionArchiveDirectorySelection { entries, truncated })
 }
 
 async fn verify_legacy_retention_archive_segment(

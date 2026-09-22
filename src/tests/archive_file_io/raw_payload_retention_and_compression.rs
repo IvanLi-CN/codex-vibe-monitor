@@ -757,17 +757,20 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
         fs::write(path, b"not a gzip archive").expect("write unverified legacy segment");
     }
 
-    let directory_entries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let heap_peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES
         .scope(
-            directory_entries.clone(),
-            run_data_retention_maintenance(&pool, &config, Some(false), None),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK.scope(
+                heap_peak.clone(),
+                run_data_retention_maintenance(&pool, &config, Some(false), None),
+            ),
         )
         .await
         .expect("run bounded legacy reconciliation pass");
     assert!(
-        directory_entries.load(std::sync::atomic::Ordering::Relaxed) <= 67,
-        "legacy discovery must stop after one cursor window, one 32-file batch, and archive layout directories"
+        heap_peak.load(std::sync::atomic::Ordering::Relaxed) <= 32,
+        "legacy discovery must retain no more than the 32-candidate heap bound"
     );
     let first_pass_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined'",
@@ -776,6 +779,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .await
     .expect("count first-pass quarantined archives");
     assert_eq!(first_pass_count, 32);
+    let first_pass_cursor: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load first-pass legacy cursor");
+    assert!(first_pass_cursor.ends_with("part-000000000000001f-000000000000001f-legacy.sqlite.gz"));
 
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
@@ -813,6 +823,107 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .await
     .expect("check the late legacy file was quarantined");
     assert_eq!(late_file_is_tracked, 1);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn legacy_retention_reconciliation_does_not_starve_after_a_truncated_referenced_window() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-legacy-truncated-referenced-window")
+            .await;
+    let archive_dir = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("2026")
+        .join("01")
+        .join("01");
+    fs::create_dir_all(&archive_dir).expect("create legacy segment directory");
+    for index in 0..31 {
+        let path = archive_dir.join(format!(
+            "part-{index:016x}-{index:016x}-referenced.sqlite.gz"
+        ));
+        fs::write(&path, b"referenced legacy archive").expect("write referenced archive");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, created_at) \
+             VALUES ('codex_invocations', '2026-01', ?1, 'referenced', 1, ?2, datetime('now'))",
+        )
+        .bind(path.to_string_lossy().to_string())
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .execute(&pool)
+        .await
+        .expect("seed referenced archive manifest");
+    }
+    fs::write(
+        archive_dir.join("part-000000000000001f-noise.txt"),
+        b"not an archive candidate",
+    )
+    .expect("write non-candidate directory entry");
+    let unreferenced =
+        archive_dir.join("part-ffffffffffffffff-ffffffffffffffff-unreferenced.sqlite.gz");
+    fs::write(&unreferenced, b"unreferenced legacy archive").expect("write unreferenced archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run first truncated legacy reconciliation pass");
+    let first_pass_unreferenced: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_prepared_archives WHERE file_path = ?1")
+            .bind(unreferenced.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("count unreferenced archive after first pass");
+    assert_eq!(first_pass_unreferenced, 0);
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("resume after truncated legacy reconciliation pass");
+    let second_pass_unreferenced: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives \
+         WHERE file_path = ?1 AND state = 'quarantined'",
+    )
+    .bind(unreferenced.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count quarantined unreferenced archive after resume");
+    assert_eq!(second_pass_unreferenced, 1);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
+    let (pool, _config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-legacy-cursor-monotonic").await;
+    let high = temp_dir.join("archives/codex_invocations/2026/01/01/part-z.sqlite.gz");
+    let low = temp_dir.join("archives/codex_invocations/2026/01/01/part-a.sqlite.gz");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors \
+         SET cursor = ?1, updated_at = datetime('now') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .bind(high.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed advanced legacy cursor");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            coordinator,
+            crate::maintenance::advance_retention_recovery_cursor(&pool, &low.to_string_lossy()),
+        )
+        .await
+        .expect("stale cursor writer should complete");
+    let stored: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load monotonic legacy cursor");
+    assert_eq!(stored, high.to_string_lossy());
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
