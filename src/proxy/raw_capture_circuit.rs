@@ -218,6 +218,10 @@ impl RawCaptureCircuitBreaker {
             .expect("raw capture circuit mutex poisoned");
         state.inventory_state = "preparing".to_string();
         state.admission_initialized = false;
+        state.raw_bytes = None;
+        state.available_bytes = None;
+        state.expired_backlog_count = None;
+        state.backlog_non_growing = None;
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
         state.updated_at = Some(Utc::now().to_rfc3339());

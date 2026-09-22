@@ -39,6 +39,32 @@ tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
     static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
     static RETENTION_TRY_ARCHIVE_LOCKS: ();
+    static RETENTION_RAW_CAPTURE_CIRCUIT: RefCell<Option<Arc<RawCaptureCircuitBreaker>>>;
+}
+
+async fn mark_retention_raw_inventory_reset_intent(pool: &Pool<Sqlite>) -> Result<()> {
+    let _ = RETENTION_RAW_CAPTURE_CIRCUIT.try_with(|circuit| {
+        if let Some(circuit) = circuit.borrow().as_ref() {
+            circuit.mark_inventory_preparing();
+        }
+    });
+    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+    Ok(())
+}
+
+pub(crate) async fn run_data_retention_maintenance_with_circuit(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+    circuit: Arc<RawCaptureCircuitBreaker>,
+) -> Result<RetentionRunSummary> {
+    RETENTION_RAW_CAPTURE_CIRCUIT
+        .scope(
+            RefCell::new(Some(circuit)),
+            run_data_retention_maintenance(pool, config, dry_run, shutdown),
+        )
+        .await
 }
 
 pub(crate) async fn retention_try_archive_locks_scope<F: Future>(future: F) -> F::Output {
@@ -3967,7 +3993,15 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
-    match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
+    match run_data_retention_maintenance_with_circuit(
+        &state.pool,
+        &state.config,
+        None,
+        Some(cancel),
+        state.raw_capture_circuit.clone(),
+    )
+    .await
+    {
         Ok(summary) => {
             if summary.deferred {
                 debug!(
@@ -4757,7 +4791,7 @@ async fn prepare_raw_compression_inventory_reset(pool: &Pool<Sqlite>) -> Result<
     else {
         return Ok(false);
     };
-    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+    mark_retention_raw_inventory_reset_intent(pool).await?;
     drop(admission);
     Ok(true)
 }
@@ -5674,7 +5708,7 @@ pub(crate) async fn prune_old_invocation_details(
             );
             let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             if !raw_paths.is_empty() {
-                mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+                mark_retention_raw_inventory_reset_intent(pool).await?;
             }
             drop(admission);
             rows_pruned += group.len();
@@ -6097,7 +6131,7 @@ pub(crate) async fn archive_old_invocations(
             );
             let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             if !raw_paths.is_empty() {
-                mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+                mark_retention_raw_inventory_reset_intent(pool).await?;
             }
             drop(admission);
             rows_archived += group.len();
@@ -6440,7 +6474,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 let raw_paths =
                     filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
                 if !raw_paths.is_empty() {
-                    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+                    mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 drop(admission);
                 rows_archived += group.len();
