@@ -49,7 +49,7 @@
 ## Verification
 
 - `cargo fmt --all -- --check`, Linux `cargo check --locked --all-targets --all-features`, and Linux Clippy with `-D warnings` pass.
-- The `lightweight` profile passes 1118 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer; archive-specific recovery tests run in the disjoint archive-file-I/O profile.
+- The `lightweight` profile passes 1119 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer; archive-specific recovery tests run in the disjoint archive-file-I/O profile.
 - The `stateful-sqlite` profile passes 1305 tests, including P1 admission for failure persistence, prepared-schema re-entry, unmeasured status counts, due published work past 32 unexpired quarantines, and successful live-mirror ledger retirement.
 - The `archive-file-io` profile passes 268 tests, including full archive-column identity mismatch rollback, retry after publication failure, source/raw ownership retention, independent orphan cleanup, sanitized failure fingerprints, prepared-key failure attribution, the authoritative-manifest preservation guard, the republish-safe quarantine guard, admission-before-I/O legacy recovery, bounded directory-entry discovery, monotonic cursor advancement, the referenced-window and truncated-sibling starvation guards, the 32-file bound, cursor wrap for late earlier paths, and expired live-mirror cleanup without Summary proof.
 - The archive-file-I/O coverage also verifies expired live-mirror cleanup without Summary proof and bounded legacy identity reconciliation.

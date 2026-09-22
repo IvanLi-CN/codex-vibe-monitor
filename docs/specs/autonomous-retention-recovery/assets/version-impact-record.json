@@ -42,7 +42,7 @@
       "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission including unknown-length stream bounds and non-truncating suppression, hysteretic watermarks, bounded physical inventory reset after every raw-mutating maintenance entry point, sanitized startup recovery diagnostics, unmeasured-byte unknown semantics, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, additive status serialization, translated Storybook states, typecheck, lint, and production build.",
       "verified_at": "2026-09-22T19:30:00+08:00",
       "evidence": [
-        "lightweight profile: 1118 passed",
+        "lightweight profile: 1119 passed",
         "stateful-sqlite profile: 1305 passed, including raw-capture status serialization and schema re-entry",
         "archive-file-io profile: 264 passed, including raw residual no-enumeration regression and retention recovery coverage",
         "Web focused units: 10 passed; System Workspace Storybook interactions: 15 passed; typecheck, Biome check, and production build passed",
