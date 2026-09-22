@@ -3977,34 +3977,8 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 invalidate_system_status_cache(state.as_ref()).await;
                 return false;
             }
-            let touched_anything = summary.touched_anything();
-            if touched_anything && !summary.dry_run {
-                let task_run = tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => return false,
-                    result = begin_system_task_run_admitted(
-                        state.as_ref(),
-                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
-                        SystemTaskKind::RetentionArchive,
-                        trigger,
-                        Some("retention maintenance completed a write pass".to_string()),
-                    ) => result.ok(),
-                };
-                if let Some(handle) = task_run.as_ref() {
-                    let (brief, detail) = summarize_retention_run_for_system_task(&summary);
-                    let _ = finish_system_task_run_reliably(
-                        state.as_ref(),
-                        Some(cancel),
-                        handle,
-                        SystemTaskStatus::Success,
-                        Some(brief),
-                        Some(detail),
-                    )
-                    .await;
-                }
-            }
-            // A cold-compression rename changes the physical path as well. Reset the
-            // incremental inventory so it cannot count both the retired and new blob.
+            // Commit the bounded inventory reset before task bookkeeping or cancellation can
+            // return. Raw path mutations must never leave the monotonic inventory stale.
             let reset_pending = match crate::system_raw_payload_metrics_inventory_reset_pending(
                 &state.pool,
             )
@@ -4041,6 +4015,32 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         invalidate_system_status_cache(state.as_ref()).await;
                         return false;
                     }
+                }
+            }
+            let touched_anything = summary.touched_anything();
+            if touched_anything && !summary.dry_run {
+                let task_run = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return false,
+                    result = begin_system_task_run_admitted(
+                        state.as_ref(),
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+                        SystemTaskKind::RetentionArchive,
+                        trigger,
+                        Some("retention maintenance completed a write pass".to_string()),
+                    ) => result.ok(),
+                };
+                if let Some(handle) = task_run.as_ref() {
+                    let (brief, detail) = summarize_retention_run_for_system_task(&summary);
+                    let _ = finish_system_task_run_reliably(
+                        state.as_ref(),
+                        Some(cancel),
+                        handle,
+                        SystemTaskStatus::Success,
+                        Some(brief),
+                        Some(detail),
+                    )
+                    .await;
                 }
             }
             invalidate_system_status_cache(state.as_ref()).await;

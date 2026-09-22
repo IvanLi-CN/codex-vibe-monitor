@@ -266,6 +266,9 @@ pub(crate) async fn run() -> Result<()> {
         let summary =
             run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
                 .await?;
+        if !summary.dry_run && (summary.raw_files_compressed > 0 || summary.raw_files_removed > 0) {
+            let _ = mark_system_raw_payload_metrics_inventory_reset_pending(&pool, 128).await?;
+        }
         info!(?summary, "retention maintenance run-once finished");
         return Ok(());
     }

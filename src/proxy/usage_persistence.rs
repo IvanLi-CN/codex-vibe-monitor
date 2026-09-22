@@ -5516,12 +5516,12 @@ async fn replay_raw_overflow_spool_segments(
     .await
     {
         Ok(header) => header,
-        Err(err) => {
+        Err(_err) => {
             return RawPayloadMeta {
                 path: None,
                 size_bytes: 0,
                 truncated: true,
-                truncated_reason: Some(format!("spool_replay_failed:{err}")),
+                truncated_reason: Some("spool_replay_failed".to_string()),
             };
         }
     };
@@ -5583,7 +5583,7 @@ async fn replay_raw_overflow_spool_segments(
         .await
         {
             Ok(payload) => payload,
-            Err(err) => {
+            Err(_err) => {
                 drop(tx);
                 let _ = writer.await;
                 if let Some(reservation) = reservation {
@@ -5593,7 +5593,7 @@ async fn replay_raw_overflow_spool_segments(
                     path: None,
                     size_bytes: 0,
                     truncated: true,
-                    truncated_reason: Some(format!("spool_replay_failed:{err}")),
+                    truncated_reason: Some("spool_replay_failed".to_string()),
                 };
             }
         };
@@ -5605,18 +5605,18 @@ async fn replay_raw_overflow_spool_segments(
                 path: None,
                 size_bytes: 0,
                 truncated: true,
-                truncated_reason: Some("spool_replay_failed:raw writer closed".to_string()),
+                truncated_reason: Some("spool_replay_failed".to_string()),
             };
         }
     }
     drop(tx);
     let meta = match writer.await {
         Ok(meta) => meta,
-        Err(err) => RawPayloadMeta {
+        Err(_err) => RawPayloadMeta {
             path: None,
             size_bytes: 0,
             truncated: true,
-            truncated_reason: Some(format!("spool_replay_failed:{err}")),
+            truncated_reason: Some("spool_replay_failed".to_string()),
         },
     };
     if let Some(reservation) = reservation {
@@ -5647,8 +5647,11 @@ async fn recover_raw_overflow_spools_inner(
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return,
-        Err(err) => {
-            warn!(path = %directory.display(), error = %err, "failed to scan raw overflow spool directory");
+        Err(_) => {
+            warn!(
+                error_kind = "read_dir_failed",
+                "failed to scan raw overflow spool directory"
+            );
             return;
         }
     };
@@ -5667,8 +5670,11 @@ async fn recover_raw_overflow_spools_inner(
         .await
         {
             Ok(header) => header,
-            Err(err) => {
-                warn!(path = %path.display(), error = %err, "raw overflow spool is incomplete or corrupt; retaining for inspection");
+            Err(_) => {
+                warn!(
+                    error_kind = "segment_read_failed",
+                    "raw overflow spool is incomplete or corrupt; retaining for inspection"
+                );
                 if let Some(capture_key) = raw_overflow_spool_capture_key_from_path(&path) {
                     corrupt_captures.insert(capture_key);
                 }
@@ -5695,8 +5701,12 @@ async fn recover_raw_overflow_spools_inner(
         segments.sort_by_key(|(_, header)| header.segment_index);
         let header = match validate_raw_overflow_spool_segments(&segments) {
             Ok(header) => header,
-            Err(err) => {
-                warn!(error = %err, spool_segment_count = segments.len(), "raw overflow spool capture is incomplete or inconsistent; retaining for inspection");
+            Err(_) => {
+                warn!(
+                    error_kind = "segment_sequence_invalid",
+                    spool_segment_count = segments.len(),
+                    "raw overflow spool capture is incomplete or inconsistent; retaining for inspection"
+                );
                 continue;
             }
         };
@@ -5714,7 +5724,6 @@ async fn recover_raw_overflow_spools_inner(
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
             remove_raw_overflow_spool_segments(&paths);
             info!(
-                invoke_id = %header.invoke_id,
                 kind = %header.kind,
                 replay_count = 1,
                 spool_segment_count = paths.len(),
@@ -5722,7 +5731,6 @@ async fn recover_raw_overflow_spools_inner(
             );
         } else {
             warn!(
-                invoke_id = %header.invoke_id,
                 kind = %header.kind,
                 spool_segment_count = paths.len(),
                 reason = ?meta.truncated_reason,

@@ -511,7 +511,9 @@ async fn runtime_pressure_health_serializes_without_sql() {
         payload["rawCapture"]["state"].as_str(),
         Some("unknown" | "capturing" | "storage_suppressed")
     ));
-    assert!(payload["rawCapture"]["rawBytes"].is_u64());
+    assert!(
+        payload["rawCapture"]["rawBytes"].is_null() || payload["rawCapture"]["rawBytes"].is_u64()
+    );
     assert!(payload["rawCapture"]["reservedBytes"].is_u64());
     assert!(payload["rawCapture"]["rawCloseBytes"].is_u64());
     assert!(payload["rawCapture"]["rawResumeBytes"].is_u64());

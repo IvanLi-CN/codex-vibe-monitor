@@ -860,7 +860,7 @@ export const StatusRawCaptureSuppressed: Story = {
     await expect(panel).toHaveTextContent("已就绪");
     await expect(panel).toHaveTextContent("原始占用水位");
     await expect(panel).toHaveTextContent("文件系统水位");
-    await expect(panel).toHaveTextContent("增长中或未知");
+    await expect(panel).toHaveTextContent("增长中");
   },
 };
 

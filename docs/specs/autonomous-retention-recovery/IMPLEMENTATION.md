@@ -32,10 +32,11 @@
 - All memory, file-backed replay, overflow-spool, startup spool recovery, and asynchronous streaming capture entry points perform circuit admission before creating a raw file. Unknown-length streams extend their in-flight reservation by observed chunks before enqueueing them, while file-backed replay uses a bounded upper estimate. A suppressed capture returns no path with the stable `storage_suppressed` reason without setting the payload `truncated` flag, while proxy delivery and structured invocation persistence continue.
 - Successful writes settle the reservation using the actual file size; failed writes release it. Retention inventory reset remains the bounded source of truth after confirmed raw-file deletion, so raw paths are never enumerated from the request path. The orphan raw-file sweep does not participate in this circuit and is not an authorization to delete unlinked residual files.
 - Timestamped pool-attempt raw deletion contributes to the retention raw-file removal count, so the next bounded inventory reset cannot retain stale physical-byte accounting. Inventory batches log only low-cardinality circuit measurements and fixed watermarks.
+- One-shot retention, raw-compression CLI runs, and cancellation-sensitive background maintenance commit a bounded `resetting` inventory marker before returning after raw path mutations; the next startup/worker pass resumes the reset. Startup spool recovery logs retain only low-cardinality error kinds and payload kind, never paths or invocation identifiers.
 
 ### System Status
 
-- `/api/system/status` adds `runtimePressureHealth.rawCapture` with low-cardinality state/reason, translated inventory state, physical raw bytes, filesystem-available bytes, in-flight reservations, close/recovery watermarks, backlog trend, and update time. Missing fields remain optional and normalize to `unknown` in the Web client.
+- `/api/system/status` adds `runtimePressureHealth.rawCapture` with low-cardinality state/reason, translated inventory state, measured physical raw bytes, filesystem-available bytes, in-flight reservations, close/recovery watermarks, backlog trend, and update time. Unmeasured physical bytes remain absent and normalize to `unknown` in the Web client.
 - System Status renders capturing, storage-suppressed, and unknown states in the existing Runtime Pressure detail surface. Storybook interaction coverage exercises the suppressed filesystem-low and missing-field scenarios.
 
 ## Operational Boundaries

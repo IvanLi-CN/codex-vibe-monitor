@@ -812,7 +812,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                         ? t("system.status.runtimePressure.rawCapture.backlogUnknown")
                         : rawCapture.backlogNonGrowing
                           ? t("system.status.runtimePressure.rawCapture.backlogStable")
-                          : t("system.status.runtimePressure.rawCapture.backlogGrowing")
+                          : t("system.status.runtimePressure.rawCapture.backlogGrowingKnown")
                     }
                   />
                 </div>

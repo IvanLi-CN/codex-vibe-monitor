@@ -24,7 +24,7 @@ pub(crate) struct RawCaptureCircuitSnapshot {
     pub(crate) state: String,
     pub(crate) reason: Option<String>,
     pub(crate) inventory_state: String,
-    pub(crate) raw_bytes: u64,
+    pub(crate) raw_bytes: Option<u64>,
     pub(crate) available_bytes: Option<u64>,
     pub(crate) reserved_bytes: u64,
     pub(crate) expired_backlog_count: Option<u64>,
@@ -42,12 +42,13 @@ struct RawCaptureCircuitState {
     state: &'static str,
     reason: Option<&'static str>,
     inventory_state: String,
-    raw_bytes: u64,
+    raw_bytes: Option<u64>,
     available_bytes: Option<u64>,
     reserved_bytes: u64,
     expired_backlog_count: Option<u64>,
     backlog_non_growing: Option<bool>,
     updated_at: Option<String>,
+    admission_initialized: bool,
 }
 
 impl Default for RawCaptureCircuitState {
@@ -69,12 +70,13 @@ impl Default for RawCaptureCircuitState {
             } else {
                 "preparing".to_string()
             },
-            raw_bytes: 0,
+            raw_bytes: test_mode.then_some(0),
             available_bytes: test_mode.then_some(u64::MAX),
             reserved_bytes: 0,
             expired_backlog_count: None,
             backlog_non_growing: test_mode.then_some(true),
             updated_at: None,
+            admission_initialized: test_mode,
         }
     }
 }
@@ -131,7 +133,7 @@ impl RawCaptureCircuitBreaker {
             .lock()
             .expect("raw capture circuit mutex poisoned");
         state.inventory_state = inventory_state.to_string();
-        state.raw_bytes = raw_bytes;
+        state.raw_bytes = Some(raw_bytes);
         state.available_bytes = if cfg!(test) {
             available_bytes.or(state.available_bytes)
         } else {
@@ -145,11 +147,20 @@ impl RawCaptureCircuitBreaker {
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
             return;
         }
-        state.state = match circuit_state {
-            Some(CIRCUIT_STATE_SUPPRESSED) => CIRCUIT_STATE_SUPPRESSED,
-            Some(CIRCUIT_STATE_CAPTURING) => CIRCUIT_STATE_CAPTURING,
-            _ => CIRCUIT_STATE_UNKNOWN,
+        let Some(persisted_state) = circuit_state
+            .filter(|value| matches!(*value, CIRCUIT_STATE_SUPPRESSED | CIRCUIT_STATE_CAPTURING))
+        else {
+            state.state = CIRCUIT_STATE_UNKNOWN;
+            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+            state.admission_initialized = false;
+            return;
         };
+        state.state = match persisted_state {
+            CIRCUIT_STATE_SUPPRESSED => CIRCUIT_STATE_SUPPRESSED,
+            CIRCUIT_STATE_CAPTURING => CIRCUIT_STATE_CAPTURING,
+            _ => unreachable!("persisted state was validated above"),
+        };
+        state.admission_initialized = true;
         state.reason = normalize_reason(circuit_reason);
         evaluate_locked(&mut state, 0, false);
     }
@@ -174,7 +185,8 @@ impl RawCaptureCircuitBreaker {
         }
         state.expired_backlog_count = expired_backlog_count;
         state.inventory_state = inventory_state.to_string();
-        state.raw_bytes = raw_bytes;
+        state.admission_initialized = true;
+        state.raw_bytes = Some(raw_bytes);
         state.available_bytes = if cfg!(test) {
             available_bytes.or(state.available_bytes)
         } else {
@@ -195,6 +207,7 @@ impl RawCaptureCircuitBreaker {
             .lock()
             .expect("raw capture circuit mutex poisoned");
         state.inventory_state = "preparing".to_string();
+        state.admission_initialized = false;
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
         state.updated_at = Some(Utc::now().to_rfc3339());
@@ -214,6 +227,11 @@ impl RawCaptureCircuitBreaker {
         if state.inventory_state != "ready" {
             state.state = CIRCUIT_STATE_UNKNOWN;
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+            return Err(RawCaptureAdmissionError {
+                reason: CIRCUIT_REASON_INVENTORY_UNREADY,
+            });
+        }
+        if !state.admission_initialized {
             return Err(RawCaptureAdmissionError {
                 reason: CIRCUIT_REASON_INVENTORY_UNREADY,
             });
@@ -245,7 +263,9 @@ impl RawCaptureCircuitBreaker {
             .state
             .lock()
             .expect("raw capture circuit mutex poisoned");
-        state.raw_bytes = state.raw_bytes.saturating_sub(bytes);
+        if let Some(raw_bytes) = state.raw_bytes.as_mut() {
+            *raw_bytes = raw_bytes.saturating_sub(bytes);
+        }
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
         }
@@ -259,7 +279,9 @@ impl RawCaptureCircuitBreaker {
             .lock()
             .expect("raw capture circuit mutex poisoned");
         state.reserved_bytes = state.reserved_bytes.saturating_sub(reserved_bytes);
-        state.raw_bytes = state.raw_bytes.saturating_add(actual_bytes);
+        if let Some(raw_bytes) = state.raw_bytes.as_mut() {
+            *raw_bytes = raw_bytes.saturating_add(actual_bytes);
+        }
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
         }
@@ -289,6 +311,11 @@ impl RawCaptureCircuitBreaker {
         if state.inventory_state != "ready" {
             state.state = CIRCUIT_STATE_UNKNOWN;
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+            return Err(RawCaptureAdmissionError {
+                reason: CIRCUIT_REASON_INVENTORY_UNREADY,
+            });
+        }
+        if !state.admission_initialized {
             return Err(RawCaptureAdmissionError {
                 reason: CIRCUIT_REASON_INVENTORY_UNREADY,
             });
@@ -361,6 +388,11 @@ fn evaluate_locked(state: &mut RawCaptureCircuitState, requested_bytes: u64, reo
         state.reason = Some(CIRCUIT_REASON_FILESYSTEM_LOW);
         return;
     }
+    if state.raw_bytes.is_none() {
+        state.state = CIRCUIT_STATE_UNKNOWN;
+        state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+        return;
+    }
     if state.backlog_non_growing != Some(true) {
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
@@ -368,6 +400,7 @@ fn evaluate_locked(state: &mut RawCaptureCircuitState, requested_bytes: u64, reo
     }
     let projected_raw = state
         .raw_bytes
+        .unwrap_or_default()
         .saturating_add(state.reserved_bytes)
         .saturating_add(requested_bytes);
     let raw_limited = projected_raw >= RAW_CAPTURE_CLOSE_BYTES;
@@ -379,7 +412,10 @@ fn evaluate_locked(state: &mut RawCaptureCircuitState, requested_bytes: u64, reo
     });
     if state.state == CIRCUIT_STATE_SUPPRESSED || reopening {
         let backlog_clear = state.backlog_non_growing == Some(true);
-        let resumed = state.raw_bytes.saturating_add(state.reserved_bytes)
+        let resumed = state
+            .raw_bytes
+            .unwrap_or_default()
+            .saturating_add(state.reserved_bytes)
             < RAW_CAPTURE_RESUME_BYTES
             && state.available_bytes.is_some_and(|bytes| {
                 bytes.saturating_sub(state.reserved_bytes) >= RAW_CAPTURE_RESUME_AVAILABLE_BYTES
@@ -450,7 +486,7 @@ mod tests {
         let circuit = Arc::new(RawCaptureCircuitBreaker::new(PathBuf::from("/")));
         circuit.hydrate(
             "ready",
-            None,
+            Some(CIRCUIT_STATE_CAPTURING),
             None,
             raw_bytes,
             Some(available_bytes),
@@ -515,6 +551,29 @@ mod tests {
             circuit
                 .admit(1)
                 .expect_err("unknown backlog must suppress capture")
+                .reason,
+            CIRCUIT_REASON_INVENTORY_UNREADY
+        );
+    }
+
+    #[test]
+    fn unrecognized_persisted_state_fails_closed() {
+        let circuit = Arc::new(RawCaptureCircuitBreaker::new(PathBuf::from("/")));
+        circuit.hydrate(
+            "ready",
+            Some("garbled"),
+            None,
+            0,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+            Some(true),
+            None,
+        );
+        assert_eq!(circuit.snapshot().state, CIRCUIT_STATE_UNKNOWN);
+        assert_eq!(
+            circuit
+                .admit(1)
+                .expect_err("unrecognized state must suppress capture")
                 .reason,
             CIRCUIT_REASON_INVENTORY_UNREADY
         );

@@ -18,6 +18,10 @@ pub(crate) async fn run_cli_command(
                 )
                 .await?;
                 let backlog = load_raw_compression_backlog_snapshot(pool, config).await?;
+                if !opts.dry_run && summary.files_compressed > 0 {
+                    let _ =
+                        mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+                }
                 info!(
                     dry_run = opts.dry_run,
                     ?summary,
