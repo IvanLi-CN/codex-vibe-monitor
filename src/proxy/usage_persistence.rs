@@ -4779,6 +4779,17 @@ pub(crate) fn spawn_raw_payload_file_write(
             truncated_reason: None,
         });
     }
+    let reservation = match state.raw_capture_circuit.admit(bytes.len() as u64) {
+        Ok(reservation) => reservation,
+        Err(_) => {
+            return PendingRawPayloadWrite::Ready(RawPayloadMeta {
+                path: None,
+                size_bytes: bytes.len() as i64,
+                truncated: true,
+                truncated_reason: Some("storage_suppressed".to_string()),
+            });
+        }
+    };
 
     let semaphore = state.proxy_raw_async_semaphore.clone();
     let invoke_id = invoke_id.to_string();
@@ -4806,6 +4817,7 @@ pub(crate) fn spawn_raw_payload_file_write(
         return PendingRawPayloadWrite::Task(tokio::spawn(async move {
             let mut spool = spool;
             if let Err(err) = spool.append(&bytes_for_spool) {
+                reservation.finish(0);
                 return RawPayloadMeta {
                     path: None,
                     size_bytes: bytes_for_spool.len() as i64,
@@ -4817,7 +4829,9 @@ pub(crate) fn spawn_raw_payload_file_write(
                     }),
                 };
             }
-            spool.finish(bytes_for_spool.len() as i64).await
+            let meta = spool.finish(bytes_for_spool.len() as i64).await;
+            reservation.finish(raw_payload_stored_bytes(&meta));
+            meta
         }));
     }
 
@@ -4829,7 +4843,9 @@ pub(crate) fn spawn_raw_payload_file_write(
             .await
             .expect("raw writer semaphore is live");
         let _permit = permit;
-        store_raw_payload_file(&config, &invoke_id, kind, bytes).await
+        let meta = store_raw_payload_file(&config, &invoke_id, kind, bytes).await;
+        reservation.finish(raw_payload_stored_bytes(&meta));
+        meta
     }))
 }
 
@@ -4854,6 +4870,17 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
             })
         }
         PoolReplayBodySnapshot::File { temp_file, size } => {
+            let reservation = match state.raw_capture_circuit.admit(size as u64) {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    return PendingRawPayloadWrite::Ready(RawPayloadMeta {
+                        path: None,
+                        size_bytes: size as i64,
+                        truncated: true,
+                        truncated_reason: Some("storage_suppressed".to_string()),
+                    });
+                }
+            };
             let config = state.config.clone();
             let semaphore = state.proxy_raw_async_semaphore.clone();
             let invoke_id = invoke_id.to_string();
@@ -4864,10 +4891,22 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
                     .acquire_owned()
                     .await
                     .expect("raw writer semaphore is live");
-                store_raw_payload_snapshot_file(&config, &invoke_id, kind, source_path, size).await
+                let meta =
+                    store_raw_payload_snapshot_file(&config, &invoke_id, kind, source_path, size)
+                        .await;
+                reservation.finish(raw_payload_stored_bytes(&meta));
+                meta
             }))
         }
     }
+}
+
+fn raw_payload_stored_bytes(meta: &RawPayloadMeta) -> u64 {
+    meta.path
+        .as_deref()
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .unwrap_or_default()
 }
 
 pub(crate) fn raw_payload_path_for_kind(
@@ -5644,6 +5683,7 @@ pub(crate) struct AsyncStreamingRawPayloadWriter {
     local_truncated_reason: Option<String>,
     local_truncated: bool,
     spool: Option<RawOverflowSpool>,
+    reservation: Option<RawCaptureReservation>,
 }
 
 static RAW_ASYNC_WRITER_QUEUED_BYTES: std::sync::atomic::AtomicUsize =
@@ -5701,6 +5741,17 @@ impl AsyncStreamingRawPayloadWriter {
         enabled: bool,
         wire_content_encoding: Option<&str>,
     ) -> Self {
+        Self::new_with_expected_size(state, invoke_id, kind, enabled, wire_content_encoding, None)
+    }
+
+    pub(crate) fn new_with_expected_size(
+        state: &AppState,
+        invoke_id: &str,
+        kind: &'static str,
+        enabled: bool,
+        wire_content_encoding: Option<&str>,
+        expected_size_bytes: Option<u64>,
+    ) -> Self {
         if !enabled {
             return Self {
                 tx: None,
@@ -5709,8 +5760,27 @@ impl AsyncStreamingRawPayloadWriter {
                 local_truncated_reason: None,
                 local_truncated: false,
                 spool: None,
+                reservation: None,
             };
         }
+
+        let reservation = match state
+            .raw_capture_circuit
+            .admit(expected_size_bytes.unwrap_or_default())
+        {
+            Ok(reservation) => reservation,
+            Err(_) => {
+                return Self {
+                    tx: None,
+                    meta_rx: None,
+                    observed_size_bytes: 0,
+                    local_truncated_reason: Some("storage_suppressed".to_string()),
+                    local_truncated: true,
+                    spool: None,
+                    reservation: None,
+                };
+            }
+        };
 
         let path = raw_payload_path_for_kind(
             &state.config.resolved_proxy_raw_dir(),
@@ -5750,9 +5820,11 @@ impl AsyncStreamingRawPayloadWriter {
                         local_truncated_reason: None,
                         local_truncated: false,
                         spool: Some(spool),
+                        reservation: Some(reservation),
                     }
                 }
                 Err(err) => {
+                    reservation.finish(0);
                     warn!(
                         capture_path = "capture_unavailable",
                         capture_unavailable_reason = "spool_capacity",
@@ -5771,6 +5843,7 @@ impl AsyncStreamingRawPayloadWriter {
                         ),
                         local_truncated: true,
                         spool: None,
+                        reservation: None,
                     }
                 }
             };
@@ -5794,6 +5867,7 @@ impl AsyncStreamingRawPayloadWriter {
                 codec,
                 rx,
             );
+            reservation.finish(raw_payload_stored_bytes(&meta));
             let _ = meta_tx.send(meta);
         });
 
@@ -5804,6 +5878,7 @@ impl AsyncStreamingRawPayloadWriter {
             local_truncated_reason: None,
             local_truncated: false,
             spool: None,
+            reservation: None,
         }
     }
 
@@ -5854,7 +5929,11 @@ impl AsyncStreamingRawPayloadWriter {
     pub(crate) async fn finish(mut self) -> RawPayloadMeta {
         self.tx.take();
         let mut meta = if let Some(spool) = self.spool.take() {
-            spool.finish(self.observed_size_bytes).await
+            let meta = spool.finish(self.observed_size_bytes).await;
+            if let Some(reservation) = self.reservation.take() {
+                reservation.finish(raw_payload_stored_bytes(&meta));
+            }
+            meta
         } else {
             match self.meta_rx.take() {
                 Some(meta_rx) => match meta_rx.await {
@@ -6503,6 +6582,7 @@ mod raw_overflow_spool_tests {
             local_truncated_reason: None,
             local_truncated: false,
             spool: None,
+            reservation: None,
         };
 
         writer.append(b"first");

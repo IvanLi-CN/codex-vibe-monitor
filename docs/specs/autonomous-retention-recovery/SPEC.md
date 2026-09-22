@@ -34,7 +34,7 @@
 
 ### REQ-ARR-003
 
-- The system MUST make archive finalization, raw-owner release, raw orphan sweeping, and Prepared Archive reconciliation independently resumable stages of one Retention Recovery lifecycle.
+- The system MUST make archive finalization, raw-owner release, filesystem-safe inventory reset, and Prepared Archive reconciliation independently resumable stages of one Retention Recovery lifecycle. PR2 MUST NOT enumerate or delete unlinked raw residuals; filesystem availability remains the safety signal for those files.
 - A failure in one stage MUST report that stage and schedule bounded retry/backoff without preventing a separately safe stage from making progress.
 - All database mutations in this lifecycle MUST retain maintenance write admission and MUST yield to P1 terminal and interactive proxy writes.
 
@@ -124,6 +124,28 @@
   image:
   ![Mobile System Status retention recovery](./assets/retention-recovery-mobile.png)
 - Healthy, recovering, degraded, and missing-field `unknown` states are covered by System Workspace Storybook interactions.
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x900
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  state: storage-suppressed raw capture with filesystem-low reason
+  evidence_note: shows the raw capture circuit state, inventory, physical raw usage, available space, reservation, and backlog trend in Runtime Pressure.
+  image:
+  ![Desktop System Status raw capture suppressed](./assets/raw-capture-suppressed-desktop.png)
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x900
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  state: missing raw capture diagnostic fields normalized to unknown
+  evidence_note: verifies additive compatibility when older backends do not publish the raw capture contract.
+  image:
+  ![Desktop System Status raw capture unknown](./assets/raw-capture-unknown-desktop.png)
 
 ## References
 

@@ -2033,6 +2033,9 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -2709,6 +2712,9 @@ async fn quota_latest_returns_degraded_when_empty() {
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

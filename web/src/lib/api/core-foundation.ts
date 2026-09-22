@@ -2331,6 +2331,18 @@ export interface RuntimePressureRetentionRecoveryHealth {
   failureFingerprint?: string;
 }
 
+export interface RuntimePressureRawCaptureHealth {
+  state: string;
+  reason?: string;
+  inventoryState: string;
+  rawBytes?: number;
+  availableBytes?: number;
+  reservedBytes?: number;
+  expiredBacklogCount?: number;
+  backlogNonGrowing?: boolean;
+  updatedAt?: string;
+}
+
 export interface RuntimePressureDashboardProjectionHealth {
   mode: string;
   state: string;
@@ -2450,6 +2462,7 @@ export interface RuntimePressureHealth {
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
   retentionWriteHealth?: RuntimePressureRetentionWriteHealth;
   retentionRecovery?: RuntimePressureRetentionRecoveryHealth;
+  rawCapture?: RuntimePressureRawCaptureHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
   dashboardHotTopics?: RuntimePressureDashboardHotTopicsHealth;
@@ -4480,6 +4493,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const dashboardHotTopics = payload.dashboardHotTopics as Record<string, unknown> | undefined;
   const retentionWriteHealth = payload.retentionWriteHealth as Record<string, unknown> | undefined;
   const retentionRecovery = payload.retentionRecovery as Record<string, unknown> | undefined;
+  const rawCapture = payload.rawCapture as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
   const optionalCount = (value: unknown) => {
@@ -4608,6 +4622,20 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       nextRetryAt: optionalString(retentionRecovery?.nextRetryAt),
       failureStage: optionalString(retentionRecovery?.failureStage),
       failureFingerprint: optionalString(retentionRecovery?.failureFingerprint),
+    },
+    rawCapture: {
+      state: optionalString(rawCapture?.state) ?? "unknown",
+      reason: optionalString(rawCapture?.reason),
+      inventoryState: optionalString(rawCapture?.inventoryState) ?? "unknown",
+      rawBytes: optionalCount(rawCapture?.rawBytes),
+      availableBytes: optionalCount(rawCapture?.availableBytes),
+      reservedBytes: optionalCount(rawCapture?.reservedBytes),
+      expiredBacklogCount: optionalCount(rawCapture?.expiredBacklogCount),
+      backlogNonGrowing:
+        typeof rawCapture?.backlogNonGrowing === "boolean"
+          ? rawCapture.backlogNonGrowing
+          : undefined,
+      updatedAt: optionalString(rawCapture?.updatedAt),
     },
     dashboardProjection: {
       mode: optionalString(projection.mode) ?? "unknown",

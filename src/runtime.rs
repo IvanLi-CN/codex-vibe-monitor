@@ -353,6 +353,9 @@ pub(crate) async fn run() -> Result<()> {
         semaphore: semaphore.clone(),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore,
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy,
@@ -393,6 +396,9 @@ pub(crate) async fn run() -> Result<()> {
     // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
     warm_dashboard_runtime_projection(state.as_ref()).await;
+    if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
+        warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
+    }
     spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());

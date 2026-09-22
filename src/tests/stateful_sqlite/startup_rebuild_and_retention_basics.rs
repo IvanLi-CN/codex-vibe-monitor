@@ -4044,9 +4044,9 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     assert_eq!(summary.invocation_details_pruned, 1);
     assert_eq!(summary.archive_batches_touched, 1);
     assert_eq!(summary.raw_files_removed, 1);
-    assert_eq!(summary.orphan_raw_files_removed, 1);
+    assert_eq!(summary.orphan_raw_files_removed, 0);
     assert!(!response_raw.exists());
-    assert!(!orphan.exists());
+    assert!(orphan.exists());
 
     let row = sqlx::query(
         r#"

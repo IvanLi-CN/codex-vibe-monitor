@@ -2249,6 +2249,7 @@ pub(crate) struct AppState {
     pub(crate) semaphore: Arc<Semaphore>,
     pub(crate) proxy_request_in_flight: Arc<AtomicUsize>,
     pub(crate) proxy_raw_async_semaphore: Arc<Semaphore>,
+    pub(crate) raw_capture_circuit: Arc<RawCaptureCircuitBreaker>,
     pub(crate) proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     pub(crate) proxy_model_settings_update_lock: Arc<Mutex<()>>,
     pub(crate) forward_proxy: Arc<Mutex<ForwardProxyManager>>,

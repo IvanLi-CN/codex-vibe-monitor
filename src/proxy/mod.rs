@@ -12,6 +12,7 @@ mod dispatch;
 mod failover;
 mod payload_utils;
 mod raw_capture;
+mod raw_capture_circuit;
 #[expect(
     clippy::too_many_arguments,
     clippy::large_enum_variant,
@@ -40,6 +41,7 @@ pub(crate) use dispatch::*;
 pub(crate) use failover::*;
 pub(crate) use payload_utils::*;
 pub(crate) use raw_capture::*;
+pub(crate) use raw_capture_circuit::*;
 pub(crate) use request_entry::*;
 pub(crate) use route_selection::*;
 pub(crate) use stream_gate::*;

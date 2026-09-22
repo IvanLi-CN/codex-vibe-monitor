@@ -25,14 +25,23 @@
 - Missing or partial backlog/prepared/quarantined counters remain unknown in the UI rather than being presented as zero.
 - Status fields, UI copy, and structured recovery logs expose the recovery snapshot fields without raw content, SQL/bindings, account identifiers, or complete paths.
 
-## PR2 Boundary
+## PR2: Raw Capture Circuit Breaker
 
-PR1 does not implement the aggregate physical raw inventory or the raw-capture circuit breaker. The 16 GiB / 12 GiB raw-store thresholds and 20 GiB / 30 GiB filesystem watermarks, their capture suppression reason, and their System Status fields remain in `SPEC.md` and are reserved for the serial PR2 based on PR1's merge commit.
+- `system_raw_payload_metrics` keeps the existing bounded invocation/blob-link inventory and now persists the additive circuit state, suppression reason, filesystem-available measurement, expired-backlog count/trend, and circuit update time. The migration is idempotent and earlier binaries ignore the new columns.
+- `RawCaptureCircuitBreaker` is process-local for in-flight reservations and hydrated from the durable inventory at startup. It starts fail-closed until the bounded inventory is ready, uses `statvfs` for the constant-time filesystem check, and applies the 16 GiB / 20 GiB close watermarks and 12 GiB / 30 GiB recovery watermarks with a non-growing expired-backlog requirement.
+- All memory, file-backed replay, overflow-spool, and asynchronous streaming capture entry points perform circuit admission before creating a raw file. A suppressed capture returns no path with the stable `storage_suppressed` reason while proxy delivery and structured invocation persistence continue.
+- Successful writes settle the reservation using the actual file size; failed writes release it. Retention inventory reset remains the bounded source of truth after confirmed raw-file deletion, so raw paths are never enumerated from the request path. The orphan raw-file sweep does not participate in this circuit and is not an authorization to delete unlinked residual files.
+
+### System Status
+
+- `/api/system/status` adds `runtimePressureHealth.rawCapture` with low-cardinality state/reason, inventory state, physical raw bytes, filesystem-available bytes, in-flight reservations, backlog trend, and update time. Missing fields remain optional and normalize to `unknown` in the Web client.
+- System Status renders capturing, storage-suppressed, and unknown states in the existing Runtime Pressure detail surface. Storybook interaction coverage exercises the suppressed filesystem-low and missing-field scenarios.
 
 ## Operational Boundaries
 
 - Recovery requires no operator command, manual deletion, process restart, or `VACUUM`.
 - The archive file format and deterministic path contract are unchanged. SQLite row deletion may make pages reusable but does not guarantee a smaller database file.
+- Unlinked raw residuals are not enumerated or deleted by the circuit-breaker implementation; filesystem-available space remains the safety boundary for such residuals.
 - This work reduces retention failure amplification; it does not establish a cause for observed upstream throughput changes or the previously observed approximately 50 GiB project footprint.
 
 ## Verification

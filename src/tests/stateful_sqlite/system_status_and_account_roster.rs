@@ -507,6 +507,24 @@ async fn runtime_pressure_health_serializes_without_sql() {
         payload["retentionRecovery"]["state"].as_str(),
         Some("unknown" | "healthy" | "recovering" | "deferred" | "degraded")
     ));
+    assert!(matches!(
+        payload["rawCapture"]["state"].as_str(),
+        Some("unknown" | "capturing" | "storage_suppressed")
+    ));
+    assert!(payload["rawCapture"]["rawBytes"].is_u64());
+    assert!(payload["rawCapture"]["reservedBytes"].is_u64());
+    let raw_capture_fields = payload["rawCapture"]
+        .as_object()
+        .expect("serialize raw capture as a bounded object");
+    for field in raw_capture_fields.keys() {
+        let normalized = field.to_ascii_lowercase();
+        assert!(
+            !["payload", "sql", "account", "path"]
+                .iter()
+                .any(|sensitive| normalized.contains(sensitive)),
+            "raw capture status must not add sensitive field {field}"
+        );
+    }
     assert!(
         payload["retentionRecovery"]["preparedCount"].is_null()
             || payload["retentionRecovery"]["preparedCount"].is_u64()
@@ -1702,6 +1720,9 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -2045,6 +2066,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
         semaphore: state.semaphore.clone(),
         proxy_request_in_flight: state.proxy_request_in_flight.clone(),
         proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
+        raw_capture_circuit: state.raw_capture_circuit.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -2108,6 +2130,7 @@ fn clone_state_with_retry_delay_overrides(
         semaphore: state.semaphore.clone(),
         proxy_request_in_flight: state.proxy_request_in_flight.clone(),
         proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
+        raw_capture_circuit: state.raw_capture_circuit.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -2199,6 +2222,9 @@ pub(crate) async fn test_state_from_existing_pool(
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

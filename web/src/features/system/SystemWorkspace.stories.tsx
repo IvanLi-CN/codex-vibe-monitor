@@ -114,6 +114,15 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       expiredBacklogCount: 0,
       lastProgressAt: "2026-06-22T08:00:00Z",
     },
+    rawCapture: {
+      state: "capturing",
+      inventoryState: "ready",
+      rawBytes: 8_589_934_592,
+      availableBytes: 64_424_509_184,
+      reservedBytes: 0,
+      expiredBacklogCount: 0,
+      backlogNonGrowing: true,
+    },
     dashboardProjection: {
       mode: "auto",
       state: "healthy",
@@ -815,6 +824,56 @@ export const StatusRetentionRecoveryDegraded: Story = {
     const recovery = canvas.getByTestId("system-status-retention-recovery");
     await expect(recovery).toHaveTextContent("最终化");
     await expect(recovery).toHaveTextContent("失败阶段 状态刷新 · 7d38a1c0b4c8e2f1");
+  },
+};
+
+export const StatusRawCaptureSuppressed: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: {
+      ...STORYBOOK_SYSTEM_STATUS,
+      runtimePressureHealth: {
+        ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!,
+        state: "degraded",
+        rawCapture: {
+          ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!.rawCapture!,
+          state: "storage_suppressed",
+          reason: "filesystem_low",
+          availableBytes: 18_000_000_000,
+          reservedBytes: 4_194_304,
+          backlogNonGrowing: false,
+        },
+      },
+    } satisfies SystemStatusResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const panel = canvas.getByTestId("system-status-raw-capture");
+    await expect(panel).toHaveTextContent("已抑制落盘");
+    await expect(panel).toHaveTextContent("文件系统可用空间不足");
+  },
+};
+
+export const StatusRawCaptureUnknown: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: {
+      ...STORYBOOK_SYSTEM_STATUS,
+      runtimePressureHealth: {
+        ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!,
+        rawCapture: undefined,
+      },
+    } satisfies SystemStatusResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const panel = canvas.getByTestId("system-status-raw-capture");
+    await expect(panel).toHaveTextContent("未知");
+    await expect(panel).toHaveTextContent("未知");
   },
 };
 

@@ -3431,84 +3431,12 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<usize> {
-    let raw_dir = config.resolved_proxy_raw_dir();
-    if !raw_dir.exists() {
-        return Ok(0);
-    }
-
-    let referenced = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT path
-        FROM (
-            SELECT request_raw_path AS path
-            FROM codex_invocations
-            WHERE request_raw_path IS NOT NULL
-            UNION
-            SELECT response_raw_path AS path
-            FROM codex_invocations
-            WHERE response_raw_path IS NOT NULL
-            UNION
-            SELECT response_raw_path AS path
-            FROM pool_upstream_request_attempts
-            WHERE response_raw_path IS NOT NULL
-        )
-        WHERE path IS NOT NULL
-        "#,
-    )
-    .fetch_all(pool)
-    .await?;
-
-    let mut referenced_paths = HashSet::new();
-    for path in referenced {
-        for candidate in resolved_raw_path_candidates(&path, raw_path_fallback_root) {
-            referenced_paths.insert(candidate);
-        }
-    }
-
-    let min_file_age = Duration::from_secs(DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS);
-    let mut removed = 0usize;
-    for entry in fs::read_dir(&raw_dir)
-        .with_context(|| format!("failed to read raw payload directory {}", raw_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let age = match entry.metadata().and_then(|metadata| metadata.modified()) {
-            Ok(modified) => modified.elapsed().unwrap_or_default(),
-            Err(err) => {
-                warn!(
-                    error_kind = %err.kind(),
-                    "failed to inspect orphan raw payload file age"
-                );
-                continue;
-            }
-        };
-        if age < min_file_age {
-            continue;
-        }
-        let normalized = normalize_path_for_compare(&path);
-        if referenced_paths.contains(&normalized) {
-            continue;
-        }
-        if dry_run {
-            removed += 1;
-            continue;
-        }
-        match fs::remove_file(&path) {
-            Ok(_) => removed += 1,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => {
-                warn!(
-                    error_kind = %err.kind(),
-                    "failed to remove orphan raw payload file"
-                );
-            }
-        }
-    }
-
-    Ok(removed)
+    let _ = (pool, config, raw_path_fallback_root, dry_run);
+    debug!(
+        maintenance_stage = "raw_orphan_sweep",
+        "raw orphan sweep is disabled; unlinked residuals are guarded by filesystem pressure"
+    );
+    Ok(0)
 }
 
 #[path = "hourly_rollup_archive_support.rs"]

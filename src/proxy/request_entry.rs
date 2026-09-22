@@ -718,6 +718,13 @@ impl ProxyUpstreamResponseBody {
         }
     }
 
+    pub(crate) fn content_length(&self) -> Option<u64> {
+        self.headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+    }
+
     pub(crate) async fn into_bytes(self) -> Result<Bytes, String> {
         match self {
             Self::Reqwest(response) => response.bytes().await.map_err(|err| err.to_string()),

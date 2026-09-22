@@ -374,7 +374,7 @@ async fn retention_orphan_sweep_skips_fresh_raw_files() {
 }
 
 #[tokio::test]
-async fn retention_recovery_persistence_failure_does_not_block_orphan_sweep() {
+async fn retention_recovery_persistence_failure_does_not_scan_orphan_raw_files() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-recovery-orphan-independence").await;
     let orphan = config.proxy_raw_dir.join("aged-orphan.bin");
@@ -410,8 +410,8 @@ async fn retention_recovery_persistence_failure_does_not_block_orphan_sweep() {
     );
 
     assert!(
-        !orphan.exists(),
-        "orphan sweep must run even when reconciliation and failure persistence fail"
+        orphan.exists(),
+        "unlinked raw residuals remain untouched while recovery fails"
     );
     let archived_attempts: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'forward_proxy_attempts'",
@@ -516,7 +516,7 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
         run_data_retention_maintenance(&pool, &config, Some(false), None)
             .await
             .expect("retention should continue after valid published recovery reconciliation");
-    assert_eq!(published_recovery_summary.orphan_raw_files_removed, 1);
+    assert_eq!(published_recovery_summary.orphan_raw_files_removed, 0);
     let published_reconciled_state: String = sqlx::query_scalar(
         "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
     )
@@ -537,8 +537,11 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("retention should continue after archive finalization failure");
-    assert_eq!(summary.orphan_raw_files_removed, 1);
-    assert!(!orphan_path.exists(), "safe orphan cleanup is independent");
+    assert_eq!(summary.orphan_raw_files_removed, 0);
+    assert!(
+        orphan_path.exists(),
+        "unlinked raw residual remains untouched"
+    );
     assert!(raw_path.exists(), "source-owned raw data remains available");
     let reconciled_state: String = sqlx::query_scalar(
         "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
@@ -1078,7 +1081,7 @@ async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
+async fn retention_orphan_sweep_does_not_enumerate_raw_directories() {
     let _guard = APP_CONFIG_ENV_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("retention-orphan-db-parent");
     let db_root = temp_dir.join("db-root");
@@ -1114,10 +1117,10 @@ async fn retention_orphan_sweep_anchors_relative_raw_dir_to_database_parent() {
         .await
         .expect("run orphan sweep");
 
-    assert_eq!(removed, 1);
+    assert_eq!(removed, 0);
     assert!(
-        !anchored_orphan.exists(),
-        "orphan sweep should clean the database-anchored raw dir"
+        anchored_orphan.exists(),
+        "unlinked raw residuals remain in place"
     );
     assert!(
         cwd_orphan.exists(),
@@ -1160,7 +1163,7 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
     assert_eq!(summary.invocation_rows_archived, 1);
     assert_eq!(summary.archive_batches_touched, 1);
     assert_eq!(summary.raw_files_removed, 1);
-    assert_eq!(summary.orphan_raw_files_removed, 1);
+    assert_eq!(summary.orphan_raw_files_removed, 0);
     assert!(response_raw.exists());
     assert!(orphan.exists());
 

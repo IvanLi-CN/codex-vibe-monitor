@@ -2,13 +2,13 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Add durable prepared-archive recovery state with full archive-column source identity and a resumable legacy archive reconciliation cursor.",
-    "release_unit_description": "Autonomous retention recovery PR1.",
+    "description": "Add durable prepared-archive recovery state, a resumable legacy archive reconciliation cursor, and additive raw-capture circuit state over the bounded physical inventory.",
+    "release_unit_description": "Autonomous retention recovery and raw capture circuit breaker.",
     "version_impact": "patch"
   },
   "durable_state": {
-    "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, artifact digest/size, bounded retry/quarantine state, and legacy reconciliation cursor.",
-    "storage_implementation": "SQLite tables retention_prepared_archives and retention_recovery_cursors.",
+    "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, artifact digest/size, bounded retry/quarantine state, legacy reconciliation cursor, and additive raw-capture circuit measurements.",
+    "storage_implementation": "SQLite tables retention_prepared_archives and retention_recovery_cursors plus additive columns on system_raw_payload_metrics.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",
       "to_program_version": "Candidate release from mainline v2.71.21.",
@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "ddl-001",
-        "description": "Idempotently create retention_prepared_archives, its path/due-work indexes, and retention_recovery_cursors with the legacy scan cursor.",
+        "description": "Idempotently create retention_prepared_archives, its path/due-work indexes, retention_recovery_cursors with the legacy scan cursor, and raw-capture circuit columns on system_raw_payload_metrics.",
         "order": 1,
         "observable": true,
         "pauseable": true
@@ -41,7 +41,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "No startup-wide historical backfill; legacy archive reconciliation advances at most 32 archive files per maintenance pass.",
+        "description": "No startup-wide historical backfill; legacy archive reconciliation advances at most 32 archive files and raw inventory advances at most 128 DB references per maintenance pass.",
         "order": 3,
         "depends_on": [
           "ddl-001",
@@ -60,16 +60,17 @@
       "backfill-001"
     ],
     "progress_signals": [
-      "retentionRecovery prepared/quarantined/backlog counts, stage, last progress, next retry, and failure fingerprint"
+      "retentionRecovery prepared/quarantined/backlog counts, stage, last progress, next retry, and failure fingerprint",
+      "rawCapture state/reason, physical raw bytes, filesystem available bytes, bounded reservations, and backlog trend"
     ],
     "pause_points": [
       "Between idempotent schema creation and maintenance-owned ledger writes.",
-      "Between each maintenance pass of at most 32 legacy archive files."
+      "Between each maintenance pass of at most 32 legacy archive files and 128 raw inventory references."
     ]
   },
   "recovery": {
     "deployed_migrations_immutable": true,
-    "program_rollback_state_behavior": "Earlier binaries ignore the additive recovery tables; they do not reverse or delete their state.",
+    "program_rollback_state_behavior": "Earlier binaries ignore the additive recovery tables and raw-capture columns; they do not reverse or delete their state.",
     "faulty_release_recovery": "A newer program version resumes or forward-repairs retained journal rows and quarantined artifacts.",
     "backup_restore_role": "separate-disaster-recovery"
   },

@@ -391,6 +391,20 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const eventBusState = eventBus?.state ?? "unknown";
   const backfillState = backfill?.state ?? "unknown";
   const recovery = health?.retentionRecovery;
+  const rawCapture = health?.rawCapture;
+  const rawCaptureState = ["capturing", "storage_suppressed", "unknown"].includes(
+    rawCapture?.state ?? "unknown",
+  )
+    ? (rawCapture?.state ?? "unknown")
+    : "unknown";
+  const rawCaptureReason = [
+    "inventory_unready",
+    "raw_store_limit",
+    "filesystem_low",
+    "both",
+  ].includes(rawCapture?.reason ?? "")
+    ? rawCapture?.reason
+    : undefined;
   const recoveryStageLabel = (stage?: string | null) =>
     stage && RETENTION_RECOVERY_STAGES.has(stage)
       ? t(`system.status.runtimePressure.retentionRecovery.stages.${stage}`)
@@ -717,6 +731,68 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     value={formatRecoveryTimestamp(recovery?.lastProgressAt)}
                     valueTitle={recovery?.lastProgressAt}
                     hint={recoveryHints || t("system.status.runtimePressure.additiveUnknown")}
+                  />
+                </div>
+              </div>
+              <div
+                className="col-span-full border-t border-base-300/60 pt-3"
+                data-testid="system-status-raw-capture"
+              >
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                  <h4 className="text-sm font-semibold text-base-content">
+                    {t("system.status.runtimePressure.rawCapture.title")}
+                  </h4>
+                  <span className="text-xs font-medium text-base-content/70">
+                    {t(`system.status.runtimePressure.rawCapture.states.${rawCaptureState}`)}
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawCapture.state")}
+                    value={t(`system.status.runtimePressure.rawCapture.states.${rawCaptureState}`)}
+                    hint={
+                      rawCaptureReason
+                        ? t(`system.status.runtimePressure.rawCapture.reasons.${rawCaptureReason}`)
+                        : t("system.status.runtimePressure.additiveUnknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawCapture.inventory")}
+                    value={
+                      rawCapture?.inventoryState ??
+                      t("system.status.runtimePressure.states.unknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawCapture.rawBytes")}
+                    value={
+                      rawCapture?.rawBytes != null
+                        ? formatBytes(rawCapture.rawBytes)
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawCapture.availableBytes")}
+                    value={
+                      rawCapture?.availableBytes != null
+                        ? formatBytes(rawCapture.availableBytes)
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                    hint={
+                      rawCapture?.reservedBytes != null
+                        ? `${t("system.status.runtimePressure.rawCapture.reservedBytes")}: ${formatBytes(rawCapture.reservedBytes)}`
+                        : t("system.status.runtimePressure.additiveUnknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawCapture.backlog")}
+                    value={
+                      rawCapture?.backlogNonGrowing == null
+                        ? t("system.status.runtimePressure.rawCapture.backlogGrowing")
+                        : rawCapture.backlogNonGrowing
+                          ? t("system.status.runtimePressure.rawCapture.backlogStable")
+                          : t("system.status.runtimePressure.rawCapture.backlogGrowing")
+                    }
                   />
                 </div>
               </div>

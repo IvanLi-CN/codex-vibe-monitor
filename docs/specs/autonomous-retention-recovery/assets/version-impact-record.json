@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add crash-safe autonomous archive recovery and an additive System Status health field.",
-    "release_unit_description": "Autonomous retention recovery PR1.",
+    "description": "Add crash-safe autonomous archive recovery, an additive raw-capture circuit contract, and System Status health fields.",
+    "release_unit_description": "Autonomous retention recovery and raw capture circuit breaker.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -17,7 +17,7 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "The system-status field is optional/additive; its new counters may be null until measured. New SQLite tables are additive and earlier binaries may ignore them. No existing field or archive format is changed.",
+      "reasoning": "The system-status fields are optional/additive; new counters may be unknown until measured. New SQLite tables and raw-capture columns are additive and earlier binaries may ignore them. No existing field or archive format is changed.",
       "assessed_at": "2026-09-21T00:00:00+08:00",
       "evidence": [
         "docs/specs/autonomous-retention-recovery/SPEC.md"
@@ -27,9 +27,9 @@
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "No public API or durable-state compatibility scope drift."
+      "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery counters that remain null until measured and idempotent recovery tables; archive wire/file formats and existing fields remain unchanged.",
+      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery and rawCapture diagnostics that remain unknown until measured, idempotent recovery tables, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
       "reassessed_at": "2026-09-21T19:26:33+08:00",
       "evidence": [
         "src/api/slices/system_routes_and_tasks.rs",
@@ -39,7 +39,7 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Stateful and archive-file-I/O regressions verify additive schema re-entry, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, sanitized diagnostics, and additive status serialization.",
+      "reasoning": "Stateful and archive-file-I/O regressions verify additive schema re-entry, fail-closed raw capture admission, hysteretic watermarks, bounded physical inventory, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, sanitized diagnostics, and additive status serialization.",
       "verified_at": "2026-09-22T10:48:26+08:00",
       "evidence": [
         "lightweight profile: 1113 passed; archive-specific maintenance recovery tests are excluded from this profile",
@@ -55,15 +55,15 @@
       "change": "compatible",
       "supported_consumer_range": "Clients that ignore the optional retentionRecovery response field.",
       "evidence": [
-        "SystemStatusResponse adds runtimePressureHealth.retentionRecovery without removing or changing existing fields."
+      "SystemStatusResponse adds runtimePressureHealth.retentionRecovery and runtimePressureHealth.rawCapture without removing or changing existing fields."
       ]
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Prepared archive journal and bounded legacy archive reconciliation cursor.",
+      "state_description": "Prepared archive journal, bounded legacy archive reconciliation cursor, and raw-capture circuit measurements.",
       "source_program_compatibility_range": "Supported earlier v2.71.x database schemas.",
       "evidence": [
-        "New tables are created with idempotent CREATE TABLE/INDEX IF NOT EXISTS statements.",
+      "New tables and raw-capture columns are created with idempotent CREATE TABLE/ALTER TABLE guards.",
         "Earlier programs ignore the new tables; candidate can operate on an earlier schema."
       ]
     }

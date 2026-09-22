@@ -5763,6 +5763,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await
         .context("failed to add system raw payload link inventory cursor")?;
     }
+    for (column, definition) in [
+        ("circuit_state", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("circuit_reason", "TEXT"),
+        ("circuit_available_bytes", "INTEGER"),
+        ("circuit_expired_backlog_count", "INTEGER"),
+        ("circuit_backlog_non_growing", "INTEGER"),
+        ("circuit_updated_at", "TEXT"),
+    ] {
+        if !raw_metrics_columns.contains(column) {
+            sqlx::query(&format!(
+                "ALTER TABLE system_raw_payload_metrics ADD COLUMN {column} {definition}"
+            ))
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to add system raw payload {column}"))?;
+        }
+    }
 
     sqlx::query(
         r#"
