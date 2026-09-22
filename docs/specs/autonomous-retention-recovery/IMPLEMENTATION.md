@@ -38,7 +38,7 @@ PR1 does not implement the aggregate physical raw inventory or the raw-capture c
 ## Verification
 
 - `cargo fmt --all -- --check`, Linux `cargo check --locked --all-targets --all-features`, and Linux Clippy with `-D warnings` pass.
-- The `lightweight` profile passes 1112 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer; archive-specific recovery tests run in the disjoint archive-file-I/O profile.
+- The `lightweight` profile passes 1113 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer; archive-specific recovery tests run in the disjoint archive-file-I/O profile.
 - The `stateful-sqlite` profile passes 1305 tests, including P1 admission for failure persistence, prepared-schema re-entry, unmeasured status counts, due published work past 32 unexpired quarantines, and successful live-mirror ledger retirement.
 - The `archive-file-io` profile passes 264 tests, including full archive-column identity mismatch rollback, retry after publication failure, source/raw ownership retention, independent orphan cleanup, sanitized failure fingerprints, prepared-key failure attribution, the authoritative-manifest preservation guard, the republish-safe quarantine guard, the 32-file bound, cursor wrap for late earlier paths, and expired live-mirror cleanup without Summary proof.
 - The archive-file-I/O coverage also verifies expired live-mirror cleanup without Summary proof and bounded legacy identity reconciliation.

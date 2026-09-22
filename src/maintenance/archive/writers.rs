@@ -289,15 +289,30 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
         }
 
         for batch in rows {
-            if batch.sha256.is_none() {
+            let Some(expected_existing_sha256) =
+                batch.sha256.as_deref().filter(|sha| !sha.trim().is_empty())
+            else {
+                last_seen_batch_id = batch.id;
+                summary.scanned_batches += 1;
                 hit_budget = true;
-                break;
-            }
+                push_backfill_sample(
+                    &mut samples,
+                    format!("batch_id={} sha256_missing", batch.id),
+                );
+                continue;
+            };
             last_seen_batch_id = batch.id;
             summary.scanned_batches += 1;
             let archive_path = PathBuf::from(&batch.file_path);
             let _archive_lock =
                 super::super::retention::retention_archive_file_lock(&archive_path)?;
+            if !archive_path.is_file()
+                || sha256_hex_file(&archive_path)? != expected_existing_sha256
+            {
+                return Err(anyhow::anyhow!(
+                    "pool archive identity verification failed before public-id backfill"
+                ));
+            }
             let suffix = retention_temp_suffix();
             let work_path = PathBuf::from(format!("{}.{}.sqlite", batch.file_path, suffix));
             let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", batch.file_path, suffix));
@@ -353,7 +368,6 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             // retention admission again here would self-wait on that permit. Hash the prepared
             // artifact before entering the bounded publication transaction.
             let sha256 = sha256_hex_file(&temp_gzip_path)?;
-            let expected_existing_sha256 = batch.sha256.as_deref().expect("checked above");
             let had_existing_file = archive_path.is_file();
             let backup_path = PathBuf::from(format!(
                 "{}.{}.restore",
@@ -440,6 +454,14 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     let _ = fs::rename(&backup_path, &archive_path);
                 } else {
                     let _ = fs::remove_file(&backup_path);
+                    let _ = sqlx::query(
+                        "UPDATE archive_batches SET replacement_staged_path = NULL
+                         WHERE id = ?1 AND replacement_staged_path = ?2",
+                    )
+                    .bind(batch.id)
+                    .bind(&staged_path_string)
+                    .execute(pool)
+                    .await;
                 }
                 return Err(error);
             }

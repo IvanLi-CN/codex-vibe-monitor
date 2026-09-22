@@ -279,7 +279,7 @@ fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error)
     health.failure_fingerprint = Some(fingerprint);
 }
 
-fn retention_error_fingerprint(error: &anyhow::Error) -> String {
+pub(crate) fn retention_error_fingerprint(error: &anyhow::Error) -> String {
     let digest = Sha256::digest(error.to_string().as_bytes());
     format!("{:x}", digest)[..16].to_string()
 }
@@ -1527,6 +1527,13 @@ pub(crate) async fn retention_recovery_persist_failure(
         return Err(retention_write_deferred("retention_recovery_failure"));
     };
     let execute_started = Instant::now();
+    let observed_artifact_sha256 = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT artifact_sha256 FROM retention_prepared_archives WHERE prepared_key = ?1",
+    )
+    .bind(prepared_key)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
     let attempt_count = sqlx::query_scalar::<_, i64>(
         "SELECT attempt_count FROM retention_prepared_archives WHERE prepared_key = ?1",
     )
@@ -1558,9 +1565,13 @@ pub(crate) async fn retention_recovery_persist_failure(
               state = 'preparing'
               OR (
                   state = 'published'
-                  AND (artifact_sha256 IS NULL OR ?7 IN ('finalizing', 'publishing'))
+                  AND (
+                      artifact_sha256 IS NULL
+                      OR ?7 IN ('finalizing', 'publishing', 'legacy_reconcile')
+                  )
               )
           )
+          AND artifact_sha256 IS ?8
         "#,
     )
     .bind(quarantine)
@@ -1570,6 +1581,7 @@ pub(crate) async fn retention_recovery_persist_failure(
     .bind(format!("+{retry_seconds} seconds"))
     .bind(prepared_key)
     .bind(stage)
+    .bind(observed_artifact_sha256.as_deref())
     .execute(pool)
     .await?;
     retention_record_commit!(
@@ -1594,13 +1606,7 @@ async fn retention_recovery_persist_latest_failure_best_effort(
     error: &anyhow::Error,
 ) {
     let persist_result = async {
-        let prepared_key = retention_recovery_current_prepared_key().or(
-            sqlx::query_scalar::<_, String>(
-                "SELECT prepared_key FROM retention_prepared_archives WHERE state IN ('preparing', 'published') ORDER BY updated_at DESC, id DESC LIMIT 1",
-            )
-            .fetch_optional(pool)
-            .await?,
-        );
+        let prepared_key = retention_recovery_current_prepared_key();
         if let Some(prepared_key) = prepared_key {
             retention_recovery_persist_failure(pool, &prepared_key, stage, error).await?;
         } else {
@@ -1928,7 +1934,7 @@ async fn reconcile_retention_prepared_archives(
             )
         )
         ORDER BY CASE
-                     WHEN state = 'preparing' THEN 0
+                     WHEN state = 'published' THEN 0
                      WHEN state = 'quarantined' THEN 1
                      ELSE 2
                  END,

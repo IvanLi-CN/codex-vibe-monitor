@@ -42,7 +42,7 @@
       "reasoning": "Stateful and archive-file-I/O regressions verify additive schema re-entry, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, sanitized diagnostics, and additive status serialization.",
       "verified_at": "2026-09-22T10:48:26+08:00",
       "evidence": [
-        "lightweight profile: 1112 passed; archive-specific maintenance recovery tests are excluded from this profile",
+        "lightweight profile: 1113 passed; archive-specific maintenance recovery tests are excluded from this profile",
         "stateful-sqlite profile: 1305 passed, including default unknown counts, actionable-journal queue progress, P1 admission, and schema re-entry",
         "archive-file-io profile: 264 passed, including cursor wrap, late earlier-path reconciliation, authoritative-manifest preservation, prepared-key failure attribution, expired live-mirror cleanup, and legacy authoritative role recovery",
         "Web units: 1538 passed and 6 skipped; typecheck and focused Biome check passed; unchanged UI surface retains prior Storybook 91-test and production-build evidence",

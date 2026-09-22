@@ -491,7 +491,7 @@ where
             Err(error) => {
                 warn!(
                     dataset,
-                    error = %error,
+                    error_fingerprint = %super::super::retention::retention_error_fingerprint(&error),
                     "archive file identity could not be verified; retaining pending metadata"
                 );
                 return Ok(false);
@@ -568,6 +568,11 @@ where
                 tx.rollback().await?;
                 return Ok(false);
             }
+        } else {
+            // A missing parent cannot be fenced. Keep the manifest pending so a concurrent
+            // writer may recreate the directory and publish under its own directory lock.
+            tx.rollback().await?;
+            return Ok(false);
         }
     }
 
@@ -709,6 +714,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
         WHERE status = ?1
           AND sha256 IS NOT NULL
           AND TRIM(sha256) <> ''
+          AND replacement_staged_path IS NULL
           AND archive_expires_at IS NOT NULL
           AND archive_expires_at < ?2
         ORDER BY archive_expires_at ASC, id ASC
@@ -4933,7 +4939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalization_retires_pending_metadata_when_archive_parent_is_missing() {
+    async fn finalization_keeps_pending_metadata_when_archive_parent_is_missing() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -4976,13 +4982,32 @@ mod tests {
         )
         .await
         .expect("missing archive parent remains retry-safe");
-        assert!(finalized);
+        assert!(!finalized);
         let remaining: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = 1")
                 .fetch_one(&pool)
                 .await
                 .expect("count finalized archive metadata");
+        assert_eq!(remaining, 1);
+
+        fs::create_dir_all(&parent).expect("recreate archive parent for retry");
+        let retried = finalize_archive_batch_file_deletion(
+            &pool,
+            1,
+            "codex_quota_snapshots",
+            &archive_path_string,
+            &archive_sha256,
+        )
+        .await
+        .expect("retry pending archive metadata after parent recreation");
+        assert!(retried);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("count retried archive metadata");
         assert_eq!(remaining, 0);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[tokio::test]

@@ -4471,7 +4471,7 @@ pub(crate) struct InvocationHourlyRollupReconciliation {
 #[derive(Debug, Clone, FromRow)]
 struct InvocationArchiveIntegrityFileRow {
     file_path: String,
-    sha256: String,
+    sha256: Option<String>,
 }
 
 async fn load_long_term_integrity_source_start_date(
@@ -4563,8 +4563,6 @@ where
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
-          AND sha256 IS NOT NULL
-          AND TRIM(sha256) <> ''
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
     )
@@ -4583,6 +4581,19 @@ where
     let mut unavailable_archive_file_paths = Vec::new();
 
     for archive_file in archive_files {
+        let Some(expected_sha256) = archive_file
+            .sha256
+            .as_deref()
+            .filter(|sha| !sha.trim().is_empty())
+        else {
+            source_incomplete = true;
+            unavailable_archive_file_paths.push(archive_file.file_path.clone());
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                "skipping archive batch with missing identity during invocation hourly rollup proof reconciliation"
+            );
+            continue;
+        };
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
             warn!(
@@ -4608,7 +4619,7 @@ where
                 continue;
             }
         };
-        if archive_file.sha256 != actual_sha256 {
+        if expected_sha256 != actual_sha256 {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 expected_sha256_present = true,
