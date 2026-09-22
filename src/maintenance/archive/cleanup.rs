@@ -717,7 +717,6 @@ pub(crate) async fn cleanup_expired_archive_batches(
               FROM retention_prepared_archives AS prepared
               WHERE prepared.file_path = archive_batches.file_path
                 AND prepared.state IN ('preparing', 'published')
-                AND prepared.staged_file_path IS NOT NULL
           )"
     } else {
         ""
