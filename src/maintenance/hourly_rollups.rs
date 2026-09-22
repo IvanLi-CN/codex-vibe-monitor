@@ -353,6 +353,8 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
@@ -436,6 +438,8 @@ async fn load_completed_forward_proxy_archives_overlapping_buckets_tx(
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
           AND coverage_end_at >= ?3
@@ -1947,7 +1951,9 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             summary.blocked_batches += 1;
             continue;
         }
-        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let _archive_lock =
+            retention_try_archive_locks_scope(async { retention_archive_file_lock(&archive_path) })
+                .await?;
         if !archive_path.exists()
             || archive_file.sha256.as_deref().is_none_or(|expected| {
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
@@ -2546,7 +2552,9 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             summary.blocked_batches += 1;
             continue;
         }
-        let _archive_lock = retention_archive_file_lock(&archive_path)?;
+        let _archive_lock =
+            retention_try_archive_locks_scope(async { retention_archive_file_lock(&archive_path) })
+                .await?;
         if !archive_path.exists()
             || archive_file.sha256.as_deref().is_none_or(|expected| {
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)

@@ -12,6 +12,8 @@ use std::{
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
@@ -107,6 +109,19 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
             .with_context(|| format!("failed to lock archive directory: {}", parent.display()));
     }
     Ok(RetentionArchiveFileLock(Some(file)))
+}
+
+pub(crate) fn retention_archive_parent_identity(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    let metadata = fs::metadata(parent).ok()?;
+    #[cfg(unix)]
+    {
+        Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        Some(format!("{}:{:?}", metadata.len(), metadata.modified().ok()))
+    }
 }
 
 #[cfg(unix)]
@@ -1606,7 +1621,7 @@ async fn retention_recovery_mark_published(
     else {
         return Err(retention_write_deferred("retention_recovery_publish"));
     };
-    sqlx::query(
+    let updated = sqlx::query(
         r#"
         UPDATE retention_prepared_archives
         SET state = ?1,
@@ -1617,6 +1632,8 @@ async fn retention_recovery_mark_published(
             last_failure_fingerprint = NULL,
             updated_at = datetime('now')
         WHERE prepared_key = ?4
+          AND state = 'preparing'
+          AND staged_file_path IS NULL
         "#,
     )
     .bind(RETENTION_RECOVERY_STATE_PUBLISHED)
@@ -1626,6 +1643,11 @@ async fn retention_recovery_mark_published(
     .execute(pool)
     .await?;
     drop(admission);
+    if updated.rows_affected() == 0 {
+        return Err(anyhow!(
+            "prepared archive journal changed during publication"
+        ));
+    }
     Ok(())
 }
 
@@ -2004,6 +2026,7 @@ async fn reconcile_retention_prepared_archives(
             }
             continue;
         }
+        let _archive_lock = retention_archive_file_lock(path)?;
         if state == RETENTION_RECOVERY_STATE_PREPARING && path.is_file() {
             let actual_sha = sha256_hex_file(path)?;
             let descriptor = RetentionPreparedArchiveDescriptor {
@@ -2029,7 +2052,7 @@ async fn reconcile_retention_prepared_archives(
             else {
                 return Err(retention_write_deferred("retention_recovery_reconcile"));
             };
-            sqlx::query(
+            let updated = sqlx::query(
                 r#"
                 UPDATE retention_prepared_archives
                 SET state = ?1,
@@ -2037,6 +2060,8 @@ async fn reconcile_retention_prepared_archives(
                     artifact_bytes = ?3,
                     updated_at = datetime('now')
                 WHERE prepared_key = ?4
+                  AND state = 'preparing'
+                  AND staged_file_path IS NULL
                 "#,
             )
             .bind(RETENTION_RECOVERY_STATE_PUBLISHED)
@@ -2046,6 +2071,9 @@ async fn reconcile_retention_prepared_archives(
             .execute(pool)
             .await?;
             drop(admission);
+            if updated.rows_affected() == 0 {
+                continue;
+            }
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PUBLISHED {
@@ -2091,10 +2119,10 @@ async fn reconcile_retention_prepared_archives(
                 .unwrap_or_default()
                     != 0;
             if expired {
+                let _archive_lock = retention_archive_file_lock(path)?;
                 let artifact_matches = artifact_sha256.as_deref().is_some_and(|expected| {
                     path.is_file() && sha256_hex_file(path).ok().as_deref() == Some(expected)
                 });
-                let _archive_lock = retention_archive_file_lock(path)?;
                 let Some(admission) =
                     acquire_retention_write_admission("retention_recovery_quarantine_cleanup")
                         .await
@@ -2120,8 +2148,8 @@ async fn reconcile_retention_prepared_archives(
                 .bind(&prepared_key)
                 .fetch_one(tx.as_mut())
                 .await?;
-                if manifest_exists == 0 && active_prepared_exists == 0 && artifact_matches {
-                    if path.is_file() {
+                if manifest_exists == 0 && active_prepared_exists == 0 {
+                    if artifact_matches && path.is_file() {
                         fs::remove_file(path).with_context(
                             || "failed to remove expired quarantined archive artifact",
                         )?;
@@ -2140,7 +2168,10 @@ async fn reconcile_retention_prepared_archives(
     Ok(())
 }
 
-async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()> {
+async fn reconcile_staged_archive_replacements(
+    pool: &Pool<Sqlite>,
+    config: Option<&AppConfig>,
+) -> Result<()> {
     let rows = sqlx::query_as::<_, (i64, String)>(
         "SELECT id, file_path
          FROM archive_batches
@@ -2184,7 +2215,11 @@ async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()
             );
             continue;
         };
-        if !replacement_staging_path_is_owned(path, staged_path) {
+        if config.is_some_and(|config| {
+            !retention_archive_path_is_within_root(config, path)
+                || !retention_archive_path_is_within_root(config, staged_path)
+        }) || !replacement_staging_path_is_owned(path, staged_path)
+        {
             retention_recovery_record_failure(
                 "legacy_reconcile",
                 &anyhow!("archive replacement staging path failed ownership verification"),
@@ -2205,6 +2240,29 @@ async fn reconcile_staged_archive_replacements(pool: &Pool<Sqlite>) -> Result<()
             continue;
         }
         if staged_path.is_file() {
+            let staged_sha = sha256_hex_file(staged_path)?;
+            if current_sha.as_deref() == Some(staged_sha.as_str()) && staged_sha != manifest_sha {
+                let Some(_admission) =
+                    acquire_retention_write_admission("retention_recovery_manifest_adopt").await
+                else {
+                    return Err(retention_write_deferred(
+                        "retention_recovery_manifest_adopt",
+                    ));
+                };
+                sqlx::query(
+                    "UPDATE archive_batches
+                     SET sha256 = ?1, replacement_staged_path = NULL
+                     WHERE id = ?2 AND replacement_staged_path = ?3",
+                )
+                .bind(&staged_sha)
+                .bind(id)
+                .bind(&staged_file_path)
+                .execute(pool)
+                .await?;
+                fs::remove_file(staged_path)
+                    .context("failed to remove adopted archive recovery copy")?;
+                continue;
+            }
             if let Err(error) = restore_staged_legacy_archive_file(staged_path, path, &manifest_sha)
             {
                 retention_recovery_record_failure("legacy_reconcile", &error);
@@ -2308,7 +2366,7 @@ fn restore_staged_legacy_archive_file(
         bail!("archive rollback artifact digest verification failed");
     }
     match fs::rename(staged_path, final_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => sync_restored_archive_file(final_path),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             fs::remove_file(final_path).with_context(|| {
                 format!(
@@ -2316,12 +2374,14 @@ fn restore_staged_legacy_archive_file(
                     final_path.display()
                 )
             })?;
-            fs::rename(staged_path, final_path).with_context(|| {
-                format!(
-                    "failed to restore interrupted legacy archive {}",
-                    final_path.display()
-                )
-            })
+            fs::rename(staged_path, final_path)
+                .with_context(|| {
+                    format!(
+                        "failed to restore interrupted legacy archive {}",
+                        final_path.display()
+                    )
+                })
+                .and_then(|()| sync_restored_archive_file(final_path))
         }
         Err(error) => Err(error).with_context(|| {
             format!(
@@ -2330,6 +2390,20 @@ fn restore_staged_legacy_archive_file(
             )
         }),
     }
+}
+
+fn sync_restored_archive_file(final_path: &Path) -> Result<()> {
+    fs::File::open(final_path)
+        .context("failed to open restored archive for sync")?
+        .sync_all()
+        .context("failed to sync restored archive")?;
+    if let Some(parent) = final_path.parent() {
+        fs::File::open(parent)
+            .context("failed to open restored archive directory for sync")?
+            .sync_all()
+            .context("failed to sync restored archive directory")?;
+    }
+    Ok(())
 }
 
 async fn reconcile_legacy_retention_archive_segments(
@@ -3687,7 +3761,7 @@ async fn run_data_retention_maintenance_inner(
                 "archive temp janitor removed stale files before retention"
             );
         }
-        if let Err(error) = reconcile_staged_archive_replacements(pool).await {
+        if let Err(error) = reconcile_staged_archive_replacements(pool, Some(config)).await {
             retention_recovery_persist_latest_failure_best_effort(pool, "legacy_reconcile", &error)
                 .await;
             retention_recovery_log_event(
@@ -6224,7 +6298,7 @@ mod retention_recovery_race_tests {
         .await
         .expect("seed staged replacement manifest");
 
-        reconcile_staged_archive_replacements(&pool)
+        reconcile_staged_archive_replacements(&pool, None)
             .await
             .expect("reconcile staged replacement");
         assert_eq!(
@@ -6284,7 +6358,7 @@ mod retention_recovery_race_tests {
         .await
         .expect("seed corrupt staged replacement manifest");
 
-        reconcile_staged_archive_replacements(&pool)
+        reconcile_staged_archive_replacements(&pool, None)
             .await
             .expect("reconcile should retain unverified staged replacement");
         assert_eq!(
@@ -6339,7 +6413,7 @@ mod retention_recovery_race_tests {
         .await
         .expect("seed null digest replacement manifest");
 
-        reconcile_staged_archive_replacements(&pool)
+        reconcile_staged_archive_replacements(&pool, None)
             .await
             .expect("reconcile should retain null digest replacement");
         assert_eq!(

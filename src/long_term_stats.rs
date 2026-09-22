@@ -449,7 +449,7 @@ async fn load_long_term_archive_attempt_accounts(
     date_range: Option<(NaiveDate, NaiveDate)>,
 ) -> Result<(HashMap<(String, String), i64>, HashSet<(String, String)>)> {
     let paths = match sqlx::query_as::<_, LongTermAttemptArchivePath>(
-        "SELECT file_path, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND status = ?1 ORDER BY month_key ASC, created_at ASC, id ASC",
+        "SELECT file_path, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND status = ?1 AND sha256 IS NOT NULL AND TRIM(sha256) <> '' ORDER BY month_key ASC, created_at ASC, id ASC",
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(pool)

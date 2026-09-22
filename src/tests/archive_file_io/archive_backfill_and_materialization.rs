@@ -3267,6 +3267,12 @@ async fn materialize_historical_rollups_backfills_usage_breakdown_prefix_behind_
     archive_pool.close().await;
     deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
         .expect("refresh archive gzip with usage breakdown detail fields");
+    sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+        .bind(sha256_hex_file(&archive_path).expect("hash refreshed usage breakdown archive"))
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("refresh usage breakdown archive manifest hash");
 
     sqlx::query(
         r#"
@@ -8400,7 +8406,7 @@ async fn node_health_archives_with_blank_manifest_sha_stay_quarantined() {
 }
 
 #[tokio::test]
-async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_marking_replayed() {
+async fn missing_pool_node_health_archives_remain_pending_with_stale_cached_rows() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-missing-archive-clears-cache").await;
     let archive_file_path = temp_dir
@@ -8470,8 +8476,8 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
 
     let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
         .await
-        .expect("backfill should clear stale cached rows for missing archives");
-    assert_eq!(summary.pending_batches, 0);
+        .expect("backfill should retain missing archives pending");
+    assert_eq!(summary.pending_batches, 1);
 
     let cached_rows: i64 = sqlx::query_scalar(
         r#"
@@ -8484,7 +8490,7 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
     .fetch_one(&pool)
     .await
     .expect("count cached rows after missing archive replay");
-    assert_eq!(cached_rows, 0);
+    assert_eq!(cached_rows, 1);
 
     let replayed: i64 = sqlx::query_scalar(
         r#"
@@ -8500,7 +8506,7 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
     .fetch_one(&pool)
     .await
     .expect("count replay marker for missing archive");
-    assert_eq!(replayed, 1);
+    assert_eq!(replayed, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -8800,7 +8806,7 @@ async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_b
 }
 
 #[tokio::test]
-async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_replayed() {
+async fn pool_upstream_node_health_archive_backfill_keeps_missing_archives_pending() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-missing-archive").await;
     let missing_occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
@@ -8844,9 +8850,9 @@ async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_repla
 
     let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
         .await
-        .expect("missing pool node health archive should be marked replayed");
+        .expect("missing pool node health archive should remain pending");
     assert!(!summary.hit_budget);
-    assert_eq!(summary.pending_batches, 0);
+    assert_eq!(summary.pending_batches, 1);
 
     let replay_marked: i64 = sqlx::query_scalar(
         r#"
@@ -8862,7 +8868,7 @@ async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_repla
     .fetch_one(&pool)
     .await
     .expect("count replay markers for missing pool node health archive");
-    assert_eq!(replay_marked, 1);
+    assert_eq!(replay_marked, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

@@ -381,26 +381,28 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 let _ = fs::remove_file(&temp_gzip_path);
                 continue;
             }
-            let backup_path = if archive_path.is_file() {
-                Some(PathBuf::from(format!(
-                    "{}.{}.restore",
-                    archive_path.display(),
-                    retention_temp_suffix()
-                )))
-            } else {
-                None
-            };
-            if let Some(backup_path) = backup_path.as_deref() {
-                sqlx::query(
-                    "UPDATE archive_batches SET replacement_staged_path = ?1 WHERE id = ?2",
-                )
+            let had_existing_file = archive_path.is_file();
+            let backup_path = PathBuf::from(format!(
+                "{}.{}.restore",
+                archive_path.display(),
+                retention_temp_suffix()
+            ));
+            sqlx::query("UPDATE archive_batches SET replacement_staged_path = ?1 WHERE id = ?2")
                 .bind(backup_path.to_string_lossy().to_string())
                 .bind(batch.id)
                 .execute(tx.as_mut())
                 .await?;
-                fs::rename(&archive_path, backup_path).with_context(|| {
+            if had_existing_file {
+                fs::rename(&archive_path, &backup_path).with_context(|| {
                     format!(
                         "failed to stage archive replacement rollback copy: {}",
+                        backup_path.display()
+                    )
+                })?;
+            } else {
+                fs::copy(&temp_gzip_path, &backup_path).with_context(|| {
+                    format!(
+                        "failed to stage archive replacement recovery copy: {}",
                         backup_path.display()
                     )
                 })?;
@@ -413,16 +415,20 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                 )
             }) {
                 tx.rollback().await?;
-                if let Some(backup_path) = backup_path.as_deref() {
-                    let _ = fs::rename(backup_path, &archive_path);
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
                 }
                 return Err(error);
             }
             if let Err(error) = sync_published_archive_file(&archive_path) {
                 tx.rollback().await?;
                 let _ = fs::remove_file(&archive_path);
-                if let Some(backup_path) = backup_path.as_deref() {
-                    let _ = fs::rename(backup_path, &archive_path);
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
                 }
                 return Err(error);
             }
@@ -436,8 +442,10 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             {
                 tx.rollback().await?;
                 let _ = fs::remove_file(&archive_path);
-                if let Some(backup_path) = backup_path.as_deref() {
-                    let _ = fs::rename(backup_path, &archive_path);
+                if had_existing_file {
+                    let _ = fs::rename(&backup_path, &archive_path);
+                } else {
+                    let _ = fs::remove_file(&backup_path);
                 }
                 return Err(error.into());
             }
@@ -446,17 +454,15 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     "archive public-id backfill commit outcome is unknown; recovery will reconcile: {error}"
                 ));
             }
-            if let Some(backup_path) = backup_path {
-                let _ = fs::remove_file(&backup_path);
-                let _ = sqlx::query(
-                    "UPDATE archive_batches SET replacement_staged_path = NULL
-                     WHERE id = ?1 AND replacement_staged_path = ?2",
-                )
-                .bind(batch.id)
-                .bind(backup_path.to_string_lossy().to_string())
-                .execute(pool)
-                .await;
-            }
+            let _ = fs::remove_file(&backup_path);
+            let _ = sqlx::query(
+                "UPDATE archive_batches SET replacement_staged_path = NULL
+                 WHERE id = ?1 AND replacement_staged_path = ?2",
+            )
+            .bind(batch.id)
+            .bind(backup_path.to_string_lossy().to_string())
+            .execute(pool)
+            .await;
         }
     }
 

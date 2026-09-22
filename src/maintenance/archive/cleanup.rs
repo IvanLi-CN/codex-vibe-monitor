@@ -480,6 +480,8 @@ async fn finalize_archive_batch_file_deletion_with_remove<F>(
 where
     F: FnOnce(&str) -> io::Result<()>,
 {
+    let parent_identity =
+        super::super::retention::retention_archive_parent_identity(Path::new(file_path));
     let mut archive_lock =
         super::super::retention::retention_archive_file_lock(Path::new(file_path))
             .context("failed to lock archive cleanup path")?;
@@ -535,6 +537,13 @@ where
         return Ok(false);
     };
 
+    if parent_identity
+        != super::super::retention::retention_archive_parent_identity(Path::new(file_path))
+    {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
     // A missing parent cannot be fenced by the initial lock attempt. Re-check it after taking
     // the SQLite writer lock and acquire the recreated directory before deleting anything.
     if !archive_lock.is_held() {
@@ -542,24 +551,23 @@ where
             tx.rollback().await?;
             return Ok(false);
         };
-        if !parent.exists() {
-            tx.rollback().await?;
-            return Ok(false);
-        }
-        archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
-            .context("failed to lock recreated archive cleanup path")?;
-        if !archive_lock.is_held() {
-            tx.rollback().await?;
-            return Ok(false);
-        }
-        let current_sha256 = if Path::new(file_path).is_file() {
-            Some(sha256_hex_file(Path::new(file_path))?)
-        } else {
-            None
-        };
-        if current_sha256 != file_sha256 {
-            tx.rollback().await?;
-            return Ok(false);
+        if parent.exists() {
+            archive_lock =
+                super::super::retention::retention_archive_file_lock(Path::new(file_path))
+                    .context("failed to lock recreated archive cleanup path")?;
+            if !archive_lock.is_held() {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            let current_sha256 = if Path::new(file_path).is_file() {
+                Some(sha256_hex_file(Path::new(file_path))?)
+            } else {
+                None
+            };
+            if current_sha256 != file_sha256 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
         }
     }
 
@@ -699,6 +707,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
                cleanup_state, historical_rollups_materialized_at, coverage_end_at
         FROM archive_batches
         WHERE status = ?1
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
           AND archive_expires_at IS NOT NULL
           AND archive_expires_at < ?2
         ORDER BY archive_expires_at ASC, id ASC
@@ -2005,6 +2015,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         return Ok("unavailable:empty_archive");
     }
     let archive_path = Path::new(&candidate.file_path);
+    let _archive_lock =
+        retention_try_archive_locks_scope(async { retention_archive_file_lock(archive_path) })
+            .await?;
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
@@ -3177,8 +3190,10 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
             inspected_path_count += 1;
             scanned_archive_batches += 1;
             skipped_archive_batches += 1;
-            next_cursor_id = next_cursor_id.max(candidate.id);
-            continue;
+            // Keep the cursor parked on an unavailable parent so a recreated archive directory
+            // is retried on the next bounded startup pass instead of waiting for cursor wrap.
+            hit_budget = true;
+            break;
         }
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
@@ -3664,6 +3679,7 @@ pub(crate) async fn prune_legacy_archive_batches(
     query.push_bind(ARCHIVE_LAYOUT_LEGACY_MONTH);
     query.push(") = ");
     query.push_bind(ARCHIVE_LAYOUT_LEGACY_MONTH);
+    query.push(" AND sha256 IS NOT NULL AND TRIM(sha256) <> ''");
     query.push(" ORDER BY month_key ASC, id ASC");
     let candidates = query
         .build_query_as::<LegacyArchivePruneCandidateRow>()
