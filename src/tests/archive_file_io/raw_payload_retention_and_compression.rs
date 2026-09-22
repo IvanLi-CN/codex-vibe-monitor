@@ -691,6 +691,57 @@ fn persisted_recovery_failure_keeps_its_prepared_key_for_outer_error_handling() 
 }
 
 #[tokio::test]
+async fn legacy_retention_reconciliation_skips_archive_io_when_pressure_gate_is_busy() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-legacy-pressure-preflight").await;
+    let archive_dir = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("2026")
+        .join("01")
+        .join("01");
+    fs::create_dir_all(&archive_dir).expect("create legacy archive directory");
+    fs::write(
+        archive_dir.join("part-0000000000000000-0000000000000000-legacy.sqlite.gz"),
+        b"not a gzip archive",
+    )
+    .expect("write legacy archive candidate");
+
+    let pressure_gate = std::sync::Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        std::time::Duration::from_secs(60),
+    ));
+    let _busy_permit = pressure_gate
+        .try_begin_background("retention_legacy_pressure_preflight")
+        .expect("occupy the test background pressure slot");
+    let directory_entries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let archive_io = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let result = crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
+        .scope(
+            pressure_gate,
+            crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES.scope(
+                directory_entries.clone(),
+                crate::maintenance::RETENTION_TEST_LEGACY_ARCHIVE_IO.scope(
+                    archive_io.clone(),
+                    crate::maintenance::reconcile_legacy_retention_archive_segments(&pool, &config),
+                ),
+            ),
+        )
+        .await;
+
+    let error = result.expect_err("busy pressure must defer legacy reconciliation");
+    assert!(error.to_string().contains("retention write deferred"));
+    assert_eq!(
+        directory_entries.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(archive_io.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-legacy-scan-bound").await;
@@ -706,9 +757,18 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
         fs::write(path, b"not a gzip archive").expect("write unverified legacy segment");
     }
 
-    run_data_retention_maintenance(&pool, &config, Some(false), None)
+    let directory_entries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES
+        .scope(
+            directory_entries.clone(),
+            run_data_retention_maintenance(&pool, &config, Some(false), None),
+        )
         .await
         .expect("run bounded legacy reconciliation pass");
+    assert!(
+        directory_entries.load(std::sync::atomic::Ordering::Relaxed) <= 67,
+        "legacy discovery must stop after one cursor window, one 32-file batch, and archive layout directories"
+    );
     let first_pass_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined'",
     )

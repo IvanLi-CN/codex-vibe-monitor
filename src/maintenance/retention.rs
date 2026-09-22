@@ -53,6 +53,26 @@ fn retention_archive_locks_are_try_only() -> bool {
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
+    pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
+        std::sync::Arc<crate::db_pressure::DbPressureGate>;
+    pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_LEGACY_ARCHIVE_IO:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+}
+
+#[cfg(test)]
+fn retention_test_legacy_directory_entry_event() {
+    let _ = RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+#[cfg(test)]
+fn retention_test_legacy_archive_io_event() {
+    let _ = RETENTION_TEST_LEGACY_ARCHIVE_IO.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
 }
 
 static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
@@ -737,7 +757,16 @@ impl RetentionWriteAdmission {
 pub(super) async fn acquire_retention_write_admission(
     operation: &'static str,
 ) -> Option<RetentionWriteAdmission> {
-    let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+    #[cfg(test)]
+    let test_pressure_gate = RETENTION_TEST_DB_PRESSURE_GATE
+        .try_with(std::sync::Arc::clone)
+        .ok();
+    #[cfg(not(test))]
+    let test_pressure_gate: Option<std::sync::Arc<crate::db_pressure::DbPressureGate>> = None;
+    let pressure_gate = match test_pressure_gate.as_deref() {
+        Some(gate) => gate,
+        None => crate::db_pressure::global_db_pressure_gate(),
+    };
     if let Some(reason) = pressure_gate.background_deny_reason() {
         retention_record_defer(operation, reason);
         return None;
@@ -2472,11 +2501,24 @@ fn sync_restored_archive_file(final_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn reconcile_legacy_retention_archive_segments(
+pub(crate) async fn reconcile_legacy_retention_archive_segments(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
     retention_recovery_set_stage("legacy_reconcile");
+
+    // Probe pressure and write admission before touching the archive tree. The permit is
+    // released immediately so archive verification does not hold the coordinator across file
+    // I/O; each database mutation below still takes its own short admission.
+    let Some(admission) =
+        acquire_retention_write_admission("retention_recovery_legacy_quarantine").await
+    else {
+        return Err(retention_write_deferred(
+            "retention_recovery_legacy_quarantine",
+        ));
+    };
+    drop(admission);
+
     let archive_root = resolved_archive_dir(config).join("codex_invocations");
     let cursor = sqlx::query_scalar::<_, String>(
         "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'legacy_archive_segments'",
@@ -2484,14 +2526,17 @@ async fn reconcile_legacy_retention_archive_segments(
     .fetch_optional(pool)
     .await?
     .unwrap_or_default();
-    let mut candidates = Vec::with_capacity(RETENTION_RECOVERY_LEGACY_SCAN_BATCH);
-    collect_retention_archive_candidates_after_cursor(
+    let RetentionArchiveCandidateScan {
+        candidates,
+        progress,
+    } = collect_retention_archive_candidates_after_cursor(
         &archive_root,
         cursor.as_str(),
         RETENTION_RECOVERY_LEGACY_SCAN_BATCH,
-        &mut candidates,
     )?;
     for path in &candidates {
+        #[cfg(test)]
+        retention_test_legacy_archive_io_event();
         let file_path = path.to_string_lossy().to_string();
         let metadata = match fs::metadata(path) {
             Ok(metadata) => metadata,
@@ -2630,7 +2675,10 @@ async fn reconcile_legacy_retention_archive_segments(
         tx.commit().await?;
         drop(admission);
     }
-    if let Some(last) = candidates.last() {
+    let progress_after_cursor = progress
+        .as_ref()
+        .filter(|path| path.to_string_lossy().as_ref() > cursor.as_str());
+    if let Some(progress) = progress_after_cursor {
         let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
         else {
             return Err(retention_write_deferred("retention_recovery_cursor"));
@@ -2642,7 +2690,7 @@ async fn reconcile_legacy_retention_archive_segments(
             ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at
             "#,
         )
-        .bind(last.to_string_lossy().to_string())
+        .bind(progress.to_string_lossy().to_string())
         .execute(pool)
         .await?;
         drop(admission);
@@ -2667,43 +2715,140 @@ async fn reconcile_legacy_retention_archive_segments(
     Ok(())
 }
 
+struct RetentionArchiveCandidateScan {
+    candidates: Vec<PathBuf>,
+    progress: Option<PathBuf>,
+}
+
+impl RetentionArchiveCandidateScan {
+    fn record_progress(&mut self, path: &Path) {
+        let should_replace = self.progress.as_ref().is_none_or(|current| {
+            path.to_string_lossy().as_ref() > current.to_string_lossy().as_ref()
+        });
+        if should_replace {
+            self.progress = Some(path.to_path_buf());
+        }
+    }
+}
+
 fn collect_retention_archive_candidates_after_cursor(
     root: &Path,
     cursor: &str,
     limit: usize,
-    candidates: &mut Vec<PathBuf>,
+) -> Result<RetentionArchiveCandidateScan> {
+    let mut scan = RetentionArchiveCandidateScan {
+        candidates: Vec::with_capacity(limit.min(RETENTION_RECOVERY_LEGACY_SCAN_BATCH)),
+        progress: None,
+    };
+    collect_retention_archive_candidates_after_cursor_inner(root, cursor, limit, &mut scan)?;
+    // Filesystem enumeration order is not a cursor contract. Only sort the bounded candidate
+    // set, never the complete contents of a visited directory.
+    scan.candidates.sort_unstable();
+    Ok(scan)
+}
+
+fn collect_retention_archive_candidates_after_cursor_inner(
+    root: &Path,
+    cursor: &str,
+    limit: usize,
+    scan: &mut RetentionArchiveCandidateScan,
 ) -> Result<()> {
-    if candidates.len() >= limit || !root.is_dir() {
+    if scan.candidates.len() >= limit || limit == 0 || !root.is_dir() {
         return Ok(());
     }
 
-    let mut entries = fs::read_dir(root)
-        .with_context(|| format!("failed to read archive directory {}", root.display()))?
-        .collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-
+    let entries = collect_bounded_retention_archive_directory_entries(root, cursor, limit)?;
     for entry in entries {
-        if candidates.len() >= limit {
+        if scan.candidates.len() >= limit {
             break;
         }
-        let path = entry.path();
+        let path = entry.path;
         let path_text = path.to_string_lossy();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
+        if entry.is_dir {
             let is_cursor_ancestor = !cursor.is_empty() && Path::new(cursor).starts_with(&path);
             if cursor.is_empty() || path_text.as_ref() > cursor || is_cursor_ancestor {
-                collect_retention_archive_candidates_after_cursor(
-                    &path, cursor, limit, candidates,
+                if path_text.as_ref() > cursor {
+                    scan.record_progress(&path);
+                }
+                collect_retention_archive_candidates_after_cursor_inner(
+                    &path, cursor, limit, scan,
                 )?;
             }
-        } else if file_type.is_file()
+        } else if entry.is_file
             && path_text.as_ref() > cursor
             && (path_text.ends_with(".sqlite.gz") || path_text.ends_with(".sqlite.zst"))
         {
-            candidates.push(path);
+            scan.record_progress(&path);
+            scan.candidates.push(path);
+        } else if path_text.as_ref() > cursor {
+            scan.record_progress(&path);
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct RetentionArchiveDirectoryEntry {
+    path: PathBuf,
+    is_dir: bool,
+    is_file: bool,
+}
+
+impl Ord for RetentionArchiveDirectoryEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path.cmp(&other.path)
+    }
+}
+
+impl PartialOrd for RetentionArchiveDirectoryEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn collect_bounded_retention_archive_directory_entries(
+    root: &Path,
+    cursor: &str,
+    limit: usize,
+) -> Result<Vec<RetentionArchiveDirectoryEntry>> {
+    // Stream the directory through a fixed-size max heap. This keeps allocation and comparison
+    // work per entry bounded by the scan batch without materializing or sorting the full listing.
+    let mut entries = std::collections::BinaryHeap::with_capacity(limit);
+    for entry in fs::read_dir(root)
+        .with_context(|| format!("failed to read archive directory {}", root.display()))?
+    {
+        let entry = entry?;
+        #[cfg(test)]
+        retention_test_legacy_directory_entry_event();
+        let path = entry.path();
+        let path_text = path.to_string_lossy();
+        let file_type = entry.file_type()?;
+        let eligible = if file_type.is_dir() {
+            cursor.is_empty() || path_text.as_ref() > cursor || Path::new(cursor).starts_with(&path)
+        } else {
+            path_text.as_ref() > cursor
+        };
+        if !eligible {
+            continue;
+        }
+        let candidate = RetentionArchiveDirectoryEntry {
+            path,
+            is_dir: file_type.is_dir(),
+            is_file: file_type.is_file(),
+        };
+        if entries.len() < limit {
+            entries.push(candidate);
+        } else if entries
+            .peek()
+            .is_some_and(|largest| candidate.path < largest.path)
+        {
+            entries.pop();
+            entries.push(candidate);
+        }
+    }
+    let mut entries = entries.into_vec();
+    entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(entries)
 }
 
 async fn verify_legacy_retention_archive_segment(
