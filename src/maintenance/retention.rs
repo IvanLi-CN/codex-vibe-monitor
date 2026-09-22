@@ -2843,9 +2843,9 @@ fn collect_retention_archive_candidates_after_cursor_inner(
                 .last()
                 .map(|entry| entry.path.to_string_lossy().to_string());
         }
-        let mut entries = entries.into_iter();
+        let entries = entries.into_iter();
         let mut next_directory = None;
-        while let Some(entry) = entries.next() {
+        for entry in entries {
             if entry.is_dir {
                 next_directory = Some(entry);
                 break;
@@ -2867,7 +2867,6 @@ fn collect_retention_archive_candidates_after_cursor_inner(
                 break;
             }
         }
-        drop(entries);
         #[cfg(test)]
         drop(heap_live);
 
@@ -2904,13 +2903,12 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             directory_cursor = boundary.to_string_lossy().to_string();
         }
         skip_path = Some(path);
-        if truncated {
-            if pause_at
+        if truncated
+            && pause_at
                 .as_deref()
                 .is_some_and(|boundary| directory_cursor.as_str() >= boundary)
-            {
-                return Ok(true);
-            }
+        {
+            return Ok(true);
         }
     }
 }
@@ -2967,7 +2965,7 @@ fn collect_bounded_retention_archive_directory_entries(
         let path_text = path.to_string_lossy();
         let file_type = entry.file_type()?;
         let eligible = if file_type.is_dir() {
-            !skip_path.is_some_and(|skipped| skipped == path)
+            skip_path.is_none_or(|skipped| skipped != path)
                 && (cursor.is_empty()
                     || path_text.as_ref() > cursor
                     || Path::new(cursor).starts_with(&path))
