@@ -4439,6 +4439,7 @@ async fn run_data_retention_maintenance_inner(
     .context("failed to archive forward proxy attempts during retention")?;
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
+    summary.raw_files_removed += proxy_archive.2;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -4456,6 +4457,7 @@ async fn run_data_retention_maintenance_inner(
     .context("failed to archive pool upstream request attempts during retention")?;
     summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
     summary.archive_batches_touched += pool_attempt_archive.1;
+    summary.raw_files_removed += pool_attempt_archive.2;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -6093,7 +6095,7 @@ pub(crate) async fn archive_timestamped_dataset(
     select_sql: &str,
     cutoff: String,
     dry_run: bool,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize)> {
     if dry_run {
         let dry_run_sql = match spec.dataset {
             "forward_proxy_attempts" => {
@@ -6136,11 +6138,13 @@ pub(crate) async fn archive_timestamped_dataset(
                 .map(|batch| batch.row_count as usize)
                 .sum(),
             batch_counts.len(),
+            0,
         ));
     }
 
     let mut rows_archived = 0usize;
     let mut archive_batches = 0usize;
+    let mut raw_files_removed = 0usize;
 
     loop {
         let candidate_limit = retention_candidate_limit(config, "timestamped_archive");
@@ -6217,7 +6221,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await,
             )?
             else {
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             if spec.dataset == "pool_upstream_request_attempts" {
                 set_archive_batch_coverage_from_local_rows(
@@ -6248,14 +6252,14 @@ pub(crate) async fn archive_timestamped_dataset(
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
                 Ok(value) => value,
-                Err(_) => return Ok((rows_archived, archive_batches)),
+                Err(_) => return Ok((rows_archived, archive_batches, raw_files_removed)),
             };
             if actual_sha256 != archive_outcome.sha256 {
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             }
             let Some(admission) = acquire_retention_write_admission("timestamped_archive").await
             else {
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
@@ -6274,7 +6278,7 @@ pub(crate) async fn archive_timestamped_dataset(
             {
                 tx.rollback().await?;
                 drop(admission);
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             }
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             if spec.dataset == "pool_upstream_request_attempts" {
@@ -6416,12 +6420,13 @@ pub(crate) async fn archive_timestamped_dataset(
             if spec.dataset == "pool_upstream_request_attempts" {
                 let raw_paths =
                     filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
-                let _ = delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                raw_files_removed +=
+                    delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
             }
         }
     }
 
-    Ok((rows_archived, archive_batches))
+    Ok((rows_archived, archive_batches, raw_files_removed))
 }
 
 pub(crate) fn archive_timestamped_dataset_month_key(

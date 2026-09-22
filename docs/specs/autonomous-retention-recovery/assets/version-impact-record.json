@@ -39,13 +39,13 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission, hysteretic watermarks, bounded physical inventory, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, sanitized diagnostics, additive status serialization, Storybook states, typecheck, lint, and production build.",
-      "verified_at": "2026-09-22T17:20:00+08:00",
+      "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission including unknown-length stream bounds and non-truncating suppression, hysteretic watermarks, bounded physical inventory, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, sanitized diagnostics, additive status serialization, translated Storybook states, typecheck, lint, and production build.",
+      "verified_at": "2026-09-22T18:12:00+08:00",
       "evidence": [
-        "lightweight profile: 1116 passed",
+        "lightweight profile: 1118 passed",
         "stateful-sqlite profile: 1305 passed, including raw-capture status serialization and schema re-entry",
         "archive-file-io profile: 264 passed, including raw residual no-enumeration regression and retention recovery coverage",
-        "Web focused units: 10 passed; Storybook interactions: 93 passed; typecheck, Biome check, and production build passed",
+        "Web focused units: 10 passed; System Workspace Storybook interactions: 15 passed; typecheck, Biome check, and production build passed",
         "Linux cargo check and Clippy passed with all targets and features; formatting and diff checks passed"
       ]
     }

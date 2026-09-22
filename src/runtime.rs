@@ -216,7 +216,6 @@ pub(crate) async fn run() -> Result<()> {
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
     log_startup_phase("schema", schema_started_at);
-    recover_raw_overflow_spools(&config).await;
     if should_recover_pending_pool_attempts_on_startup(&cli) {
         let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
         if recovered_running_invocations > 0 {
@@ -399,6 +398,7 @@ pub(crate) async fn run() -> Result<()> {
     if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
         warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
     }
+    recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
     spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());

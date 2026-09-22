@@ -2338,6 +2338,10 @@ export interface RuntimePressureRawCaptureHealth {
   rawBytes?: number;
   availableBytes?: number;
   reservedBytes?: number;
+  rawCloseBytes?: number;
+  rawResumeBytes?: number;
+  availableCloseBytes?: number;
+  availableResumeBytes?: number;
   expiredBacklogCount?: number;
   backlogNonGrowing?: boolean;
   updatedAt?: string;
@@ -4630,6 +4634,10 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       rawBytes: optionalCount(rawCapture?.rawBytes),
       availableBytes: optionalCount(rawCapture?.availableBytes),
       reservedBytes: optionalCount(rawCapture?.reservedBytes),
+      rawCloseBytes: optionalCount(rawCapture?.rawCloseBytes),
+      rawResumeBytes: optionalCount(rawCapture?.rawResumeBytes),
+      availableCloseBytes: optionalCount(rawCapture?.availableCloseBytes),
+      availableResumeBytes: optionalCount(rawCapture?.availableResumeBytes),
       expiredBacklogCount: optionalCount(rawCapture?.expiredBacklogCount),
       backlogNonGrowing:
         typeof rawCapture?.backlogNonGrowing === "boolean"

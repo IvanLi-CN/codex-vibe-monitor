@@ -68,6 +68,10 @@ pub(crate) struct SystemRawCaptureHealth {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) available_bytes: Option<u64>,
     pub(crate) reserved_bytes: u64,
+    pub(crate) raw_close_bytes: u64,
+    pub(crate) raw_resume_bytes: u64,
+    pub(crate) available_close_bytes: u64,
+    pub(crate) available_resume_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) expired_backlog_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,6 +276,10 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             raw_bytes: raw_capture_snapshot.raw_bytes,
             available_bytes: raw_capture_snapshot.available_bytes,
             reserved_bytes: raw_capture_snapshot.reserved_bytes,
+            raw_close_bytes: RAW_CAPTURE_CLOSE_BYTES,
+            raw_resume_bytes: RAW_CAPTURE_RESUME_BYTES,
+            available_close_bytes: RAW_CAPTURE_CLOSE_AVAILABLE_BYTES,
+            available_resume_bytes: RAW_CAPTURE_RESUME_AVAILABLE_BYTES,
             expired_backlog_count: raw_capture_snapshot.expired_backlog_count,
             backlog_non_growing: raw_capture_snapshot.backlog_non_growing,
             updated_at: raw_capture_snapshot.updated_at,
@@ -1208,6 +1216,7 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     );
     persist_raw_capture_circuit(state).await?;
     set_system_raw_metrics_health_override(state, None).await;
+    let circuit_snapshot = state.raw_capture_circuit.snapshot();
     debug!(
         metrics_source = "inventory",
         inventory_state = state_name,
@@ -1216,6 +1225,17 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         legacy_row_count = rows.len(),
         link_row_count = link_rows.len(),
         discovered_path_count = deltas.0,
+        circuit_state = circuit_snapshot.state,
+        circuit_reason = ?circuit_snapshot.reason,
+        raw_bytes = circuit_snapshot.raw_bytes,
+        available_bytes = ?circuit_snapshot.available_bytes,
+        reserved_bytes = circuit_snapshot.reserved_bytes,
+        expired_backlog_count = ?circuit_snapshot.expired_backlog_count,
+        backlog_non_growing = ?circuit_snapshot.backlog_non_growing,
+        raw_close_bytes = RAW_CAPTURE_CLOSE_BYTES,
+        raw_resume_bytes = RAW_CAPTURE_RESUME_BYTES,
+        available_close_bytes = RAW_CAPTURE_CLOSE_AVAILABLE_BYTES,
+        available_resume_bytes = RAW_CAPTURE_RESUME_AVAILABLE_BYTES,
         "system raw metrics inventory batch completed"
     );
     Ok(rows.len().saturating_add(link_rows.len()) as u64)

@@ -16,7 +16,9 @@
 ## Related Changes
 
 - PR1 delivers autonomous archive recovery and System Status diagnostics on `th/autonomous-retention-recovery`.
-- The physical raw inventory and capture circuit breaker remain a separate PR2 after PR1 merges.
+- PR2 adds the bounded physical raw inventory and capture circuit breaker as an additive extension to
+  the retention metrics ledger; it preserves the existing proxy, archive, and structured-record
+  contracts while exposing fail-closed storage health through System Status.
 
 ## References
 

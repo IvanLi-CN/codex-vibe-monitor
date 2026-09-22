@@ -120,6 +120,10 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       rawBytes: 8_589_934_592,
       availableBytes: 64_424_509_184,
       reservedBytes: 0,
+      rawCloseBytes: 17_179_869_184,
+      rawResumeBytes: 12_884_901_888,
+      availableCloseBytes: 21_474_836_480,
+      availableResumeBytes: 32_212_254_720,
       expiredBacklogCount: 0,
       backlogNonGrowing: true,
     },
@@ -853,6 +857,10 @@ export const StatusRawCaptureSuppressed: Story = {
     const panel = canvas.getByTestId("system-status-raw-capture");
     await expect(panel).toHaveTextContent("已抑制落盘");
     await expect(panel).toHaveTextContent("文件系统可用空间不足");
+    await expect(panel).toHaveTextContent("已就绪");
+    await expect(panel).toHaveTextContent("原始占用水位");
+    await expect(panel).toHaveTextContent("文件系统水位");
+    await expect(panel).toHaveTextContent("增长中或未知");
   },
 };
 
@@ -874,6 +882,7 @@ export const StatusRawCaptureUnknown: Story = {
     const panel = canvas.getByTestId("system-status-raw-capture");
     await expect(panel).toHaveTextContent("未知");
     await expect(panel).toHaveTextContent("未知");
+    await expect(panel).toHaveTextContent("过期积压趋势");
   },
 };
 

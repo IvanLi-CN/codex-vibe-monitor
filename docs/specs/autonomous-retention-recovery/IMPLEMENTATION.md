@@ -28,13 +28,14 @@
 ## PR2: Raw Capture Circuit Breaker
 
 - `system_raw_payload_metrics` keeps the existing bounded invocation/blob-link inventory and now persists the additive circuit state, suppression reason, filesystem-available measurement, expired-backlog count/trend, and circuit update time. The migration is idempotent and earlier binaries ignore the new columns.
-- `RawCaptureCircuitBreaker` is process-local for in-flight reservations and hydrated from the durable inventory at startup. It starts fail-closed until the bounded inventory is ready, uses `statvfs` for the constant-time filesystem check, and applies the 16 GiB / 20 GiB close watermarks and 12 GiB / 30 GiB recovery watermarks with a non-growing expired-backlog requirement.
-- All memory, file-backed replay, overflow-spool, and asynchronous streaming capture entry points perform circuit admission before creating a raw file. A suppressed capture returns no path with the stable `storage_suppressed` reason while proxy delivery and structured invocation persistence continue.
+- `RawCaptureCircuitBreaker` is process-local for in-flight reservations and hydrated from the durable inventory at startup. It starts fail-closed until the bounded inventory is ready, uses `statvfs` for the constant-time filesystem check, and applies the 16 GiB / 20 GiB close watermarks and 12 GiB / 30 GiB recovery watermarks with a known, non-growing expired-backlog requirement. Unknown filesystem measurements and backlog history remain fail-closed.
+- All memory, file-backed replay, overflow-spool, startup spool recovery, and asynchronous streaming capture entry points perform circuit admission before creating a raw file. Unknown-length streams extend their in-flight reservation by observed chunks before enqueueing them, while file-backed replay uses a bounded upper estimate. A suppressed capture returns no path with the stable `storage_suppressed` reason without setting the payload `truncated` flag, while proxy delivery and structured invocation persistence continue.
 - Successful writes settle the reservation using the actual file size; failed writes release it. Retention inventory reset remains the bounded source of truth after confirmed raw-file deletion, so raw paths are never enumerated from the request path. The orphan raw-file sweep does not participate in this circuit and is not an authorization to delete unlinked residual files.
+- Timestamped pool-attempt raw deletion contributes to the retention raw-file removal count, so the next bounded inventory reset cannot retain stale physical-byte accounting. Inventory batches log only low-cardinality circuit measurements and fixed watermarks.
 
 ### System Status
 
-- `/api/system/status` adds `runtimePressureHealth.rawCapture` with low-cardinality state/reason, inventory state, physical raw bytes, filesystem-available bytes, in-flight reservations, backlog trend, and update time. Missing fields remain optional and normalize to `unknown` in the Web client.
+- `/api/system/status` adds `runtimePressureHealth.rawCapture` with low-cardinality state/reason, translated inventory state, physical raw bytes, filesystem-available bytes, in-flight reservations, close/recovery watermarks, backlog trend, and update time. Missing fields remain optional and normalize to `unknown` in the Web client.
 - System Status renders capturing, storage-suppressed, and unknown states in the existing Runtime Pressure detail surface. Storybook interaction coverage exercises the suppressed filesystem-low and missing-field scenarios.
 
 ## Operational Boundaries
@@ -47,11 +48,11 @@
 ## Verification
 
 - `cargo fmt --all -- --check`, Linux `cargo check --locked --all-targets --all-features`, and Linux Clippy with `-D warnings` pass.
-- The `lightweight` profile passes 1113 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer; archive-specific recovery tests run in the disjoint archive-file-I/O profile.
+- The `lightweight` profile passes 1118 tests, including the rule that maintenance fairness cannot bypass an interactive SQLite writer; archive-specific recovery tests run in the disjoint archive-file-I/O profile.
 - The `stateful-sqlite` profile passes 1305 tests, including P1 admission for failure persistence, prepared-schema re-entry, unmeasured status counts, due published work past 32 unexpired quarantines, and successful live-mirror ledger retirement.
 - The `archive-file-io` profile passes 268 tests, including full archive-column identity mismatch rollback, retry after publication failure, source/raw ownership retention, independent orphan cleanup, sanitized failure fingerprints, prepared-key failure attribution, the authoritative-manifest preservation guard, the republish-safe quarantine guard, admission-before-I/O legacy recovery, bounded directory-entry discovery, monotonic cursor advancement, the referenced-window and truncated-sibling starvation guards, the 32-file bound, cursor wrap for late earlier paths, and expired live-mirror cleanup without Summary proof.
 - The archive-file-I/O coverage also verifies expired live-mirror cleanup without Summary proof and bounded legacy identity reconciliation.
-- Web unit tests pass 1538 tests across 156 files, with 6 skipped. Type checking and a focused Biome check pass. Storybook (91 tests) and production build passed for the System Status recovery surface and its translations; the change adds the recovery panel and status-region accessibility semantics without changing unrelated pages. Repo-wide lint from the preceding candidate reported 86 existing warnings; the build reported the existing large-bundle warning.
+- Web focused unit tests pass 10 tests, type checking passes, and repo-wide Biome exits successfully with 86 existing warnings. Storybook System Workspace interaction tests pass 15 tests and the production build passes for the System Status raw-capture surface and its translations; the change adds translated inventory/watermark states and live-region semantics without changing unrelated pages. The build reports the existing large-bundle warning.
 
 ## References
 

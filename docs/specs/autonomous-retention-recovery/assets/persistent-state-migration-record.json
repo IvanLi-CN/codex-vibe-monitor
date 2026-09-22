@@ -61,7 +61,7 @@
     ],
     "progress_signals": [
       "retentionRecovery prepared/quarantined/backlog counts, stage, last progress, next retry, and failure fingerprint",
-      "rawCapture state/reason, physical raw bytes, filesystem available bytes, bounded reservations, and backlog trend"
+      "rawCapture state/reason, physical raw bytes, filesystem available bytes, fixed close/recovery watermarks, bounded reservations, and backlog trend"
     ],
     "pause_points": [
       "Between idempotent schema creation and maintenance-owned ledger writes.",
@@ -78,7 +78,7 @@
     "patch": {
       "required_test_evidence": [
         "Public system-status API change is additive and optional for older clients.",
-        "Raw-capture circuit hydration, hysteresis, bounded reservations, and inventory reset pass stateful SQLite and focused raw-capture regression tests.",
+        "Raw-capture circuit hydration, hysteresis, fail-closed unknown states, bounded reservations, and inventory reset pass stateful SQLite and focused raw-capture regression tests.",
         "Candidate creates and reuses recovery schema over an earlier v2.71.x database.",
         "Schema creation is idempotent and a failed archive publication is retried without losing live rows or raw ownership."
       ]

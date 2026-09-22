@@ -513,6 +513,10 @@ async fn runtime_pressure_health_serializes_without_sql() {
     ));
     assert!(payload["rawCapture"]["rawBytes"].is_u64());
     assert!(payload["rawCapture"]["reservedBytes"].is_u64());
+    assert!(payload["rawCapture"]["rawCloseBytes"].is_u64());
+    assert!(payload["rawCapture"]["rawResumeBytes"].is_u64());
+    assert!(payload["rawCapture"]["availableCloseBytes"].is_u64());
+    assert!(payload["rawCapture"]["availableResumeBytes"].is_u64());
     let raw_capture_fields = payload["rawCapture"]
         .as_object()
         .expect("serialize raw capture as a bounded object");
