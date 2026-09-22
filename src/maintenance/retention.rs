@@ -4000,17 +4000,6 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 || summary.orphan_raw_files_removed > 0
                 || reset_pending
             {
-                if let Err(error) =
-                    mark_system_raw_payload_metrics_inventory_reset_pending(&state.pool, 128).await
-                {
-                    warn!(
-                        trigger,
-                        error = %error,
-                        "failed to persist system raw metrics inventory reset intent"
-                    );
-                    invalidate_system_status_cache(state.as_ref()).await;
-                    return false;
-                }
                 match reset_retention_raw_payload_metrics_inventory(state.as_ref()).await {
                     Ok(true) => {}
                     Ok(false) => {
@@ -4684,6 +4673,9 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
+            if !dry_run && !prepare_raw_compression_inventory_reset(pool).await? {
+                continue;
+            }
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
                 candidate.id,
@@ -4760,6 +4752,16 @@ pub(crate) fn accumulate_raw_compression_summary(
     target.estimated_bytes_after += next.estimated_bytes_after;
 }
 
+async fn prepare_raw_compression_inventory_reset(pool: &Pool<Sqlite>) -> Result<bool> {
+    let Some(admission) = acquire_retention_write_admission("raw_metrics_inventory_reset").await
+    else {
+        return Ok(false);
+    };
+    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+    drop(admission);
+    Ok(true)
+}
+
 pub(crate) async fn compress_cold_proxy_raw_payload_lane(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -4826,6 +4828,10 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
+
+            if !dry_run && !prepare_raw_compression_inventory_reset(pool).await? {
+                continue;
+            }
 
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
@@ -5666,11 +5672,13 @@ pub(crate) async fn prune_old_invocation_details(
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
+            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
+            if !raw_paths.is_empty() {
+                mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+            }
             drop(admission);
             rows_pruned += group.len();
             archive_batches += 1;
-
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
     }
@@ -6087,11 +6095,14 @@ pub(crate) async fn archive_old_invocations(
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
+            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
+            if !raw_paths.is_empty() {
+                mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+            }
             drop(admission);
             rows_archived += group.len();
             archive_batches += 1;
             retention_recovery_record_progress();
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
     }
@@ -6425,14 +6436,21 @@ pub(crate) async fn archive_timestamped_dataset(
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
-            drop(admission);
-            rows_archived += group.len();
-            archive_batches += 1;
             if spec.dataset == "pool_upstream_request_attempts" {
                 let raw_paths =
                     filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
+                if !raw_paths.is_empty() {
+                    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+                }
+                drop(admission);
+                rows_archived += group.len();
+                archive_batches += 1;
                 raw_files_removed +=
                     delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+            } else {
+                drop(admission);
+                rows_archived += group.len();
+                archive_batches += 1;
             }
         }
     }
