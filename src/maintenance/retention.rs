@@ -2721,12 +2721,9 @@ pub(crate) async fn reconcile_legacy_retention_archive_segments(
         tx.commit().await?;
         drop(admission);
     }
-    let progress_after_cursor = progress
-        .as_ref()
-        .filter(|path| path.to_string_lossy().as_ref() > cursor.as_str());
+    let progress_after_cursor = progress.as_deref().filter(|path| *path > cursor.as_str());
     if let Some(progress) = progress_after_cursor {
-        let progress = progress.to_string_lossy().to_string();
-        advance_retention_recovery_cursor(pool, cursor.as_str(), &progress).await?;
+        advance_retention_recovery_cursor(pool, cursor.as_str(), progress).await?;
     } else if !cursor.is_empty() {
         // Wrap when the tail is exhausted so earlier-arriving files are eventually revisited.
         let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
@@ -2787,16 +2784,17 @@ pub(crate) async fn advance_retention_recovery_cursor(
 
 struct RetentionArchiveCandidateScan {
     candidates: Vec<PathBuf>,
-    progress: Option<PathBuf>,
+    progress: Option<String>,
 }
 
 impl RetentionArchiveCandidateScan {
-    fn record_progress(&mut self, path: &Path) {
-        let should_replace = self.progress.as_ref().is_none_or(|current| {
-            path.to_string_lossy().as_ref() > current.to_string_lossy().as_ref()
-        });
+    fn record_progress(&mut self, cursor_key: &str) {
+        let should_replace = self
+            .progress
+            .as_ref()
+            .is_none_or(|current| cursor_key > current.as_str());
         if should_replace {
-            self.progress = Some(path.to_path_buf());
+            self.progress = Some(cursor_key.to_string());
         }
     }
 }
@@ -2844,9 +2842,7 @@ fn collect_retention_archive_candidates_after_cursor_inner(
         )?;
         let RetentionArchiveDirectorySelection { entries, truncated } = selection;
         if pause_at.is_none() && truncated {
-            pause_at = entries
-                .last()
-                .map(|entry| entry.path.to_string_lossy().to_string());
+            pause_at = entries.last().map(|entry| entry.cursor_key.clone());
         }
         let entries = entries.into_iter();
         let mut next_directory = None;
@@ -2856,15 +2852,16 @@ fn collect_retention_archive_candidates_after_cursor_inner(
                 break;
             }
             let path = entry.path;
-            let path_text = path.to_string_lossy();
-            let is_after_cursor = path_text.as_ref() > directory_cursor.as_str();
+            let cursor_key = entry.cursor_key;
+            let is_after_cursor = cursor_key.as_str() > directory_cursor.as_str();
             if is_after_cursor {
-                scan.record_progress(&path);
-                directory_cursor = path_text.to_string();
+                scan.record_progress(&cursor_key);
+                directory_cursor = cursor_key;
             }
             if entry.is_file
                 && is_after_cursor
-                && (path_text.ends_with(".sqlite.gz") || path_text.ends_with(".sqlite.zst"))
+                && (path.to_string_lossy().ends_with(".sqlite.gz")
+                    || path.to_string_lossy().ends_with(".sqlite.zst"))
             {
                 scan.candidates.push(path);
             }
@@ -2887,16 +2884,16 @@ fn collect_retention_archive_candidates_after_cursor_inner(
         };
         let RetentionArchiveDirectoryEntry {
             path,
+            cursor_key,
             #[cfg(test)]
             heap_entry_guard,
             ..
         } = entry;
         #[cfg(test)]
         drop(heap_entry_guard);
-        let path_text = path.to_string_lossy();
-        if path_text.as_ref() > directory_cursor.as_str() {
-            scan.record_progress(&path);
-            directory_cursor = path_text.to_string();
+        if cursor_key.as_str() > directory_cursor.as_str() {
+            scan.record_progress(&cursor_key);
+            directory_cursor = cursor_key;
         }
         let child_stopped = collect_retention_archive_candidates_after_cursor_inner(
             &path,
@@ -2907,10 +2904,10 @@ fn collect_retention_archive_candidates_after_cursor_inner(
         if child_stopped {
             return Ok(true);
         }
-        let boundary = retention_directory_boundary_cursor(&path);
-        if boundary.to_string_lossy().as_ref() > directory_cursor.as_str() {
-            scan.record_progress(&boundary);
-            directory_cursor = boundary.to_string_lossy().to_string();
+        if let Some(progress) = scan.progress.as_deref()
+            && progress > directory_cursor.as_str()
+        {
+            directory_cursor = progress.to_string();
         }
         skip_path = Some(path);
         if truncated
@@ -2923,15 +2920,18 @@ fn collect_retention_archive_candidates_after_cursor_inner(
     }
 }
 
-fn retention_directory_boundary_cursor(path: &Path) -> PathBuf {
-    let mut boundary = path.to_path_buf();
-    boundary.push("\u{10ffff}");
-    boundary
+fn retention_archive_cursor_key(path: &Path, is_dir: bool) -> String {
+    let mut cursor_key = path.to_string_lossy().to_string();
+    if is_dir {
+        cursor_key.push('/');
+    }
+    cursor_key
 }
 
 #[derive(Debug, Eq, PartialEq)]
 struct RetentionArchiveDirectoryEntry {
     path: PathBuf,
+    cursor_key: String,
     is_dir: bool,
     is_file: bool,
     #[cfg(test)]
@@ -2945,7 +2945,7 @@ struct RetentionArchiveDirectorySelection {
 
 impl Ord for RetentionArchiveDirectoryEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.path.cmp(&other.path)
+        self.cursor_key.cmp(&other.cursor_key)
     }
 }
 
@@ -2967,9 +2967,11 @@ fn collect_bounded_retention_archive_directory_entries(
             let entry = entry?;
             let path = entry.path();
             let file_type = entry.file_type()?;
+            let is_dir = file_type.is_dir();
             Ok(RetentionArchiveDirectoryEntry {
+                cursor_key: retention_archive_cursor_key(&path, is_dir),
                 path,
-                is_dir: file_type.is_dir(),
+                is_dir,
                 is_file: file_type.is_file(),
                 #[cfg(test)]
                 heap_entry_guard: None,
@@ -2993,14 +2995,13 @@ fn select_bounded_retention_archive_directory_entries(
         #[cfg(test)]
         retention_test_legacy_directory_entry_event();
         let path = &entry.path;
-        let path_text = path.to_string_lossy();
         let eligible = if entry.is_dir {
             skip_path.is_none_or(|skipped| skipped != path)
                 && (cursor.is_empty()
-                    || path_text.as_ref() > cursor
+                    || entry.cursor_key.as_str() > cursor
                     || Path::new(cursor).starts_with(path))
         } else {
-            path_text.as_ref() > cursor
+            entry.cursor_key.as_str() > cursor
         };
         if !eligible {
             continue;
@@ -3018,7 +3019,7 @@ fn select_bounded_retention_archive_directory_entries(
             entries.push(candidate);
         } else if entries
             .peek()
-            .is_some_and(|largest| entry.path < largest.path)
+            .is_some_and(|largest| entry.cursor_key < largest.cursor_key)
         {
             truncated = true;
             entries.pop();
@@ -3037,7 +3038,7 @@ fn select_bounded_retention_archive_directory_entries(
         }
     }
     let mut entries = entries.into_vec();
-    entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    entries.sort_unstable_by(|left, right| left.cursor_key.cmp(&right.cursor_key));
     Ok(RetentionArchiveDirectorySelection { entries, truncated })
 }
 
@@ -3049,6 +3050,7 @@ pub(crate) fn retention_test_select_bounded_archive_paths(
 ) -> Vec<PathBuf> {
     let entries = paths.into_iter().map(|path| {
         Ok(RetentionArchiveDirectoryEntry {
+            cursor_key: retention_archive_cursor_key(&path, false),
             path,
             is_dir: false,
             is_file: true,

@@ -970,6 +970,45 @@ async fn legacy_retention_reconciliation_reaches_siblings_after_a_truncated_dire
 }
 
 #[tokio::test]
+async fn legacy_retention_reconciliation_keeps_same_prefix_files_after_directory_traversal() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-legacy-same-prefix-file").await;
+    let archive_dir = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("2026")
+        .join("01")
+        .join("01");
+    fs::create_dir_all(archive_dir.join("a")).expect("create same-prefix legacy directory");
+    for index in 0..32 {
+        fs::write(
+            archive_dir
+                .join("a")
+                .join(format!("part-{index:016x}-{index:016x}-legacy.sqlite.gz")),
+            b"unreferenced nested archive",
+        )
+        .expect("write nested legacy archive");
+    }
+    let same_prefix_file = archive_dir.join("a.sqlite.gz");
+    fs::write(&same_prefix_file, b"unreferenced same-prefix archive")
+        .expect("write same-prefix legacy archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run same-prefix legacy reconciliation pass");
+    let tracked_state: Option<String> =
+        sqlx::query_scalar("SELECT state FROM retention_prepared_archives WHERE file_path = ?1")
+            .bind(same_prefix_file.to_string_lossy().to_string())
+            .fetch_optional(&pool)
+            .await
+            .expect("load same-prefix legacy archive state");
+    assert_eq!(tracked_state.as_deref(), Some("quarantined"));
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
     let (pool, _config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-legacy-cursor-monotonic").await;
