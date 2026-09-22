@@ -13146,7 +13146,8 @@ async fn load_summary_projection_archive_manifest_sha256(
     {
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT file_path, sha256 FROM archive_batches WHERE dataset = 'codex_invocations' \
-             AND status = 'completed' AND file_path IN (",
+             AND status = 'completed' AND sha256 IS NOT NULL AND TRIM(sha256) <> '' \
+             AND file_path IN (",
         );
         {
             let mut separated = query.separated(", ");

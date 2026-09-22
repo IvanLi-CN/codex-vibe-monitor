@@ -4563,6 +4563,8 @@ where
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
     )

@@ -639,29 +639,6 @@ where
         return Ok(false);
     }
 
-    // Reacquire the current parent immediately before removal. The original directory fd may
-    // refer to an inode that was renamed away while SQLite proof checks were running.
-    drop(archive_lock);
-    let fresh_parent_identity =
-        super::super::retention::retention_archive_parent_identity(Path::new(file_path));
-    if fresh_parent_identity != parent_identity {
-        tx.rollback().await?;
-        return Ok(false);
-    }
-    archive_lock = super::super::retention::retention_archive_file_lock(Path::new(file_path))
-        .context("failed to relock current archive cleanup path")?;
-    if archive_lock.is_held() {
-        let fresh_sha256 = if Path::new(file_path).is_file() {
-            Some(sha256_hex_file(Path::new(file_path))?)
-        } else {
-            None
-        };
-        if fresh_sha256 != file_sha256 {
-            tx.rollback().await?;
-            return Ok(false);
-        }
-    }
-
     match remove_file(file_path) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -3210,10 +3187,8 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
             inspected_path_count += 1;
             scanned_archive_batches += 1;
             skipped_archive_batches += 1;
-            // Keep the cursor parked on an unavailable parent so a recreated archive directory
-            // is retried on the next bounded startup pass instead of waiting for cursor wrap.
-            hit_budget = true;
-            break;
+            next_cursor_id = next_cursor_id.max(candidate.id);
+            continue;
         }
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(

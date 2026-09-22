@@ -123,6 +123,15 @@ grep -q "cargo_home=$default_workspace/cargo-home" "$contract_record"
 grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
 [[ -d "$default_workspace/cargo-home" && -d "$default_workspace/target" ]]
 
+: >"$contract_record"
+archive_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile archive-file-io 2>&1)"
+grep -q 'backend_test_profile=archive-file-io' <<<"$archive_output"
+grep -q 'maintenance::retention::retention_recovery_race_tests' "$contract_record"
+
 valid_dot_workspace="$tmp_root/cache..v2"
 dot_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
   PATH="$contract_bin:/usr/bin:/bin" \

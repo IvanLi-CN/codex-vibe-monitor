@@ -883,6 +883,21 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             "legacy archive replacement recovery is still pending"
         ));
     }
+    let existing_archive_staged_path = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT replacement_staged_path FROM archive_batches
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(final_file_path.to_string_lossy().to_string())
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    if existing_archive_staged_path.is_some() {
+        return Err(anyhow::anyhow!(
+            "archive replacement recovery is still pending"
+        ));
+    }
     let prepared_bytes = temporary_file_path
         .metadata()
         .map(|metadata| metadata.len() as usize)

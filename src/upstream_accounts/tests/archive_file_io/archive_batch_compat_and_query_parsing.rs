@@ -4214,6 +4214,7 @@ pub(crate) async fn ensure_window_actual_usage_test_tables(pool: &SqlitePool) {
                 day_key TEXT,
                 part_key TEXT,
                 file_path TEXT NOT NULL,
+                sha256 TEXT,
                 status TEXT NOT NULL,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
@@ -4224,6 +4225,9 @@ pub(crate) async fn ensure_window_actual_usage_test_tables(pool: &SqlitePool) {
     .execute(pool)
     .await
     .expect("create archive_batches table");
+    let _ = sqlx::query("ALTER TABLE archive_batches ADD COLUMN sha256 TEXT")
+        .execute(pool)
+        .await;
 }
 
 pub(crate) fn shanghai_local_iso(timestamp: DateTime<Utc>) -> String {

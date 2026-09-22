@@ -4365,6 +4365,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
            AND batches.status = 'completed' \
+           AND batches.sha256 IS NOT NULL \
+           AND TRIM(batches.sha256) <> '' \
            AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
            AND NOT EXISTS ( \
              SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \

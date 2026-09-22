@@ -270,14 +270,18 @@ fn retention_recovery_clear_current_prepared_key() {
 }
 
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
-    let digest = Sha256::digest(error.to_string().as_bytes());
-    let fingerprint = format!("{digest:x}");
+    let fingerprint = retention_error_fingerprint(error);
     let mut health = RETENTION_RECOVERY_HEALTH
         .lock()
         .expect("retention recovery health");
     health.state = "degraded".to_string();
     health.failure_stage = Some(stage.to_string());
-    health.failure_fingerprint = Some(fingerprint[..16].to_string());
+    health.failure_fingerprint = Some(fingerprint);
+}
+
+fn retention_error_fingerprint(error: &anyhow::Error) -> String {
+    let digest = Sha256::digest(error.to_string().as_bytes());
+    format!("{:x}", digest)[..16].to_string()
 }
 
 fn retention_recovery_record_deferred(stage: &'static str) {
@@ -677,7 +681,10 @@ fn retention_record_error(operation: &'static str, error: &anyhow::Error) {
         .expect("retention write health");
     health.snapshot.state = "degraded".to_string();
     health.snapshot.operation = Some(operation.to_string());
-    health.snapshot.last_error = Some(error.to_string());
+    health.snapshot.last_error = Some(format!(
+        "failure_fingerprint:{}",
+        retention_error_fingerprint(error)
+    ));
 }
 
 pub(super) fn take_retention_micro_batch<T>(
@@ -1547,7 +1554,7 @@ pub(crate) async fn retention_recovery_persist_failure(
             attempt_count = attempt_count + 1,
             updated_at = datetime('now')
         WHERE prepared_key = ?6
-          AND state = 'preparing'
+          AND state IN ('preparing', 'published')
         "#,
     )
     .bind(quarantine)
@@ -1913,7 +1920,11 @@ async fn reconcile_retention_prepared_archives(
                   AND active.state IN ('preparing', 'published')
             )
         )
-        ORDER BY CASE WHEN state = 'published' THEN 0 ELSE 1 END,
+        ORDER BY CASE
+                     WHEN state = 'preparing' THEN 0
+                     WHEN state = 'quarantined' THEN 1
+                     ELSE 2
+                 END,
                  updated_at ASC, prepared_key ASC
         LIMIT ?2
         "#,
@@ -3662,12 +3673,20 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         handle,
                         SystemTaskStatus::Failed,
                         Some("retention maintenance failed".to_string()),
-                        Some(err.to_string()),
+                        Some(format!(
+                            "failure_fingerprint:{}",
+                            retention_error_fingerprint(&err)
+                        )),
                     )
                     .await;
                 }
             }
-            warn!(trigger, error = %err, retry_soon = pressure_error, "failed to run retention maintenance");
+            warn!(
+                trigger,
+                error_fingerprint = %retention_error_fingerprint(&err),
+                retry_soon = pressure_error,
+                "failed to run retention maintenance"
+            );
             return !pressure_error;
         }
     };
