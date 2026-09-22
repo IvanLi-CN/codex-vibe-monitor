@@ -705,7 +705,24 @@ pub(crate) async fn cleanup_expired_archive_batches(
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let owner_facing_node_health_window_cutoff = shanghai_local_cutoff_string(7);
-    let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
+    let prepared_archive_guard = if sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'retention_prepared_archives')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0
+    {
+        "AND NOT EXISTS (
+              SELECT 1
+              FROM retention_prepared_archives AS prepared
+              WHERE prepared.file_path = archive_batches.file_path
+                AND prepared.state IN ('preparing', 'published')
+                AND prepared.staged_file_path IS NOT NULL
+          )"
+    } else {
+        ""
+    };
+    let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(&format!(
         r#"
         SELECT id, dataset, file_path, sha256,
                COALESCE(summary_source_kind, 'unknown') AS summary_source_kind,
@@ -715,12 +732,13 @@ pub(crate) async fn cleanup_expired_archive_batches(
           AND sha256 IS NOT NULL
           AND TRIM(sha256) <> ''
           AND replacement_staged_path IS NULL
+          {prepared_archive_guard}
           AND archive_expires_at IS NOT NULL
           AND archive_expires_at < ?2
         ORDER BY archive_expires_at ASC, id ASC
         LIMIT ?3
         "#,
-    )
+    ))
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(&cutoff)
     .bind(super::super::retention::retention_candidate_limit(config, "archive_cleanup") as i64)
@@ -732,6 +750,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
         FROM hourly_rollup_archive_replay
         WHERE target = ?1
           AND dataset = 'pool_upstream_request_attempts'
+          AND archive_sha256 IS NOT NULL
+          AND TRIM(archive_sha256) <> ''
         "#,
     )
     .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
@@ -745,6 +765,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
         FROM hourly_rollup_archive_replay
         WHERE target = ?1
           AND dataset = 'pool_upstream_request_attempts'
+          AND archive_sha256 IS NOT NULL
+          AND TRIM(archive_sha256) <> ''
         "#,
     )
     .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)

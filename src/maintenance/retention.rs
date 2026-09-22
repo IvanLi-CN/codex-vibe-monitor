@@ -1996,6 +1996,21 @@ async fn reconcile_retention_prepared_archives(
                     .await?;
                 continue;
             }
+            let archive_staged_path = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT replacement_staged_path FROM archive_batches
+                 WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
+            )
+            .bind(&file_path)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+            if archive_staged_path.as_deref() != Some(staged_file_path.as_str()) {
+                // The prepared pointer was durable but the archive manifest pointer was not;
+                // no rename could have started, so clear the orphaned pointer and retry.
+                clear_retention_staged_file_path(pool, &prepared_key, &staged_file_path, true)
+                    .await?;
+                continue;
+            }
             let manifest_sha = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT sha256 FROM archive_batches WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
             )

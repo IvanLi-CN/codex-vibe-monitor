@@ -557,10 +557,13 @@ async fn invocation_archive_has_stale_replay_marker_tx(
            AND batches.status = 'completed'
         WHERE replay.dataset = ?1
           AND replay.file_path = ?2
-          AND replay.archive_sha256 IS NOT NULL
+          AND (
+              replay.archive_sha256 IS NULL
+              OR TRIM(replay.archive_sha256) = ''
+              OR replay.archive_sha256 <> batches.sha256
+          )
           AND batches.sha256 IS NOT NULL
           AND TRIM(batches.sha256) <> ''
-          AND replay.archive_sha256 <> batches.sha256
         LIMIT 1
         "#,
     )

@@ -871,6 +871,43 @@ pub(crate) async fn archive_rows_into_month_batch_at_path(
     })
 }
 
+async fn clear_legacy_archive_replacement_journal(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    month_key: &str,
+    final_file_path: &Path,
+    staged_file_path: Option<&Path>,
+) {
+    let Some(staged_file_path) = staged_file_path else {
+        return;
+    };
+    let final_file_path = final_file_path.to_string_lossy().to_string();
+    let staged_file_path = staged_file_path.to_string_lossy().to_string();
+    let _ = sqlx::query(
+        "UPDATE retention_prepared_archives
+         SET staged_file_path = NULL, updated_at = datetime('now')
+         WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'
+           AND staged_file_path = ?3",
+    )
+    .bind(dataset)
+    .bind(&final_file_path)
+    .bind(&staged_file_path)
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "UPDATE archive_batches
+         SET replacement_staged_path = NULL
+         WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3
+           AND replacement_staged_path = ?4",
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(&final_file_path)
+    .bind(&staged_file_path)
+    .execute(pool)
+    .await;
+}
+
 async fn replace_legacy_archive_file_with_cleanup_serialization(
     pool: &Pool<Sqlite>,
     dataset: &str,
@@ -1013,6 +1050,14 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         if let Some(backup_path) = backup_path.as_deref() {
             let _ = fs::rename(backup_path, final_file_path);
         }
+        clear_legacy_archive_replacement_journal(
+            pool,
+            dataset,
+            month_key,
+            final_file_path,
+            backup_path.as_deref(),
+        )
+        .await;
         return Err(error);
     }
     if let Err(error) = sync_published_archive_file(final_file_path) {
@@ -1021,6 +1066,14 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         if let Some(backup_path) = backup_path.as_deref() {
             let _ = fs::rename(backup_path, final_file_path);
         }
+        clear_legacy_archive_replacement_journal(
+            pool,
+            dataset,
+            month_key,
+            final_file_path,
+            backup_path.as_deref(),
+        )
+        .await;
         return Err(error);
     }
     let commit_started = Instant::now();
