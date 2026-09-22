@@ -714,16 +714,22 @@ async fn legacy_retention_reconciliation_skips_archive_io_when_pressure_gate_is_
     let _busy_permit = pressure_gate
         .try_begin_background("retention_legacy_pressure_preflight")
         .expect("occupy the test background pressure slot");
+    let directory_traversal = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let directory_entries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let archive_io = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let result = crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
         .scope(
             pressure_gate,
-            crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES.scope(
-                directory_entries.clone(),
-                crate::maintenance::RETENTION_TEST_LEGACY_ARCHIVE_IO.scope(
-                    archive_io.clone(),
-                    crate::maintenance::reconcile_legacy_retention_archive_segments(&pool, &config),
+            crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_TRAVERSAL.scope(
+                directory_traversal.clone(),
+                crate::maintenance::RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES.scope(
+                    directory_entries.clone(),
+                    crate::maintenance::RETENTION_TEST_LEGACY_ARCHIVE_IO.scope(
+                        archive_io.clone(),
+                        crate::maintenance::reconcile_legacy_retention_archive_segments(
+                            &pool, &config,
+                        ),
+                    ),
                 ),
             ),
         )
@@ -731,6 +737,10 @@ async fn legacy_retention_reconciliation_skips_archive_io_when_pressure_gate_is_
 
     let error = result.expect_err("busy pressure must defer legacy reconciliation");
     assert!(error.to_string().contains("retention write deferred"));
+    assert_eq!(
+        directory_traversal.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
     assert_eq!(
         directory_entries.load(std::sync::atomic::Ordering::Relaxed),
         0
@@ -752,10 +762,25 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
         .join("01")
         .join("01");
     fs::create_dir_all(&archive_dir).expect("create legacy segment directory");
-    for index in 0..33 {
-        let path = archive_dir.join(format!("part-{index:016x}-{index:016x}-legacy.sqlite.gz"));
+    let archive_paths = (0..33)
+        .map(|index| archive_dir.join(format!("part-{index:016x}-{index:016x}-legacy.sqlite.gz")))
+        .collect::<Vec<_>>();
+    for path in archive_paths.iter().rev() {
         fs::write(path, b"not a gzip archive").expect("write unverified legacy segment");
     }
+    let selected_forward = crate::maintenance::retention_test_select_bounded_archive_paths(
+        archive_paths.clone(),
+        "",
+        32,
+    );
+    let mut archive_paths_reversed = archive_paths.clone();
+    archive_paths_reversed.reverse();
+    let selected_reversed = crate::maintenance::retention_test_select_bounded_archive_paths(
+        archive_paths_reversed,
+        "",
+        32,
+    );
+    assert_eq!(selected_forward, selected_reversed);
 
     let heap_peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let heap_live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

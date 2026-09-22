@@ -55,6 +55,8 @@ tokio::task_local! {
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
     pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
+    pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_TRAVERSAL:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE:
@@ -66,6 +68,13 @@ tokio::task_local! {
 }
 
 #[cfg(test)]
+fn retention_test_legacy_directory_traversal_event() {
+    let _ = RETENTION_TEST_LEGACY_DIRECTORY_TRAVERSAL.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+#[cfg(test)]
 fn retention_test_legacy_directory_entry_event() {
     let _ = RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES.try_with(|counter| {
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -73,35 +82,34 @@ fn retention_test_legacy_directory_entry_event() {
 }
 
 #[cfg(test)]
-struct RetentionTestLegacyDirectoryHeapGuard {
-    size: usize,
+#[derive(Debug, Eq, PartialEq)]
+struct RetentionTestLegacyDirectoryHeapEntryGuard {
+    observed: bool,
 }
 
 #[cfg(test)]
-impl RetentionTestLegacyDirectoryHeapGuard {
-    fn new(size: usize) -> Self {
-        let applied = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE
+impl RetentionTestLegacyDirectoryHeapEntryGuard {
+    fn new() -> Self {
+        let observed = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE
             .try_with(|live| {
-                let current = live.fetch_add(size, std::sync::atomic::Ordering::Relaxed) + size;
+                let current = live.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 let _ = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_PEAK.try_with(|peak| {
                     peak.fetch_max(current, std::sync::atomic::Ordering::Relaxed);
                 });
             })
             .is_ok();
-        Self {
-            size: if applied { size } else { 0 },
-        }
+        Self { observed }
     }
 }
 
 #[cfg(test)]
-impl Drop for RetentionTestLegacyDirectoryHeapGuard {
+impl Drop for RetentionTestLegacyDirectoryHeapEntryGuard {
     fn drop(&mut self) {
-        if self.size == 0 {
+        if !self.observed {
             return;
         }
         let _ = RETENTION_TEST_LEGACY_DIRECTORY_HEAP_LIVE.try_with(|live| {
-            live.fetch_sub(self.size, std::sync::atomic::Ordering::Relaxed);
+            live.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
     }
 }
@@ -2818,6 +2826,8 @@ fn collect_retention_archive_candidates_after_cursor_inner(
     if scan.candidates.len() >= limit {
         return Ok(true);
     }
+    #[cfg(test)]
+    retention_test_legacy_directory_traversal_event();
     if limit == 0 || !root.is_dir() {
         return Ok(false);
     }
@@ -2832,12 +2842,7 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             skip_path.as_deref(),
             limit,
         )?;
-        let RetentionArchiveDirectorySelection {
-            entries,
-            truncated,
-            #[cfg(test)]
-            heap_live,
-        } = selection;
+        let RetentionArchiveDirectorySelection { entries, truncated } = selection;
         if pause_at.is_none() && truncated {
             pause_at = entries
                 .last()
@@ -2867,8 +2872,6 @@ fn collect_retention_archive_candidates_after_cursor_inner(
                 break;
             }
         }
-        #[cfg(test)]
-        drop(heap_live);
 
         if scan.candidates.len() >= limit {
             return Ok(true);
@@ -2882,7 +2885,14 @@ fn collect_retention_archive_candidates_after_cursor_inner(
             }
             return Ok(truncated);
         };
-        let path = entry.path;
+        let RetentionArchiveDirectoryEntry {
+            path,
+            #[cfg(test)]
+            heap_entry_guard,
+            ..
+        } = entry;
+        #[cfg(test)]
+        drop(heap_entry_guard);
         let path_text = path.to_string_lossy();
         if path_text.as_ref() > directory_cursor.as_str() {
             scan.record_progress(&path);
@@ -2924,13 +2934,13 @@ struct RetentionArchiveDirectoryEntry {
     path: PathBuf,
     is_dir: bool,
     is_file: bool,
+    #[cfg(test)]
+    heap_entry_guard: Option<RetentionTestLegacyDirectoryHeapEntryGuard>,
 }
 
 struct RetentionArchiveDirectorySelection {
     entries: Vec<RetentionArchiveDirectoryEntry>,
     truncated: bool,
-    #[cfg(test)]
-    heap_live: RetentionTestLegacyDirectoryHeapGuard,
 }
 
 impl Ord for RetentionArchiveDirectoryEntry {
@@ -2951,43 +2961,76 @@ fn collect_bounded_retention_archive_directory_entries(
     skip_path: Option<&Path>,
     limit: usize,
 ) -> Result<RetentionArchiveDirectorySelection> {
+    let directory_entries = fs::read_dir(root)
+        .with_context(|| format!("failed to read archive directory {}", root.display()))?
+        .map(|entry| {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            Ok(RetentionArchiveDirectoryEntry {
+                path,
+                is_dir: file_type.is_dir(),
+                is_file: file_type.is_file(),
+                #[cfg(test)]
+                heap_entry_guard: None,
+            })
+        });
+    select_bounded_retention_archive_directory_entries(directory_entries, cursor, skip_path, limit)
+}
+
+fn select_bounded_retention_archive_directory_entries(
+    directory_entries: impl IntoIterator<Item = Result<RetentionArchiveDirectoryEntry>>,
+    cursor: &str,
+    skip_path: Option<&Path>,
+    limit: usize,
+) -> Result<RetentionArchiveDirectorySelection> {
     // Stream the directory through a fixed-size max heap. This keeps allocation and comparison
     // work per entry bounded by the scan batch without materializing or sorting the full listing.
     let mut entries = std::collections::BinaryHeap::with_capacity(limit);
     let mut truncated = false;
-    for entry in fs::read_dir(root)
-        .with_context(|| format!("failed to read archive directory {}", root.display()))?
-    {
+    for entry in directory_entries {
         let entry = entry?;
         #[cfg(test)]
         retention_test_legacy_directory_entry_event();
-        let path = entry.path();
+        let path = &entry.path;
         let path_text = path.to_string_lossy();
-        let file_type = entry.file_type()?;
-        let eligible = if file_type.is_dir() {
+        let eligible = if entry.is_dir {
             skip_path.is_none_or(|skipped| skipped != path)
                 && (cursor.is_empty()
                     || path_text.as_ref() > cursor
-                    || Path::new(cursor).starts_with(&path))
+                    || Path::new(cursor).starts_with(path))
         } else {
             path_text.as_ref() > cursor
         };
         if !eligible {
             continue;
         }
-        let candidate = RetentionArchiveDirectoryEntry {
-            path,
-            is_dir: file_type.is_dir(),
-            is_file: file_type.is_file(),
-        };
         if entries.len() < limit {
+            #[cfg(test)]
+            let candidate = {
+                let mut candidate = entry;
+                candidate.heap_entry_guard =
+                    Some(RetentionTestLegacyDirectoryHeapEntryGuard::new());
+                candidate
+            };
+            #[cfg(not(test))]
+            let candidate = entry;
             entries.push(candidate);
         } else if entries
             .peek()
-            .is_some_and(|largest| candidate.path < largest.path)
+            .is_some_and(|largest| entry.path < largest.path)
         {
             truncated = true;
             entries.pop();
+            #[cfg(test)]
+            let candidate = {
+                let mut candidate = entry;
+                candidate.heap_entry_guard =
+                    Some(RetentionTestLegacyDirectoryHeapEntryGuard::new());
+                candidate
+            };
+            #[cfg(not(test))]
+            let candidate = entry;
             entries.push(candidate);
         } else {
             truncated = true;
@@ -2995,12 +3038,29 @@ fn collect_bounded_retention_archive_directory_entries(
     }
     let mut entries = entries.into_vec();
     entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    Ok(RetentionArchiveDirectorySelection {
-        #[cfg(test)]
-        heap_live: RetentionTestLegacyDirectoryHeapGuard::new(entries.len()),
-        entries,
-        truncated,
-    })
+    Ok(RetentionArchiveDirectorySelection { entries, truncated })
+}
+
+#[cfg(test)]
+pub(crate) fn retention_test_select_bounded_archive_paths(
+    paths: Vec<PathBuf>,
+    cursor: &str,
+    limit: usize,
+) -> Vec<PathBuf> {
+    let entries = paths.into_iter().map(|path| {
+        Ok(RetentionArchiveDirectoryEntry {
+            path,
+            is_dir: false,
+            is_file: true,
+            heap_entry_guard: None,
+        })
+    });
+    select_bounded_retention_archive_directory_entries(entries, cursor, None, limit)
+        .expect("select bounded archive paths")
+        .entries
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect()
 }
 
 async fn verify_legacy_retention_archive_segment(
