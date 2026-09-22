@@ -880,15 +880,19 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             "legacy_archive_file_publish",
         ));
     };
-    let existing_staged_path = sqlx::query_scalar::<_, Option<String>>(
+    let existing_staged_path = match sqlx::query_scalar::<_, Option<String>>(
         "SELECT staged_file_path FROM retention_prepared_archives
          WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'",
     )
     .bind(dataset)
     .bind(final_file_path.to_string_lossy().to_string())
     .fetch_optional(pool)
-    .await?
-    .flatten();
+    .await
+    {
+        Ok(value) => value.flatten(),
+        Err(error) if error.to_string().contains("no such table") => None,
+        Err(error) => return Err(error.into()),
+    };
     if existing_staged_path.is_some() {
         return Err(anyhow::anyhow!(
             "legacy archive replacement recovery is still pending"
@@ -964,7 +968,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         WHERE dataset = ?3
           AND month_key = ?4
           AND file_path = ?5
-          AND cleanup_state = ?6
+          AND cleanup_state IN (?6, ?7)
         "#,
     )
     .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
@@ -973,6 +977,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     .bind(month_key)
     .bind(final_file_path.to_string_lossy().to_string())
     .bind(ARCHIVE_CLEANUP_STATE_DELETE_PENDING)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
     .execute(tx.as_mut())
     .await?;
     if let Err(error) = fs::rename(temporary_file_path, final_file_path).with_context(|| {
