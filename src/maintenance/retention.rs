@@ -1554,7 +1554,13 @@ pub(crate) async fn retention_recovery_persist_failure(
             attempt_count = attempt_count + 1,
             updated_at = datetime('now')
         WHERE prepared_key = ?6
-          AND (state = 'preparing' OR (state = 'published' AND artifact_sha256 IS NULL))
+          AND (
+              state = 'preparing'
+              OR (
+                  state = 'published'
+                  AND (artifact_sha256 IS NULL OR ?7 IN ('finalizing', 'publishing'))
+              )
+          )
         "#,
     )
     .bind(quarantine)
@@ -1563,6 +1569,7 @@ pub(crate) async fn retention_recovery_persist_failure(
     .bind(fingerprint)
     .bind(format!("+{retry_seconds} seconds"))
     .bind(prepared_key)
+    .bind(stage)
     .execute(pool)
     .await?;
     retention_record_commit!(
