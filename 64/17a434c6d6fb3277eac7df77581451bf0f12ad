@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.27",
+  "base_stable_version": "2.71.26",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-23T15:59:26Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.27",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4cb010a882919cd350e59701c5fb9162d0cdbab0",
+  "pr_number": 999,
+  "pr_title": "fix(storage): finalize raw ownership in retention transactions",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.27",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.27",
+  "target_sha": "6417a434c6d6fb3277eac7df77581451bf0f12ad",
+  "type_label": "type:patch"
+}
