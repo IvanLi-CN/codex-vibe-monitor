@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.29",
+  "base_stable_version": "2.71.28",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-23T19:42:32Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.29",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0354d0ed03355036657dd82fd8edfd579d800e7c",
+  "pr_number": 1003,
+  "pr_title": "refactor(api): extract invocation query foundation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.29",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.29",
+  "target_sha": "1eafbc377f1d1a91fd81caab887c52d8e216963d",
+  "type_label": "type:patch"
+}
