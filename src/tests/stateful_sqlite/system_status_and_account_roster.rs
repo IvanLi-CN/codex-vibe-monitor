@@ -255,15 +255,21 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     assert_eq!(response.non_success_count, 3);
     assert_eq!(response.completed_archive_batches_count, 1);
     assert_eq!(response.archived_bodies.count, 4);
-    assert_eq!(response.archived_bodies.bytes, 17);
+    assert_eq!(response.archived_bodies.bytes, Some(17));
     assert_eq!(response.raw_bodies.count, 4);
-    assert_eq!(response.raw_bodies.bytes, 48);
+    assert_eq!(response.raw_bodies.bytes, Some(48));
     assert_eq!(response.request_raw_bodies.count, 2);
-    assert_eq!(response.request_raw_bodies.bytes, 20);
+    assert_eq!(response.request_raw_bodies.bytes, Some(20));
     assert_eq!(response.response_raw_bodies.count, 2);
-    assert_eq!(response.response_raw_bodies.bytes, 28);
+    assert_eq!(response.response_raw_bodies.bytes, Some(28));
     assert_eq!(response.raw_metrics_health.state, "ready");
+    assert_eq!(response.raw_metrics_health.physical_coverage, "partial");
     let response_json = serde_json::to_value(&response).expect("serialize system status");
+    assert_eq!(response_json["rawBodies"]["bytes"], 48);
+    assert_eq!(
+        response_json["rawMetricsHealth"]["physicalCoverage"],
+        "partial"
+    );
     assert_eq!(
         response_json["runtimePressureHealth"]["writerAccounting"]["state"],
         "healthy"
@@ -345,7 +351,7 @@ async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_curso
         .await
         .expect("load raw metrics snapshot");
     assert_eq!(response.raw_bodies.count, 2);
-    assert_eq!(response.raw_bodies.bytes, 5);
+    assert_eq!(response.raw_bodies.bytes, Some(5));
     assert_eq!(response.request_raw_bodies.count, 1);
     assert_eq!(response.response_raw_bodies.count, 1);
 
@@ -381,7 +387,7 @@ async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration
     let initial = load_system_status_uncached(state.as_ref())
         .await
         .expect("load initial raw metrics");
-    assert_eq!(initial.raw_bodies.bytes, 5);
+    assert_eq!(initial.raw_bodies.bytes, Some(5));
 
     fs::write(&response_path, b"expanded-response").expect("expand response raw");
     hydrate_raw_capture_circuit(state.as_ref())
@@ -393,7 +399,7 @@ async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration
     let refreshed = load_system_status_uncached(state.as_ref())
         .await
         .expect("load revalidated raw metrics");
-    assert_eq!(refreshed.raw_bodies.bytes, 17);
+    assert_eq!(refreshed.raw_bodies.bytes, Some(17));
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -419,12 +425,23 @@ async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write(
         .await
         .expect("load deferred status");
     assert_eq!(deferred.raw_metrics_health.state, "deferred");
+    assert_eq!(deferred.raw_metrics_health.physical_coverage, "unknown");
+    assert_eq!(deferred.raw_bodies.bytes, None);
+    assert_eq!(deferred.request_raw_bodies.bytes, None);
+    assert_eq!(deferred.response_raw_bodies.bytes, None);
+    let deferred_json = serde_json::to_value(&deferred).expect("serialize deferred status");
+    assert!(deferred_json["rawBodies"]["bytes"].is_null());
+    assert_eq!(
+        deferred_json["rawMetricsHealth"]["physicalCoverage"],
+        "unknown"
+    );
 
     set_system_raw_metrics_health_override(state.as_ref(), None).await;
     let recovered = load_system_status_uncached(state.as_ref())
         .await
         .expect("load recovered status");
     assert_eq!(recovered.raw_metrics_health.state, "ready");
+    assert_eq!(recovered.raw_metrics_health.physical_coverage, "partial");
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -435,6 +452,12 @@ async fn system_status_cached_snapshot_applies_raw_metrics_override_without_io()
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    sqlx::query(
+        "UPDATE system_raw_payload_metrics SET inventory_state = 'ready', raw_bytes = 42, request_raw_bytes = 24, response_raw_bytes = 18 WHERE singleton = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed ready raw metrics snapshot");
     hydrate_system_status_snapshot(state.as_ref())
         .await
         .expect("hydrate system status snapshot");
@@ -449,6 +472,10 @@ async fn system_status_cached_snapshot_applies_raw_metrics_override_without_io()
         .await
         .expect("serve patched status cache without SQLite");
     assert_eq!(deferred.raw_metrics_health.state, "deferred");
+    assert_eq!(deferred.raw_metrics_health.physical_coverage, "unknown");
+    assert_eq!(deferred.raw_bodies.bytes, None);
+    assert_eq!(deferred.request_raw_bodies.bytes, None);
+    assert_eq!(deferred.response_raw_bodies.bytes, None);
 
     set_system_raw_metrics_health_override(state.as_ref(), None).await;
     let restored = load_system_status_cached(state.as_ref())
@@ -458,6 +485,8 @@ async fn system_status_cached_snapshot_applies_raw_metrics_override_without_io()
         restored.raw_metrics_health.state,
         baseline.raw_metrics_health.state
     );
+    assert_eq!(restored.raw_bodies.bytes, Some(42));
+    assert_eq!(restored.raw_metrics_health.physical_coverage, "partial");
 }
 
 #[tokio::test]

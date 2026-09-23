@@ -11,6 +11,64 @@ afterEach(() => {
 });
 
 describe("fetchSystemStatus retention recovery compatibility", () => {
+  it("keeps raw bytes unknown while the inventory is not ready", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              rawBodies: { count: 4, bytes: 0 },
+              requestRawBodies: { count: 2, bytes: 0 },
+              responseRawBodies: { count: 2, bytes: 0 },
+              rawMetricsHealth: {
+                state: "preparing",
+                inventoryCursor: 12,
+                physicalCoverage: "unknown",
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+
+    expect(status.rawMetricsHealth).toMatchObject({
+      state: "preparing",
+      inventoryCursor: 12,
+      physicalCoverage: "unknown",
+    });
+    expect(status.rawBodies.bytes).toBeNull();
+    expect(status.requestRawBodies.bytes).toBeNull();
+    expect(status.responseRawBodies.bytes).toBeNull();
+  });
+
+  it("preserves ready tracked bytes without assuming complete physical coverage", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              rawBodies: { count: 4, bytes: 17 },
+              requestRawBodies: { count: 2, bytes: 11 },
+              responseRawBodies: { count: 2, bytes: 9 },
+              rawMetricsHealth: { state: "ready", inventoryCursor: 12 },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+
+    expect(status.rawBodies.bytes).toBe(17);
+    expect(status.requestRawBodies.bytes).toBe(11);
+    expect(status.responseRawBodies.bytes).toBe(9);
+    expect(status.rawMetricsHealth.physicalCoverage).toBe("unknown");
+  });
+
   it("normalizes a missing recovery diagnostic to unknown for older backends", async () => {
     vi.stubGlobal(
       "fetch",
