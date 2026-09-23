@@ -1433,6 +1433,7 @@ pub(crate) struct SystemRawPayloadInventoryResetOutcome {
 pub(crate) async fn mark_system_raw_payload_metrics_inventory_reset_pending(
     pool: &Pool<Sqlite>,
     max_paths: usize,
+    recovery_pending: bool,
 ) -> Result<SystemRawPayloadInventoryResetOutcome> {
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1454,12 +1455,13 @@ pub(crate) async fn mark_system_raw_payload_metrics_inventory_reset_pending(
             circuit_available_bytes = NULL,
             circuit_expired_backlog_count = NULL,
             circuit_backlog_non_growing = NULL,
-            circuit_recovery_pending = CASE WHEN circuit_state = 'storage_suppressed' OR circuit_recovery_pending != 0 THEN 1 ELSE 0 END,
+            circuit_recovery_pending = CASE WHEN ?1 != 0 OR circuit_state = 'storage_suppressed' OR circuit_recovery_pending != 0 THEN 1 ELSE 0 END,
             circuit_updated_at = datetime('now'),
             updated_at = datetime('now')
         WHERE singleton = 1
         "#,
     )
+    .bind(i64::from(recovery_pending))
     .execute(tx.as_mut())
     .await?;
     let removed_path_count = sqlx::query(

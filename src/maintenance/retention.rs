@@ -43,12 +43,19 @@ tokio::task_local! {
 }
 
 async fn mark_retention_raw_inventory_reset_intent(pool: &Pool<Sqlite>) -> Result<()> {
-    let _ = RETENTION_RAW_CAPTURE_CIRCUIT.try_with(|circuit| {
-        if let Some(circuit) = circuit.borrow().as_ref() {
-            circuit.mark_inventory_preparing();
-        }
-    });
-    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128).await?;
+    let recovery_pending = RETENTION_RAW_CAPTURE_CIRCUIT
+        .try_with(|circuit| {
+            if let Some(circuit) = circuit.borrow().as_ref() {
+                let pending = circuit.snapshot().recovery_pending
+                    || circuit.snapshot().state == "storage_suppressed";
+                circuit.mark_inventory_preparing();
+                pending
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128, recovery_pending).await?;
     Ok(())
 }
 

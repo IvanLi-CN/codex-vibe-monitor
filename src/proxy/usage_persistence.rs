@@ -5787,13 +5787,20 @@ async fn recover_raw_overflow_spools_inner(
     let mut captures = HashMap::<String, Vec<(PathBuf, RawOverflowSpoolHeader)>>::new();
     let mut corrupt_captures = std::collections::HashSet::new();
     let mut inspected_segments = 0_usize;
-    for entry in entries.flatten() {
+    let mut batch_truncated = false;
+    let mut entries = entries;
+    while let Some(entry) = entries.next() {
         if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
+            batch_truncated = true;
             break;
         }
+        let Ok(entry) = entry else {
+            inspected_segments += 1;
+            continue;
+        };
         let path = entry.path();
-        inspected_segments += 1;
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
+            inspected_segments += 1;
             continue;
         }
         let header = match run_blocking_raw_writer_io({
@@ -5804,6 +5811,7 @@ async fn recover_raw_overflow_spools_inner(
         {
             Ok(header) => header,
             Err(_) => {
+                inspected_segments += 1;
                 warn!(
                     error_kind = "segment_read_failed",
                     "raw overflow spool is incomplete or corrupt; retaining for inspection"
@@ -5822,13 +5830,12 @@ async fn recover_raw_overflow_spools_inner(
         {
             continue;
         }
+        inspected_segments += 1;
         captures
             .entry(capture_key)
             .or_default()
             .push((path, header));
     }
-    let batch_truncated = inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE;
-
     let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
     for (capture_key, mut segments) in captures {
         if corrupt_captures.contains(&capture_key) {

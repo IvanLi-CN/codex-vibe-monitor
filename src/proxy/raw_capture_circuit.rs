@@ -198,7 +198,8 @@ impl RawCaptureCircuitBreaker {
         state.available_bytes = None;
         state.expired_backlog_count = _expired_backlog_count;
         state.backlog_non_growing = _backlog_non_growing;
-        state.resume_hysteresis = circuit_state == Some(CIRCUIT_STATE_SUPPRESSED);
+        state.resume_hysteresis =
+            circuit_state == Some(CIRCUIT_STATE_SUPPRESSED) || recovery_pending;
         state.resume_reason = normalize_reason(circuit_reason);
         state.recovery_pending = recovery_pending || state.resume_hysteresis;
         state.spool_inventory_overflow = false;
@@ -438,7 +439,7 @@ impl RawCaptureCircuitBreaker {
             .saturating_add(state.spool_bytes.unwrap_or_default())
             .saturating_add(state.reserved_bytes)
             .saturating_add(replacement_bytes);
-        let replacement_only = requested_bytes <= state.spool_bytes.unwrap_or_default()
+        let replacement_only = reservation_bytes <= state.spool_bytes.unwrap_or_default()
             && (state.spool_inventory_overflow
                 || matches!(
                     state.reason,
