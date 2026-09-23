@@ -5799,8 +5799,8 @@ async fn recover_raw_overflow_spools_inner(
             continue;
         };
         let path = entry.path();
+        inspected_segments += 1;
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
-            inspected_segments += 1;
             continue;
         }
         let header = match run_blocking_raw_writer_io({
@@ -5811,7 +5811,6 @@ async fn recover_raw_overflow_spools_inner(
         {
             Ok(header) => header,
             Err(_) => {
-                inspected_segments += 1;
                 warn!(
                     error_kind = "segment_read_failed",
                     "raw overflow spool is incomplete or corrupt; retaining for inspection"
@@ -5830,11 +5829,13 @@ async fn recover_raw_overflow_spools_inner(
         {
             continue;
         }
-        inspected_segments += 1;
         captures
             .entry(capture_key)
             .or_default()
             .push((path, header));
+    }
+    if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
+        batch_truncated = true;
     }
     let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
     for (capture_key, mut segments) in captures {
@@ -5867,9 +5868,14 @@ async fn recover_raw_overflow_spools_inner(
             .map(|(path, _)| path)
             .collect::<Vec<_>>();
         let completion_marker = raw_overflow_spool_completion_marker(&directory, &capture_key);
-        let expected_last_segment = fs::read_to_string(&completion_marker)
+        let mut expected_last_segment = fs::read_to_string(&completion_marker)
             .ok()
             .and_then(|value| value.trim().parse::<u32>().ok());
+        if expected_last_segment.is_none() && !batch_truncated {
+            if fs::write(&completion_marker, selected_last_segment.to_string()).is_ok() {
+                expected_last_segment = Some(selected_last_segment);
+            }
+        }
         if (batch_truncated && expected_last_segment.is_none())
             || expected_last_segment.is_some_and(|expected| expected != selected_last_segment)
         {

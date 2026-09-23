@@ -46,10 +46,7 @@ async fn mark_retention_raw_inventory_reset_intent(pool: &Pool<Sqlite>) -> Resul
     let recovery_pending = RETENTION_RAW_CAPTURE_CIRCUIT
         .try_with(|circuit| {
             if let Some(circuit) = circuit.borrow().as_ref() {
-                let pending = circuit.snapshot().recovery_pending
-                    || circuit.snapshot().state == "storage_suppressed";
-                circuit.mark_inventory_preparing();
-                pending
+                circuit.mark_inventory_preparing()
             } else {
                 false
             }

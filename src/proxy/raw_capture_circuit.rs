@@ -300,17 +300,17 @@ impl RawCaptureCircuitBreaker {
             raw_bytes.max(state.raw_bytes.unwrap_or_default())
         });
         state.spool_bytes = spool_bytes;
+        state.available_bytes = if cfg!(test) {
+            available_bytes.or(state.available_bytes).or(Some(u64::MAX))
+        } else {
+            filesystem_available_bytes(&self.raw_root)
+        };
         if spool_inventory_overflow {
             state.admission_initialized = false;
             state.state = CIRCUIT_STATE_UNKNOWN;
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
             return true;
         }
-        state.available_bytes = if cfg!(test) {
-            available_bytes.or(state.available_bytes).or(Some(u64::MAX))
-        } else {
-            filesystem_available_bytes(&self.raw_root)
-        };
         let reopening = state.resume_hysteresis;
         if reopening {
             state.state = CIRCUIT_STATE_SUPPRESSED;
@@ -326,7 +326,7 @@ impl RawCaptureCircuitBreaker {
         true
     }
 
-    pub(crate) fn mark_inventory_preparing(&self) {
+    pub(crate) fn mark_inventory_preparing(&self) -> bool {
         let mut state = self
             .state
             .lock()
@@ -359,6 +359,7 @@ impl RawCaptureCircuitBreaker {
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
         state.updated_at = Some(Utc::now().to_rfc3339());
+        state.recovery_pending
     }
 
     pub(crate) fn admit(
