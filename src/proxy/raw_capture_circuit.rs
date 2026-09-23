@@ -30,6 +30,7 @@ pub(crate) struct RawCaptureCircuitSnapshot {
     pub(crate) spool_bytes: Option<u64>,
     pub(crate) physical_raw_bytes: Option<u64>,
     pub(crate) recovery_pending: bool,
+    pub(crate) spool_inventory_overflow: bool,
     pub(crate) available_bytes: Option<u64>,
     pub(crate) reserved_bytes: u64,
     pub(crate) expired_backlog_count: Option<u64>,
@@ -60,6 +61,7 @@ struct RawCaptureCircuitState {
     resume_hysteresis: bool,
     resume_reason: Option<&'static str>,
     recovery_pending: bool,
+    spool_inventory_overflow: bool,
 }
 
 impl Default for RawCaptureCircuitState {
@@ -94,6 +96,7 @@ impl Default for RawCaptureCircuitState {
             resume_hysteresis: false,
             resume_reason: None,
             recovery_pending: false,
+            spool_inventory_overflow: false,
         }
     }
 }
@@ -127,6 +130,7 @@ impl RawCaptureCircuitBreaker {
                 .raw_bytes
                 .map(|bytes| bytes.saturating_add(state.spool_bytes.unwrap_or_default())),
             recovery_pending: state.recovery_pending,
+            spool_inventory_overflow: state.spool_inventory_overflow,
             available_bytes: state.available_bytes,
             reserved_bytes: state.reserved_bytes,
             expired_backlog_count: state.expired_backlog_count,
@@ -197,6 +201,7 @@ impl RawCaptureCircuitBreaker {
         state.resume_hysteresis = circuit_state == Some(CIRCUIT_STATE_SUPPRESSED);
         state.resume_reason = normalize_reason(circuit_reason);
         state.recovery_pending = recovery_pending || state.resume_hysteresis;
+        state.spool_inventory_overflow = false;
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
         state.admission_initialized = false;
@@ -212,6 +217,13 @@ impl RawCaptureCircuitBreaker {
             state.accounting_generation,
             state.raw_bytes,
         )
+    }
+
+    pub(crate) fn set_inventory_spool_overflow(&self, overflow: bool) {
+        self.state
+            .lock()
+            .expect("raw capture circuit mutex poisoned")
+            .spool_inventory_overflow = overflow;
     }
 
     pub(crate) fn update_inventory(
@@ -270,6 +282,7 @@ impl RawCaptureCircuitBreaker {
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
             return true;
         }
+        let spool_inventory_overflow = state.spool_inventory_overflow;
         let awaiting_backlog_comparison = state.resume_hysteresis;
         state.backlog_non_growing = match (state.expired_backlog_count, expired_backlog_count) {
             (Some(previous), Some(current)) => Some(current <= previous),
@@ -286,6 +299,12 @@ impl RawCaptureCircuitBreaker {
             raw_bytes.max(state.raw_bytes.unwrap_or_default())
         });
         state.spool_bytes = spool_bytes;
+        if spool_inventory_overflow {
+            state.admission_initialized = false;
+            state.state = CIRCUIT_STATE_UNKNOWN;
+            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+            return true;
+        }
         state.available_bytes = if cfg!(test) {
             available_bytes.or(state.available_bytes).or(Some(u64::MAX))
         } else {
@@ -298,6 +317,7 @@ impl RawCaptureCircuitBreaker {
             if state.backlog_non_growing == Some(true) {
                 state.resume_hysteresis = false;
                 state.resume_reason = None;
+                state.spool_inventory_overflow = false;
                 state.recovery_pending = false;
             }
         }
@@ -397,15 +417,11 @@ impl RawCaptureCircuitBreaker {
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
         }
-        let spool_only_recovery = state.inventory_state != "ready"
-            && state.spool_bytes.is_some()
-            && state.available_bytes.is_some();
-        if !spool_only_recovery
-            && (state.inventory_state != "ready"
-                || !state.admission_initialized
-                || state.raw_bytes.is_none()
-                || state.available_bytes.is_none()
-                || state.backlog_non_growing != Some(true))
+        if state.inventory_state != "ready"
+            || state.raw_bytes.is_none()
+            || state.available_bytes.is_none()
+            || state.backlog_non_growing != Some(true)
+            || (!state.admission_initialized && !state.spool_inventory_overflow)
         {
             state.state = CIRCUIT_STATE_UNKNOWN;
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
@@ -423,7 +439,7 @@ impl RawCaptureCircuitBreaker {
             .saturating_add(state.reserved_bytes)
             .saturating_add(replacement_bytes);
         let replacement_only = requested_bytes <= state.spool_bytes.unwrap_or_default()
-            && (spool_only_recovery
+            && (state.spool_inventory_overflow
                 || matches!(
                     state.reason,
                     Some(CIRCUIT_REASON_RAW_STORE_LIMIT | CIRCUIT_REASON_BOTH)

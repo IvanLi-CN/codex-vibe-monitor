@@ -5750,7 +5750,10 @@ fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) {
             let bytes = fs::metadata(path)
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
-            record_raw_overflow_spool_bytes(directory, -(bytes.min(i64::MAX as u64) as i64));
+            if fs::remove_file(path).is_ok() {
+                record_raw_overflow_spool_bytes(directory, -(bytes.min(i64::MAX as u64) as i64));
+            }
+            continue;
         }
         let _ = fs::remove_file(path);
     }
@@ -5789,6 +5792,7 @@ async fn recover_raw_overflow_spools_inner(
             break;
         }
         let path = entry.path();
+        inspected_segments += 1;
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
             continue;
         }
@@ -5818,7 +5822,6 @@ async fn recover_raw_overflow_spools_inner(
         {
             continue;
         }
-        inspected_segments += 1;
         captures
             .entry(capture_key)
             .or_default()
@@ -5848,6 +5851,10 @@ async fn recover_raw_overflow_spools_inner(
                 continue;
             }
         };
+        let selected_last_segment = segments
+            .last()
+            .map(|(_, segment_header)| segment_header.segment_index)
+            .unwrap_or(header.segment_index);
         let paths = segments
             .into_iter()
             .map(|(path, _)| path)
@@ -5856,7 +5863,6 @@ async fn recover_raw_overflow_spools_inner(
         let expected_last_segment = fs::read_to_string(&completion_marker)
             .ok()
             .and_then(|value| value.trim().parse::<u32>().ok());
-        let selected_last_segment = header.segment_index;
         if (batch_truncated && expected_last_segment.is_none())
             || expected_last_segment.is_some_and(|expected| expected != selected_last_segment)
         {

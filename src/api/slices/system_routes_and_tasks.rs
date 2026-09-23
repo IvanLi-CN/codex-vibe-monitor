@@ -1205,6 +1205,9 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
                 return Err(error).context("failed to inspect raw overflow spool inventory");
             }
         };
+    state
+        .raw_capture_circuit
+        .set_inventory_spool_overflow(spool_inventory_overflow);
     if !spool_inventory_overflow {
         crate::proxy::set_raw_overflow_spool_accounted_bytes(&spool_directory, spool_bytes);
     }
@@ -1303,7 +1306,6 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         String::new()
     };
     let state_name = if !recheck_active
-        && !spool_inventory_overflow
         && rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
         && link_rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
     {
@@ -1596,9 +1598,7 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                 warn!(error = %error, "system raw metrics inventory batch failed");
             } else {
                 let circuit_snapshot = state.raw_capture_circuit.snapshot();
-                if circuit_snapshot.inventory_state == "ready"
-                    || circuit_snapshot.spool_bytes.is_some()
-                {
+                if circuit_snapshot.inventory_state == "ready" {
                     crate::proxy::recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
                 }
             }
