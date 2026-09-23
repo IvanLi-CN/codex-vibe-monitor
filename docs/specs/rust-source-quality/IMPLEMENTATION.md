@@ -16,6 +16,16 @@ The contract is implemented by the following checked-in surfaces:
   `.github/workflows/ci-main.yml` delegate Rust source quality to the same
   runner while retaining the existing lint job name and check topology.
 
+The first source-quality extraction keeps
+`src/api/slices/invocations_and_summary.rs` as the parent module and moves the
+contiguous invocation query foundation (`build_invocation_select_query`
+through `append_invocation_order_clause`) into
+`src/api/slices/invocations_and_summary/invocation_query.rs`. The parent
+explicitly re-exports the symbols used by its remaining runtime-overlay,
+summary, dashboard, and workflow-detail code. The parent budget is now 44,631
+physical lines, down from 45,660; the 1,049-line query module remains below
+the 2,500-line production target and is not a selected inventory entry.
+
 ## Inventory Contract
 
 The policy has 33 `production` entries above the 2,500-line destination target
