@@ -5997,14 +5997,16 @@ fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<Stri
         }
     };
     add_path(path);
-    if let Some(root) = fallback_root {
+    let absolute_root =
+        fallback_root.map(|root| std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()));
+    if let Some(root) = absolute_root.as_deref() {
         let path = Path::new(path);
         if path.is_absolute() {
             if let Ok(relative) = path.strip_prefix(root) {
                 add_path(&relative.to_string_lossy());
             }
         } else {
-            let absolute = root.join(path);
+            let absolute = std::path::absolute(root.join(path)).unwrap_or_else(|_| root.join(path));
             add_path(&absolute.to_string_lossy());
         }
     }
@@ -7283,6 +7285,21 @@ pub(crate) fn shanghai_archive_expiry_from_local_naive(
 #[cfg(test)]
 mod retention_write_budget_tests {
     use super::*;
+
+    #[test]
+    fn raw_path_ledger_aliases_normalize_relative_database_roots() {
+        let aliases = raw_path_ledger_aliases(
+            "proxy_raw_payloads/sample.bin",
+            Some(Path::new("relative-database")),
+        );
+        let absolute_root =
+            std::path::absolute("relative-database").expect("resolve relative database root");
+        let absolute_path = absolute_root.join("proxy_raw_payloads/sample.bin");
+        let absolute_compressed_path = absolute_root.join("proxy_raw_payloads/sample.bin.gz");
+
+        assert!(aliases.contains(&absolute_path.to_string_lossy().into_owned()));
+        assert!(aliases.contains(&absolute_compressed_path.to_string_lossy().into_owned()));
+    }
 
     #[test]
     fn retention_write_budget_adapts_without_exceeding_hard_bounds() {
