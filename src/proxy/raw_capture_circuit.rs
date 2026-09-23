@@ -271,9 +271,10 @@ impl RawCaptureCircuitBreaker {
         if state.inventory_generation != generation {
             return false;
         }
+        let spool_inventory_overflow = state.spool_inventory_overflow;
         state.inventory_state = inventory_state.to_string();
         state.updated_at = Some(Utc::now().to_rfc3339());
-        if inventory_state != "ready" {
+        if inventory_state != "ready" && !spool_inventory_overflow {
             state.raw_bytes = None;
             state.spool_bytes = spool_bytes;
             state.available_bytes = if cfg!(test) {
@@ -287,7 +288,6 @@ impl RawCaptureCircuitBreaker {
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
             return true;
         }
-        let spool_inventory_overflow = state.spool_inventory_overflow;
         let awaiting_backlog_comparison = state.resume_hysteresis;
         state.backlog_non_growing = match (state.expired_backlog_count, expired_backlog_count) {
             (Some(previous), Some(current)) => Some(current <= previous),
@@ -423,7 +423,7 @@ impl RawCaptureCircuitBreaker {
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
         }
-        if state.inventory_state != "ready"
+        if state.inventory_state != "ready" && !state.spool_inventory_overflow
             || state.raw_bytes.is_none()
             || state.available_bytes.is_none()
             || state.backlog_non_growing != Some(true)

@@ -5762,16 +5762,22 @@ fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) {
 }
 
 pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
-    recover_raw_overflow_spools_inner(config, None).await;
+    recover_raw_overflow_spools_inner(config, None, None).await;
 }
 
 pub(crate) async fn recover_raw_overflow_spools_with_circuit(state: &AppState) {
-    recover_raw_overflow_spools_inner(&state.config, Some(state.raw_capture_circuit.clone())).await;
+    recover_raw_overflow_spools_inner(
+        &state.config,
+        Some(state.raw_capture_circuit.clone()),
+        Some(state.proxy_raw_async_semaphore.clone()),
+    )
+    .await;
 }
 
 async fn recover_raw_overflow_spools_inner(
     config: &AppConfig,
     circuit: Option<Arc<RawCaptureCircuitBreaker>>,
+    writer_semaphore: Option<Arc<Semaphore>>,
 ) {
     let directory = config.resolved_proxy_raw_dir().join(RAW_OVERFLOW_SPOOL_DIR);
     let entries = match fs::read_dir(&directory) {
@@ -5788,6 +5794,7 @@ async fn recover_raw_overflow_spools_inner(
 
     let mut captures = HashMap::<String, Vec<(PathBuf, RawOverflowSpoolHeader)>>::new();
     let mut corrupt_captures = std::collections::HashSet::new();
+    let mut active_captures_seen = std::collections::HashSet::new();
     let mut inspected_segments = 0_usize;
     let mut batch_truncated = false;
     for entry in entries {
@@ -5811,6 +5818,11 @@ async fn recover_raw_overflow_spools_inner(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&active_capture)
         {
+            // Count one live capture once so a long stream cannot monopolize the
+            // bounded recovery budget with its rotated segments.
+            if active_captures_seen.insert(active_capture) {
+                inspected_segments += 1;
+            }
             continue;
         }
         let header = match run_blocking_raw_writer_io({
@@ -5840,7 +5852,8 @@ async fn recover_raw_overflow_spools_inner(
     if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
         batch_truncated = true;
     }
-    let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
+    let semaphore = writer_semaphore
+        .unwrap_or_else(|| Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config))));
     for (capture_key, mut segments) in captures {
         if corrupt_captures.contains(&capture_key) {
             warn!(

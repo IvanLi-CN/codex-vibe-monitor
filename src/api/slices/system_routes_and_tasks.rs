@@ -1601,7 +1601,9 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                 warn!(error = %error, "system raw metrics inventory batch failed");
             } else {
                 let circuit_snapshot = state.raw_capture_circuit.snapshot();
-                if circuit_snapshot.inventory_state == "ready" {
+                if circuit_snapshot.inventory_state == "ready"
+                    || circuit_snapshot.spool_inventory_overflow
+                {
                     crate::proxy::recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
                 }
             }
