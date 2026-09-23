@@ -45,6 +45,7 @@
 ### System Status
 
 - `/api/system/status` adds `runtimePressureHealth.rawCapture` with low-cardinality state/reason, translated inventory state, measured physical raw bytes, filesystem-available bytes, in-flight reservations, close/recovery watermarks, backlog trend, and update time. Unmeasured physical bytes remain absent and normalize to `unknown` in the Web client.
+- `/api/system/status` raw inventory metrics now serialize raw/request/response bytes as nullable values while inventory is preparing, deferred, errored, or unknown, and expose `rawMetricsHealth.physicalCoverage`. A ready snapshot is explicitly partial because the bounded linked-file inventory does not enumerate unlinked residuals; the Web normalizer and System Status page preserve unknown/restricted values instead of substituting zero or claiming complete physical usage.
 - System Status renders capturing, storage-suppressed, and unknown states in the existing Runtime Pressure detail surface. Thresholds are labeled in binary GiB, and one atomic live region announces state, suppression reason, and inventory state without duplicate visible announcements. A bounded spool inventory overflow is rendered as inventory preparation while capture remains fail-closed. Storybook interaction coverage exercises the suppressed filesystem-low, capturing, and missing-field scenarios.
 
 ## Operational Boundaries

@@ -57,6 +57,7 @@
 
 - `/api/system/status` and structured logs MUST expose low-cardinality Retention Recovery state: circuit-breaker state and reason, physical raw bytes and watermarks, filesystem free bytes, backlog counts/age, current stage, last successful progress, retry time, and a sanitized failure fingerprint.
 - Prepared, quarantined, and expired-backlog counts MUST be null or omitted until a successful status refresh measures them; an unmeasured count MUST NOT appear as zero.
+- The additive System Status raw-inventory contract MUST expose nullable tracked raw metric bytes plus `rawMetricsHealth.physicalCoverage=partial|unknown`. When raw inventory is not ready or coverage is unknown, raw metric bytes and any derived project-storage total MUST remain unknown or explicitly restricted; a missing raw value MUST NOT render as `0 B` or as a complete physical-disk claim. Runtime Pressure `rawCapture.rawBytes` remains the separate physical-capture measurement and keeps its own nullable contract.
 - These diagnostics MUST NOT expose raw request/response content, SQL text or bindings, account identifiers, or full payload/archive paths.
 
 ### REQ-ARR-007
