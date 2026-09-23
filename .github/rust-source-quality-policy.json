@@ -21,7 +21,7 @@
     {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
-      "line_budget": 45660,
+      "line_budget": 44631,
       "next_module_workstream": "Split invocation query, summary projection, and workflow detail routing into dedicated modules."
     },
     {
