@@ -5036,6 +5036,7 @@ pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES: u64 = 8;
 const RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE: usize = 32;
+const RAW_OVERFLOW_SPOOL_RECOVERY_SCAN_LIMIT: usize = RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE * 4;
 
 #[derive(Default)]
 struct RawOverflowSpoolAccounting {
@@ -5797,7 +5798,11 @@ async fn recover_raw_overflow_spools_inner(
     let mut active_captures_seen = std::collections::HashSet::new();
     let mut inspected_segments = 0_usize;
     let mut batch_truncated = false;
-    for entry in entries {
+    for (scanned_entries, entry) in entries.enumerate() {
+        if scanned_entries >= RAW_OVERFLOW_SPOOL_RECOVERY_SCAN_LIMIT {
+            batch_truncated = true;
+            break;
+        }
         if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
             batch_truncated = true;
             break;
