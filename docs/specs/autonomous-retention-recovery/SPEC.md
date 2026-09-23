@@ -31,10 +31,12 @@
 - A recovery pass MAY reuse an artifact only after exact source-identity and digest verification. Invocation identity covers every archive-column value, including its SQLite storage type; both the live source rows and the rows in the artifact MUST match. An unverified artifact MUST NOT authorize source or raw deletion.
 - A legacy or unmatched artifact MUST be handled by a resumable, bounded reconciliation cursor that wraps after exhausting the current tail so files arriving behind the saved cursor are eventually revisited. It is retained as quarantined evidence for 24 hours and may then be removed only when it matches neither a Prepared Archive nor a committed manifest.
 - Legacy reconciliation MUST obtain background write admission before traversing the archive directory or performing archive-file I/O. It MUST stream directory entries through a selection structure whose retained allocation, comparison work per entry, and candidate set are bounded by the scan batch rather than materializing and sorting a complete directory. Directory cursors MUST preserve the lexical stream position between same-prefix files and descendants; a truncated directory MUST pause traversal at its selected boundary, and cursor persistence MUST be monotonic with a conditional tail wrap so overlapping passes cannot skip or regress legacy artifacts.
+- A raw residual MUST be handled by a separate resumable reconciliation cursor and durable quarantine ledger. Each pass MAY inspect at most the raw reconciliation batch of direct regular files under the resolved raw root, using a bounded selection heap; it MUST skip subdirectories, symlinks, unknown file names, and paths outside that root. A candidate MUST retain its stable file identity and quarantine timestamp across interruption, and identity replacement MUST restart its quarantine period.
+- A raw residual MAY be physically removed only after its identity is unchanged, no live raw owner or fallback raw-path reference can still resolve to it, and its durable quarantine period has elapsed. The final metadata and reference checks MUST happen immediately before removal. The protocol MUST delete the file before clearing its ledger row so a crash leaves either the content or a recoverable stale ledger, never an authorization to delete without proof.
 
 ### REQ-ARR-003
 
-- The system MUST make archive finalization, raw-owner release, filesystem-safe inventory reset, and Prepared Archive reconciliation independently resumable stages of one Retention Recovery lifecycle. PR2 MUST NOT enumerate or delete unlinked raw residuals; filesystem availability remains the safety signal for those files.
+- The system MUST make archive finalization, raw-owner release, filesystem-safe inventory reset, Prepared Archive reconciliation, and raw residual reconciliation independently resumable stages of one Retention Recovery lifecycle. Raw reconciliation MUST remain outside the proxy request path and MUST NOT block archive publication or structured invocation persistence. Filesystem availability remains the safety signal for candidates that cannot pass the raw identity, reference, or quarantine gates.
 - A failure in one stage MUST report that stage and schedule bounded retry/backoff without preventing a separately safe stage from making progress.
 - All database mutations in this lifecycle MUST retain maintenance write admission and MUST yield to P1 terminal and interactive proxy writes.
 
@@ -60,7 +62,7 @@
 ### REQ-ARR-007
 
 - Autonomous Retention Recovery MUST NOT invoke maintenance CLI commands, restart the process, run `VACUUM`, or delete database files.
-- It MAY release raw-file and orphan/prepared-artifact storage only when the proof requirements in REQ-ARR-001 and REQ-ARR-002 hold. SQLite pages made reusable by row deletion are not a promise of immediate database-file shrinkage.
+- It MAY release raw-file and orphan/prepared-artifact storage only when the proof requirements in REQ-ARR-001 and REQ-ARR-002 hold. Raw residual release additionally requires the durable identity, reference, and quarantine gates in REQ-ARR-002. SQLite pages made reusable by row deletion are not a promise of immediate database-file shrinkage.
 
 ## Verification
 
@@ -94,11 +96,18 @@
 - covers: `REQ-ARR-007`
 - Pass condition: Automatic paths never invoke a CLI, restart, `VACUUM`, or database-file deletion; only proven raw/artifact candidates are removed.
 
+### VER-ARR-006
+
+- Method: Archive-file I/O fixtures with restart/reopen, identity replacement, owner-reference, unassociated residual, cursor-boundary, and quarantine-expiry cases.
+- covers: `REQ-ARR-002`, `REQ-ARR-003`, `REQ-ARR-007`
+- Pass condition: A newly observed residual is durably quarantined before release; crashes resume from the ledger and cursor; wrong-identity and referenced candidates remain; each pass is bounded; only an unchanged, unreferenced candidate whose quarantine period has elapsed is physically removed.
+
 ## Related ADRs
 
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 - [ADR 0015: Coordinated runtime SQLite write admission](../../adr/0015-coordinated-runtime-sqlite-write-admission.md)
 - [ADR 0016: Autonomous raw capture circuit breaker](../../adr/0016-autonomous-raw-capture-circuit-breaker.md)
+- [ADR 0017: Historical raw-file reconciliation protocol](../../adr/0017-historical-raw-file-reconciliation.md)
 
 ## Visual Evidence
 

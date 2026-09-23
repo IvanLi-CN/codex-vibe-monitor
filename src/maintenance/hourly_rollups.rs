@@ -3425,20 +3425,6 @@ pub(crate) async fn delete_rows_by_ids(
     Ok(())
 }
 
-pub(crate) async fn sweep_orphan_proxy_raw_files(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-    raw_path_fallback_root: Option<&Path>,
-    dry_run: bool,
-) -> Result<usize> {
-    let _ = (pool, config, raw_path_fallback_root, dry_run);
-    debug!(
-        maintenance_stage = "raw_orphan_sweep",
-        "raw orphan sweep is disabled; unlinked residuals are guarded by filesystem pressure"
-    );
-    Ok(0)
-}
-
 #[path = "hourly_rollup_archive_support.rs"]
 mod hourly_rollup_archive_support;
 pub(crate) use hourly_rollup_archive_support::*;

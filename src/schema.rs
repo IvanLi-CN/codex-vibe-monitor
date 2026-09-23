@@ -2481,12 +2481,37 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
         INSERT OR IGNORE INTO retention_recovery_cursors (scope, cursor)
-        VALUES ('legacy_archive_segments', '')
+        VALUES ('legacy_archive_segments', ''), ('raw_payload_files', '')
         "#,
     )
     .execute(pool)
     .await
     .context("failed to seed retention recovery cursor")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS retention_raw_reconciliation (
+            raw_path TEXT PRIMARY KEY,
+            file_identity TEXT NOT NULL,
+            byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
+            quarantined_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention raw reconciliation table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_retention_raw_reconciliation_quarantine
+        ON retention_raw_reconciliation (quarantined_at, raw_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention raw reconciliation quarantine index")?;
 
     // A detail-prune archive duplicates records still retained in the live table. Segment keys
     // encode the exact inclusive ID bounds in hexadecimal; only a contiguous live range proves

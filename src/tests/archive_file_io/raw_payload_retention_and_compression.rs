@@ -1081,7 +1081,7 @@ async fn legacy_retention_cursor_advance_is_monotonic_for_a_stale_writer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn retention_orphan_sweep_does_not_enumerate_raw_directories() {
+async fn retention_orphan_sweep_is_root_anchored_and_bounded() {
     let _guard = APP_CONFIG_ENV_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("retention-orphan-db-parent");
     let db_root = temp_dir.join("db-root");
@@ -1126,6 +1126,206 @@ async fn retention_orphan_sweep_does_not_enumerate_raw_directories() {
         cwd_orphan.exists(),
         "orphan sweep should stop scanning cwd-relative stray files"
     );
+    let quarantined: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(anchored_orphan.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count anchored raw quarantine row");
+    assert_eq!(quarantined, 1);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_raw_reconciliation_survives_reopen_and_releases_unassociated_file() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-reconcile-restart").await;
+    let raw_path = config.proxy_raw_dir.join("restart-orphan.bin");
+    fs::write(&raw_path, b"restart-orphan").expect("write restart orphan");
+
+    let first = sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+        .await
+        .expect("record raw quarantine");
+    assert_eq!(first, 0);
+    let raw_path_string = raw_path.to_string_lossy().to_string();
+    let first_identity: String = sqlx::query_scalar(
+        "SELECT file_identity FROM retention_raw_reconciliation WHERE raw_path = ?1",
+    )
+    .bind(&raw_path_string)
+    .fetch_one(&pool)
+    .await
+    .expect("load durable raw identity");
+    pool.close().await;
+
+    let reopened = SqlitePool::connect(&test_sqlite_url_for_path(&config.database_path))
+        .await
+        .expect("reopen retention sqlite");
+    sqlx::query("UPDATE retention_raw_reconciliation SET quarantined_at = ?1 WHERE raw_path = ?2")
+        .bind(format_utc_iso(
+            Utc::now() - ChronoDuration::seconds(DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS as i64 + 1),
+        ))
+        .bind(&raw_path_string)
+        .execute(&reopened)
+        .await
+        .expect("age durable quarantine row");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET cursor = '' WHERE scope = 'raw_payload_files'",
+    )
+    .execute(&reopened)
+    .await
+    .expect("rewind raw cursor for interrupted pass");
+
+    let removed = sweep_orphan_proxy_raw_files(&reopened, &config, None, false)
+        .await
+        .expect("resume raw reconciliation after reopen");
+    assert_eq!(removed, 1);
+    assert!(!raw_path.exists());
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(&raw_path_string)
+            .fetch_one(&reopened)
+            .await
+            .expect("count released raw quarantine row");
+    assert_eq!(remaining, 0);
+    assert!(!first_identity.is_empty());
+
+    reopened.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_raw_reconciliation_resets_wrong_identity_without_release() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-reconcile-identity").await;
+    let raw_path = config.proxy_raw_dir.join("identity-replacement.bin");
+    fs::write(&raw_path, b"old-identity").expect("write original raw file");
+    sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+        .await
+        .expect("record original identity");
+    let raw_path_string = raw_path.to_string_lossy().to_string();
+    let original_identity: String = sqlx::query_scalar(
+        "SELECT file_identity FROM retention_raw_reconciliation WHERE raw_path = ?1",
+    )
+    .bind(&raw_path_string)
+    .fetch_one(&pool)
+    .await
+    .expect("load original identity");
+    sqlx::query("UPDATE retention_raw_reconciliation SET quarantined_at = ?1 WHERE raw_path = ?2")
+        .bind(format_utc_iso(
+            Utc::now() - ChronoDuration::seconds(DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS as i64 + 1),
+        ))
+        .bind(&raw_path_string)
+        .execute(&pool)
+        .await
+        .expect("age original quarantine row");
+    fs::write(&raw_path, b"replacement-identity").expect("replace raw file contents");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET cursor = '' WHERE scope = 'raw_payload_files'",
+    )
+    .execute(&pool)
+    .await
+    .expect("rewind raw cursor after replacement");
+
+    let removed = sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+        .await
+        .expect("reconcile replacement identity");
+    assert_eq!(removed, 0);
+    assert!(raw_path.exists());
+    let replacement_identity: String = sqlx::query_scalar(
+        "SELECT file_identity FROM retention_raw_reconciliation WHERE raw_path = ?1",
+    )
+    .bind(&raw_path_string)
+    .fetch_one(&pool)
+    .await
+    .expect("load replacement identity");
+    assert_ne!(replacement_identity, original_identity);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_raw_reconciliation_keeps_referenced_fallback_owner() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-reconcile-reference").await;
+    let raw_path = config.proxy_raw_dir.join("referenced-owner.bin");
+    fs::write(&raw_path, b"referenced-owner").expect("write referenced raw file");
+    insert_retention_invocation(
+        &pool,
+        "referenced-owner",
+        &shanghai_local_days_ago(1, 12, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        Some(&raw_path),
+        Some(1),
+        Some(0.0),
+    )
+    .await;
+
+    let first = sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+        .await
+        .expect("scan referenced raw file");
+    assert_eq!(first, 0);
+    assert!(raw_path.exists());
+    let ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(raw_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count referenced raw ledger rows");
+    assert_eq!(ledger_rows, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_raw_reconciliation_respects_scan_batch_boundary() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-reconcile-batch").await;
+    for index in 0..33 {
+        fs::write(
+            config
+                .proxy_raw_dir
+                .join(format!("batch-boundary-{index:02}.bin")),
+            b"batch-boundary",
+        )
+        .expect("write batch boundary raw file");
+    }
+
+    let first = sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+        .await
+        .expect("run first bounded raw scan");
+    assert_eq!(first, 0);
+    let first_ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation")
+            .fetch_one(&pool)
+            .await
+            .expect("count first bounded raw ledger rows");
+    assert_eq!(first_ledger_rows, 32);
+    let cursor: String = sqlx::query_scalar(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = 'raw_payload_files'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load raw reconciliation cursor");
+    assert_eq!(cursor, "batch-boundary-31.bin");
+
+    let second = sweep_orphan_proxy_raw_files(&pool, &config, None, false)
+        .await
+        .expect("run second bounded raw scan");
+    assert_eq!(second, 0);
+    let second_ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation")
+            .fetch_one(&pool)
+            .await
+            .expect("count second bounded raw ledger rows");
+    assert_eq!(second_ledger_rows, 33);
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

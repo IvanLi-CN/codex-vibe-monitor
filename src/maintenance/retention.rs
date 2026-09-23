@@ -27,6 +27,8 @@ const SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS: usize = 5_000;
 const SYSTEM_TASK_RUN_RETENTION_PASS_INTERVAL: Duration = Duration::from_secs(15);
 const SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const RETENTION_RECOVERY_LEGACY_SCAN_BATCH: usize = 32;
+const RETENTION_RAW_RECONCILIATION_SCAN_BATCH: usize = 32;
+const RETENTION_RAW_RECONCILIATION_SCOPE: &str = "raw_payload_files";
 const RETENTION_RECOVERY_QUARANTINE_GRACE_SECS: i64 = 24 * 60 * 60;
 const RETENTION_RECOVERY_STATE_PREPARING: &str = "preparing";
 const RETENTION_RECOVERY_STATE_PUBLISHED: &str = "published";
@@ -2781,6 +2783,21 @@ pub(crate) async fn advance_retention_recovery_cursor(
     observed_cursor: &str,
     progress: &str,
 ) -> Result<()> {
+    advance_retention_recovery_cursor_for_scope(
+        pool,
+        "legacy_archive_segments",
+        observed_cursor,
+        progress,
+    )
+    .await
+}
+
+async fn advance_retention_recovery_cursor_for_scope(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+    observed_cursor: &str,
+    progress: &str,
+) -> Result<()> {
     let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
     else {
         return Err(retention_write_deferred("retention_recovery_cursor"));
@@ -2788,28 +2805,580 @@ pub(crate) async fn advance_retention_recovery_cursor(
     sqlx::query(
         r#"
         INSERT INTO retention_recovery_cursors (scope, cursor, updated_at)
-        VALUES ('legacy_archive_segments', ?1, datetime('now'))
+        VALUES (?1, ?2, datetime('now'))
         ON CONFLICT(scope) DO UPDATE SET
             cursor = CASE
-                WHEN retention_recovery_cursors.cursor = ?2
+                WHEN retention_recovery_cursors.cursor = ?3
                     AND excluded.cursor > retention_recovery_cursors.cursor
                     THEN excluded.cursor
                 ELSE retention_recovery_cursors.cursor
             END,
             updated_at = CASE
-                WHEN retention_recovery_cursors.cursor = ?2
+                WHEN retention_recovery_cursors.cursor = ?3
                     AND excluded.cursor > retention_recovery_cursors.cursor
                     THEN excluded.updated_at
                 ELSE retention_recovery_cursors.updated_at
             END
         "#,
     )
+    .bind(scope)
     .bind(progress)
     .bind(observed_cursor)
     .execute(pool)
     .await?;
     drop(admission);
     Ok(())
+}
+
+#[derive(Debug, FromRow)]
+struct RetentionRawReconciliationRow {
+    raw_path: String,
+    file_identity: String,
+    byte_size: i64,
+    quarantined_at: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct RetentionRawDirectoryEntry {
+    name: String,
+    path: PathBuf,
+}
+
+impl Ord for RetentionRawDirectoryEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name.cmp(&other.name)
+    }
+}
+
+impl PartialOrd for RetentionRawDirectoryEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct RetentionRawDirectorySelection {
+    entries: Vec<RetentionRawDirectoryEntry>,
+}
+
+struct RetentionRawCandidateScan {
+    candidates: Vec<PathBuf>,
+    progress: Option<String>,
+}
+
+fn collect_bounded_retention_raw_directory_entries(
+    root: &Path,
+    cursor: &str,
+    limit: usize,
+) -> Result<RetentionRawDirectorySelection> {
+    if limit == 0 {
+        return Ok(RetentionRawDirectorySelection {
+            entries: Vec::new(),
+        });
+    }
+    let directory = match fs::read_dir(root) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(RetentionRawDirectorySelection {
+                entries: Vec::new(),
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read raw reconciliation directory {}",
+                    root.display()
+                )
+            });
+        }
+    };
+    let entries = directory.map(
+        |entry| -> std::io::Result<Option<RetentionRawDirectoryEntry>> {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_file() {
+                return Ok(None);
+            }
+            Ok(Some(RetentionRawDirectoryEntry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: entry.path(),
+            }))
+        },
+    );
+    let mut heap = std::collections::BinaryHeap::with_capacity(limit);
+    for entry in entries {
+        let Some(entry) = entry? else {
+            continue;
+        };
+        if !cursor.is_empty() && entry.name.as_str() <= cursor {
+            continue;
+        }
+        if heap.len() < limit {
+            heap.push(entry);
+        } else if heap.peek().is_some_and(|largest| entry.name < largest.name) {
+            heap.pop();
+            heap.push(entry);
+        }
+    }
+    let mut entries = heap.into_vec();
+    entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    Ok(RetentionRawDirectorySelection { entries })
+}
+
+fn collect_retention_raw_candidates_after_cursor(
+    root: &Path,
+    cursor: &str,
+    limit: usize,
+) -> Result<RetentionRawCandidateScan> {
+    let selection = collect_bounded_retention_raw_directory_entries(root, cursor, limit)?;
+    let progress = selection.entries.last().map(|entry| entry.name.clone());
+    let candidates = selection
+        .entries
+        .into_iter()
+        .filter(|entry| retention_raw_reconciliation_supported_name(&entry.name))
+        .map(|entry| entry.path)
+        .collect();
+    Ok(RetentionRawCandidateScan {
+        candidates,
+        progress,
+    })
+}
+
+fn retention_raw_reconciliation_supported_name(name: &str) -> bool {
+    name.ends_with(".bin") || name.ends_with(".bin.gz") || name.ends_with(".bin.zst")
+}
+
+fn retention_raw_file_identity(metadata: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map(|value| value.as_nanos())
+            .unwrap_or_default();
+        format!("{}:{modified}", metadata.len())
+    }
+}
+
+fn retention_raw_quarantine_due(quarantined_at: &str) -> bool {
+    parse_to_utc_datetime(quarantined_at).is_some_and(|observed_at| {
+        Utc::now().signed_duration_since(observed_at)
+            >= ChronoDuration::seconds(RETENTION_RECOVERY_QUARANTINE_GRACE_SECS)
+    })
+}
+
+fn retention_raw_reference_path_variants(config: &AppConfig, candidate: &Path) -> Vec<String> {
+    let candidate = normalize_path_for_compare(candidate);
+    let configured_root = normalize_path_for_compare(&config.resolved_proxy_raw_dir());
+    let mut paths = vec![candidate.to_string_lossy().into_owned()];
+    if let Ok(relative) = candidate.strip_prefix(&configured_root)
+        && let Some(database_parent) = config.database_path.parent()
+    {
+        let database_parent = normalize_path_for_compare(database_parent);
+        if let Ok(raw_root_relative) = configured_root.strip_prefix(database_parent) {
+            paths.push(
+                raw_root_relative
+                    .join(relative)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    let initial = paths.clone();
+    for path in initial {
+        if let Some(alternate) = raw_payload_alternate_db_path(&path)
+            && !paths.contains(&alternate)
+        {
+            paths.push(alternate);
+        }
+    }
+    paths
+}
+
+async fn retention_raw_reference_paths(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    candidate: &Path,
+) -> Result<Vec<String>> {
+    let paths = retention_raw_reference_path_variants(config, candidate);
+    let placeholders = (1..=paths.len())
+        .map(|index| format!("(?{index})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        r#"
+        WITH candidate_paths(raw_path) AS (VALUES {placeholders})
+        SELECT DISTINCT referenced.raw_path
+        FROM (
+            SELECT links.raw_path
+            FROM proxy_raw_payload_blob_links AS links
+            INNER JOIN candidate_paths ON candidate_paths.raw_path = links.raw_path
+            UNION ALL
+            SELECT invocations.request_raw_path
+            FROM codex_invocations AS invocations
+            INNER JOIN candidate_paths ON candidate_paths.raw_path = invocations.request_raw_path
+            WHERE invocations.request_raw_path IS NOT NULL
+            UNION ALL
+            SELECT invocations.response_raw_path
+            FROM codex_invocations AS invocations
+            INNER JOIN candidate_paths ON candidate_paths.raw_path = invocations.response_raw_path
+            WHERE invocations.response_raw_path IS NOT NULL
+            UNION ALL
+            SELECT attempts.response_raw_path
+            FROM pool_upstream_request_attempts AS attempts
+            INNER JOIN candidate_paths ON candidate_paths.raw_path = attempts.response_raw_path
+            WHERE attempts.response_raw_path IS NOT NULL
+        ) AS referenced
+        WHERE referenced.raw_path IS NOT NULL
+        "#
+    );
+    let mut query = sqlx::query_scalar::<_, String>(&query);
+    for path in &paths {
+        query = query.bind(path);
+    }
+    Ok(query.fetch_all(pool).await?)
+}
+
+async fn retention_raw_candidate_is_referenced(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    candidate: &Path,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<bool> {
+    let candidate = normalize_path_for_compare(candidate);
+    let referenced_paths = retention_raw_reference_paths(pool, config, &candidate).await?;
+    for referenced_path in referenced_paths {
+        let resolved = resolved_raw_path_read_candidates(&referenced_path, raw_path_fallback_root);
+        let Some(candidate_index) = resolved
+            .iter()
+            .position(|path| normalize_path_for_compare(path) == candidate)
+        else {
+            continue;
+        };
+        if candidate_index == 0
+            || !resolved
+                .iter()
+                .take(candidate_index)
+                .any(|path| path.exists())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn load_retention_raw_reconciliation_row(
+    pool: &Pool<Sqlite>,
+    raw_path: &str,
+) -> Result<Option<RetentionRawReconciliationRow>> {
+    Ok(sqlx::query_as::<_, RetentionRawReconciliationRow>(
+        r#"
+        SELECT raw_path, file_identity, byte_size, quarantined_at
+        FROM retention_raw_reconciliation
+        WHERE raw_path = ?1
+        "#,
+    )
+    .bind(raw_path)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn record_retention_raw_reconciliation_observation(
+    pool: &Pool<Sqlite>,
+    raw_path: &str,
+    file_identity: &str,
+    byte_size: i64,
+) -> Result<()> {
+    let Some(admission) = acquire_retention_write_admission("raw_reconciliation_quarantine").await
+    else {
+        return Err(retention_write_deferred("raw_reconciliation_quarantine"));
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO retention_raw_reconciliation (
+            raw_path, file_identity, byte_size, quarantined_at
+        )
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(raw_path) DO UPDATE SET
+            file_identity = excluded.file_identity,
+            byte_size = excluded.byte_size,
+            quarantined_at = CASE
+                WHEN retention_raw_reconciliation.file_identity = excluded.file_identity
+                    AND retention_raw_reconciliation.byte_size = excluded.byte_size
+                    THEN retention_raw_reconciliation.quarantined_at
+                ELSE excluded.quarantined_at
+            END,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(raw_path)
+    .bind(file_identity)
+    .bind(byte_size)
+    .bind(format_utc_iso(Utc::now()))
+    .execute(pool)
+    .await?;
+    drop(admission);
+    Ok(())
+}
+
+async fn clear_retention_raw_reconciliation_row(
+    pool: &Pool<Sqlite>,
+    raw_path: &str,
+    file_identity: Option<&str>,
+) -> Result<()> {
+    let Some(admission) =
+        acquire_retention_write_admission("raw_reconciliation_ledger_cleanup").await
+    else {
+        return Err(retention_write_deferred(
+            "raw_reconciliation_ledger_cleanup",
+        ));
+    };
+    if let Some(file_identity) = file_identity {
+        sqlx::query(
+            "DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1 AND file_identity = ?2",
+        )
+        .bind(raw_path)
+        .bind(file_identity)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(raw_path)
+            .execute(pool)
+            .await?;
+    }
+    drop(admission);
+    Ok(())
+}
+
+async fn cleanup_missing_retention_raw_reconciliation_rows(
+    pool: &Pool<Sqlite>,
+    limit: usize,
+) -> Result<()> {
+    let rows = sqlx::query_as::<_, RetentionRawReconciliationRow>(
+        r#"
+        SELECT raw_path, file_identity, byte_size, quarantined_at
+        FROM retention_raw_reconciliation
+        ORDER BY raw_path
+        LIMIT ?1
+        "#,
+    )
+    .bind(limit as i64)
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        match fs::symlink_metadata(&row.raw_path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                clear_retention_raw_reconciliation_row(
+                    pool,
+                    &row.raw_path,
+                    Some(&row.file_identity),
+                )
+                .await?;
+            }
+            Ok(metadata) if !metadata.file_type().is_file() => {
+                clear_retention_raw_reconciliation_row(
+                    pool,
+                    &row.raw_path,
+                    Some(&row.file_identity),
+                )
+                .await?;
+            }
+            Err(error) => {
+                return Err(error).context("failed to inspect raw reconciliation ledger path");
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn sweep_orphan_proxy_raw_files(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+) -> Result<usize> {
+    let raw_root = normalize_path_for_compare(&config.resolved_proxy_raw_dir());
+    let effective_fallback_root = raw_path_fallback_root.or(config.database_path.parent());
+    let Some(admission) = acquire_retention_write_admission("raw_reconciliation_scan").await else {
+        return Err(retention_write_deferred("raw_reconciliation_scan"));
+    };
+    drop(admission);
+
+    if !dry_run {
+        cleanup_missing_retention_raw_reconciliation_rows(
+            pool,
+            RETENTION_RAW_RECONCILIATION_SCAN_BATCH,
+        )
+        .await?;
+    }
+
+    let cursor = sqlx::query_scalar::<_, String>(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = ?1",
+    )
+    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
+    let scan = collect_retention_raw_candidates_after_cursor(
+        &raw_root,
+        &cursor,
+        RETENTION_RAW_RECONCILIATION_SCAN_BATCH,
+    )?;
+    let mut removed = 0usize;
+    for path in &scan.candidates {
+        let path = normalize_path_for_compare(path);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata,
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).context("failed to inspect raw reconciliation candidate");
+            }
+        };
+        let raw_path = path.to_string_lossy().into_owned();
+        let file_identity = retention_raw_file_identity(&metadata);
+        let byte_size = i64::try_from(metadata.len())
+            .context("raw reconciliation candidate size exceeds SQLite integer range")?;
+        let existing = load_retention_raw_reconciliation_row(pool, &raw_path).await?;
+        if retention_raw_candidate_is_referenced(pool, config, &path, effective_fallback_root)
+            .await?
+        {
+            if !dry_run && existing.is_some() {
+                clear_retention_raw_reconciliation_row(pool, &raw_path, None).await?;
+            }
+            continue;
+        }
+        if existing
+            .as_ref()
+            .is_none_or(|row| row.file_identity != file_identity || row.byte_size != byte_size)
+        {
+            if !dry_run {
+                record_retention_raw_reconciliation_observation(
+                    pool,
+                    &raw_path,
+                    &file_identity,
+                    byte_size,
+                )
+                .await?;
+            }
+            continue;
+        }
+        let Some(existing) = existing else {
+            continue;
+        };
+        if dry_run || !retention_raw_quarantine_due(&existing.quarantined_at) {
+            continue;
+        }
+
+        let Some(release_admission) =
+            acquire_retention_write_admission("raw_reconciliation_release").await
+        else {
+            return Err(retention_write_deferred("raw_reconciliation_release"));
+        };
+        let _directory_lock = retention_archive_file_lock(&path)?;
+        let final_metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata,
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                clear_retention_raw_reconciliation_row(
+                    pool,
+                    &raw_path,
+                    Some(&existing.file_identity),
+                )
+                .await?;
+                continue;
+            }
+            Err(error) => {
+                return Err(error).context("failed to recheck raw reconciliation candidate");
+            }
+        };
+        let final_identity = retention_raw_file_identity(&final_metadata);
+        let final_size = i64::try_from(final_metadata.len())
+            .context("raw reconciliation candidate size exceeds SQLite integer range")?;
+        let Some(current) = load_retention_raw_reconciliation_row(pool, &raw_path).await? else {
+            continue;
+        };
+        if current.file_identity != final_identity || current.byte_size != final_size {
+            record_retention_raw_reconciliation_observation(
+                pool,
+                &raw_path,
+                &final_identity,
+                final_size,
+            )
+            .await?;
+            continue;
+        }
+        if !retention_raw_quarantine_due(&current.quarantined_at)
+            || retention_raw_candidate_is_referenced(pool, config, &path, effective_fallback_root)
+                .await?
+        {
+            continue;
+        }
+        fs::remove_file(&path).context("failed to remove raw reconciliation candidate")?;
+        RETENTION_RAW_CAPTURE_CIRCUIT
+            .try_with(|circuit| {
+                if let Some(circuit) = circuit.borrow().as_ref() {
+                    circuit.record_deleted_bytes(final_metadata.len());
+                }
+            })
+            .ok();
+        mark_retention_raw_inventory_reset_intent(pool).await?;
+        drop(release_admission);
+        clear_retention_raw_reconciliation_row(pool, &raw_path, Some(&final_identity)).await?;
+        removed += 1;
+    }
+
+    if !dry_run {
+        let progress_after_cursor = scan
+            .progress
+            .as_deref()
+            .filter(|progress| *progress > cursor.as_str());
+        if let Some(progress) = progress_after_cursor {
+            advance_retention_recovery_cursor_for_scope(
+                pool,
+                RETENTION_RAW_RECONCILIATION_SCOPE,
+                cursor.as_str(),
+                progress,
+            )
+            .await?;
+        } else if !cursor.is_empty() {
+            let Some(admission) =
+                acquire_retention_write_admission("retention_recovery_cursor").await
+            else {
+                return Err(retention_write_deferred("retention_recovery_cursor"));
+            };
+            sqlx::query(
+                r#"
+                UPDATE retention_recovery_cursors
+                SET cursor = '', updated_at = datetime('now')
+                WHERE scope = ?1 AND cursor = ?2
+                "#,
+            )
+            .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+            .bind(&cursor)
+            .execute(pool)
+            .await?;
+            drop(admission);
+        }
+    }
+    if !dry_run && (removed > 0 || scan.progress.is_some()) {
+        retention_recovery_record_progress();
+    }
+    Ok(removed)
 }
 
 struct RetentionArchiveCandidateScan {
