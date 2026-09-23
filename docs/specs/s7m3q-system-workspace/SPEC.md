@@ -195,8 +195,18 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: owner-approved
-- evidence_note: 验证状态页已改为“实际磁盘占用总览 + 数据库记录概况 + 归档与逻辑体量”三段结构；项目级磁盘公式、未知条件和物理占用边界合并为主读数下的一段自然说明。
+- evidence_note: 验证状态页的存储总览保留一段紧邻主读数的项目级磁盘公式说明，明确未知条件和物理占用边界，不再重复渲染标题级说明。
   snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-grouped-layout.png`
+- source_type: storybook_canvas
+  story_id_or_title: System/SystemWorkspace/StatusRuntimePressureDegradedMobile
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: 移动端验证存储总览只保留一段公式说明，并在 393px 宽度下自然换行，不与主读数或其他卡片重叠。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-storage-overview-mobile.png`
 - source_type: storybook_canvas
   story_id_or_title: System/SystemWorkspace/StatusRequestHeavy
   target_program: mock-only
