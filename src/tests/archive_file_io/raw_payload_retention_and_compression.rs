@@ -456,6 +456,19 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
         Some(0.12),
     )
     .await;
+    let query_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM proxy_raw_payload_blob_links WHERE raw_path = ?1)",
+    )
+    .bind(raw_path.to_string_lossy().as_ref())
+    .fetch_all(&pool)
+    .await
+    .expect("explain raw ownership lookup");
+    assert!(
+        query_plan
+            .iter()
+            .any(|entry| entry.3.contains("idx_proxy_raw_payload_blob_links_path")),
+        "raw ownership lookup must use the path index: {query_plan:?}"
+    );
     sqlx::query(
         r#"
         CREATE TRIGGER retention_test_abort_archive_finalize

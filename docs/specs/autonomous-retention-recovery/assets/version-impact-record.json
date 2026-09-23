@@ -29,24 +29,27 @@
         "detected": false,
       "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery and rawCapture diagnostics that remain unknown until measured, idempotent archive/raw reconciliation tables and cursors, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
+      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery, rawCapture, and rawReferenceCheckMs diagnostics that remain unknown until measured, idempotent archive/raw reconciliation tables and cursors, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
       "reassessed_at": "2026-09-23T00:00:00+08:00",
       "evidence": [
         "src/api/slices/system_routes_and_tasks.rs",
         "src/schema.rs",
-        "web/src/lib/api/core-foundation.ts"
+        "src/maintenance/retention.rs",
+        "web/src/lib/api/core-foundation.ts",
+        "web/src/pages/system/SystemStatusPage.tsx"
       ]
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission including unknown-length stream bounds and non-truncating suppression, hysteretic watermarks, bounded physical inventory reset after every raw-mutating maintenance entry point, sanitized startup recovery diagnostics, unmeasured-byte unknown semantics, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, additive status serialization, translated Storybook states, typecheck, lint, and production build.",
+      "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission including unknown-length stream bounds and non-truncating suppression, hysteretic watermarks, bounded physical inventory reset after every raw-mutating maintenance entry point, sanitized startup recovery diagnostics, unmeasured-byte unknown semantics, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, indexed raw ownership confirmation with post-commit unlink, independent retention stages, bounded legacy reconciliation, additive status serialization, translated Storybook states, typecheck, lint, and production build.",
       "verified_at": "2026-09-23T00:00:00+08:00",
       "evidence": [
         "lightweight profile: 1125 passed, including raw-capture restart, generation, and hysteresis regressions",
         "stateful-sqlite profile: 1306 passed, including raw-capture status serialization and schema re-entry",
-        "archive-file-io profile: 273 passed, including raw residual no-enumeration regression, concurrent inventory/reset guards, and retention recovery coverage",
+        "archive-file-io profile: 273 passed, including raw residual no-enumeration regression, concurrent inventory/reset guards, indexed raw-reference finalization, and retention recovery coverage",
         "Web focused units: 10 passed; System Workspace Storybook interactions: 16 passed; typecheck, Biome check, and production build passed",
-        "Linux cargo check and Clippy passed with all targets and features; formatting and diff checks passed"
+        "Shared-testbox empirical contention scenarios: 2 passed; Linux cargo check and Clippy passed with all targets and features; formatting and diff checks passed",
+        "Headless Storybook canvas evidence captured for System/SystemWorkspace/StatusRetentionRecoveryHealthy and confirmed by the owner"
       ]
     }
   },

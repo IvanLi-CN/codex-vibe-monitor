@@ -2310,6 +2310,7 @@ export interface RuntimePressureRetentionWriteHealth {
   lockWaitMs: number;
   executeMs: number;
   commitMs: number;
+  rawReferenceCheckMs?: number;
   budgetBreachCount: number;
   deferReason?: string;
   starvationAgeMs?: number;
@@ -4606,6 +4607,8 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           lockWaitMs: number(retentionWriteHealth.lockWaitMs),
           executeMs: number(retentionWriteHealth.executeMs),
           commitMs: number(retentionWriteHealth.commitMs),
+          rawReferenceCheckMs:
+            normalizeFiniteNumber(retentionWriteHealth.rawReferenceCheckMs) ?? undefined,
           budgetBreachCount: number(retentionWriteHealth.budgetBreachCount),
           deferReason: optionalString(retentionWriteHealth.deferReason),
           starvationAgeMs: normalizeFiniteNumber(retentionWriteHealth.starvationAgeMs) ?? undefined,

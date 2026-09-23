@@ -102,6 +102,7 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       lockWaitMs: 2,
       executeMs: 47,
       commitMs: 18,
+      rawReferenceCheckMs: 1,
       budgetBreachCount: 0,
       p1WaiterCount: 0,
       candidateRemainingHint: 1,
@@ -797,6 +798,9 @@ export const StatusRetentionRecoveryHealthy: Story = {
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("健康");
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
       "孤儿清扫",
+    );
+    await expect(canvas.getByTestId("system-status-runtime-pressure-health")).toHaveTextContent(
+      "1ms",
     );
   },
 };

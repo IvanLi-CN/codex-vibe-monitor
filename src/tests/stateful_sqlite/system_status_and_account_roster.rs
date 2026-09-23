@@ -290,6 +290,10 @@ async fn system_status_aggregates_counts_and_file_sizes() {
             .is_u64()
     );
     assert!(
+        response_json["runtimePressureHealth"]["retentionWriteHealth"]["rawReferenceCheckMs"]
+            .is_null()
+    );
+    assert!(
         response.database_bytes > 0,
         "database bytes should include sqlite files"
     );

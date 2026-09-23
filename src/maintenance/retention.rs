@@ -258,6 +258,7 @@ pub(crate) struct RetentionWriteHealthSnapshot {
     pub(crate) lock_wait_ms: u64,
     pub(crate) execute_ms: u64,
     pub(crate) commit_ms: u64,
+    pub(crate) raw_reference_check_ms: Option<u64>,
     pub(crate) budget_breach_count: u64,
     pub(crate) defer_reason: Option<String>,
     pub(crate) starvation_age_ms: Option<u64>,
@@ -278,6 +279,7 @@ impl Default for RetentionWriteHealthSnapshot {
             lock_wait_ms: 0,
             execute_ms: 0,
             commit_ms: 0,
+            raw_reference_check_ms: None,
             budget_breach_count: 0,
             defer_reason: None,
             starvation_age_ms: None,
@@ -630,9 +632,44 @@ pub(crate) struct RetentionWriteCommit {
     pub(crate) lock_wait: Duration,
     pub(crate) execute_elapsed: Duration,
     pub(crate) commit_elapsed: Duration,
+    pub(crate) raw_reference_check_elapsed: Option<Duration>,
     pub(crate) p1_waiter_count: usize,
     pub(crate) candidate_remaining_hint: usize,
 }
+
+macro_rules! retention_record_commit_with_reference_check {
+    (
+        $operation:expr,
+        $admission_mode:expr,
+        $rows:expr,
+        $estimated_bytes:expr,
+        $prepare_elapsed:expr,
+        $lock_wait:expr,
+        $execute_elapsed:expr,
+        $commit_elapsed:expr,
+        $raw_reference_check_elapsed:expr,
+        $p1_waiter_count:expr,
+        $candidate_remaining_hint:expr $(,)?
+    ) => {
+        $crate::maintenance::retention::record_retention_write_commit(
+            $crate::maintenance::retention::RetentionWriteCommit {
+                operation: $operation,
+                admission_mode: $admission_mode,
+                rows: $rows,
+                estimated_bytes: $estimated_bytes,
+                prepare_elapsed: $prepare_elapsed,
+                lock_wait: $lock_wait,
+                execute_elapsed: $execute_elapsed,
+                commit_elapsed: $commit_elapsed,
+                raw_reference_check_elapsed: $raw_reference_check_elapsed,
+                p1_waiter_count: $p1_waiter_count,
+                candidate_remaining_hint: $candidate_remaining_hint,
+            },
+        )
+    };
+}
+
+pub(crate) use retention_record_commit_with_reference_check;
 
 macro_rules! retention_record_commit {
     (
@@ -647,19 +684,18 @@ macro_rules! retention_record_commit {
         $p1_waiter_count:expr,
         $candidate_remaining_hint:expr $(,)?
     ) => {
-        $crate::maintenance::retention::record_retention_write_commit(
-            $crate::maintenance::retention::RetentionWriteCommit {
-                operation: $operation,
-                admission_mode: $admission_mode,
-                rows: $rows,
-                estimated_bytes: $estimated_bytes,
-                prepare_elapsed: $prepare_elapsed,
-                lock_wait: $lock_wait,
-                execute_elapsed: $execute_elapsed,
-                commit_elapsed: $commit_elapsed,
-                p1_waiter_count: $p1_waiter_count,
-                candidate_remaining_hint: $candidate_remaining_hint,
-            },
+        $crate::maintenance::retention::retention_record_commit_with_reference_check!(
+            $operation,
+            $admission_mode,
+            $rows,
+            $estimated_bytes,
+            $prepare_elapsed,
+            $lock_wait,
+            $execute_elapsed,
+            $commit_elapsed,
+            None,
+            $p1_waiter_count,
+            $candidate_remaining_hint,
         )
     };
 }
@@ -676,6 +712,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
         lock_wait,
         execute_elapsed,
         commit_elapsed,
+        raw_reference_check_elapsed,
         p1_waiter_count,
         candidate_remaining_hint,
     } = commit;
@@ -692,6 +729,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
         lock_wait,
         execute_elapsed,
         commit_elapsed,
+        raw_reference_check_elapsed,
         p1_waiter_count,
         candidate_remaining_hint,
     );
@@ -706,6 +744,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
             lock_wait_ms = lock_wait.as_millis() as u64,
             execute_ms = execute_elapsed.as_millis() as u64,
             commit_ms = commit_elapsed.as_millis() as u64,
+            raw_reference_check_ms = ?raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             p1_waiter_count,
             candidate_remaining_hint,
             "retention write transaction exceeded its micro-batch budget"
@@ -719,6 +758,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
             prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
             lock_wait_ms = lock_wait.as_millis() as u64,
             execute_ms = execute_elapsed.as_millis() as u64,
+            raw_reference_check_ms = ?raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             p1_waiter_count,
             candidate_remaining_hint,
             "retention write micro-batch committed"
@@ -737,6 +777,7 @@ fn observe_retention_write_commit(
     lock_wait: Duration,
     execute_elapsed: Duration,
     commit_elapsed: Duration,
+    raw_reference_check_elapsed: Option<Duration>,
     p1_waiter_count: usize,
     candidate_remaining_hint: usize,
 ) -> bool {
@@ -761,6 +802,8 @@ fn observe_retention_write_commit(
     health.snapshot.lock_wait_ms = lock_wait.as_millis() as u64;
     health.snapshot.execute_ms = execute_elapsed.as_millis() as u64;
     health.snapshot.commit_ms = commit_elapsed.as_millis() as u64;
+    health.snapshot.raw_reference_check_ms =
+        raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64);
     health.snapshot.defer_reason = None;
     health.snapshot.starvation_age_ms = if admission_mode == "fairness" {
         Some(lock_wait.as_millis() as u64)
@@ -5944,7 +5987,7 @@ pub(crate) fn delete_exact_proxy_raw_path(
 }
 
 async fn filter_unreferenced_proxy_raw_paths(
-    pool: &Pool<Sqlite>,
+    connection: &mut sqlx::SqliteConnection,
     raw_paths: &[Option<String>],
 ) -> Result<Vec<Option<String>>> {
     let candidates = raw_paths
@@ -5959,17 +6002,11 @@ async fn filter_unreferenced_proxy_raw_paths(
             SELECT EXISTS(
               SELECT 1 FROM proxy_raw_payload_blob_links
               WHERE raw_path = ?1
-              UNION ALL
-              SELECT 1 FROM codex_invocations
-              WHERE request_raw_path = ?1 OR response_raw_path = ?1
-              UNION ALL
-              SELECT 1 FROM pool_upstream_request_attempts
-              WHERE response_raw_path = ?1
             )
             "#,
         )
         .bind(&path)
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?;
         if referenced == 0 {
             unreferenced.push(Some(path));
@@ -6262,9 +6299,12 @@ pub(crate) async fn prune_old_invocation_details(
                 record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
             }
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
+            let raw_reference_check_started = Instant::now();
+            let raw_paths = filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths).await?;
+            let raw_reference_check_elapsed = raw_reference_check_started.elapsed();
             let commit_started = Instant::now();
             tx.commit().await?;
-            retention_record_commit!(
+            retention_record_commit_with_reference_check!(
                 "invocation_detail_prune",
                 admission.admission_mode(),
                 group.len(),
@@ -6276,17 +6316,17 @@ pub(crate) async fn prune_old_invocation_details(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
+                Some(raw_reference_check_elapsed),
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             if !raw_paths.is_empty() {
                 mark_retention_raw_inventory_reset_intent(pool).await?;
             }
-            drop(admission);
             rows_pruned += group.len();
             archive_batches += 1;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+            drop(admission);
         }
     }
 
@@ -6680,9 +6720,12 @@ pub(crate) async fn archive_old_invocations(
             )
             .await?;
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
+            let raw_reference_check_started = Instant::now();
+            let raw_paths = filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths).await?;
+            let raw_reference_check_elapsed = raw_reference_check_started.elapsed();
             let commit_started = Instant::now();
             tx.commit().await?;
-            retention_record_commit!(
+            retention_record_commit_with_reference_check!(
                 "invocation_archive",
                 admission.admission_mode(),
                 group.len(),
@@ -6699,18 +6742,18 @@ pub(crate) async fn archive_old_invocations(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
+                Some(raw_reference_check_elapsed),
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             if !raw_paths.is_empty() {
                 mark_retention_raw_inventory_reset_intent(pool).await?;
             }
-            drop(admission);
             rows_archived += group.len();
             archive_batches += 1;
             retention_recovery_record_progress();
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+            drop(admission);
         }
     }
 
@@ -7029,9 +7072,19 @@ pub(crate) async fn archive_timestamped_dataset(
                 &materialized_forward_proxy_rows,
             )
             .await?;
+            let (raw_paths, raw_reference_check_elapsed) =
+                if spec.dataset == "pool_upstream_request_attempts" {
+                    let raw_reference_check_started = Instant::now();
+                    let raw_paths =
+                        filter_unreferenced_proxy_raw_paths(tx.as_mut(), &pool_attempt_raw_paths)
+                            .await?;
+                    (raw_paths, Some(raw_reference_check_started.elapsed()))
+                } else {
+                    (Vec::new(), None)
+                };
             let commit_started = Instant::now();
             tx.commit().await?;
-            retention_record_commit!(
+            retention_record_commit_with_reference_check!(
                 "timestamped_archive",
                 admission.admission_mode(),
                 group.len(),
@@ -7040,20 +7093,19 @@ pub(crate) async fn archive_timestamped_dataset(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
+                raw_reference_check_elapsed,
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
             if spec.dataset == "pool_upstream_request_attempts" {
-                let raw_paths =
-                    filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
-                drop(admission);
                 rows_archived += group.len();
                 archive_batches += 1;
                 raw_files_removed +=
                     delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                drop(admission);
             } else {
                 drop(admission);
                 rows_archived += group.len();
@@ -7213,6 +7265,7 @@ mod retention_write_budget_tests {
             Duration::ZERO,
             Duration::from_millis(251),
             Duration::ZERO,
+            None,
             0,
             0,
         ));

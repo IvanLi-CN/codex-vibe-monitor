@@ -23,6 +23,7 @@
 - The system MUST release a live invocation detail or its raw-owner link only in the same finalized source transaction that publishes its corresponding Verified Archive.
 - Inputs: An expired invocation candidate, archive artifact, manifest, Summary proof, and source rows.
 - Outputs: Either an atomically finalized archive plus source transition, or unchanged live source ownership.
+- Raw-owner finalization MUST prove the path has no remaining link in `proxy_raw_payload_blob_links` within the same source transaction; a committed transaction is required before any physical raw unlink.
 - A `live_mirror` detail-prune archive is a prepared, source-identity-verified recovery artifact whose live canonical row remains online; it MUST NOT become a Summary or rollup authority. Its manifest, prepared-ledger removal, structured-field transition, and raw-owner release still commit together.
 
 ### REQ-ARR-002
@@ -39,6 +40,7 @@
 - The system MUST make archive finalization, raw-owner release, filesystem-safe inventory reset, Prepared Archive reconciliation, and raw residual reconciliation independently resumable stages of one Retention Recovery lifecycle. Raw reconciliation MUST remain outside the proxy request path and MUST NOT block archive publication or structured invocation persistence. Filesystem availability remains the safety signal for candidates that cannot pass the raw identity, reference, or quarantine gates.
 - A failure in one stage MUST report that stage and schedule bounded retry/backoff without preventing a separately safe stage from making progress.
 - All database mutations in this lifecycle MUST retain maintenance write admission and MUST yield to P1 terminal and interactive proxy writes.
+- The raw-owner link confirmation MUST use the path index on the link ledger rather than scanning owner tables while maintenance admission is held.
 
 ### REQ-ARR-004
 
@@ -58,6 +60,7 @@
 - `/api/system/status` and structured logs MUST expose low-cardinality Retention Recovery state: circuit-breaker state and reason, physical raw bytes and watermarks, filesystem free bytes, backlog counts/age, current stage, last successful progress, retry time, and a sanitized failure fingerprint.
 - Prepared, quarantined, and expired-backlog counts MUST be null or omitted until a successful status refresh measures them; an unmeasured count MUST NOT appear as zero.
 - These diagnostics MUST NOT expose raw request/response content, SQL text or bindings, account identifiers, or full payload/archive paths.
+- Retention write diagnostics MAY include `rawReferenceCheckMs`; it is nullable and MUST remain unknown when no raw-owner confirmation ran.
 
 ### REQ-ARR-007
 
@@ -156,6 +159,18 @@
   evidence_note: verifies additive compatibility when older backends do not publish the raw capture contract.
   image:
   ![Desktop System Status raw capture unknown](./assets/raw-capture-unknown-desktop.png)
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x900
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  story_id_or_title: System/SystemWorkspace/StatusRetentionRecoveryHealthy
+  state: healthy retention recovery with measured raw reference confirmation
+  evidence_note: shows Runtime Pressure with retention write health, raw reference confirmation timing, recovery stage, and raw capture diagnostics.
+  image:
+  ![System Status retention reference confirmation](./assets/raw-reference-finalization-v2-runtime-details.png)
 
 ## References
 
