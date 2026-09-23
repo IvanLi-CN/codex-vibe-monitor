@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.26",
+  "base_stable_version": "2.71.25",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-23T13:56:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.26",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a90ba27c5c73643e32f6a44357005367f139d4d2",
+  "pr_number": 1000,
+  "pr_title": "fix(system): clarify storage coverage copy",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.26",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.26",
+  "target_sha": "edb6d8624b1713619c32caa050e397f0aded79b4",
+  "type_label": "type:patch"
+}
