@@ -40,7 +40,7 @@
 - The system MUST make archive finalization, raw-owner release, filesystem-safe inventory reset, Prepared Archive reconciliation, and raw residual reconciliation independently resumable stages of one Retention Recovery lifecycle. Raw reconciliation MUST remain outside the proxy request path and MUST NOT block archive publication or structured invocation persistence. Filesystem availability remains the safety signal for candidates that cannot pass the raw identity, reference, or quarantine gates.
 - A failure in one stage MUST report that stage and schedule bounded retry/backoff without preventing a separately safe stage from making progress.
 - All database mutations in this lifecycle MUST retain maintenance write admission and MUST yield to P1 terminal and interactive proxy writes.
-- The raw-owner link confirmation MUST use the path index on the link ledger rather than scanning owner tables while maintenance admission is held.
+- The raw-owner link confirmation MUST use the path index on the link ledger rather than scanning owner tables while maintenance admission is held. Relative database roots MUST be normalized before checking relative/absolute ledger aliases, including both `.bin` and `.bin.gz` variants.
 
 ### REQ-ARR-004
 
