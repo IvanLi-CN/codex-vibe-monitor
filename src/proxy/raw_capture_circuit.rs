@@ -169,6 +169,10 @@ impl RawCaptureCircuitBreaker {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Hydration mirrors the additive durable circuit columns one-for-one."
+    )]
     pub(crate) fn hydrate_with_recovery_pending(
         &self,
         inventory_state: &str,
