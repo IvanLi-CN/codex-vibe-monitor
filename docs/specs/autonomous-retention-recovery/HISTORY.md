@@ -19,6 +19,7 @@
 - The raw-reference finalization follow-up moves candidate ownership confirmation into the source transaction and keeps physical unlink after commit, preserving the accepted write-admission boundary.
 - Raw-reference finalization normalizes relative database roots before checking legacy relative/absolute ledger aliases, including both `.bin` and `.bin.gz` variants.
 - The ownership proof also checks cwd-relative raw-path representations before any post-commit unlink.
+- The ownership proof resolves absolute fallback roots and prefixed relative paths without double-prefixing the database root.
 - PR2 adds the bounded physical raw inventory and capture circuit breaker as an additive extension to
   the retention metrics ledger; it preserves the existing proxy, archive, and structured-record
   contracts while exposing fail-closed storage health through System Status.
