@@ -5999,11 +5999,27 @@ fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<Stri
     add_path(path);
     let absolute_root =
         fallback_root.map(|root| std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()));
+    if let Some(root) = fallback_root
+        && !Path::new(path).is_absolute()
+        && let Ok(relative) = Path::new(path).strip_prefix(root)
+    {
+        add_path(&relative.to_string_lossy());
+    }
     if let Some(root) = absolute_root.as_deref() {
         let path = Path::new(path);
         if path.is_absolute() {
+            if let Ok(cwd) = std::env::current_dir()
+                && let Ok(relative) = path.strip_prefix(cwd)
+            {
+                add_path(&relative.to_string_lossy());
+            }
             if let Ok(relative) = path.strip_prefix(root) {
                 add_path(&relative.to_string_lossy());
+                if let Some(fallback_root) = fallback_root
+                    && !fallback_root.is_absolute()
+                {
+                    add_path(&fallback_root.join(relative).to_string_lossy());
+                }
             }
         } else {
             let cwd_absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
@@ -7305,6 +7321,29 @@ mod retention_write_budget_tests {
         assert!(aliases.contains(&absolute_path.to_string_lossy().into_owned()));
         assert!(aliases.contains(&absolute_compressed_path.to_string_lossy().into_owned()));
         assert!(aliases.contains(&cwd_relative_path.to_string_lossy().into_owned()));
+
+        let prefixed_aliases = raw_path_ledger_aliases(
+            "relative-database/proxy_raw_payloads/sample.bin",
+            Some(Path::new("relative-database")),
+        );
+        assert!(prefixed_aliases.contains(&"proxy_raw_payloads/sample.bin".to_string()));
+        assert!(prefixed_aliases.contains(&"proxy_raw_payloads/sample.bin.gz".to_string()));
+
+        let absolute_prefixed_path =
+            std::path::absolute("relative-database/proxy_raw_payloads/sample.bin")
+                .expect("resolve absolute prefixed raw path");
+        let absolute_prefixed_aliases = raw_path_ledger_aliases(
+            &absolute_prefixed_path.to_string_lossy(),
+            Some(Path::new("relative-database")),
+        );
+        assert!(
+            absolute_prefixed_aliases
+                .contains(&"relative-database/proxy_raw_payloads/sample.bin".to_string())
+        );
+        assert!(
+            absolute_prefixed_aliases
+                .contains(&"relative-database/proxy_raw_payloads/sample.bin.gz".to_string())
+        );
     }
 
     #[test]
