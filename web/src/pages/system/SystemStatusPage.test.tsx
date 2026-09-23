@@ -421,6 +421,7 @@ describe("SystemStatusPage", () => {
     expect(pageText).toContain("保留写入健康状态");
     expect(pageText).toContain("已延后");
     expect(pageText).toContain("4 / 16 KB");
+    expect(pageText).toContain("raw 引用确认 -");
     expect(pageText).toContain("pressure_cooldown:30000ms");
   });
 });

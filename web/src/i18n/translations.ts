@@ -1785,7 +1785,7 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionWrite": "Retention write health",
     "system.status.runtimePressure.retentionTransaction": "Retention transaction rows / estimate",
     "system.status.runtimePressure.retentionTransactionHint":
-      "wait {{wait}}ms, execute {{execute}}ms, commit {{commit}}ms, admission {{fairness}}.",
+      "wait {{wait}}ms, execute {{execute}}ms, commit {{commit}}ms, raw reference {{reference}}, admission {{fairness}}.",
     "system.status.runtimePressure.retentionBudget": "Retention budget breaches / pending hint",
     "system.status.runtimePressure.retentionBudgetHint":
       "prepare {{prepare}}ms, starvation {{starvation}}ms, P1 waiters {{p1}}.",
@@ -5009,7 +5009,7 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionWrite": "保留写入健康状态",
     "system.status.runtimePressure.retentionTransaction": "保留事务行数 / 估算写入",
     "system.status.runtimePressure.retentionTransactionHint":
-      "等待 {{wait}}ms，执行 {{execute}}ms，提交 {{commit}}ms，准入 {{fairness}}。",
+      "等待 {{wait}}ms，执行 {{execute}}ms，提交 {{commit}}ms，raw 引用确认 {{reference}}，准入 {{fairness}}。",
     "system.status.runtimePressure.retentionBudget": "保留预算越线 / 待处理提示",
     "system.status.runtimePressure.retentionBudgetHint":
       "准备 {{prepare}}ms，饥饿 {{starvation}}ms，P1 等待者 {{p1}}。",
