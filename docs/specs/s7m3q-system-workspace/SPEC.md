@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- [ADR 0016: Autonomous raw capture circuit breaker](../../adr/0016-autonomous-raw-capture-circuit-breaker.md)
+
 ## 背景 / 问题陈述
 
 - 顶层 `设置` 当前同时承载系统级配置、forward proxy 诊断与运行信息，信息架构已经过载。
@@ -15,7 +19,7 @@
 - 把顶层 `设置` 升级为顶层 `系统` 工作区，采用左侧导航、右侧子路由出口的两栏布局。
 - 在 `系统` 下稳定提供 `状态 / 任务 / 设置 / 代理` 四个子界面。
 - 新增系统状态读接口，展示调用成功数、非成功数、归档 body 数量/体积、raw payload 总量/体积、request raw payload、response raw payload、数据库体积、其他文件体积，并按 60 秒轮询刷新。
-- raw payload 指标读取持久快照；首次升级或 retention 后通过 additive `rawMetricsHealth=preparing|ready|deferred|error` 明确盘点状态。ready 后状态读取不得查询全部 raw path 或逐文件读取元数据。
+- raw payload 指标读取持久快照；首次升级或 retention 后通过 additive `rawMetricsHealth=preparing|ready|deferred|error|unknown` 与 `physicalCoverage=partial|unknown` 明确盘点状态和覆盖范围。ready 后状态读取不得查询全部 raw path 或逐文件读取元数据。
 - `GET /api/system/status` additive 暴露 `runtimePressureHealth`，覆盖 Dashboard producer、request semantic pipeline、RSS/Swap 与 writer accounting；该 health 只读取内存计数器，不得新增状态页 SQL。
 - `GET /api/system/status` 的完整响应由启动 hydration 与后台维护的 last-good 内存快照提供；请求路径在 cache miss、TTL 到期或刷新失败时不得执行 SQLite、`Path::exists`、文件 metadata 或目录扫描。后台刷新最长间隔为 60 秒；last-good 仅在该 freshness 边界内可服务，超过边界使用端点 unavailable 契约。
 - 新增系统后台任务记录读接口，至少覆盖 scheduler、retention/archive（含 raw compression 摘要）、startup backfill、forward-proxy subscription refresh。
@@ -79,22 +83,23 @@
   - 数据库体积
   - 其他文件体积
 - MUST 采用“顶部总览 + 下方分组”信息架构，而不是把所有指标平铺成同权大卡片：
-  - 顶部全宽 `实际磁盘占用总览`
+  - 顶部全宽 `已追踪项目存储总览`
   - 下方 `数据库记录概况`
   - 下方 `归档与逻辑体量`
-- `实际磁盘占用总览` MUST 以 `archivedBodies.bytes + rawBodies.bytes + databaseBytes + otherFilesBytes` 作为主读数，并展示 `raw / archive / database / other` 四项 breakdown。
-- `实际磁盘占用总览` MUST 在主读数旁直接展示总量公式，明确 `当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件`。
+- `已追踪项目存储总览` MUST 以 `archivedBodies.bytes + rawBodies.bytes + databaseBytes + otherFilesBytes` 作为主读数，并展示 `raw / archive / database / other` 四项 breakdown；其中 raw bytes 为可空值。
+- `已追踪项目存储总览` MUST 在主读数旁直接展示总量公式，明确 `已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件`，并说明这不是完整物理文件系统总量。
+- 当 `rawMetricsHealth.state` 不是 `ready`、raw bytes 为 `null` 或 `physicalCoverage` 不是 `complete` 时，页面 MUST 将 raw 与顶部总量显示为 `未知` 或带有 `受限` 标记，绝不能把缺失值渲染为 `0 B`，也不能使用“实际磁盘占用”表述。
 - `数据库记录概况` MUST 至少展示 `live invocations / 调用成功数 / 调用非成功数 / 已完成归档批次数`。
 - `归档与逻辑体量` MUST 至少展示 `已归档 body 数量 / 已归档 body 体积`，并明确 archive 体积已计入顶部项目磁盘总量。
 - MUST 每 60 秒自动刷新一次，并显示“上次刷新时间 / 刷新中”状态。
 - “非成功数”按 `status != success` 统计，包含失败与未完成状态；页面文案需明确这是系统口径。
 - “已归档 body” 在首版按 `archive_batches.dataset='codex_invocations' AND status='completed'` 的归档调用行数 / 归档文件实际大小统计。
-- “raw payload” 在首版按 live `codex_invocations.request_raw_path` 与 `codex_invocations.response_raw_path` 的实际文件路径统计，字节数按磁盘上实际文件大小汇总，数量按去重后的实际文件数统计。
-- `raw payload` 总量等于 request 与 response 两侧去重后的实际文件集合并集。
-- 页面 MUST 把 `raw payload` 总量显式标成“并集总量”，并把 request / response 显式标成“侧向拆分”。
-- 页面 MUST 明确说明 request / response 体积只用于解释分布，不能直接相加回 `raw payload` 总量。
+- “raw payload” 在首版按持久化增量快照中的已关联 `codex_invocations.request_raw_path` 与 `codex_invocations.response_raw_path` 统计，字节数按已追踪文件大小汇总，数量按去重后的已追踪文件数统计。
+- `raw payload` 总量等于 request 与 response 两侧去重后的已追踪文件集合并集；未关联的物理 raw 残留不在此口径内。
+- 页面 MUST 把 `raw payload` 总量显式标成“并集总量”，把 request / response 显式标成“侧向拆分”，并在 raw 指标旁显示 `已验证`、`受限` 或 `未知` 覆盖状态。
+- 页面 MUST 明确说明 request / response 体积只用于解释分布，不能直接相加回 `raw payload` 总量，也不代表完整物理 raw 存储。
 - `raw payload 聚焦` 区域 MUST 采用“总量卡 + request 行 + response 行”的稳定层级，不得在窄列内把 request / response 拆分再次并排压成四张等权小卡片。
-- `实际磁盘占用总览` MUST 先顺序展示主读数、四项 breakdown、再展示 `raw payload 聚焦`，不得让左右并排的上半区形成明显未承载信息的大面积留白。
+- `已追踪项目存储总览` MUST 先顺序展示主读数、四项 breakdown、再展示 `raw payload 聚焦`，不得让左右并排的上半区形成明显未承载信息的大面积留白。
 - `live invocations` 在首版按 `codex_invocations` 当前 live 行数统计。
 - `已完成归档批次数` 在首版按 `archive_batches.dataset='codex_invocations' AND status='completed'` 的批次数统计。
 - `body` 仅作为 UI 文案保留；长期术语以 `raw payload` 为准。
@@ -170,7 +175,6 @@
   viewport_strategy: explicit_browser_viewport
   sensitive_exclusion: N/A
   submission_gate: owner-approved
-  PR: none
   evidence_note: raw payload 指标处于 `preparing` 时，页面保留可用统计值，明确说明后台盘点且不在请求中扫描文件。
   snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-raw-metrics-preparing-browser-viewport.png`
 - source_type: storybook_canvas
@@ -181,7 +185,6 @@
   viewport_strategy: explicit_browser_viewport
   sensitive_exclusion: N/A
   submission_gate: owner-approved
-  PR: none
   evidence_note: raw payload 指标处于 `ready` 时，页面明确显示指标已由写侧维护，状态读取不触发文件扫描。
   snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-raw-metrics-ready-browser-viewport.png`
 - source_type: storybook_canvas
@@ -192,7 +195,7 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: owner-approved
-- evidence_note: 验证状态页已改为“实际磁盘占用总览 + 数据库记录概况 + 归档与逻辑体量”三段结构，并把项目级磁盘总量公式直接贴在主读数旁。
+- evidence_note: 验证状态页已改为“实际磁盘占用总览 + 数据库记录概况 + 归档与逻辑体量”三段结构；项目级磁盘公式、未知条件和物理占用边界合并为主读数下的一段自然说明。
   snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-grouped-layout.png`
 - source_type: storybook_canvas
   story_id_or_title: System/SystemWorkspace/StatusRequestHeavy
@@ -237,7 +240,7 @@
 
 ## 风险 / 开放问题 / 假设
 
-- 风险：`raw payload` 需要同时覆盖 request / response 两侧，并用去重后的真实磁盘文件口径解释总量；request / response 拆分与总量并非同一去重口径，页面必须明确说明。
+- 风险：`raw payload` 只能覆盖已关联的 request / response 文件集合，不能证明物理 raw store 没有未关联残留；页面必须持续区分已追踪字节与未知物理余量。
 - 风险：后台任务已有多种内部子步骤，首版任务记录只保留可读摘要，不扩展成完整事件流。
 - 假设：状态页采用前端 60 秒轮询足以满足系统观察需求，不新增 SSE。
 

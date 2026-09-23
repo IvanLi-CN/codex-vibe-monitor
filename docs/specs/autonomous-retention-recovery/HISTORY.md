@@ -4,6 +4,7 @@
 
 ## Lifecycle / Compatibility
 
+- The additive System Status storage view distinguishes tracked linked-file bytes from unknown physical raw-store coverage; older clients may ignore `physicalCoverage`, while newer clients fail closed for missing raw bytes.
 - This active topic extends, rather than replaces, `9aucy-db-retention-archive`: that topic continues to own the baseline retention tiers, archive/rollup contract, and normal maintenance admission.
 - Existing deployments retain per-payload `PROXY_RAW_MAX_BYTES` behavior. The new breaker is an aggregate-store policy and adds an explicit structured omission reason when it suppresses raw capture.
 - System-status additions are additive. Existing clients may ignore them without changing proxy or structured invocation behavior.

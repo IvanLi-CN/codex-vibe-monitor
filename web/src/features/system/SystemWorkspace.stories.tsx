@@ -53,7 +53,11 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   responseRawBodies: { count: 670, bytes: 8_000_000_000 },
   databaseBytes: 618_659_840,
   otherFilesBytes: 142_344_192,
-  rawMetricsHealth: { state: "ready", inventoryCursor: 128_076 },
+  rawMetricsHealth: {
+    state: "ready",
+    inventoryCursor: 128_076,
+    physicalCoverage: "partial",
+  },
   projectionHealth: {
     terminal: {
       state: "healthy",
@@ -527,13 +531,14 @@ export const Status: Story = {
       "aria-current",
       "page",
     );
-    await expect(canvas.getByText("实际磁盘占用总览")).toBeVisible();
+    await expect(canvas.getByText("已追踪项目存储总览")).toBeVisible();
     await expect(canvas.getByText("数据库记录概况")).toBeVisible();
     await expect(
       canvas.getByText(
-        "当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。",
+        "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点未知时，总量也未知。",
       ),
     ).toBeVisible();
+    await expect(canvas.getByTestId("system-status-overview")).toHaveTextContent("受限");
     await expect(canvas.getByTestId("system-status-request-raw-breakdown")).toBeVisible();
     await expect(canvas.getByTestId("system-status-response-raw-breakdown")).toBeVisible();
     await expect(canvas.getAllByText("侧向拆分")).toHaveLength(2);
@@ -933,7 +938,11 @@ export const StatusRequestHeavy: Story = {
       archivedBodies: { count: 118_420, bytes: 649_117_696 },
       databaseBytes: 5_261_484_032,
       otherFilesBytes: 8_806,
-      rawMetricsHealth: { state: "preparing", inventoryCursor: 64_000 },
+      rawMetricsHealth: {
+        state: "preparing",
+        inventoryCursor: 64_000,
+        physicalCoverage: "unknown",
+      },
       projectionHealth: {
         terminal: {
           state: "dirty_last_good",
@@ -955,9 +964,9 @@ export const StatusRequestHeavy: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("system-status-overview")).toBeVisible();
-    await expect(canvas.getByText("raw payload 总量")).toBeVisible();
-    await expect(canvas.getByText("request 侧 raw payload")).toBeVisible();
-    await expect(canvas.getByText("response 侧 raw payload")).toBeVisible();
+    await expect(canvas.getByText("已追踪 raw payload 总量")).toBeVisible();
+    await expect(canvas.getByText("已追踪 request 侧 raw payload")).toBeVisible();
+    await expect(canvas.getByText("已追踪 response 侧 raw payload")).toBeVisible();
     await expect(canvas.getByText("并集总量")).toBeVisible();
     await expect(canvas.getAllByText("侧向拆分")).toHaveLength(2);
     await expect(canvas.getByTestId("system-status-request-raw-breakdown")).toHaveTextContent(
@@ -966,12 +975,78 @@ export const StatusRequestHeavy: Story = {
     await expect(canvas.getByTestId("system-status-response-raw-breakdown")).toHaveTextContent(
       "670",
     );
-    await expect(canvas.getByText("64 GB")).toBeVisible();
-    await expect(canvas.getByText("5.5 GB")).toBeVisible();
+    const overview = canvas.getByTestId("system-status-overview");
+    await expect(overview).toHaveTextContent("未知");
+    await expect(overview).not.toHaveTextContent("0 B");
+    await expect(overview).toHaveTextContent(
+      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+    );
     await userEvent.click(canvas.getByText("投影详情"));
     await expect(canvas.getByText("writer_pressure")).toBeVisible();
     await expect(canvas.getByText("2")).toBeVisible();
   },
+};
+
+type RawInventoryUnavailableState = "preparing" | "deferred" | "error" | "unknown";
+
+function rawInventoryUnavailableStatus(state: RawInventoryUnavailableState): SystemStatusResponse {
+  return {
+    ...STORYBOOK_SYSTEM_STATUS,
+    rawBodies: { ...STORYBOOK_SYSTEM_STATUS.rawBodies, bytes: 0 },
+    requestRawBodies: { ...STORYBOOK_SYSTEM_STATUS.requestRawBodies, bytes: 0 },
+    responseRawBodies: { ...STORYBOOK_SYSTEM_STATUS.responseRawBodies, bytes: 0 },
+    rawMetricsHealth: {
+      state,
+      inventoryCursor: 64_000,
+      physicalCoverage: "unknown",
+    },
+  };
+}
+
+function rawInventoryUnavailablePlay(message: string) {
+  return async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+    const canvas = within(canvasElement);
+    const overview = await canvas.findByTestId("system-status-overview");
+    await expect(overview).toBeVisible();
+    await expect(overview).toHaveTextContent("已追踪项目存储总览");
+    await expect(overview).toHaveTextContent("未知");
+    await expect(overview).not.toHaveTextContent("0 B");
+    await expect(overview).toHaveTextContent(message);
+  };
+}
+
+export const StatusRawInventoryPreparing: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("preparing") },
+  play: rawInventoryUnavailablePlay(
+    "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+  ),
+};
+
+export const StatusRawInventoryDeferred: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("deferred") },
+  play: rawInventoryUnavailablePlay(
+    "数据库压力较高，Raw payload 盘点已延后；raw 字节数和项目总量保持未知。",
+  ),
+};
+
+export const StatusRawInventoryError: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("error") },
+  play: rawInventoryUnavailablePlay(
+    "Raw payload 盘点需要恢复；恢复覆盖前，raw 字节数和项目总量保持未知。",
+  ),
+};
+
+export const StatusRawInventoryUnknown: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("unknown") },
+  play: rawInventoryUnavailablePlay("Raw payload 盘点覆盖范围未知；raw 字节数和项目总量保持未知。"),
 };
 
 export const Tasks: Story = {

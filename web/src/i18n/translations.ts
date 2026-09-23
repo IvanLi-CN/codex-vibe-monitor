@@ -1636,32 +1636,34 @@ const baseTranslations = {
     "system.status.lastRefreshed": "Last refreshed: {{at}}",
     "system.status.lastRefreshedEmpty": "Waiting for first refresh",
     "system.status.definition":
-      "Non-success count includes every recorded invocation whose status is not `success`, including failed and unfinished terminal outcomes. Project disk usage combines archive, raw payload, database, and other runtime files.",
+      "Non-success count includes every recorded invocation whose status is not `success`, including failed and unfinished terminal outcomes. Tracked project storage combines the currently tracked archive, raw payload, database, and other runtime files; incomplete raw inventory keeps the total unknown.",
     "system.status.rawPayloadDefinition":
-      "Raw payload total is the de-duplicated request + response file union. Request and response values stay side-specific, so they explain the split but do not add back up to the union total.",
-    "system.status.summary.projectDiskLabel": "Current project disk usage",
+      "Tracked raw payload bytes come from the persisted inventory of linked request + response files. Request and response values explain the split; they do not add back up to the union, and untracked physical raw files are outside this view.",
+    "system.status.summary.projectDiskLabel": "Tracked project storage",
     "system.status.summary.projectDiskHint":
-      "This is project-owned runtime storage, not the whole server filesystem.",
-    "system.status.summary.projectDiskFormula":
-      "Project footprint = raw payload union + archive + database + other runtime files.",
+      "Tracked project storage = tracked raw inventory + archive + database + other runtime files. The total stays unknown until tracked raw and archive bytes are available, and it never represents the full physical filesystem.",
+    "system.status.storage.unknown": "Unknown",
+    "system.status.storage.limited": "Limited",
+    "system.status.storage.verified": "Verified",
     "system.status.metric.bytesLabel": "Bytes",
     "system.status.metric.countLabel": "Count",
     "system.status.metric.unionBadge": "Union total",
     "system.status.metric.splitBadge": "Side split",
-    "system.status.sections.diskOverviewTitle": "Actual disk usage overview",
+    "system.status.sections.diskOverviewTitle": "Tracked project storage overview",
     "system.status.sections.diskOverviewDescription":
-      "Lead with the current project footprint, then explain where the bytes are coming from.",
+      "Lead with the bytes this service can verify, then show whether raw inventory covers the physical store.",
     "system.status.sections.rawPayloadFocusTitle": "Raw payload focus",
     "system.status.sections.rawPayloadFocusDescription":
-      "Keep the real on-disk raw payload total and the request/response split together for quick attribution.",
+      "Keep tracked raw inventory beside its coverage state; runtime pressure retains live physical capture telemetry.",
     "system.status.sections.databaseRecordsTitle": "Database record overview",
     "system.status.sections.databaseRecordsDescription":
       "Track live invocation rows and completed archive batches so the counts have a clear source.",
     "system.status.sections.archiveLogicalTitle": "Archive and logical volume",
     "system.status.sections.archiveLogicalDescription":
       "Use archived body counts and archive footprint to understand what the archive currently represents.",
-    "system.status.breakdown.rawPayloadBytes": "Raw payload footprint",
-    "system.status.breakdown.rawPayloadBytesHint": "Unique request + response raw files on disk.",
+    "system.status.breakdown.rawPayloadBytes": "Tracked raw payload",
+    "system.status.breakdown.rawPayloadBytesHint":
+      "Persisted bytes for linked request + response files only; unlinked physical raw files are not covered.",
     "system.status.breakdown.archiveBytes": "Archive footprint",
     "system.status.breakdown.archiveBytesHint": "Completed invocation archive files on disk.",
     "system.status.breakdown.databaseBytes": "Database footprint",
@@ -1685,34 +1687,35 @@ const baseTranslations = {
     "system.status.cards.archivedBodiesBytes": "Archived body size",
     "system.status.cards.archivedBodiesBytesHint":
       "Current on-disk archive footprint for completed invocation batches. Included in project disk usage.",
-    "system.status.cards.rawBodiesCount": "Raw payloads",
-    "system.status.cards.rawBodiesCountHint":
-      "Unique on-disk request + response raw payload files.",
-    "system.status.cards.rawBodiesBytes": "Raw payload total",
+    "system.status.cards.rawBodiesCount": "Tracked raw payloads",
+    "system.status.cards.rawBodiesCountHint": "Unique linked request + response raw payload files.",
+    "system.status.cards.rawBodiesBytes": "Tracked raw payload total",
     "system.status.cards.rawBodiesBytesHint":
-      "De-duplicated on-disk bytes for the request + response raw payload file union.",
+      "Persisted bytes for the linked request + response raw-file union. This is not a full physical raw-store total.",
     "system.status.rawMetrics.preparing":
-      "Raw payload metrics are being prepared in the background. Values will become complete without scanning files from this page.",
+      "Raw payload inventory is still being prepared. Raw bytes and the project total remain unknown until coverage is ready.",
     "system.status.rawMetrics.ready":
-      "Raw payload metrics are ready and maintained from the write side.",
+      "Raw payload inventory is ready for the linked-file set; unlinked physical raw files remain outside this total.",
     "system.status.rawMetrics.deferred":
-      "Raw payload metrics inventory is deferred while database pressure is elevated.",
+      "Raw payload inventory is deferred under database pressure. Raw bytes and the project total remain unknown.",
     "system.status.rawMetrics.error":
-      "Raw payload metrics inventory needs recovery; the last known values are retained.",
-    "system.status.cards.requestRawBodiesCount": "Request raw payloads",
+      "Raw payload inventory needs recovery. Raw bytes and the project total remain unknown until coverage is restored.",
+    "system.status.rawMetrics.unknown":
+      "Raw payload inventory coverage is unknown. Raw bytes and the project total remain unknown.",
+    "system.status.cards.requestRawBodiesCount": "Tracked request raw payloads",
     "system.status.cards.requestRawBodiesCountHint":
-      "Unique request-side raw payload files on disk.",
-    "system.status.cards.requestRawBodiesBytes": "Request-side raw payload",
+      "Unique linked request-side raw payload files.",
+    "system.status.cards.requestRawBodiesBytes": "Tracked request-side raw payload",
     "system.status.cards.requestRawBodiesBytesHint":
-      "Request-side on-disk bytes. This split explains where the union total comes from, but it is not re-deduplicated for addition.",
+      "Tracked request-side bytes. This split explains the union, but it is not re-deduplicated for addition and excludes unlinked physical files.",
     "system.status.cards.requestRawBodiesSplitHint":
       "Use this side split to understand why request is heavy.",
-    "system.status.cards.responseRawBodiesCount": "Response raw payloads",
+    "system.status.cards.responseRawBodiesCount": "Tracked response raw payloads",
     "system.status.cards.responseRawBodiesCountHint":
-      "Unique response-side raw payload files on disk.",
-    "system.status.cards.responseRawBodiesBytes": "Response-side raw payload",
+      "Unique linked response-side raw payload files.",
+    "system.status.cards.responseRawBodiesBytes": "Tracked response-side raw payload",
     "system.status.cards.responseRawBodiesBytesHint":
-      "Response-side on-disk bytes. This split explains where the union total comes from, but it is not re-deduplicated for addition.",
+      "Tracked response-side bytes. This split explains the union, but it is not re-deduplicated for addition and excludes unlinked physical files.",
     "system.status.cards.responseRawBodiesSplitHint":
       "Use this side split to understand why response is heavy.",
     "system.status.cards.databaseBytes": "Database size",
@@ -4867,33 +4870,34 @@ const baseTranslations = {
     "system.status.lastRefreshed": "上次刷新：{{at}}",
     "system.status.lastRefreshedEmpty": "等待首次刷新",
     "system.status.definition":
-      "非成功数按所有 `status != success` 的调用记录统计，包含失败和未完成的终态记录。当前项目磁盘占用按 archive、raw payload、数据库和其他运行文件合并统计。",
+      "非成功数按所有 `status != success` 的调用记录统计，包含失败和未完成的终态记录。已追踪项目存储按当前可追踪的 archive、raw payload、数据库和其他运行文件合并统计；raw 盘点不完整时，项目总量保持未知。",
     "system.status.rawPayloadDefinition":
-      "raw payload 总量按 request + response 去重文件并集统计；request / response 体积只用于解释侧向分布，不能直接相加回总量。",
-    "system.status.summary.projectDiskLabel": "当前项目磁盘占用",
+      "raw payload 只按已持久化盘点的 request + response 关联文件统计；request / response 只解释侧向分布，不能直接相加回并集，未关联的物理 raw 残留不在此视图内。",
+    "system.status.summary.projectDiskLabel": "已追踪项目存储",
     "system.status.summary.projectDiskHint":
-      "这里只统计当前项目运行存储，不代表 101 整机文件系统总占用。",
-    "system.status.summary.projectDiskFormula":
-      "当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。",
+      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积未知时总量保持未知，也不代表完整物理文件系统占用。",
+    "system.status.storage.unknown": "未知",
+    "system.status.storage.limited": "受限",
+    "system.status.storage.verified": "已验证",
     "system.status.metric.bytesLabel": "体积",
     "system.status.metric.countLabel": "数量",
     "system.status.metric.unionBadge": "并集总量",
     "system.status.metric.splitBadge": "侧向拆分",
-    "system.status.sections.diskOverviewTitle": "实际磁盘占用总览",
+    "system.status.sections.diskOverviewTitle": "已追踪项目存储总览",
     "system.status.sections.diskOverviewDescription":
-      "先确认当前项目实际占了多少磁盘，再快速判断占用主要来自哪一类运行产物。",
+      "先展示服务能够验证的项目存储，再标明 raw 盘点是否覆盖物理存储。",
     "system.status.sections.rawPayloadFocusTitle": "raw payload 聚焦",
     "system.status.sections.rawPayloadFocusDescription":
-      "把 raw payload 总量与 request / response 拆分放在一起，方便直接解释为什么 request 或 response 偏大。",
+      "把已追踪 raw 盘点与覆盖状态放在一起；运行压力区域保留实时物理捕获遥测。",
     "system.status.sections.databaseRecordsTitle": "数据库记录概况",
     "system.status.sections.databaseRecordsDescription":
       "用 live invocation 行数和已完成归档批次数解释当前数据库与归档记录的来源。",
     "system.status.sections.archiveLogicalTitle": "归档与逻辑体量",
     "system.status.sections.archiveLogicalDescription":
       "用已归档 body 数量和 archive 当前体积理解归档规模；archive 体积已计入上方项目磁盘总量。",
-    "system.status.breakdown.rawPayloadBytes": "raw payload 占用",
+    "system.status.breakdown.rawPayloadBytes": "已追踪 raw payload",
     "system.status.breakdown.rawPayloadBytesHint":
-      "去重后的 request + response raw payload 文件磁盘占用。",
+      "仅为已关联 request + response 文件的持久盘点；未关联的物理 raw 残留不在口径内。",
     "system.status.breakdown.archiveBytes": "archive 占用",
     "system.status.breakdown.archiveBytesHint": "已完成 invocation archive 文件的磁盘占用。",
     "system.status.breakdown.databaseBytes": "数据库占用",
@@ -4915,27 +4919,32 @@ const baseTranslations = {
     "system.status.cards.archivedBodiesBytes": "已归档 body 体积",
     "system.status.cards.archivedBodiesBytesHint":
       "当前已完成 invocation archive 的磁盘占用，已计入上方项目磁盘总量。",
-    "system.status.cards.rawBodiesCount": "raw payload 数量",
-    "system.status.cards.rawBodiesCountHint": "去重后的 request + response raw payload 文件数。",
-    "system.status.cards.rawBodiesBytes": "raw payload 总量",
+    "system.status.cards.rawBodiesCount": "已追踪 raw payload 数量",
+    "system.status.cards.rawBodiesCountHint": "已关联的 request + response raw 文件数。",
+    "system.status.cards.rawBodiesBytes": "已追踪 raw payload 总量",
     "system.status.cards.rawBodiesBytesHint":
-      "request + response raw payload 去重并集后的磁盘实测字节数。",
+      "已关联 request + response raw 文件并集的持久盘点字节数，不是完整物理 raw 存储总量。",
     "system.status.rawMetrics.preparing":
-      "Raw payload 指标正在后台建立；页面不会扫描文件，完成后数值会自动完整。",
-    "system.status.rawMetrics.ready": "Raw payload 指标已就绪，并由写侧持续维护。",
-    "system.status.rawMetrics.deferred": "数据库压力较高，Raw payload 指标盘点已延后。",
-    "system.status.rawMetrics.error": "Raw payload 指标盘点需要恢复，当前保留最近一次有效数值。",
-    "system.status.cards.requestRawBodiesCount": "request raw payload 数量",
-    "system.status.cards.requestRawBodiesCountHint": "去重后的 request 侧 raw payload 文件数。",
-    "system.status.cards.requestRawBodiesBytes": "request 侧 raw payload",
+      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+    "system.status.rawMetrics.ready":
+      "Raw payload 已完成关联文件盘点；未关联的物理 raw 残留仍不在此总量内。",
+    "system.status.rawMetrics.deferred":
+      "数据库压力较高，Raw payload 盘点已延后；raw 字节数和项目总量保持未知。",
+    "system.status.rawMetrics.error":
+      "Raw payload 盘点需要恢复；恢复覆盖前，raw 字节数和项目总量保持未知。",
+    "system.status.rawMetrics.unknown":
+      "Raw payload 盘点覆盖范围未知；raw 字节数和项目总量保持未知。",
+    "system.status.cards.requestRawBodiesCount": "已追踪 request raw payload 数量",
+    "system.status.cards.requestRawBodiesCountHint": "已关联的 request 侧 raw payload 文件数。",
+    "system.status.cards.requestRawBodiesBytes": "已追踪 request 侧 raw payload",
     "system.status.cards.requestRawBodiesBytesHint":
-      "request 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
+      "已追踪 request 侧字节数，只用于解释并集分布，不代表再次去重后的可加总量，也不含未关联物理文件。",
     "system.status.cards.requestRawBodiesSplitHint": "用这个侧向拆分判断为什么 request 偏大。",
-    "system.status.cards.responseRawBodiesCount": "response raw payload 数量",
-    "system.status.cards.responseRawBodiesCountHint": "去重后的 response 侧 raw payload 文件数。",
-    "system.status.cards.responseRawBodiesBytes": "response 侧 raw payload",
+    "system.status.cards.responseRawBodiesCount": "已追踪 response raw payload 数量",
+    "system.status.cards.responseRawBodiesCountHint": "已关联的 response 侧 raw payload 文件数。",
+    "system.status.cards.responseRawBodiesBytes": "已追踪 response 侧 raw payload",
     "system.status.cards.responseRawBodiesBytesHint":
-      "response 侧 raw payload 的磁盘实测字节数，只用于解释分布，不代表再次去重后的可加总量。",
+      "已追踪 response 侧字节数，只用于解释并集分布，不代表再次去重后的可加总量，也不含未关联物理文件。",
     "system.status.cards.responseRawBodiesSplitHint": "用这个侧向拆分判断为什么 response 偏大。",
     "system.status.cards.databaseBytes": "数据库体积",
     "system.status.cards.databaseBytesHint": "当前 SQLite 数据库文件大小。",

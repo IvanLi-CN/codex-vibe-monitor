@@ -98,7 +98,7 @@ describe("SystemStatusPage", () => {
       responseRawBodies: { count: 3, bytes: 2_048 },
       databaseBytes: 2_048,
       otherFilesBytes: 8_192,
-      rawMetricsHealth: { state: "ready", inventoryCursor: 6 },
+      rawMetricsHealth: { state: "ready", inventoryCursor: 6, physicalCoverage: "partial" },
       projectionHealth: {
         terminal: {
           state: "healthy",
@@ -149,17 +149,22 @@ describe("SystemStatusPage", () => {
     expect(host?.textContent ?? "").toContain("运行压力：未知");
     expect(host?.textContent ?? "").toContain("这些字段不会为状态刷新新增 SQLite 查询");
     expect(host?.querySelector('[data-testid="system-status-raw-metrics-health"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("Raw payload 指标已就绪，并由写侧持续维护。");
+    expect(host?.textContent ?? "").toContain(
+      "Raw payload 已完成关联文件盘点；未关联的物理 raw 残留仍不在此总量内。",
+    );
     expect(host?.textContent ?? "").toContain("修复中");
     expect(host?.querySelector('[data-testid="system-status-records-section"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-archive-section"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("实际磁盘占用总览");
+    expect(host?.textContent ?? "").toContain("已追踪项目存储总览");
     expect(host?.textContent ?? "").toContain("数据库记录概况");
     expect(host?.textContent ?? "").toContain("归档与逻辑体量");
-    expect(host?.textContent ?? "").toContain("当前项目磁盘占用");
+    expect(host?.textContent ?? "").toContain("已追踪项目存储");
     expect(host?.textContent ?? "").toContain(
-      "当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。",
+      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积未知时总量保持未知，也不代表完整物理文件系统占用。",
     );
+    expect(
+      host?.querySelectorAll('[data-testid="system-status-project-disk-formula"]'),
+    ).toHaveLength(1);
     expect(host?.textContent ?? "").toContain("并集总量");
     expect(host?.textContent ?? "").toContain("侧向拆分");
     expect(host?.textContent ?? "").toContain("live invocations");
@@ -195,7 +200,7 @@ describe("SystemStatusPage", () => {
         "",
     ).toContain("3");
     expect(host?.textContent ?? "").toContain(
-      "raw payload 总量按 request + response 去重文件并集统计；request / response 体积只用于解释侧向分布，不能直接相加回总量。",
+      "raw payload 只按已持久化盘点的 request + response 关联文件统计；request / response 只解释侧向分布，不能直接相加回并集，未关联的物理 raw 残留不在此视图内。",
     );
 
     await act(async () => {
@@ -204,6 +209,57 @@ describe("SystemStatusPage", () => {
     });
 
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps raw and project storage unknown while inventory is preparing", async () => {
+    apiMocks.fetchSystemStatus.mockResolvedValueOnce({
+      liveInvocationsCount: 6,
+      successCount: 3,
+      nonSuccessCount: 3,
+      completedArchiveBatchesCount: 2,
+      archivedBodies: { count: 9, bytes: 4_096 },
+      rawBodies: { count: 5, bytes: 0 },
+      requestRawBodies: { count: 2, bytes: 0 },
+      responseRawBodies: { count: 3, bytes: 0 },
+      databaseBytes: 2_048,
+      otherFilesBytes: 8_192,
+      rawMetricsHealth: {
+        state: "preparing",
+        inventoryCursor: 0,
+        physicalCoverage: "unknown",
+      },
+      projectionHealth: {
+        terminal: {
+          state: "healthy",
+          cursorLag: 0,
+          dirtyBucketCount: 0,
+          pendingEventCount: 0,
+        },
+        longTerm: {
+          state: "healthy",
+          cursorLag: 0,
+          dirtyBucketCount: 0,
+          pendingEventCount: 0,
+        },
+      },
+      refreshedAt: "2026-06-22T08:00:00Z",
+    });
+
+    renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const overviewText =
+      host?.querySelector('[data-testid="system-status-overview"]')?.textContent ?? "";
+    expect(overviewText).toContain("已追踪项目存储");
+    expect(overviewText).toContain("未知");
+    expect(overviewText).not.toContain("0 B");
+    expect(overviewText).not.toContain("实际磁盘");
+    expect(overviewText).toContain(
+      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+    );
   });
 
   it("keeps missing event bus and backfill diagnostics visibly unknown", async () => {
@@ -218,7 +274,7 @@ describe("SystemStatusPage", () => {
       responseRawBodies: { count: 3, bytes: 2_048 },
       databaseBytes: 2_048,
       otherFilesBytes: 8_192,
-      rawMetricsHealth: { state: "ready", inventoryCursor: 6 },
+      rawMetricsHealth: { state: "ready", inventoryCursor: 6, physicalCoverage: "partial" },
       projectionHealth: {
         terminal: {
           state: "healthy",

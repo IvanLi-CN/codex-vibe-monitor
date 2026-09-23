@@ -14,8 +14,9 @@ const RETENTION_RECOVERY_STAGES = new Set([
   "status_refresh",
 ]);
 
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
+function formatBytes(value: number | null | undefined, unknownLabel = "Unknown"): string {
+  if (value == null || !Number.isFinite(value)) return unknownLabel;
+  if (value <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let current = value;
   let index = 0;
@@ -51,9 +52,10 @@ type MetricCellProps = {
   hint?: string;
   tone?: "default" | "primary" | "secondary";
   badge?: string;
+  badges?: string[];
 };
 
-function MetricCell({ title, value, hint, tone = "default", badge }: MetricCellProps) {
+function MetricCell({ title, value, hint, tone = "default", badge, badges }: MetricCellProps) {
   const toneClass =
     tone === "primary"
       ? "text-primary"
@@ -64,11 +66,16 @@ function MetricCell({ title, value, hint, tone = "default", badge }: MetricCellP
     <div className="metric-cell h-full">
       <div className="flex flex-wrap items-center gap-2">
         <div className="metric-label normal-case tracking-normal">{title}</div>
-        {badge ? (
-          <Chip size="compact" tone="secondary" className="px-2 text-[11px] font-semibold">
-            {badge}
+        {[badge, ...(badges ?? [])].filter(Boolean).map((label) => (
+          <Chip
+            key={label}
+            size="compact"
+            tone="secondary"
+            className="px-2 text-[11px] font-semibold"
+          >
+            {label}
           </Chip>
-        ) : null}
+        ))}
       </div>
       <div className={`metric-value mt-2 text-2xl tabular-nums sm:text-3xl ${toneClass}`}>
         {value}
@@ -85,9 +92,11 @@ type BreakdownRowProps = {
   value: string;
   hint?: string;
   valueTitle?: string;
+  badge?: string;
+  badges?: string[];
 };
 
-function BreakdownRow({ label, value, hint, valueTitle }: BreakdownRowProps) {
+function BreakdownRow({ label, value, hint, valueTitle, badge, badges }: BreakdownRowProps) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
       <div className="min-w-0">
@@ -96,13 +105,25 @@ function BreakdownRow({ label, value, hint, valueTitle }: BreakdownRowProps) {
           <div className="mt-1 text-xs leading-relaxed text-base-content/65">{hint}</div>
         ) : null}
       </div>
-      <div
-        className={`text-right text-lg font-semibold tabular-nums text-base-content sm:text-xl ${
-          valueTitle ? "max-w-[55%] break-words" : "shrink-0"
-        }`}
-        title={valueTitle}
-      >
-        {value}
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        {[badge, ...(badges ?? [])].filter(Boolean).map((label) => (
+          <Chip
+            key={label}
+            size="compact"
+            tone="secondary"
+            className="px-2 text-[11px] font-semibold"
+          >
+            {label}
+          </Chip>
+        ))}
+        <div
+          className={`text-right text-lg font-semibold tabular-nums text-base-content sm:text-xl ${
+            valueTitle ? "max-w-[55%] break-words" : "shrink-0"
+          }`}
+          title={valueTitle}
+        >
+          {value}
+        </div>
       </div>
     </div>
   );
@@ -112,6 +133,7 @@ type PairedMetricProps = {
   title: string;
   testId?: string;
   badge?: string;
+  badges?: string[];
   summary?: string;
   bytesLabel: string;
   bytesValue: string;
@@ -126,6 +148,7 @@ function PairedMetric({
   title,
   testId,
   badge,
+  badges,
   summary,
   bytesLabel,
   bytesValue,
@@ -142,11 +165,16 @@ function PairedMetric({
     >
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-sm font-semibold text-base-content">{title}</div>
-        {badge ? (
-          <Chip size="compact" tone="secondary" className="px-2 text-[11px] font-semibold">
-            {badge}
+        {[badge, ...(badges ?? [])].filter(Boolean).map((label) => (
+          <Chip
+            key={label}
+            size="compact"
+            tone="secondary"
+            className="px-2 text-[11px] font-semibold"
+          >
+            {label}
           </Chip>
-        ) : null}
+        ))}
       </div>
       {summary ? (
         <p className="mt-2 max-w-[44ch] text-xs leading-relaxed text-base-content/65">{summary}</p>
@@ -173,12 +201,30 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
         ? t("system.status.rawMetrics.deferred")
         : rawMetricsState === "error"
           ? t("system.status.rawMetrics.error")
-          : t("system.status.rawMetrics.preparing");
+          : rawMetricsState === "unknown"
+            ? t("system.status.rawMetrics.unknown")
+            : rawMetricsState === "preparing"
+              ? t("system.status.rawMetrics.preparing")
+              : t("system.status.rawMetrics.unknown");
+  const rawBodiesBytes = rawMetricsState === "ready" ? status.rawBodies.bytes : null;
+  const requestRawBodiesBytes = rawMetricsState === "ready" ? status.requestRawBodies.bytes : null;
+  const responseRawBodiesBytes =
+    rawMetricsState === "ready" ? status.responseRawBodies.bytes : null;
+  const rawCoverage =
+    rawBodiesBytes == null
+      ? "unknown"
+      : status.rawMetricsHealth.physicalCoverage === "complete"
+        ? "verified"
+        : "limited";
+  const rawCoverageLabel = t(`system.status.storage.${rawCoverage}`);
+  const unknownBytesLabel = t("system.status.storage.unknown");
   const projectDiskBytes =
-    status.archivedBodies.bytes +
-    status.rawBodies.bytes +
-    status.databaseBytes +
-    status.otherFilesBytes;
+    rawBodiesBytes == null || status.archivedBodies.bytes == null
+      ? null
+      : status.archivedBodies.bytes +
+        rawBodiesBytes +
+        status.databaseBytes +
+        status.otherFilesBytes;
 
   return (
     <section className="surface-panel overflow-hidden" data-testid="system-status-overview">
@@ -191,32 +237,35 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
         </div>
 
         <div className="rounded-xl border border-primary/20 bg-primary/8 px-5 py-5">
-          <div className="text-sm font-semibold text-primary">
-            {t("system.status.summary.projectDiskLabel")}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-semibold text-primary">
+              {t("system.status.summary.projectDiskLabel")}
+            </div>
+            <Chip size="compact" tone="secondary" className="px-2 text-[11px] font-semibold">
+              {rawCoverageLabel}
+            </Chip>
           </div>
           <div className="mt-2 text-4xl font-semibold tracking-tight tabular-nums text-base-content sm:text-5xl">
-            {formatBytes(projectDiskBytes)}
+            {formatBytes(projectDiskBytes, unknownBytesLabel)}
           </div>
-          <p className="mt-3 max-w-[60ch] text-sm leading-relaxed text-base-content/72">
-            {t("system.status.summary.projectDiskHint")}
-          </p>
           <p
-            className="mt-3 max-w-[65ch] text-xs font-medium leading-relaxed text-base-content/75"
+            className="mt-3 max-w-full text-sm leading-relaxed text-base-content/72"
             data-testid="system-status-project-disk-formula"
           >
-            {t("system.status.summary.projectDiskFormula")}
+            {t("system.status.summary.projectDiskHint")}
           </p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <BreakdownRow
             label={t("system.status.breakdown.rawPayloadBytes")}
-            value={formatBytes(status.rawBodies.bytes)}
+            value={formatBytes(rawBodiesBytes, unknownBytesLabel)}
             hint={t("system.status.breakdown.rawPayloadBytesHint")}
+            badge={rawCoverageLabel}
           />
           <BreakdownRow
             label={t("system.status.breakdown.archiveBytes")}
-            value={formatBytes(status.archivedBodies.bytes)}
+            value={formatBytes(status.archivedBodies.bytes, unknownBytesLabel)}
             hint={t("system.status.breakdown.archiveBytesHint")}
           />
           <BreakdownRow
@@ -241,10 +290,11 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
           <div className="mt-5 grid gap-3 xl:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:items-start">
             <MetricCell
               title={t("system.status.cards.rawBodiesBytes")}
-              value={formatBytes(status.rawBodies.bytes)}
+              value={formatBytes(rawBodiesBytes, unknownBytesLabel)}
               hint={t("system.status.cards.rawBodiesBytesHint")}
               tone="primary"
               badge={t("system.status.metric.unionBadge")}
+              badges={[rawCoverageLabel]}
             />
             <div className="grid gap-3 xl:grid-cols-2">
               <PairedMetric
@@ -253,10 +303,11 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
                 badge={t("system.status.metric.splitBadge")}
                 summary={t("system.status.cards.requestRawBodiesSplitHint")}
                 bytesLabel={t("system.status.metric.bytesLabel")}
-                bytesValue={formatBytes(status.requestRawBodies.bytes)}
+                bytesValue={formatBytes(requestRawBodiesBytes, unknownBytesLabel)}
                 countLabel={t("system.status.metric.countLabel")}
                 countValue={status.requestRawBodies.count.toLocaleString()}
                 tone="secondary"
+                badges={[rawCoverageLabel]}
               />
               <PairedMetric
                 title={t("system.status.cards.responseRawBodiesBytes")}
@@ -264,9 +315,10 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
                 badge={t("system.status.metric.splitBadge")}
                 summary={t("system.status.cards.responseRawBodiesSplitHint")}
                 bytesLabel={t("system.status.metric.bytesLabel")}
-                bytesValue={formatBytes(status.responseRawBodies.bytes)}
+                bytesValue={formatBytes(responseRawBodiesBytes, unknownBytesLabel)}
                 countLabel={t("system.status.metric.countLabel")}
                 countValue={status.responseRawBodies.count.toLocaleString()}
+                badges={[rawCoverageLabel]}
               />
             </div>
           </div>
@@ -939,7 +991,7 @@ export default function SystemStatusPage() {
         },
         {
           title: t("system.status.cards.archivedBodiesBytes"),
-          value: formatBytes(status.archivedBodies.bytes),
+          value: formatBytes(status.archivedBodies.bytes, t("system.status.storage.unknown")),
           hint: t("system.status.cards.archivedBodiesBytesHint"),
           tone: "secondary" as const,
         },

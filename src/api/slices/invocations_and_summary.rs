@@ -42686,7 +42686,15 @@ mod request_compression_query_tests {
                 url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
             )
             .await;
-            let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+            use chrono::Datelike;
+
+            let historical_at = Utc::now() - ChronoDuration::days(3);
+            let historical_at = if historical_at.weekday() == chrono::Weekday::Sun {
+                historical_at - ChronoDuration::hours(12)
+            } else {
+                historical_at
+            };
+            let historical_at = db_occurred_at_lower_bound(historical_at);
             sqlx::query(
                 "WITH RECURSIVE rows(value) AS (\
                      SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1\

@@ -1962,7 +1962,11 @@ function systemStatus() {
     responseRawBodies: { count: 670, bytes: 8_000_000 },
     databaseBytes: 618_659_840,
     otherFilesBytes: 142_344_192,
-    rawMetricsHealth: { state: "ready", inventoryCursor: 128_076 },
+    rawMetricsHealth: {
+      state: "ready",
+      inventoryCursor: 128_076,
+      physicalCoverage: "partial",
+    },
     projectionHealth: {
       terminal: {
         state: "healthy",

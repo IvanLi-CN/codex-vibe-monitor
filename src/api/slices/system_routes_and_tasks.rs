@@ -25,7 +25,7 @@ const SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE: i64 = 128;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemStatusMetric {
     pub(crate) count: u64,
-    pub(crate) bytes: u64,
+    pub(crate) bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -49,12 +49,24 @@ pub(crate) struct SystemProjectionHealth {
     pub(crate) long_term: SystemProjectionConsumerHealth,
 }
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemRawMetricsHealth {
     pub(crate) state: String,
     pub(crate) inventory_cursor: i64,
     pub(crate) updated_age_ms: Option<u64>,
+    pub(crate) physical_coverage: String,
+}
+
+impl Default for SystemRawMetricsHealth {
+    fn default() -> Self {
+        Self {
+            state: "unknown".to_string(),
+            inventory_cursor: 0,
+            updated_age_ms: None,
+            physical_coverage: RAW_METRICS_PHYSICAL_COVERAGE_UNKNOWN.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -140,6 +152,43 @@ pub(crate) struct SystemStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) runtime_pressure_health: Option<SystemRuntimePressureHealth>,
     pub(crate) refreshed_at: String,
+}
+
+const RAW_METRICS_PHYSICAL_COVERAGE_PARTIAL: &str = "partial";
+const RAW_METRICS_PHYSICAL_COVERAGE_UNKNOWN: &str = "unknown";
+
+fn normalize_raw_metrics_state(state: &str) -> String {
+    match state {
+        "ready" | "preparing" | "deferred" | "error" | "unknown" => state.to_string(),
+        "resetting" => "preparing".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn raw_metrics_physical_coverage(display_state: &str, inventory_state: &str) -> String {
+    if display_state == "ready" && inventory_state == "ready" {
+        RAW_METRICS_PHYSICAL_COVERAGE_PARTIAL.to_string()
+    } else {
+        RAW_METRICS_PHYSICAL_COVERAGE_UNKNOWN.to_string()
+    }
+}
+
+fn raw_metrics_bytes_if_ready(
+    display_state: &str,
+    inventory_state: &str,
+    bytes: i64,
+) -> Option<u64> {
+    (display_state == "ready" && inventory_state == "ready").then_some(bytes.max(0) as u64)
+}
+
+fn apply_raw_metrics_display_contract(response: &mut SystemStatusResponse) {
+    if response.raw_metrics_health.state != "ready" {
+        response.raw_bodies.bytes = None;
+        response.request_raw_bodies.bytes = None;
+        response.response_raw_bodies.bytes = None;
+        response.raw_metrics_health.physical_coverage =
+            RAW_METRICS_PHYSICAL_COVERAGE_UNKNOWN.to_string();
+    }
 }
 
 fn runtime_pressure_state(
@@ -610,7 +659,12 @@ pub(crate) fn add_existing_raw_payload_bytes(
         return;
     }
     metric.count = metric.count.saturating_add(1);
-    metric.bytes = metric.bytes.saturating_add(count_file_size(&candidate));
+    metric.bytes = Some(
+        metric
+            .bytes
+            .unwrap_or_default()
+            .saturating_add(count_file_size(&candidate)),
+    );
 }
 
 pub(crate) fn collect_existing_raw_payload_metrics(
@@ -1420,8 +1474,13 @@ pub(crate) async fn set_system_raw_metrics_health_override(
     }
     cache.raw_metrics_health_override = override_state.clone();
     if let Some(latest) = cache.latest.as_mut() {
-        latest.response.raw_metrics_health.state =
-            override_state.unwrap_or_else(|| latest.raw_metrics_inventory_state.clone());
+        let display_state = override_state
+            .as_deref()
+            .unwrap_or(&latest.raw_metrics_inventory_state);
+        let display_state = normalize_raw_metrics_state(display_state);
+        latest.response.raw_metrics_health.state = display_state.clone();
+        latest.response.raw_metrics_health.physical_coverage =
+            raw_metrics_physical_coverage(&display_state, &latest.raw_metrics_inventory_state);
     }
 }
 
@@ -1681,7 +1740,8 @@ async fn load_system_status_snapshot_uncached(
             .await
             .raw_metrics_health_override
             .clone()
-            .unwrap_or_else(|| raw_metrics.inventory_state.clone()))
+            .map(|state| normalize_raw_metrics_state(&state))
+            .unwrap_or_else(|| normalize_raw_metrics_state(&raw_metrics.inventory_state)))
     })
     .await?;
 
@@ -1734,19 +1794,31 @@ async fn load_system_status_snapshot_uncached(
                 .max(0) as u64,
             archived_bodies: SystemStatusMetric {
                 count: archived.archived_count.unwrap_or(0).max(0) as u64,
-                bytes: filesystem_bytes.archive_bytes,
+                bytes: Some(filesystem_bytes.archive_bytes),
             },
             raw_bodies: SystemStatusMetric {
                 count: raw_metrics.raw_count.max(0) as u64,
-                bytes: raw_metrics.raw_bytes.max(0) as u64,
+                bytes: raw_metrics_bytes_if_ready(
+                    &raw_metrics_state,
+                    &raw_metrics.inventory_state,
+                    raw_metrics.raw_bytes,
+                ),
             },
             request_raw_bodies: SystemStatusMetric {
                 count: raw_metrics.request_raw_count.max(0) as u64,
-                bytes: raw_metrics.request_raw_bytes.max(0) as u64,
+                bytes: raw_metrics_bytes_if_ready(
+                    &raw_metrics_state,
+                    &raw_metrics.inventory_state,
+                    raw_metrics.request_raw_bytes,
+                ),
             },
             response_raw_bodies: SystemStatusMetric {
                 count: raw_metrics.response_raw_count.max(0) as u64,
-                bytes: raw_metrics.response_raw_bytes.max(0) as u64,
+                bytes: raw_metrics_bytes_if_ready(
+                    &raw_metrics_state,
+                    &raw_metrics.inventory_state,
+                    raw_metrics.response_raw_bytes,
+                ),
             },
             database_bytes: filesystem_bytes.database_bytes,
             other_files_bytes: filesystem_bytes.other_files_bytes,
@@ -1783,9 +1855,13 @@ async fn load_system_status_snapshot_uncached(
                 },
             },
             raw_metrics_health: SystemRawMetricsHealth {
-                state: raw_metrics_state,
+                state: raw_metrics_state.clone(),
                 inventory_cursor: raw_metrics.inventory_cursor,
                 updated_age_ms: None,
+                physical_coverage: raw_metrics_physical_coverage(
+                    &raw_metrics_state,
+                    &raw_metrics.inventory_state,
+                ),
             },
             runtime_pressure_health: Some(runtime_pressure_health),
             refreshed_at: format_utc_iso(Utc::now()),
@@ -1822,6 +1898,8 @@ pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<System
             metrics_source = "system_status_memory_snapshot",
             snapshot_age_ms, "serving system status from last-good memory snapshot"
         );
+        let mut response = response;
+        apply_raw_metrics_display_contract(&mut response);
         return Ok(response);
     }
 
@@ -1953,7 +2031,10 @@ async fn publish_system_status_snapshot(
         // completed filesystem scan cannot publish a stale snapshot.
         ensure_system_status_snapshot_refresh_active(cancellation, deadline)?;
         if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
-            response.raw_metrics_health.state = override_state.to_string();
+            let display_state = normalize_raw_metrics_state(override_state);
+            response.raw_metrics_health.state = display_state.clone();
+            response.raw_metrics_health.physical_coverage =
+                raw_metrics_physical_coverage(&display_state, &raw_metrics_inventory_state);
         }
         cache.latest = Some(SystemStatusCacheEntry {
             cached_at: Instant::now(),

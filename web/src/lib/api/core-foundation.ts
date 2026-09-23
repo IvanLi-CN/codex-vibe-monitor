@@ -2224,7 +2224,7 @@ export interface SettingsPayload {
 
 export interface SystemStatusMetric {
   count: number;
-  bytes: number;
+  bytes: number | null;
 }
 
 export interface SystemProjectionConsumerHealth {
@@ -2248,6 +2248,7 @@ export interface SystemRawMetricsHealth {
   state: string;
   inventoryCursor: number;
   updatedAgeMs?: number;
+  physicalCoverage?: "complete" | "partial" | "unknown";
 }
 
 export interface RuntimePressureProcessHealth {
@@ -4441,7 +4442,7 @@ function normalizeSystemStatusMetric(raw: unknown): SystemStatusMetric {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
     count: normalizeFiniteNumber(payload.count) ?? 0,
-    bytes: normalizeFiniteNumber(payload.bytes) ?? 0,
+    bytes: normalizeFiniteNumber(payload.bytes) ?? null,
   };
 }
 
@@ -4472,10 +4473,21 @@ function normalizeSystemProjectionHealth(raw: unknown): SystemProjectionHealth {
 
 function normalizeSystemRawMetricsHealth(raw: unknown): SystemRawMetricsHealth {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const state =
+    typeof payload.state === "string" &&
+    ["ready", "preparing", "deferred", "error", "unknown"].includes(payload.state)
+      ? payload.state
+      : "unknown";
+  const physicalCoverage = ["complete", "partial", "unknown"].includes(
+    payload.physicalCoverage as string,
+  )
+    ? (payload.physicalCoverage as "complete" | "partial" | "unknown")
+    : "unknown";
   return {
-    state: typeof payload.state === "string" ? payload.state : "preparing",
+    state,
     inventoryCursor: normalizeFiniteNumber(payload.inventoryCursor) ?? 0,
     updatedAgeMs: normalizeFiniteNumber(payload.updatedAgeMs) ?? undefined,
+    physicalCoverage: state === "ready" ? physicalCoverage : "unknown",
   };
 }
 
@@ -4731,19 +4743,28 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
 
 function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const rawMetricsHealth = normalizeSystemRawMetricsHealth(payload.rawMetricsHealth);
+  const rawBodies = normalizeSystemStatusMetric(payload.rawBodies);
+  const requestRawBodies = normalizeSystemStatusMetric(payload.requestRawBodies);
+  const responseRawBodies = normalizeSystemStatusMetric(payload.responseRawBodies);
+  if (rawMetricsHealth.state !== "ready") {
+    rawBodies.bytes = null;
+    requestRawBodies.bytes = null;
+    responseRawBodies.bytes = null;
+  }
   return {
     liveInvocationsCount: normalizeFiniteNumber(payload.liveInvocationsCount) ?? 0,
     successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
     nonSuccessCount: normalizeFiniteNumber(payload.nonSuccessCount) ?? 0,
     completedArchiveBatchesCount: normalizeFiniteNumber(payload.completedArchiveBatchesCount) ?? 0,
     archivedBodies: normalizeSystemStatusMetric(payload.archivedBodies),
-    rawBodies: normalizeSystemStatusMetric(payload.rawBodies),
-    requestRawBodies: normalizeSystemStatusMetric(payload.requestRawBodies),
-    responseRawBodies: normalizeSystemStatusMetric(payload.responseRawBodies),
+    rawBodies,
+    requestRawBodies,
+    responseRawBodies,
     databaseBytes: normalizeFiniteNumber(payload.databaseBytes) ?? 0,
     otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
     projectionHealth: normalizeSystemProjectionHealth(payload.projectionHealth),
-    rawMetricsHealth: normalizeSystemRawMetricsHealth(payload.rawMetricsHealth),
+    rawMetricsHealth,
     runtimePressureHealth: normalizeRuntimePressureHealth(payload.runtimePressureHealth),
     refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };
