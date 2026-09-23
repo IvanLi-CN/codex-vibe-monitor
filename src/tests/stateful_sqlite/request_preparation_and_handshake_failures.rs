@@ -1450,6 +1450,39 @@ fn parse_usage_value_preserves_reported_cache_write_tokens() {
 }
 
 #[test]
+fn parse_stream_response_payload_preserves_exact_cache_write_from_prior_usage_event() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"input_tokens":1000,"output_tokens":0,"total_tokens":1000,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":250}}}}"#,
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"id":"resp_test","model":"gpt-6-sol","status":"completed","usage":{"input_tokens":1000,"output_tokens":100,"total_tokens":1100,"input_tokens_details":{"cached_tokens":300}}}}"#,
+    ]
+    .join("\n");
+
+    let parsed = parse_stream_response_payload(raw.as_bytes());
+
+    assert_eq!(parsed.usage.input_tokens, Some(1_000));
+    assert_eq!(parsed.usage.output_tokens, Some(100));
+    assert_eq!(parsed.usage.reported_cache_write_tokens, Some(250));
+    assert!(parsed.usage_missing_reason.is_none());
+}
+
+#[test]
+fn parse_stream_response_payload_accepts_later_exact_cache_write_zero() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"input_tokens":1000,"output_tokens":0,"total_tokens":1000,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":250}}}}"#,
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"id":"resp_test","model":"gpt-6-sol","status":"completed","usage":{"input_tokens":1000,"output_tokens":100,"total_tokens":1100,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":0}}}}"#,
+    ]
+    .join("\n");
+
+    let parsed = parse_stream_response_payload(raw.as_bytes());
+
+    assert_eq!(parsed.usage.reported_cache_write_tokens, Some(0));
+}
+
+#[test]
 fn parse_stream_response_payload_extracts_terminal_failure_details() {
     let raw = [
         "event: response.created",
@@ -1845,6 +1878,61 @@ fn estimate_gpt_6_uses_exact_cache_write_long_context_and_output_rate_for_reason
         assert!((long.output - (1_000.0 * output_price * 1.5 / 1_000_000.0)).abs() < 1e-12);
         assert!((long.reasoning - (200.0 * output_price * 1.5 / 1_000_000.0)).abs() < 1e-12);
     }
+}
+
+#[test]
+fn estimate_explicit_cache_split_uses_exact_cache_write_for_existing_models() {
+    let catalog = default_pricing_catalog();
+
+    for (reported_cache_write_tokens, expected_input_tokens, expected_write_tokens) in
+        [(300, 500, 300), (0, 800, 0)]
+    {
+        let usage = ParsedUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(100),
+            cache_input_tokens: Some(200),
+            reported_cache_write_tokens: Some(reported_cache_write_tokens),
+            reasoning_tokens: Some(0),
+            total_tokens: Some(1_100),
+        };
+        let (breakdown, estimated, _) = estimate_proxy_cost_breakdown(
+            &catalog,
+            Some("gpt-5.6-sol"),
+            &usage,
+            None,
+            ProxyPricingMode::ResponseTier,
+        );
+        let breakdown = breakdown.expect("exact cache-write cost exists");
+
+        assert!(estimated);
+        assert!(
+            (breakdown.input - (expected_input_tokens as f64 * 5.0 / 1_000_000.0)).abs() < 1e-12
+        );
+        assert!(
+            (breakdown.cache_write - (expected_write_tokens as f64 * 6.25 / 1_000_000.0)).abs()
+                < 1e-12
+        );
+        assert!((breakdown.cache_read - (200.0 * 0.5 / 1_000_000.0)).abs() < 1e-12);
+        assert!((breakdown.output - (100.0 * 30.0 / 1_000_000.0)).abs() < 1e-12);
+    }
+
+    let inconsistent_usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(100),
+        cache_input_tokens: Some(200),
+        reported_cache_write_tokens: Some(801),
+        reasoning_tokens: Some(0),
+        total_tokens: Some(1_100),
+    };
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.6-sol"),
+        &inconsistent_usage,
+        None,
+        ProxyPricingMode::ResponseTier,
+    );
+    assert!(cost.is_none());
+    assert!(!estimated);
 }
 
 #[test]

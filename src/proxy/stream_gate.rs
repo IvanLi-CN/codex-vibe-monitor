@@ -804,7 +804,10 @@ impl StreamResponsePayloadParser {
                         self.service_tier_rank = rank;
                     }
                 }
-                if let Some(parsed_usage) = extract_usage_from_payload(&value) {
+                if let Some(mut parsed_usage) = extract_usage_from_payload(&value) {
+                    parsed_usage.reported_cache_write_tokens = parsed_usage
+                        .reported_cache_write_tokens
+                        .or(self.usage.reported_cache_write_tokens);
                     self.usage = parsed_usage;
                     self.usage_found = true;
                 }

@@ -445,7 +445,7 @@ pub(crate) fn estimate_proxy_cost_breakdown(
     };
     let non_cached_input_tokens = input_tokens.saturating_sub(billable_cache_tokens);
 
-    let (ordinary_input_tokens, cache_write_tokens) = if official_gpt_6_model {
+    let (ordinary_input_tokens, cache_write_tokens) =
         if let Some(reported_cache_write_tokens) = usage.reported_cache_write_tokens {
             let Some(available_after_cache_read) = usage
                 .input_tokens
@@ -466,10 +466,7 @@ pub(crate) fn estimate_proxy_cost_breakdown(
             )
         } else {
             (0, non_cached_input_tokens)
-        }
-    } else {
-        (0, non_cached_input_tokens)
-    };
+        };
 
     let mut breakdown = if pricing.has_explicit_cache_pricing_split() {
         let cache_write_price = pricing
