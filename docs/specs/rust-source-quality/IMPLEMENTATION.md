@@ -42,8 +42,27 @@ parent explicitly re-exports `hydrate_summary_snapshots`,
 seams through crate-visible test-only re-exports. The parent budget is now
 42,897 physical lines, down from 44,631; the 1,761-line lifecycle module is
 below the 2,500-line production target and is not a selected inventory entry.
-The remaining parent workstream is limited to the summary-projection and
-workflow-detail responsibilities recorded in the policy.
+The remaining parent workstream is limited to the summary-projection
+models/builders and the named dashboard activity/network, summary/history/
+suggestions/stats responsibilities recorded in the policy.
+
+The PR4 source-quality extraction moves the contiguous workflow-detail
+region beginning with the complete `fetch_invocation_pool_attempts`
+definition and ending with the complete `fetch_invocation_request_body`
+definition from `src/api/slices/invocations_and_summary.rs` into
+`src/api/slices/invocations_and_summary/invocation_workflow_detail.rs`. On the
+verified PR3 merge base `29e441c6e01ddda38769b4d3a82c58a36db1154d`, the exact
+boundary is physical lines 2,992 through 5,421 inclusive (2,430 moved lines).
+It contains pool-attempt retrieval, workflow identity/attempt/detail response
+models, hero/timeline construction, upstream-account attempt hydration,
+workflow-detail reads, request/response body row queries, raw-body fallback and
+summary construction, record detail, and the related handlers. The child is
+2,436 physical lines after the crate-visible compatibility adjustments and
+remains below the 2,500-line production target, so it is not an inventory
+entry. The parent budget decreases from 42,897 to exactly 40,532 physical
+lines. The parent keeps explicit crate-visible re-exports for routes,
+subscriptions, sibling slices, and the existing inline tests; no tests or
+resource buckets move.
 
 ## Inventory Contract
 
@@ -82,7 +101,9 @@ No global Clippy pedantic configuration or new dependency is introduced.
 - `bun run verify:rust`
 - `bash .github/scripts/test-quality-gates-contract.sh`
 - Focused existing summary-projection/stateful SQLite coverage and
-  `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+  focused workflow-detail coverage, including
+  `cargo test workflow_usage_audit_only_attaches_to_last_success_like_attempt -- --nocapture`,
+  followed by `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
 - `cargo check --locked --all-targets --all-features`
 - `git diff --check`
 
