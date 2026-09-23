@@ -6041,7 +6041,13 @@ fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<Stri
             add_path(&cwd_absolute.to_string_lossy());
             let relative = fallback_root_relative
                 .as_deref()
-                .and_then(|root_relative| path.strip_prefix(root_relative).ok())
+                .and_then(|root_relative| match path.strip_prefix(root_relative) {
+                    Ok(relative) => Some(relative),
+                    Err(_) => {
+                        add_path(&root_relative.join(path).to_string_lossy());
+                        None
+                    }
+                })
                 .unwrap_or(path);
             let absolute =
                 std::path::absolute(root.join(relative)).unwrap_or_else(|_| root.join(relative));
@@ -7387,6 +7393,10 @@ mod retention_write_budget_tests {
         assert!(
             absolute_fallback_unprefixed_aliases
                 .contains(&absolute_path.to_string_lossy().into_owned())
+        );
+        assert!(
+            absolute_fallback_unprefixed_aliases
+                .contains(&"relative-database/proxy_raw_payloads/sample.bin".to_string())
         );
     }
 
