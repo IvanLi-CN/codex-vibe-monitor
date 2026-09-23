@@ -5999,14 +5999,29 @@ fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<Stri
     add_path(path);
     let absolute_root =
         fallback_root.map(|root| std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()));
-    if let Some(root) = fallback_root
-        && !Path::new(path).is_absolute()
-        && let Ok(relative) = Path::new(path).strip_prefix(root)
-    {
-        add_path(&relative.to_string_lossy());
+    let fallback_root_relative = fallback_root.and_then(|root| {
+        if root.is_absolute() {
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| root.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        } else {
+            Some(root.to_path_buf())
+        }
+    });
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        if let Some(root) = fallback_root_relative.as_deref()
+            && let Ok(relative) = path.strip_prefix(root)
+        {
+            add_path(&relative.to_string_lossy());
+        }
+        if let Some(root) = fallback_root
+            && !root.is_absolute()
+        {
+            add_path(&root.join(path).to_string_lossy());
+        }
     }
     if let Some(root) = absolute_root.as_deref() {
-        let path = Path::new(path);
         if path.is_absolute() {
             if let Ok(cwd) = std::env::current_dir()
                 && let Ok(relative) = path.strip_prefix(cwd)
@@ -6024,7 +6039,12 @@ fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<Stri
         } else {
             let cwd_absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
             add_path(&cwd_absolute.to_string_lossy());
-            let absolute = std::path::absolute(root.join(path)).unwrap_or_else(|_| root.join(path));
+            let relative = fallback_root_relative
+                .as_deref()
+                .and_then(|root_relative| path.strip_prefix(root_relative).ok())
+                .unwrap_or(path);
+            let absolute =
+                std::path::absolute(root.join(relative)).unwrap_or_else(|_| root.join(relative));
             add_path(&absolute.to_string_lossy());
         }
     }
@@ -7343,6 +7363,30 @@ mod retention_write_budget_tests {
         assert!(
             absolute_prefixed_aliases
                 .contains(&"relative-database/proxy_raw_payloads/sample.bin.gz".to_string())
+        );
+
+        let absolute_fallback_prefixed_aliases = raw_path_ledger_aliases(
+            "relative-database/proxy_raw_payloads/sample.bin",
+            Some(&absolute_root),
+        );
+        assert!(
+            absolute_fallback_prefixed_aliases
+                .contains(&"proxy_raw_payloads/sample.bin".to_string())
+        );
+        assert!(
+            absolute_fallback_prefixed_aliases
+                .contains(&"proxy_raw_payloads/sample.bin.gz".to_string())
+        );
+        assert!(
+            absolute_fallback_prefixed_aliases
+                .contains(&absolute_path.to_string_lossy().into_owned())
+        );
+
+        let absolute_fallback_unprefixed_aliases =
+            raw_path_ledger_aliases("proxy_raw_payloads/sample.bin", Some(&absolute_root));
+        assert!(
+            absolute_fallback_unprefixed_aliases
+                .contains(&absolute_path.to_string_lossy().into_owned())
         );
     }
 
