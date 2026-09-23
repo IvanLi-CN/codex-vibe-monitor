@@ -19,6 +19,9 @@
 - PR2 adds the bounded physical raw inventory and capture circuit breaker as an additive extension to
   the retention metrics ledger; it preserves the existing proxy, archive, and structured-record
   contracts while exposing fail-closed storage health through System Status.
+- PR3 adds a bounded, restart-safe raw residual reconciliation stage. It preserves original raw
+  paths during quarantine and releases only candidates with durable identity, owner-reference, and
+  quarantine proof.
 
 ## References
 

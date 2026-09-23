@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add crash-safe autonomous archive recovery, an additive raw-capture circuit contract, and System Status health fields.",
+    "description": "Add crash-safe autonomous archive recovery, bounded historical raw-file reconciliation, an additive raw-capture circuit contract, and System Status health fields.",
     "release_unit_description": "Autonomous retention recovery and raw capture circuit breaker.",
     "affected_contracts": [
       "public-api",
@@ -29,7 +29,7 @@
         "detected": false,
       "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery and rawCapture diagnostics that remain unknown until measured, idempotent recovery tables, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
+      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery and rawCapture diagnostics that remain unknown until measured, idempotent archive/raw reconciliation tables and cursors, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
       "reassessed_at": "2026-09-23T00:00:00+08:00",
       "evidence": [
         "src/api/slices/system_routes_and_tasks.rs",
@@ -44,7 +44,7 @@
       "evidence": [
         "lightweight profile: 1125 passed, including raw-capture restart, generation, and hysteresis regressions",
         "stateful-sqlite profile: 1306 passed, including raw-capture status serialization and schema re-entry",
-        "archive-file-io profile: 269 passed, including raw residual no-enumeration regression, concurrent inventory/reset guards, and retention recovery coverage",
+        "archive-file-io profile: 273 passed, including raw residual no-enumeration regression, concurrent inventory/reset guards, and retention recovery coverage",
         "Web focused units: 10 passed; System Workspace Storybook interactions: 16 passed; typecheck, Biome check, and production build passed",
         "Linux cargo check and Clippy passed with all targets and features; formatting and diff checks passed"
       ]
@@ -60,7 +60,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Prepared archive journal, bounded legacy archive reconciliation cursor, and raw-capture circuit measurements.",
+      "state_description": "Prepared archive journal, bounded legacy and historical-raw reconciliation cursors and raw quarantine ledger, and raw-capture circuit measurements.",
       "source_program_compatibility_range": "Supported earlier v2.71.x database schemas.",
       "evidence": [
       "New tables and raw-capture columns are created with idempotent CREATE TABLE/ALTER TABLE guards.",
@@ -71,7 +71,8 @@
   "release_unit": {
     "member_change_records": [
       "autonomous-retention-recovery-pr1",
-      "autonomous-raw-capture-circuit-breaker-pr2"
+      "autonomous-raw-capture-circuit-breaker-pr2",
+      "historical-raw-file-reconciliation-pr3"
     ],
     "maximum_verified_impact": "patch",
     "calculation_evidence": [

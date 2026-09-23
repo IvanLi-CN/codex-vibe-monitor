@@ -19391,11 +19391,43 @@ async fn build_summary_projection_once(
         if exact_live_admission.overflow.is_some() || !exact_live_admission.gaps.is_empty() {
             // A rolling window whose partial boundary includes this dense hour cannot be exact
             // within the finite record budget. Keep the independently admitted `current` prefix
-            // and unaffected ranges available, while making only this range explicitly
-            // unavailable instead of aborting the complete read-model build.
+            // and unaffected ranges available, while making only the affected candidate buckets
+            // explicitly unavailable instead of aborting the complete read-model build. The
+            // candidate query is ordered newest-first, so an overflow candidate also proves that
+            // every omitted row is at or before its bucket; later empty buckets remain exact.
+            let mut unavailable_ranges = Vec::new();
+            for candidate in &exact_live_admission.gaps {
+                let Some(bucket) = summary_projection_live_candidate_bucket(candidate) else {
+                    unavailable_ranges.push(range);
+                    break;
+                };
+                let (Some(start), Some(end)) = (
+                    Utc.timestamp_opt(bucket, 0).single(),
+                    Utc.timestamp_opt(bucket.saturating_add(3_600), 0).single(),
+                ) else {
+                    unavailable_ranges.push(range);
+                    break;
+                };
+                unavailable_ranges.push(ExactUtcRange { start, end });
+            }
+            if let Some(candidate) = exact_live_admission.overflow.as_ref() {
+                if let Some(end) = summary_projection_live_candidate_bucket(candidate)
+                    .and_then(|bucket| Utc.timestamp_opt(bucket.saturating_add(3_600), 0).single())
+                {
+                    unavailable_ranges.push(ExactUtcRange {
+                        start: range.start,
+                        end: range.end.min(end),
+                    });
+                } else {
+                    unavailable_ranges.push(range);
+                }
+            }
+            if unavailable_ranges.is_empty() {
+                unavailable_ranges.push(range);
+            }
             summary_projection_mark_unavailable_archive_ranges(
                 &mut unavailable_exact_live_buckets,
-                [range],
+                unavailable_ranges,
             )?;
             continue;
         }

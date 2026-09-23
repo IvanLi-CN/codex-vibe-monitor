@@ -2,13 +2,13 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Add durable prepared-archive recovery state, a resumable legacy archive reconciliation cursor, and additive raw-capture circuit state over the bounded physical inventory.",
+    "description": "Add durable prepared-archive recovery state, resumable legacy-archive and historical-raw reconciliation cursors and ledgers, and additive raw-capture circuit state over the bounded physical inventory.",
     "release_unit_description": "Autonomous retention recovery and raw capture circuit breaker.",
     "version_impact": "patch"
   },
   "durable_state": {
-    "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, artifact digest/size, bounded retry/quarantine state, legacy reconciliation cursor, startup raw-path revalidation cursor, recovery-pending hysteresis marker, and additive raw-capture circuit measurements including overflow-spool bytes.",
-    "storage_implementation": "SQLite tables retention_prepared_archives and retention_recovery_cursors plus additive circuit and overflow-spool columns on system_raw_payload_metrics.",
+    "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, artifact digest/size, bounded retry/quarantine state, legacy and raw reconciliation cursors, raw candidate identity/size/quarantine ledger, startup raw-path revalidation cursor, recovery-pending hysteresis marker, and additive raw-capture circuit measurements including overflow-spool bytes.",
+    "storage_implementation": "SQLite tables retention_prepared_archives, retention_recovery_cursors, and retention_raw_reconciliation plus additive circuit and overflow-spool columns on system_raw_payload_metrics.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",
       "to_program_version": "Candidate release from mainline v2.71.23.",
@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "ddl-001",
-        "description": "Idempotently create retention_prepared_archives, its path/due-work indexes, retention_recovery_cursors with the legacy scan cursor, and raw-capture circuit plus overflow-spool columns on system_raw_payload_metrics.",
+        "description": "Idempotently create retention_prepared_archives, its path/due-work indexes, retention_recovery_cursors with legacy and raw scan cursors, retention_raw_reconciliation with its bounded due-work index, and raw-capture circuit plus overflow-spool columns on system_raw_payload_metrics.",
         "order": 1,
         "observable": true,
         "pauseable": true
@@ -29,7 +29,7 @@
     "dml_changes": [
       {
         "id": "dml-001",
-        "description": "Insert and update only bounded prepared archive, retry, quarantine, and cursor rows during normal maintenance.",
+        "description": "Insert and update only bounded prepared archive, retry, raw quarantine, and cursor rows during normal maintenance.",
         "order": 2,
         "depends_on": [
           "ddl-001"
@@ -41,7 +41,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "No startup-wide historical backfill; legacy archive reconciliation advances at most 32 archive files and raw inventory advances at most 128 DB references per maintenance pass.",
+        "description": "No startup-wide historical backfill; legacy archive reconciliation advances at most 32 archive files, raw residual reconciliation advances at most 32 direct files, and raw inventory advances at most 128 DB references per maintenance pass.",
         "order": 3,
         "depends_on": [
           "ddl-001",
@@ -65,7 +65,7 @@
     ],
     "pause_points": [
       "Between idempotent schema creation and maintenance-owned ledger writes.",
-      "Between each maintenance pass of at most 32 legacy archive files and 128 raw inventory references."
+      "Between each maintenance pass of at most 32 legacy archive files, 32 raw residual files, and 128 raw inventory references."
     ]
   },
   "recovery": {
