@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "loc_targets": {
+    "production": 2500,
+    "test_helper": 3000
+  },
+  "files": [
+    {
+      "path": "src/selected.rs",
+      "role": "production",
+      "line_budget": 4,
+      "next_module_workstream": "Keep the selected fixture boundary small while the source checker contract evolves."
+    }
+  ],
+  "suppressions": [
+    {
+      "path": "src/selected.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "The fixture helper is intentionally retained to verify a recorded targeted suppression."
+    }
+  ]
+}

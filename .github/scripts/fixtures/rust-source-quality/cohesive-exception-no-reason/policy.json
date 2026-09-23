@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "loc_targets": {
+    "production": 2500,
+    "test_helper": 3000
+  },
+  "files": [
+    {
+      "path": "src/selected.rs",
+      "role": "production",
+      "line_budget": 1,
+      "cohesive_exception": {
+        "reason": ""
+      }
+    }
+  ],
+  "suppressions": []
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "loc_targets": {
+    "production": 2500,
+    "test_helper": 3000
+  },
+  "files": [
+    {
+      "path": "src/selected.rs",
+      "role": "production",
+      "line_budget": 2,
+      "next_module_workstream": "Keep the selected fixture boundary small while the source checker contract evolves."
+    }
+  ],
+  "suppressions": [
+    {
+      "path": "src/selected.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_variables)]",
+      "reason": "The fixture policy records a different declaration to prove material edits cannot pass silently."
+    }
+  ]
+}

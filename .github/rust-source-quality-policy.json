@@ -1,0 +1,1056 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
+    "production_candidates": 33,
+    "test_helper_candidates": 23,
+    "inventory_entries": 56,
+    "suppression_entries": 117
+  },
+  "loc_targets": {
+    "production": 2500,
+    "test_helper": 3000
+  },
+  "files": [
+    {
+      "path": "src/api/slices/error_distribution_and_sse.rs",
+      "role": "production",
+      "line_budget": 4787,
+      "next_module_workstream": "Split SSE error classification, query assembly, and response projection into bounded modules."
+    },
+    {
+      "path": "src/api/slices/invocations_and_summary.rs",
+      "role": "production",
+      "line_budget": 45660,
+      "next_module_workstream": "Split invocation query, summary projection, and workflow detail routing into dedicated modules."
+    },
+    {
+      "path": "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings.rs",
+      "role": "production",
+      "line_budget": 3980,
+      "next_module_workstream": "Split prompt-cache conversation binding endpoints, hydration, and persistence operations."
+    },
+    {
+      "path": "src/api/slices/prompt_cache_and_timeseries/timeseries.rs",
+      "role": "production",
+      "line_budget": 5853,
+      "next_module_workstream": "Split prompt-cache timeseries query, aggregation, and flush/restart lifecycle."
+    },
+    {
+      "path": "src/api/slices/settings_models_and_cache.rs",
+      "role": "production",
+      "line_budget": 2555,
+      "next_module_workstream": "Split settings model capture, cache persistence, and dashboard projection."
+    },
+    {
+      "path": "src/api/slices/subscriptions.rs",
+      "role": "production",
+      "line_budget": 24000,
+      "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
+    },
+    {
+      "path": "src/api/slices/system_routes_and_tasks.rs",
+      "role": "production",
+      "line_budget": 2990,
+      "next_module_workstream": "Split system routes, task lifecycle, runtime pressure, and filesystem operations."
+    },
+    {
+      "path": "src/app_state.rs",
+      "role": "production",
+      "line_budget": 3083,
+      "next_module_workstream": "Split application state construction, routing caches, dashboard state, and invocation store."
+    },
+    {
+      "path": "src/forward_proxy/slices/storage_and_hourly_stats.rs",
+      "role": "production",
+      "line_budget": 3842,
+      "next_module_workstream": "Split forward-proxy storage, hourly rollup, and persistence support."
+    },
+    {
+      "path": "src/long_term_stats.rs",
+      "role": "production",
+      "line_budget": 18815,
+      "next_module_workstream": "Split long-term statistics projection, archive compatibility, rollups, and refresh lifecycle."
+    },
+    {
+      "path": "src/maintenance/archive/cleanup.rs",
+      "role": "production",
+      "line_budget": 5264,
+      "next_module_workstream": "Split archive cleanup bootstrap, expiry, legacy pruning, snapshot support, and reconciliation."
+    },
+    {
+      "path": "src/maintenance/archive/hourly_rollups.rs",
+      "role": "production",
+      "line_budget": 7189,
+      "next_module_workstream": "Split archive hourly rollup entry, account activity, network, replay, and retention."
+    },
+    {
+      "path": "src/maintenance/hourly_rollups.rs",
+      "role": "production",
+      "line_budget": 4428,
+      "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
+    },
+    {
+      "path": "src/maintenance/retention.rs",
+      "role": "production",
+      "line_budget": 7512,
+      "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
+    },
+    {
+      "path": "src/maintenance/startup_backfill.rs",
+      "role": "production",
+      "line_budget": 3269,
+      "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
+    },
+    {
+      "path": "src/oauth_bridge.rs",
+      "role": "production",
+      "line_budget": 2762,
+      "next_module_workstream": "Split OAuth bridge request rewriting, header forwarding, installation state, and test support."
+    },
+    {
+      "path": "src/proxy/dispatch.rs",
+      "role": "production",
+      "line_budget": 4033,
+      "next_module_workstream": "Split proxy dispatch body capture, streaming, routing, and request entry coordination."
+    },
+    {
+      "path": "src/proxy/failover.rs",
+      "role": "production",
+      "line_budget": 4842,
+      "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
+    },
+    {
+      "path": "src/proxy/payload_utils.rs",
+      "role": "production",
+      "line_budget": 2935,
+      "next_module_workstream": "Split proxy payload normalization, classification, backfill, and CORS helpers."
+    },
+    {
+      "path": "src/proxy/request_entry.rs",
+      "role": "production",
+      "line_budget": 6317,
+      "next_module_workstream": "Split proxy request entry validation, capture, reservation, and response persistence."
+    },
+    {
+      "path": "src/proxy/route_selection.rs",
+      "role": "production",
+      "line_budget": 3634,
+      "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
+    },
+    {
+      "path": "src/proxy/stream_gate.rs",
+      "role": "production",
+      "line_budget": 2744,
+      "next_module_workstream": "Split proxy stream admission, prefix handling, SSE gating, and usage accounting."
+    },
+    {
+      "path": "src/proxy/usage_persistence.rs",
+      "role": "production",
+      "line_budget": 6920,
+      "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
+    },
+    {
+      "path": "src/proxy/websocket.rs",
+      "role": "production",
+      "line_budget": 4856,
+      "next_module_workstream": "Split WebSocket connection, preparation, tunnel, usage, and protocol event handling."
+    },
+    {
+      "path": "src/schema.rs",
+      "role": "production",
+      "line_budget": 6395,
+      "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
+    },
+    {
+      "path": "src/sqlite_batch_writer.rs",
+      "role": "production",
+      "line_budget": 6213,
+      "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
+    },
+    {
+      "path": "src/stats/mod.rs",
+      "role": "production",
+      "line_budget": 5833,
+      "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
+    },
+    {
+      "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
+      "role": "test_helper",
+      "line_budget": 10991,
+      "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
+    },
+    {
+      "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
+      "role": "test_helper",
+      "line_budget": 8232,
+      "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
+    },
+    {
+      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "role": "test_helper",
+      "line_budget": 4141,
+      "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+      "role": "test_helper",
+      "line_budget": 7757,
+      "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
+      "role": "test_helper",
+      "line_budget": 3866,
+      "next_module_workstream": "Split OAuth route rewrite/timeout fixtures by request preparation, response, and failure paths."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
+      "role": "test_helper",
+      "line_budget": 23764,
+      "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
+      "role": "test_helper",
+      "line_budget": 3185,
+      "next_module_workstream": "Split pricing catalog/model passthrough fixtures by catalog, fallback, and accounting cases."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
+      "role": "test_helper",
+      "line_budget": 6302,
+      "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_backfill_and_cost_repairs.rs",
+      "role": "test_helper",
+      "line_budget": 3107,
+      "next_module_workstream": "Split proxy backfill/cost repair fixtures by early/late backfill, rollups, and locks."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
+      "role": "test_helper",
+      "line_budget": 4170,
+      "next_module_workstream": "Split proxy broadcast/runtime harness fixtures by forward-proxy history, settings, and timeseries."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
+      "role": "test_helper",
+      "line_budget": 3617,
+      "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
+      "role": "test_helper",
+      "line_budget": 3691,
+      "next_module_workstream": "Split routing failover/retry fixtures by reservation, retry capture, and failure timing."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_terminal_reasoning.rs",
+      "role": "test_helper",
+      "line_budget": 3671,
+      "next_module_workstream": "Split routing failover terminal-reasoning fixtures by capture route, overload, and timeout."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_timeout_and_overload_failover.rs",
+      "role": "test_helper",
+      "line_budget": 3137,
+      "next_module_workstream": "Split routing timeout/overload fixtures by timeout paths, overload streams, and account rules."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs",
+      "role": "test_helper",
+      "line_budget": 4295,
+      "next_module_workstream": "Split runtime overlay/group-rule fixtures by account rules, capture phases, and fixture upstreams."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
+      "role": "test_helper",
+      "line_budget": 6126,
+      "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
+      "role": "test_helper",
+      "line_budget": 4945,
+      "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
+    },
+    {
+      "path": "src/upstream_accounts/core_runtime_types.rs",
+      "role": "production",
+      "line_budget": 3516,
+      "next_module_workstream": "Split upstream account runtime types, account state, and capability projections."
+    },
+    {
+      "path": "src/upstream_accounts/crud_group_notes.rs",
+      "role": "production",
+      "line_budget": 2717,
+      "next_module_workstream": "Split upstream group note CRUD, validation, and endpoint projection."
+    },
+    {
+      "path": "src/upstream_accounts/oauth_sessions_callbacks.rs",
+      "role": "production",
+      "line_budget": 3500,
+      "next_module_workstream": "Split OAuth session callbacks, mailbox transitions, and account mutation helpers."
+    },
+    {
+      "path": "src/upstream_accounts/routing/selection.rs",
+      "role": "production",
+      "line_budget": 2875,
+      "next_module_workstream": "Split upstream route candidate selection, policy, and route health inputs."
+    },
+    {
+      "path": "src/upstream_accounts/sync_account_imports_tags.rs",
+      "role": "production",
+      "line_budget": 4411,
+      "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
+    },
+    {
+      "path": "src/upstream_accounts/sync_routing_status.rs",
+      "role": "production",
+      "line_budget": 2689,
+      "next_module_workstream": "Split upstream routing status synchronization, health projection, and persistence."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
+      "role": "test_helper",
+      "line_budget": 4464,
+      "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
+      "role": "test_helper",
+      "line_budget": 7130,
+      "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
+      "role": "test_helper",
+      "line_budget": 4471,
+      "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/relogin_duplicates_and_usage_snapshots.rs",
+      "role": "test_helper",
+      "line_budget": 4729,
+      "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt.rs",
+      "role": "test_helper",
+      "line_budget": 3550,
+      "next_module_workstream": "Split upstream resolver concurrency/node-shunt fixtures by core, provisioning, and failures."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "role": "test_helper",
+      "line_budget": 8055,
+      "next_module_workstream": "Split upstream sync cooldown/capability fixtures by recovery, classification, and maintenance."
+    }
+  ],
+  "suppressions": [
+    {
+      "path": "src/api/slices/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Existing internal response adapters preserve established call-site and payload contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/api/slices/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/api/slices/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, clippy::type_complexity, reason = \"Existing internal query adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/api/slices/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/api/slices/prompt_cache_and_timeseries/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Prompt-cache query and hydration adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/api/slices/prompt_cache_and_timeseries/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/api/slices/prompt_cache_and_timeseries/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Timeseries aggregation adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/api/slices/prompt_cache_and_timeseries/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/api/slices/settings_models_and_cache.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/api/slices/settings_models_and_cache.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/api/slices/settings_models_and_cache.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/api/slices/settings_models_and_cache.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/api/slices/settings_models_and_cache.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/api/slices/settings_models_and_cache.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/db_pressure.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/db_pressure.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/forward_proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Forward-proxy statistics adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/forward_proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/long_term_stats.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"The bucket key and invocation timing are kept explicit at this aggregation boundary.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/long_term_stats.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/long_term_stats.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"The bucket key and invocation timing are kept explicit at this aggregation boundary.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/long_term_stats.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/main.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"OAuth bridge adapters preserve upstream request contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/main.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/main.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime shutdown coordination preserves established task handles.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/main.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/main.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::large_enum_variant, reason = \"Batch variants preserve established channel payload ownership.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/main.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/main.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::type_complexity, reason = \"Statistics row tuples mirror persisted query shapes.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/main.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/main.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/main.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/maintenance/archive.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::type_complexity, reason = \"Archive rollup accumulator tuples mirror persisted row shapes.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/maintenance/archive.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/maintenance/retention.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/maintenance/retention.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/maintenance/retention.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/maintenance/retention.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/maintenance/retention.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/maintenance/retention.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/maintenance/retention.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/maintenance/retention.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/dispatch.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/dispatch.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/dispatch.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/dispatch.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/failover.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/failover.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Proxy dispatch adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Failover adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, clippy::large_enum_variant, reason = \"Request-entry variants and adapters preserve established runtime contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Route-selection adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Usage persistence adapters preserve established database call contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"WebSocket preparation adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/payload_utils.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/payload_utils.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/payload_utils.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/raw_capture.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/raw_capture.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/raw_capture.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/raw_capture.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/raw_capture.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/raw_capture.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/raw_capture.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/raw_capture.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/raw_capture.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/raw_capture.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/raw_capture_circuit.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Hydration mirrors the additive durable circuit columns one-for-one.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/raw_capture_circuit.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/raw_capture_circuit.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Hydration mirrors the additive durable circuit columns one-for-one.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/raw_capture_circuit.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/raw_capture_circuit.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Inventory reconciliation carries the bounded scan and generation guards together.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/raw_capture_circuit.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/request_entry.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/request_entry.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/stream_gate.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/stream_gate.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/stream_gate.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/stream_gate.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/stream_gate.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/stream_gate.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/proxy/usage_persistence.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/proxy/usage_persistence.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/runtime.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/runtime.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"The accounting wrapper mirrors the single-writer ownership boundaries.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Flush dependencies mirror the single-writer ownership boundaries.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/sqlite_batch_writer.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Flush dependencies mirror the single-writer ownership boundaries.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/sqlite_batch_writer.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/stats/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::ptr_arg)]",
+      "reason": "Retain this targeted allow for the established pointer-shaped helper API in src/stats/mod.rs; remove it when the listed statistics split preserves an equivalent boundary."
+    },
+    {
+      "path": "src/stats/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::ptr_arg)]",
+      "reason": "Retain this targeted allow for the established pointer-shaped helper API in src/stats/mod.rs; remove it when the listed statistics split preserves an equivalent boundary."
+    },
+    {
+      "path": "src/stats/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::ptr_arg)]",
+      "reason": "Retain this targeted allow for the established pointer-shaped helper API in src/stats/mod.rs; remove it when the listed statistics split preserves an equivalent boundary."
+    },
+    {
+      "path": "src/summary_source_change.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::items_after_test_module)]",
+      "reason": "Retain this targeted allow for the current test placement in src/summary_source_change.rs; remove it when the listed module workstream separates production and test ownership."
+    },
+    {
+      "path": "src/terminal_projection.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::items_after_test_module)]",
+      "reason": "Retain this targeted allow for the current test placement in src/terminal_projection.rs; remove it when the listed module workstream separates production and test ownership."
+    },
+    {
+      "path": "src/tests/archive_file_io/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/tests/archive_file_io/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock reservation logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/archive_file_io/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/tests/lightweight/forward_proxy_config_and_storage.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/tests/lightweight/forward_proxy_config_and_storage.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/lightweight/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/tests/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Test compatibility adapter mirrors the production resolver signature.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/tests/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::type_complexity, reason = \"Test fixture tuples mirror statistics row shapes.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Test insertion helpers mirror persisted prompt-cache fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/tests/stateful_sqlite/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Test insertion helpers mirror persisted rollup fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/tests/stateful_sqlite/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock upstream attempt logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock upstream attempt logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock upstream attempt logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
+      "kind": "allow",
+      "declaration": "#[allow(deprecated)]",
+      "reason": "Retain this targeted allow for the compatibility call sites in src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs; remove it when the listed module workstream removes the deprecated boundary."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unreachable_code)]",
+      "reason": "Retain this targeted allow for the intentional guarded branch in src/tests/stateful_sqlite/routing_failover_retry_budget.rs; remove it when the listed test split isolates that control-flow fixture."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/routing_failover_retry_budget.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unreachable_code)]",
+      "reason": "Retain this targeted allow for the intentional guarded branch in src/tests/stateful_sqlite/routing_failover_retry_budget.rs; remove it when the listed test split isolates that control-flow fixture."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/tests/stateful_sqlite/system_status_and_account_roster.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/core.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::large_enum_variant, reason = \"Imported OAuth job variants preserve established channel payload ownership.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/core.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/core_models_rows.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/core_models_rows.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/core_models_rows.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/core_models_rows.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/core_models_rows.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/core_models_rows.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/core_models_rows.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/core_models_rows.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/core_models_rows.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/core_models_rows.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"OAuth callback persistence adapters mirror session metadata fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/failure_recording.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Temporary model health records retain the complete upstream evidence contract.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/failure_recording.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/failure_recording.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Temporary model health records retain the complete upstream evidence contract.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/failure_recording.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Failure recording adapters mirror persisted event fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Routing selection adapters preserve established call-site contracts.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/model_health.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Structured model route events mirror the persisted event contract.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/model_health.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/model_health.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Model failure evidence and concurrency fencing are one state transition.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/model_health.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/model_health.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Model failure evidence and concurrency fencing are one state transition.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/model_health.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/priority_handoff.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The test guard serializes process-global admission state across async assertions.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/routing/priority_handoff.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/routing/settings_runtime.rs",
+      "kind": "allow",
+      "declaration": "#[allow(deprecated)]",
+      "reason": "Retain this targeted allow for the compatibility call sites in src/upstream_accounts/routing/settings_runtime.rs; remove it when the listed module workstream removes the deprecated boundary."
+    },
+    {
+      "path": "src/upstream_accounts/routing/settings_runtime.rs",
+      "kind": "allow",
+      "declaration": "#[allow(deprecated)]",
+      "reason": "Retain this targeted allow for the compatibility call sites in src/upstream_accounts/routing/settings_runtime.rs; remove it when the listed module workstream removes the deprecated boundary."
+    },
+    {
+      "path": "src/upstream_accounts/routing/sticky_routes.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky clear fencing carries the route identity, generation, and causal attempt metadata.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/sticky_routes.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/sync.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, clippy::type_complexity, reason = \"Group session adapters mirror persisted group metadata and usage row shapes.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/sync.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/sync.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Routing-rule normalization mirrors persisted policy columns.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/sync.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/sync.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Status transition adapters mirror persisted audit fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/sync.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/sync_group_sessions.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/sync_group_sessions.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/sync_mailbox_and_filters.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/sync_mailbox_and_filters.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/sync_mailbox_and_filters.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/sync_mailbox_and_filters.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/sync_mailbox_and_filters.rs",
+      "kind": "allow",
+      "declaration": "#[allow(dead_code)]",
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/upstream_accounts/sync_mailbox_and_filters.rs; remove it when the listed module workstream makes the item reachable."
+    },
+    {
+      "path": "src/upstream_accounts/sync_oauth_crypto_utils.rs",
+      "kind": "allow",
+      "declaration": "#[allow(deprecated)]",
+      "reason": "Retain this targeted allow for the compatibility call sites in src/upstream_accounts/sync_oauth_crypto_utils.rs; remove it when the listed module workstream removes the deprecated boundary."
+    },
+    {
+      "path": "src/upstream_accounts/sync_oauth_crypto_utils.rs",
+      "kind": "allow",
+      "declaration": "#[allow(deprecated)]",
+      "reason": "Retain this targeted allow for the compatibility call sites in src/upstream_accounts/sync_oauth_crypto_utils.rs; remove it when the listed module workstream removes the deprecated boundary."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/archive_file_io/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/tests/archive_file_io/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, clippy::type_complexity, reason = \"Archive compatibility fixtures mirror legacy persisted row shapes.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/tests/archive_file_io/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/tests/lightweight/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/lightweight/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/stateful_sqlite/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"OAuth fixture builders mirror credential and metadata fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/tests/stateful_sqlite/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Usage fixture builders mirror persisted hourly fields.\" )]",
+      "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/tests/stateful_sqlite/mod.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/mod.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"Mock resolver attempt logs intentionally stay locked until async assertions observe requests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/mod.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current argument bundle at src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::await_holding_lock, reason = \"The process-global priority handoff mirror must be isolated from concurrent stateful tests.\" )]",
+      "reason": "Retain this targeted expect declaration for the current module boundary in src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/upstream_accounts/tests/support/mod.rs",
+      "kind": "allow",
+      "declaration": "#[allow(unused_imports)]",
+      "reason": "Retain this targeted allow for conditional test-module imports in src/upstream_accounts/tests/support/mod.rs; remove it when the listed test helper split stabilizes module ownership."
+    }
+  ]
+}

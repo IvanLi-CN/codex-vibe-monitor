@@ -236,11 +236,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cargo fmt check
-        run: cargo fmt --all -- --check
-
-      - name: Cargo clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Rust source quality
+        run: bash .github/scripts/run-rust-source-quality.sh
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -292,11 +289,15 @@ jobs:
             .github/scripts/metadata_gate.py \
             .github/scripts/check_live_quality_gates.py \
             .github/scripts/check_quality_gates_contract.py \
+            .github/scripts/check_rust_source_quality.py \
             .github/scripts/release_snapshot.py \
             .github/scripts/verify_manifest_platforms.py
           bash -n .github/scripts/build-smoke-image-with-retry.sh
           bash -n .github/scripts/run-backend-tests.sh
           bash -n .github/scripts/test-representative-scale-contract.sh
+          bash -n .github/scripts/run-rust-source-quality.sh
+          bash -n .github/scripts/test-rust-source-quality.sh
+          bash .github/scripts/test-rust-source-quality.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
