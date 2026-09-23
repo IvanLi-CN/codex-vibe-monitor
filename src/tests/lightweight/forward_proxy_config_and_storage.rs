@@ -328,6 +328,24 @@ async fn raw_overflow_spool_allows_concurrent_captures_without_preallocating_glo
     }
 }
 
+fn mark_raw_overflow_spool_complete_for_test(spool_dir: &Path) {
+    let mut segments = fs::read_dir(spool_dir)
+        .expect("read overflow spool directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("frames"))
+        .collect::<Vec<_>>();
+    segments.sort();
+    let segment = segments.last().expect("overflow spool segment");
+    let stem = segment
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .expect("overflow spool segment name");
+    let (capture_id, segment_index) = stem.rsplit_once('-').expect("capture segment suffix");
+    fs::write(spool_dir.join(format!("{capture_id}.done")), segment_index)
+        .expect("write completion marker");
+}
+
 #[tokio::test]
 async fn raw_overflow_spool_recovery_publishes_complete_frames_and_keeps_invalid_files() {
     let state = test_state_with_openai_base(
@@ -349,6 +367,7 @@ async fn raw_overflow_spool_recovery_publishes_complete_frames_and_keeps_invalid
     drop(writer);
 
     let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    mark_raw_overflow_spool_complete_for_test(&spool_dir);
     fs::create_dir_all(&spool_dir).expect("create spool dir");
     let invalid_path = spool_dir.join("incomplete.frames");
     fs::write(&invalid_path, b"partial").expect("write invalid spool");
@@ -370,6 +389,52 @@ async fn raw_overflow_spool_recovery_publishes_complete_frames_and_keeps_invalid
     );
     let _ = fs::remove_file(recovered);
     let _ = fs::remove_file(invalid_path);
+}
+
+#[tokio::test]
+async fn raw_overflow_spool_recovery_retains_unmarked_new_capture() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() {
+        permits.push(permit);
+    }
+    let mut writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "invoke-unmarked-spool",
+        "response",
+        true,
+        None,
+    );
+    writer.append(b"retain-unmarked");
+    drop(writer);
+
+    let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    drop(permits);
+    recover_raw_overflow_spools(&state.config).await;
+
+    let recovered = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join("invoke-unmarked-spool-response.bin.zst");
+    assert!(
+        !recovered.exists(),
+        "new-format spool without completion proof must not publish"
+    );
+    let segments = fs::read_dir(&spool_dir)
+        .expect("read overflow spool directory")
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("frames"))
+        .collect::<Vec<_>>();
+    assert!(
+        !segments.is_empty(),
+        "unmarked spool must remain for a later bounded recovery pass"
+    );
+    for segment in segments {
+        let _ = fs::remove_file(segment.path());
+    }
 }
 
 #[tokio::test]
@@ -401,6 +466,7 @@ async fn raw_overflow_spool_rotates_segments_and_recovers_the_capture_in_order()
         .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("frames"))
         .count();
     assert_eq!(segment_count, 2, "overflow capture should rotate at 16 MiB");
+    mark_raw_overflow_spool_complete_for_test(&spool_dir);
 
     drop(permits);
     recover_raw_overflow_spools(&state.config).await;
@@ -451,6 +517,7 @@ async fn raw_overflow_spool_recovery_retains_a_capture_when_a_later_segment_is_c
         2,
         "overflow capture should rotate at 16 MiB"
     );
+    mark_raw_overflow_spool_complete_for_test(&spool_dir);
     fs::write(&segments[1], b"partial").expect("corrupt later spool segment");
 
     drop(permits);

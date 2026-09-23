@@ -44,6 +44,7 @@
 - It MUST resume raw capture only after physical raw storage is below `12 GiB` and filesystem free space is at least `30 GiB`.
 - While suppressed, the system MUST continue proxy delivery and durable structured invocation facts, and MUST record a storage-suppression reason rather than representing the event as a per-payload truncation.
 - The circuit-breaker decision MUST use Physical Raw Inventory and bounded write reservations; it MUST NOT perform a full directory scan in the proxy request path.
+- A new-format overflow-spool capture MUST be replayed only when its completion marker proves the recorded final segment; a missing or mismatched marker MUST retain the validated segments for a later bounded recovery pass. A bounded spool inventory overflow MUST remain observable as inventory preparation rather than inventory readiness.
 
 ### REQ-ARR-005
 

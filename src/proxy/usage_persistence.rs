@@ -5571,10 +5571,12 @@ fn read_raw_overflow_spool_segment(path: &Path) -> io::Result<(RawOverflowSpoolH
 }
 
 fn raw_overflow_spool_capture_key(path: &Path, header: &RawOverflowSpoolHeader) -> String {
-    header
-        .capture_id
-        .clone()
-        .unwrap_or_else(|| format!("legacy:{}", path.display()))
+    header.capture_id.clone().unwrap_or_else(|| {
+        format!(
+            "legacy:{}",
+            short_sha256_fingerprint(&path.to_string_lossy())
+        )
+    })
 }
 
 fn raw_overflow_spool_capture_key_from_path(path: &Path) -> Option<String> {
@@ -5786,7 +5788,6 @@ async fn recover_raw_overflow_spools_inner(
 
     let mut captures = HashMap::<String, Vec<(PathBuf, RawOverflowSpoolHeader)>>::new();
     let mut corrupt_captures = std::collections::HashSet::new();
-    let mut active_captures_seen = std::collections::HashSet::new();
     let mut inspected_segments = 0_usize;
     let mut batch_truncated = false;
     for entry in entries {
@@ -5803,18 +5804,15 @@ async fn recover_raw_overflow_spools_inner(
             inspected_segments += 1;
             continue;
         }
+        inspected_segments += 1;
         if let Some(active_capture) = raw_overflow_spool_capture_key_from_path(&path)
             && RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&active_capture)
         {
-            if active_captures_seen.insert(active_capture) {
-                inspected_segments += 1;
-            }
             continue;
         }
-        inspected_segments += 1;
         let header = match run_blocking_raw_writer_io({
             let path = path.clone();
             move || read_raw_overflow_spool_segment(&path).map(|(header, _)| header)
@@ -5838,6 +5836,9 @@ async fn recover_raw_overflow_spools_inner(
             .entry(capture_key)
             .or_default()
             .push((path, header));
+    }
+    if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
+        batch_truncated = true;
     }
     let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
     for (capture_key, mut segments) in captures {
@@ -5873,6 +5874,9 @@ async fn recover_raw_overflow_spools_inner(
         let expected_last_segment = fs::read_to_string(&completion_marker)
             .ok()
             .and_then(|value| value.trim().parse::<u32>().ok());
+        if expected_last_segment.is_none() && header.capture_id.is_some() {
+            continue;
+        }
         if (batch_truncated && expected_last_segment.is_none())
             || expected_last_segment.is_some_and(|expected| expected != selected_last_segment)
         {

@@ -1305,7 +1305,8 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     } else {
         String::new()
     };
-    let state_name = if !recheck_active
+    let state_name = if !spool_inventory_overflow
+        && !recheck_active
         && rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
         && link_rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
     {

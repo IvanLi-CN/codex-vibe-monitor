@@ -30,7 +30,7 @@
       "description": "No public API or durable-state compatibility scope drift."
       },
       "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery and rawCapture diagnostics that remain unknown until measured, idempotent recovery tables, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
-      "reassessed_at": "2026-09-21T19:26:33+08:00",
+      "reassessed_at": "2026-09-23T00:00:00+08:00",
       "evidence": [
         "src/api/slices/system_routes_and_tasks.rs",
         "src/schema.rs",
@@ -40,10 +40,10 @@
     "verified": {
       "impact": "patch",
       "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission including unknown-length stream bounds and non-truncating suppression, hysteretic watermarks, bounded physical inventory reset after every raw-mutating maintenance entry point, sanitized startup recovery diagnostics, unmeasured-byte unknown semantics, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, independent retention stages, bounded legacy reconciliation, additive status serialization, translated Storybook states, typecheck, lint, and production build.",
-      "verified_at": "2026-09-22T19:30:00+08:00",
+      "verified_at": "2026-09-23T00:00:00+08:00",
       "evidence": [
-        "lightweight profile: 1123 passed, including raw-capture restart, generation, and hysteresis regressions",
-        "stateful-sqlite profile: 1305 passed, including raw-capture status serialization and schema re-entry",
+        "lightweight profile: 1125 passed, including raw-capture restart, generation, and hysteresis regressions",
+        "stateful-sqlite profile: 1306 passed, including raw-capture status serialization and schema re-entry",
         "archive-file-io profile: 269 passed, including raw residual no-enumeration regression, concurrent inventory/reset guards, and retention recovery coverage",
         "Web focused units: 10 passed; System Workspace Storybook interactions: 16 passed; typecheck, Biome check, and production build passed",
         "Linux cargo check and Clippy passed with all targets and features; formatting and diff checks passed"
