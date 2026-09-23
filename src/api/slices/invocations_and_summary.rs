@@ -6,7 +6,7 @@ use crate::{
     proxy_price_version,
 };
 use anyhow::anyhow;
-use chrono::{Datelike, TimeZone, Timelike};
+use chrono::{TimeZone, Timelike};
 use chrono_tz::TZ_VARIANTS;
 use flate2::read::GzDecoder;
 use futures_util::{StreamExt, TryStreamExt};
@@ -42686,6 +42686,8 @@ mod request_compression_query_tests {
                 url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
             )
             .await;
+            use chrono::Datelike;
+
             let historical_at = Utc::now() - ChronoDuration::days(3);
             let historical_at = if historical_at.weekday() == chrono::Weekday::Sun {
                 historical_at - ChronoDuration::hours(12)
