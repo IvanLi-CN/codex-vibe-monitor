@@ -95,7 +95,7 @@ scan/update/skip counters, cursor, and drained-or-continuing state.
 - `REQ-PRICING-API`: `PUT /api/settings/pricing` must accept both legacy `cacheInputPer1m` and the new `cacheReadPer1m` / `cacheWritePer1m` fields. `GET /api/settings/pricing` must return the new fields and continue mirroring `cacheInputPer1m` from `cacheReadPer1m` during the compatibility window. SQLite persistence must preserve existing pricing rows and backfill read pricing from legacy data without overwriting user-defined values.
 - `REQ-MODEL-ALIASES`: Model resolution must match exact supported IDs first and map calendar-valid `-YYYY-MM-DD` aliases for rows that exist to their base pricing rows. Invalid dates, unknown/preview variants, and IDs without a pricing row remain unpriced.
 - `REQ-SETTINGS-PRICING`: Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
-- `REQ-MODEL-IDENTITY`: Structured read-only model fields must recognize and distinguish the official GPT-6 IDs while retaining their complete IDs in tooltips and accessible names. Existing GPT-5.6 icon identities remain unchanged. Editors, filters, selectors, and raw payload viewers keep the original text.
+- `REQ-MODEL-IDENTITY`: Structured read-only model fields must recognize and distinguish the official GPT-6 IDs and calendar-valid dated aliases while retaining their complete IDs in tooltips and accessible names. Invalid dated aliases and preview variants remain as their original text without an official GPT-6 identity. Existing GPT-5.6 icon identities remain unchanged. Editors, filters, selectors, and raw payload viewers keep the original text.
 - `REQ-COST-BUCKETS`: New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `REQ-CACHE-WRITE-FALLBACK`: When exact upstream cache-write usage exists, retain that count (including a reported zero). Otherwise, preserve the legacy inferred value `max(inputTokens - cacheInputTokens, 0)` and identify it as inferred rather than upstream-reported. `cacheInputTokens` remains the upstream cache-read count.
 - `REQ-REPORTED-CACHE-WRITE`: Read exact cache-write usage from `usage.input_tokens_details.cache_write_tokens`. Persist it separately in nullable `reported_cache_write_tokens` and expose nullable `reportedCacheWriteTokens` in invocation detail/API data. Keep existing `cacheWriteTokens` and aggregate Usage details unchanged as the total non-cache input amount. Older invocation rows and archive files do not receive fabricated exact counts.
@@ -163,6 +163,7 @@ The canonical upstream usage field is `usage.input_tokens_details.cache_write_to
 - Given a GPT-6 invocation with reasoning Tokens, when cost is estimated, then those Tokens use the output rate without a separate reasoning-price row.
 - Given `gpt-6-astra-2026-09-23`, `gpt-6-sol-2026-09-23`, or `gpt-6-luna-2026-09-23`, when cost is estimated, then the matching base pricing row is used rather than `unknown`.
 - Given an invalid GPT-6 date suffix such as `gpt-6-sol-2026-99-99` or a preview variant such as `gpt-6-astra-preview`, when cost is estimated, then the model remains unpriced.
+- Given an invalid dated GPT-6 alias such as `gpt-6-astra-2026-99-99`, when its model identity is rendered, then the complete identifier remains plain text and receives no official GPT-6 icon.
 - Given a repo-managed catalog containing temporary `gpt-6-terra`, when official GPT-6 preset and `/v1/models` lists are generated, then Terra remains excluded while direct compatibility pricing remains intact.
 - Given a GPT-6 model that rejects a request parameter, when the proxy forwards it, then this project does not perform model-specific capability validation and upstream validation remains authoritative.
 - Given non-null historical invocation costs, custom pricing rows, or manually edited GPT-6 seed rows, when the catalog snapshot advances, then those values remain unchanged.
@@ -194,7 +195,7 @@ The canonical upstream usage field is `usage.input_tokens_details.cache_write_to
 
 - `VER-PRICING` covers: `REQ-PRICE-CATALOG`, `REQ-GPT6-PRICES`, `REQ-GPT6-BILLING`, `REQ-TERRA-COMPAT`, and `REQ-MODEL-ALIASES`. Fixed pricing fixtures and Rust tests verify short/long context boundaries, Standard and Fast tier handling, unsupported-tier unknown costs, seed idempotence, edit preservation, and dated aliases.
 - `VER-PRICING-API` covers: `REQ-PRICING-API`. Pricing API contract and SQLite tests verify legacy aliases, explicit cache prices, and preservation of user-defined values.
-- `VER-MODEL-UI` covers: `REQ-SETTINGS-PRICING` and `REQ-MODEL-IDENTITY`. Web selector/identity tests and owner-approved mock captures verify official model visibility, compatibility-only Terra behavior, accessible identity, and exact price display.
+- `VER-MODEL-UI` covers: `REQ-SETTINGS-PRICING` and `REQ-MODEL-IDENTITY`. Web selector/identity tests and owner-approved mock captures verify official model visibility, compatibility-only Terra behavior, calendar-valid dated identities, invalid-alias text fallback, accessible identity, and exact price display.
 - `VER-USAGE-API` covers: `REQ-COST-BUCKETS`, `REQ-CACHE-WRITE-FALLBACK`, `REQ-REPORTED-CACHE-WRITE`, `REQ-COST-AUDIT`, `REQ-COST-TOLERANCE`, `REQ-HISTORIC-BUCKETS`, and `REQ-WORKFLOW-AUDIT`. Usage fixtures, invocation API tests, SQLite tests, and legacy archive tests verify exact nullable usage, estimates, audit immutability, historical compatibility, and cost reconciliation.
 - `VER-USAGE-UI` covers: `REQ-USAGE-AGGREGATES` and `REQ-USAGE-DETAILS`. Web unit tests and deterministic mock UI evidence verify reconciled breakdowns, unchanged aggregate semantics, and exact reported cache-write presentation.
 
@@ -240,6 +241,19 @@ The GPT-6 evidence below records the owner-confirmed formal-model selector, pric
 - story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAudit
 - state: exact upstream-reported cache-write usage alongside legacy uncached input
 - evidence_note: Owner-confirmed capture shows `reportedCacheWriteTokens` separately from the existing estimated `cacheWriteTokens` semantics, with the mock upstream-reported value of 4,096 and legacy uncached-input value of 5,632.
+
+![Invalid dated GPT-6 alias model identity fallback](./assets/gpt6-invalid-date-model-identity-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: story canvas
+- requested_viewport: desktop
+- viewport_strategy: Storybook viewport
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Components/ModelIdentity InvalidDatedGPT6Alias
+- state: invalid calendar date alias shown as original text without official GPT-6 icon
+- evidence_note: Owner-confirmed capture verifies that `gpt-6-astra-2026-99-99` does not receive official GPT-6 identity styling.
 
 ![Settings pricing cache read/write split](./assets/settings-pricing-cache-read-write-storybook.png)
 

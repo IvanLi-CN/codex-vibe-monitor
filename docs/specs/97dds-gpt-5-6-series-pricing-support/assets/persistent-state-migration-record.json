@@ -10,8 +10,8 @@
     "description": "Nullable reported cache-write Token counts on invocation records, future invocation archives, and repo-managed pricing catalog version and seed rows. Existing invocation costs and historical exact cache-write counts are not rewritten.",
     "storage_implementation": "SQLite codex_invocations.reported_cache_write_tokens plus invocation archive datasets and the existing SQLite pricing catalog.",
     "source_compatibility_range": {
-      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including the locked mainline baseline 3da04515bcacac7fa25e6dc58ab5ae82641eb614.",
-      "to_program_version": "Candidate release from the locked mainline baseline.",
+      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including the current candidate base 6417a434c6d6fb3277eac7df77581451bf0f12ad.",
+      "to_program_version": "Candidate release based on mainline commit 6417a434c6d6fb3277eac7df77581451bf0f12ad.",
       "direct_major_skips_supported": false
     }
   },
@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "ddl-001",
-        "description": "Idempotently add nullable reported_cache_write_tokens to codex_invocations before new exact usage values are persisted; archive readers project NULL when reading legacy datasets without the column.",
+        "description": "Within a SQLite BEGIN IMMEDIATE transaction, idempotently add nullable reported_cache_write_tokens to codex_invocations before new exact usage values are persisted; independent processes serialize schema inspection and DDL, and archive readers project NULL when reading legacy datasets without the column.",
         "order": 1,
         "observable": true,
         "pauseable": true
