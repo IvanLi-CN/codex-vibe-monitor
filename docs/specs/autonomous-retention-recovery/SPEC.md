@@ -23,7 +23,7 @@
 - The system MUST release a live invocation detail or its raw-owner link only in the same finalized source transaction that publishes its corresponding Verified Archive.
 - Inputs: An expired invocation candidate, archive artifact, manifest, Summary proof, and source rows.
 - Outputs: Either an atomically finalized archive plus source transition, or unchanged live source ownership.
-- Raw-owner finalization MUST prove the path has no remaining link in `proxy_raw_payload_blob_links` within the same source transaction; a committed transaction is required before any physical raw unlink.
+- Raw-owner finalization MUST prove the path and its `.bin`/`.bin.gz` storage variant have no remaining links in `proxy_raw_payload_blob_links` within the same source transaction; a committed transaction is required before any physical raw unlink.
 - A `live_mirror` detail-prune archive is a prepared, source-identity-verified recovery artifact whose live canonical row remains online; it MUST NOT become a Summary or rollup authority. Its manifest, prepared-ledger removal, structured-field transition, and raw-owner release still commit together.
 
 ### REQ-ARR-002

@@ -135,6 +135,61 @@ async fn shared_raw_blob_keeps_file_reference_until_last_owner_is_removed() {
 }
 
 #[tokio::test]
+async fn retention_finalization_keeps_compression_variant_with_another_owner() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-shared-compression-variant").await;
+    let compressed_path = config.proxy_raw_dir.join("shared-response.bin.gz");
+    let identity_path = config.proxy_raw_dir.join("shared-response.bin");
+    fs::write(&compressed_path, b"compressed-owner").expect("write compressed raw");
+    fs::write(&identity_path, b"identity-owner").expect("write identity raw");
+
+    insert_retention_invocation(
+        &pool,
+        "retention-compressed-owner",
+        &shanghai_local_days_ago(91, 12, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        Some(&compressed_path),
+        Some(1),
+        Some(0.0),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "retention-identity-owner",
+        &shanghai_local_days_ago(1, 12, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        Some(&identity_path),
+        Some(1),
+        Some(0.0),
+    )
+    .await;
+
+    let archived = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("archive old compressed owner");
+    assert_eq!(archived.0, 1);
+    assert!(
+        compressed_path.exists(),
+        "the archived path remains while its alternate variant is still owned"
+    );
+    assert!(
+        identity_path.exists(),
+        "the alternate path remains owned by the recent invocation"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn schema_backfill_links_existing_pool_attempt_response_raw() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("legacy-attempt-raw-link").await;

@@ -5997,7 +5997,7 @@ async fn filter_unreferenced_proxy_raw_paths(
         .collect::<std::collections::BTreeSet<_>>();
     let mut unreferenced = Vec::with_capacity(candidates.len());
     for path in candidates {
-        let referenced = sqlx::query_scalar::<_, i64>(
+        let mut referenced = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT EXISTS(
               SELECT 1 FROM proxy_raw_payload_blob_links
@@ -6008,6 +6008,21 @@ async fn filter_unreferenced_proxy_raw_paths(
         .bind(&path)
         .fetch_one(&mut *connection)
         .await?;
+        if referenced == 0
+            && let Some(alternate_path) = raw_payload_alternate_db_path(&path)
+        {
+            referenced = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT EXISTS(
+                  SELECT 1 FROM proxy_raw_payload_blob_links
+                  WHERE raw_path = ?1
+                )
+                "#,
+            )
+            .bind(alternate_path)
+            .fetch_one(&mut *connection)
+            .await?;
+        }
         if referenced == 0 {
             unreferenced.push(Some(path));
         }
@@ -6300,8 +6315,10 @@ pub(crate) async fn prune_old_invocation_details(
             }
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
             let raw_reference_check_started = Instant::now();
+            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
             let raw_paths = filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths).await?;
-            let raw_reference_check_elapsed = raw_reference_check_started.elapsed();
+            let raw_reference_check_elapsed =
+                had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
             tx.commit().await?;
             retention_record_commit_with_reference_check!(
@@ -6316,7 +6333,7 @@ pub(crate) async fn prune_old_invocation_details(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
-                Some(raw_reference_check_elapsed),
+                raw_reference_check_elapsed,
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
@@ -6721,8 +6738,10 @@ pub(crate) async fn archive_old_invocations(
             .await?;
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
             let raw_reference_check_started = Instant::now();
+            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
             let raw_paths = filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths).await?;
-            let raw_reference_check_elapsed = raw_reference_check_started.elapsed();
+            let raw_reference_check_elapsed =
+                had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
             tx.commit().await?;
             retention_record_commit_with_reference_check!(
@@ -6742,7 +6761,7 @@ pub(crate) async fn archive_old_invocations(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
-                Some(raw_reference_check_elapsed),
+                raw_reference_check_elapsed,
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
@@ -7075,10 +7094,15 @@ pub(crate) async fn archive_timestamped_dataset(
             let (raw_paths, raw_reference_check_elapsed) =
                 if spec.dataset == "pool_upstream_request_attempts" {
                     let raw_reference_check_started = Instant::now();
+                    let had_raw_reference_candidates =
+                        pool_attempt_raw_paths.iter().any(Option::is_some);
                     let raw_paths =
                         filter_unreferenced_proxy_raw_paths(tx.as_mut(), &pool_attempt_raw_paths)
                             .await?;
-                    (raw_paths, Some(raw_reference_check_started.elapsed()))
+                    (
+                        raw_paths,
+                        had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed()),
+                    )
                 } else {
                     (Vec::new(), None)
                 };
