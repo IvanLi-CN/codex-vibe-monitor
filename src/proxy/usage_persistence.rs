@@ -5036,9 +5036,15 @@ pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES: u64 = 8;
 
-static RAW_OVERFLOW_SPOOL_RESERVATIONS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+#[derive(Default)]
+struct RawOverflowSpoolAccounting {
+    durable_bytes: std::collections::HashMap<PathBuf, u64>,
+    reserved_bytes: std::collections::HashMap<PathBuf, u64>,
+}
+
+static RAW_OVERFLOW_SPOOL_ACCOUNTING: std::sync::LazyLock<
+    std::sync::Mutex<RawOverflowSpoolAccounting>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(RawOverflowSpoolAccounting::default()));
 
 struct StreamingRawPayloadChunk {
     bytes: Bytes,
@@ -5163,6 +5169,10 @@ impl RawOverflowSpool {
             let write_result = write_raw_overflow_spool_frame(&mut self.file, frame);
             release_raw_overflow_spool_bytes(&self.directory, reservation_bytes);
             write_result?;
+            record_raw_overflow_spool_bytes(
+                &self.directory,
+                reservation_bytes.min(i64::MAX as u64) as i64,
+            );
             self.segment_payload_bytes = self
                 .segment_payload_bytes
                 .saturating_add(frame.len() as u64);
@@ -5295,17 +5305,30 @@ pub(crate) fn bounded_raw_overflow_spool_directory_bytes(
 }
 
 fn reserve_raw_overflow_spool_bytes(directory: &Path, bytes: u64) -> io::Result<()> {
-    let mut reservations = RAW_OVERFLOW_SPOOL_RESERVATIONS
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let reserved_bytes = reservations.get(directory).copied().unwrap_or_default();
-    if reserved_bytes.saturating_add(bytes) > RAW_OVERFLOW_SPOOL_MAX_BYTES {
+    let durable_bytes = accounting
+        .durable_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    let reserved_bytes = accounting
+        .reserved_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    if durable_bytes
+        .saturating_add(reserved_bytes)
+        .saturating_add(bytes)
+        > RAW_OVERFLOW_SPOOL_MAX_BYTES
+    {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "raw overflow spool capacity reached",
         ));
     }
-    reservations.insert(
+    accounting.reserved_bytes.insert(
         directory.to_path_buf(),
         reserved_bytes.saturating_add(bytes),
     );
@@ -5316,16 +5339,47 @@ fn release_raw_overflow_spool_bytes(directory: &Path, bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let mut reservations = RAW_OVERFLOW_SPOOL_RESERVATIONS
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(reserved_bytes) = reservations.get_mut(directory) else {
+    let Some(reserved_bytes) = accounting.reserved_bytes.get_mut(directory) else {
         return;
     };
     *reserved_bytes = reserved_bytes.saturating_sub(bytes);
     if *reserved_bytes == 0 {
-        reservations.remove(directory);
+        accounting.reserved_bytes.remove(directory);
     }
+}
+
+pub(crate) fn set_raw_overflow_spool_accounted_bytes(directory: &Path, bytes: u64) {
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    accounting
+        .durable_bytes
+        .insert(directory.to_path_buf(), bytes);
+}
+
+fn record_raw_overflow_spool_bytes(directory: &Path, delta: i64) {
+    if delta == 0 {
+        return;
+    }
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = accounting
+        .durable_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    let next = if delta >= 0 {
+        current.saturating_add(delta as u64)
+    } else {
+        current.saturating_sub(delta.unsigned_abs())
+    };
+    accounting
+        .durable_bytes
+        .insert(directory.to_path_buf(), next);
 }
 
 fn create_raw_overflow_spool_segment(
@@ -5362,6 +5416,12 @@ fn create_raw_overflow_spool_segment(
         let _ = fs::remove_file(&path);
         return Err(error);
     }
+    record_raw_overflow_spool_bytes(
+        directory,
+        fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(reserved_bytes) as i64,
+    );
     let file = file?;
     Ok((path, file))
 }
@@ -5627,6 +5687,12 @@ async fn replay_raw_overflow_spool_segments(
 
 fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) {
     for path in paths {
+        if let Some(directory) = path.parent() {
+            let bytes = fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            record_raw_overflow_spool_bytes(directory, -(bytes.min(i64::MAX as u64) as i64));
+        }
         let _ = fs::remove_file(path);
     }
 }

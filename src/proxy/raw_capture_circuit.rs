@@ -268,18 +268,32 @@ impl RawCaptureCircuitBreaker {
             .state
             .lock()
             .expect("raw capture circuit mutex poisoned");
+        let preserve_suppression = state.state == CIRCUIT_STATE_SUPPRESSED
+            || state.resume_hysteresis
+            || state.reason.is_some_and(|reason| {
+                matches!(
+                    reason,
+                    CIRCUIT_REASON_RAW_STORE_LIMIT
+                        | CIRCUIT_REASON_FILESYSTEM_LOW
+                        | CIRCUIT_REASON_BOTH
+                )
+            });
+        if preserve_suppression {
+            state.resume_hysteresis = true;
+            state.resume_reason = state
+                .resume_reason
+                .or(state.reason)
+                .or(Some(CIRCUIT_REASON_RAW_STORE_LIMIT));
+        }
         state.inventory_generation = state.inventory_generation.saturating_add(1);
         state.inventory_state = "preparing".to_string();
         state.admission_initialized = false;
         state.raw_bytes = None;
         state.spool_bytes = None;
         state.available_bytes = None;
-        state.expired_backlog_count = None;
         state.backlog_non_growing = None;
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
-        state.resume_hysteresis = false;
-        state.resume_reason = None;
         state.updated_at = Some(Utc::now().to_rfc3339());
     }
 
@@ -794,6 +808,37 @@ mod tests {
         );
         assert_eq!(circuit.snapshot().state, CIRCUIT_STATE_SUPPRESSED);
 
+        circuit.update_inventory(
+            "ready",
+            RAW_CAPTURE_RESUME_BYTES - 1,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+        );
+        assert_eq!(circuit.snapshot().state, CIRCUIT_STATE_CAPTURING);
+    }
+
+    #[test]
+    fn inventory_reset_keeps_suppression_hysteresis() {
+        let circuit = ready(
+            RAW_CAPTURE_CLOSE_BYTES,
+            RAW_CAPTURE_RESUME_AVAILABLE_BYTES,
+            true,
+        );
+        assert_eq!(
+            circuit
+                .admit(0)
+                .expect_err("close watermark should suppress capture")
+                .reason,
+            CIRCUIT_REASON_RAW_STORE_LIMIT
+        );
+        circuit.mark_inventory_preparing();
+        circuit.update_inventory(
+            "ready",
+            RAW_CAPTURE_RESUME_BYTES + 1,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES - 1),
+            Some(0),
+        );
+        assert_eq!(circuit.snapshot().state, CIRCUIT_STATE_SUPPRESSED);
         circuit.update_inventory(
             "ready",
             RAW_CAPTURE_RESUME_BYTES - 1,

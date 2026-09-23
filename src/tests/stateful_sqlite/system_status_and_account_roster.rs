@@ -353,6 +353,52 @@ async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_curso
 }
 
 #[tokio::test]
+async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration() {
+    use std::time::Duration as StdDuration;
+
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "system-status-raw-revalidation",
+        StdDuration::from_millis(100),
+    )
+    .await;
+    let raw_dir = state.config.resolved_proxy_raw_dir();
+    fs::create_dir_all(&raw_dir).expect("create raw dir");
+    let response_path = raw_dir.join("revalidated-response.bin");
+    fs::write(&response_path, b"small").expect("write initial response raw");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, raw_response, response_raw_path, response_raw_size) VALUES (?1, ?2, 'proxy', '', ?3, 5)",
+    )
+    .bind("revalidation-invocation")
+    .bind("2026-08-04T00:00:00.000Z")
+    .bind(response_path.to_string_lossy().as_ref())
+    .execute(&state.pool)
+    .await
+    .expect("insert invocation with response raw");
+
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("initial inventory refresh");
+    let initial = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load initial raw metrics");
+    assert_eq!(initial.raw_bodies.bytes, 5);
+
+    fs::write(&response_path, b"expanded-response").expect("expand response raw");
+    hydrate_raw_capture_circuit(state.as_ref())
+        .await
+        .expect("rehydrate raw circuit");
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("revalidate existing raw path");
+    let refreshed = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load revalidated raw metrics");
+    assert_eq!(refreshed.raw_bodies.bytes, 17);
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write() {
     use std::time::Duration as StdDuration;
 

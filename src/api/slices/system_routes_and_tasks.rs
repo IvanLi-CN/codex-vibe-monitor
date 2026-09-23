@@ -388,6 +388,8 @@ struct SystemRawPayloadMetricsRow {
     inventory_state: String,
     inventory_cursor: i64,
     link_inventory_cursor: i64,
+    inventory_recheck_cursor: String,
+    inventory_recheck_active: i64,
     raw_count: i64,
     raw_bytes: i64,
     raw_overflow_spool_bytes: i64,
@@ -420,6 +422,14 @@ struct SystemRawPayloadBlobLinkRow {
 
 #[derive(Debug, FromRow)]
 struct SystemRawPayloadInventoryPathRow {
+    byte_size: i64,
+    request_seen: i64,
+    response_seen: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct SystemRawPayloadInventoryRecheckRow {
+    raw_path: String,
     byte_size: i64,
     request_seen: i64,
     response_seen: i64,
@@ -992,12 +1002,16 @@ pub(crate) async fn refresh_system_raw_payload_metrics_inventory(state: &AppStat
             true,
         )
         .await;
+    if result.is_err() {
+        state.raw_capture_circuit.mark_inventory_preparing();
+        set_system_raw_metrics_health_override(state, Some("error")).await;
+    }
     result.map(|_| ())
 }
 
 pub(crate) async fn hydrate_raw_capture_circuit(state: &AppState) -> Result<()> {
     let row = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
-        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, inventory_recheck_cursor, inventory_recheck_active, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
     .await?;
@@ -1013,6 +1027,13 @@ pub(crate) async fn hydrate_raw_capture_circuit(state: &AppState) -> Result<()> 
         row.circuit_backlog_non_growing.map(|value| value != 0),
         row.circuit_updated_at,
     );
+    if row.inventory_state != "resetting" {
+        sqlx::query(
+            "UPDATE system_raw_payload_metrics SET inventory_state = 'preparing', inventory_recheck_cursor = '', inventory_recheck_active = 1, updated_at = datetime('now') WHERE singleton = 1 AND inventory_state != 'resetting'",
+        )
+        .execute(&state.pool)
+        .await?;
+    }
     Ok(())
 }
 
@@ -1065,7 +1086,7 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     let (inventory_generation, accounting_generation, _) =
         state.raw_capture_circuit.inventory_checkpoint();
     let snapshot = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
-        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, inventory_recheck_cursor, inventory_recheck_active, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
     .await?;
@@ -1104,6 +1125,23 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     .bind(SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE)
     .fetch_all(&state.pool)
     .await?;
+    let recheck_rows = if snapshot.inventory_recheck_active != 0 {
+        sqlx::query_as::<_, SystemRawPayloadInventoryRecheckRow>(
+            r#"
+            SELECT raw_path, byte_size, request_seen, response_seen
+            FROM system_raw_payload_inventory_paths
+            WHERE raw_path > ?1
+            ORDER BY raw_path ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(&snapshot.inventory_recheck_cursor)
+        .bind(SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        Vec::new()
+    };
 
     let fallback_root = state.config.database_path.parent();
     let mut paths = HashMap::<String, (i64, bool, bool)>::new();
@@ -1163,7 +1201,25 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
                 return Err(error).context("failed to inspect raw overflow spool inventory");
             }
         };
+    crate::proxy::set_raw_overflow_spool_accounted_bytes(&spool_directory, spool_bytes);
 
+    let recheck_changes = recheck_rows
+        .iter()
+        .filter_map(|row| {
+            let current_size = resolved_raw_path_read_candidates(&row.raw_path, fallback_root)
+                .into_iter()
+                .find(|candidate| candidate.exists())
+                .map(|candidate| count_file_size(&candidate) as i64)
+                .unwrap_or_default();
+            (current_size != row.byte_size).then_some((
+                row.raw_path.clone(),
+                current_size,
+                current_size.saturating_sub(row.byte_size),
+                row.request_seen != 0,
+                row.response_seen != 0,
+            ))
+        })
+        .collect::<Vec<_>>();
     let mut deltas = (0_i64, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64);
     let mut tx = state.pool.begin().await?;
     for (path, (byte_size, request_seen, response_seen)) in paths {
@@ -1182,6 +1238,22 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         deltas.4 += delta.4;
         deltas.5 += delta.5;
     }
+    for (path, byte_size, delta, request_seen, response_seen) in recheck_changes {
+        sqlx::query(
+            "UPDATE system_raw_payload_inventory_paths SET byte_size = ?2 WHERE raw_path = ?1",
+        )
+        .bind(path)
+        .bind(byte_size)
+        .execute(tx.as_mut())
+        .await?;
+        deltas.1 = deltas.1.saturating_add(delta);
+        if request_seen {
+            deltas.3 = deltas.3.saturating_add(delta);
+        }
+        if response_seen {
+            deltas.5 = deltas.5.saturating_add(delta);
+        }
+    }
     let next_cursor = rows
         .last()
         .map(|row| row.id)
@@ -1190,7 +1262,18 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         .last()
         .map(|row| row.id)
         .unwrap_or(snapshot.link_inventory_cursor);
-    let state_name = if !spool_inventory_overflow
+    let recheck_active = snapshot.inventory_recheck_active != 0
+        && recheck_rows.len() == SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize;
+    let next_recheck_cursor = if recheck_active {
+        recheck_rows
+            .last()
+            .map(|row| row.raw_path.clone())
+            .unwrap_or_else(|| snapshot.inventory_recheck_cursor.clone())
+    } else {
+        String::new()
+    };
+    let state_name = if !recheck_active
+        && !spool_inventory_overflow
         && rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
         && link_rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
     {
@@ -1204,21 +1287,25 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         SET inventory_state = ?1,
             inventory_cursor = ?2,
             link_inventory_cursor = ?3,
-            raw_count = raw_count + ?4,
-            raw_bytes = raw_bytes + ?5,
-            request_raw_count = request_raw_count + ?6,
-            request_raw_bytes = request_raw_bytes + ?7,
-            response_raw_count = response_raw_count + ?8,
-            response_raw_bytes = response_raw_bytes + ?9,
-            raw_overflow_spool_bytes = ?10,
+            inventory_recheck_cursor = ?4,
+            inventory_recheck_active = ?5,
+            raw_count = raw_count + ?6,
+            raw_bytes = raw_bytes + ?7,
+            request_raw_count = request_raw_count + ?8,
+            request_raw_bytes = request_raw_bytes + ?9,
+            response_raw_count = response_raw_count + ?10,
+            response_raw_bytes = response_raw_bytes + ?11,
+            raw_overflow_spool_bytes = ?12,
             updated_at = datetime('now')
         WHERE singleton = 1
-          AND inventory_state = ?11
+          AND inventory_state = ?13
         "#,
     )
     .bind(state_name)
     .bind(next_cursor)
     .bind(next_link_cursor)
+    .bind(next_recheck_cursor)
+    .bind(i64::from(recheck_active))
     .bind(deltas.0)
     .bind(deltas.1)
     .bind(deltas.2)
@@ -1322,6 +1409,8 @@ pub(crate) async fn mark_system_raw_payload_metrics_inventory_reset_pending(
         SET inventory_state = 'resetting',
             inventory_cursor = 0,
             link_inventory_cursor = 0,
+            inventory_recheck_cursor = '',
+            inventory_recheck_active = 1,
             raw_count = 0,
             raw_bytes = 0,
             request_raw_count = 0,
@@ -1385,6 +1474,8 @@ pub(crate) async fn reset_system_raw_payload_metrics_inventory_batch(
         SET inventory_state = 'resetting',
             inventory_cursor = 0,
             link_inventory_cursor = 0,
+            inventory_recheck_cursor = '',
+            inventory_recheck_active = 1,
             raw_count = 0,
             raw_bytes = 0,
             request_raw_count = 0,
@@ -1535,7 +1626,7 @@ async fn load_system_status_snapshot_uncached(
 
     let raw_metrics = await_system_status_refresh_operation(cancellation, async {
         Ok(sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
-        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, inventory_recheck_cursor, inventory_recheck_active, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
     .await?)
