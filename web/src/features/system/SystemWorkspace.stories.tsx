@@ -534,7 +534,7 @@ export const Status: Story = {
     await expect(canvas.getByText("数据库记录概况")).toBeVisible();
     await expect(
       canvas.getByText(
-        "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点未知时，总量也未知。",
+        "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积不可用时保持未知，也不代表完整物理文件系统占用。",
       ),
     ).toBeVisible();
     await expect(canvas.getByTestId("system-status-overview")).toHaveTextContent("受限");

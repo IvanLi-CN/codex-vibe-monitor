@@ -231,9 +231,6 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
       <div className="surface-panel-body gap-5">
         <div className="section-heading">
           <h3 className="section-title">{t("system.status.sections.diskOverviewTitle")}</h3>
-          <p className="section-description max-w-[65ch]">
-            {t("system.status.sections.diskOverviewDescription")}
-          </p>
         </div>
 
         <div className="rounded-xl border border-primary/20 bg-primary/8 px-5 py-5">

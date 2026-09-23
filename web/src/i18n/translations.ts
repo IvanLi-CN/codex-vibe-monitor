@@ -1641,7 +1641,7 @@ const baseTranslations = {
       "Tracked raw payload bytes come from the persisted inventory of linked request + response files. Request and response values explain the split; they do not add back up to the union, and untracked physical raw files are outside this view.",
     "system.status.summary.projectDiskLabel": "Tracked project storage",
     "system.status.summary.projectDiskHint":
-      "Tracked project storage = tracked raw inventory + archive + database + other runtime files. The total stays unknown until tracked raw and archive bytes are available, and it never represents the full physical filesystem.",
+      "Tracked project storage = tracked raw inventory + archive + database + other runtime files; it remains unknown when tracked raw or archive bytes are unavailable and does not represent the full physical filesystem.",
     "system.status.storage.unknown": "Unknown",
     "system.status.storage.limited": "Limited",
     "system.status.storage.verified": "Verified",
@@ -1650,8 +1650,6 @@ const baseTranslations = {
     "system.status.metric.unionBadge": "Union total",
     "system.status.metric.splitBadge": "Side split",
     "system.status.sections.diskOverviewTitle": "Tracked project storage overview",
-    "system.status.sections.diskOverviewDescription":
-      "Lead with the bytes this service can verify, then show whether raw inventory covers the physical store.",
     "system.status.sections.rawPayloadFocusTitle": "Raw payload focus",
     "system.status.sections.rawPayloadFocusDescription":
       "Keep tracked raw inventory beside its coverage state; runtime pressure retains live physical capture telemetry.",
@@ -4875,7 +4873,7 @@ const baseTranslations = {
       "raw payload 只按已持久化盘点的 request + response 关联文件统计；request / response 只解释侧向分布，不能直接相加回并集，未关联的物理 raw 残留不在此视图内。",
     "system.status.summary.projectDiskLabel": "已追踪项目存储",
     "system.status.summary.projectDiskHint":
-      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积未知时总量保持未知，也不代表完整物理文件系统占用。",
+      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积不可用时保持未知，也不代表完整物理文件系统占用。",
     "system.status.storage.unknown": "未知",
     "system.status.storage.limited": "受限",
     "system.status.storage.verified": "已验证",
@@ -4884,8 +4882,6 @@ const baseTranslations = {
     "system.status.metric.unionBadge": "并集总量",
     "system.status.metric.splitBadge": "侧向拆分",
     "system.status.sections.diskOverviewTitle": "已追踪项目存储总览",
-    "system.status.sections.diskOverviewDescription":
-      "先展示服务能够验证的项目存储，再标明 raw 盘点是否覆盖物理存储。",
     "system.status.sections.rawPayloadFocusTitle": "raw payload 聚焦",
     "system.status.sections.rawPayloadFocusDescription":
       "把已追踪 raw 盘点与覆盖状态放在一起；运行压力区域保留实时物理捕获遥测。",
