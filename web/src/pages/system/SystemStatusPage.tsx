@@ -744,6 +744,10 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                         wait: retention.lockWaitMs.toLocaleString(),
                         execute: retention.executeMs.toLocaleString(),
                         commit: retention.commitMs.toLocaleString(),
+                        reference:
+                          retention.rawReferenceCheckMs == null
+                            ? "-"
+                            : `${retention.rawReferenceCheckMs.toLocaleString()}ms`,
                         fairness: retention.admissionMode ?? "-",
                       })
                     : t("system.status.runtimePressure.additiveUnknown")
