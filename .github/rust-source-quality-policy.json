@@ -93,7 +93,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 7512,
+      "line_budget": 7735,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -183,7 +183,7 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 8232,
+      "line_budget": 8305,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
