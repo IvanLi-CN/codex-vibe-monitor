@@ -17,6 +17,7 @@
 
 - PR1 delivers autonomous archive recovery and System Status diagnostics on `th/autonomous-retention-recovery`.
 - The raw-reference finalization follow-up moves candidate ownership confirmation into the source transaction and keeps physical unlink after commit, preserving the accepted write-admission boundary.
+- Raw-reference finalization normalizes relative database roots before checking legacy relative/absolute ledger aliases, including both `.bin` and `.bin.gz` variants.
 - PR2 adds the bounded physical raw inventory and capture circuit breaker as an additive extension to
   the retention metrics ledger; it preserves the existing proxy, archive, and structured-record
   contracts while exposing fail-closed storage health through System Status.
