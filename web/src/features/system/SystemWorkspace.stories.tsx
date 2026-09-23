@@ -114,6 +114,19 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       expiredBacklogCount: 0,
       lastProgressAt: "2026-06-22T08:00:00Z",
     },
+    rawCapture: {
+      state: "capturing",
+      inventoryState: "ready",
+      rawBytes: 8_589_934_592,
+      availableBytes: 64_424_509_184,
+      reservedBytes: 0,
+      rawCloseBytes: 17_179_869_184,
+      rawResumeBytes: 12_884_901_888,
+      availableCloseBytes: 21_474_836_480,
+      availableResumeBytes: 32_212_254_720,
+      expiredBacklogCount: 0,
+      backlogNonGrowing: true,
+    },
     dashboardProjection: {
       mode: "auto",
       state: "healthy",
@@ -815,6 +828,83 @@ export const StatusRetentionRecoveryDegraded: Story = {
     const recovery = canvas.getByTestId("system-status-retention-recovery");
     await expect(recovery).toHaveTextContent("最终化");
     await expect(recovery).toHaveTextContent("失败阶段 状态刷新 · 7d38a1c0b4c8e2f1");
+  },
+};
+
+export const StatusRawCaptureSuppressed: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: {
+      ...STORYBOOK_SYSTEM_STATUS,
+      runtimePressureHealth: {
+        ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!,
+        state: "degraded",
+        rawCapture: {
+          ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!.rawCapture!,
+          state: "storage_suppressed",
+          reason: "filesystem_low",
+          availableBytes: 18_000_000_000,
+          reservedBytes: 4_194_304,
+          backlogNonGrowing: false,
+        },
+      },
+    } satisfies SystemStatusResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const panel = canvas.getByTestId("system-status-raw-capture");
+    await expect(panel).toHaveTextContent("已抑制落盘");
+    await expect(panel).toHaveTextContent("文件系统可用空间不足");
+    await expect(panel).toHaveTextContent("已就绪");
+    await expect(panel).toHaveTextContent("原始占用水位");
+    await expect(panel).toHaveTextContent("文件系统水位");
+    await expect(panel).toHaveTextContent("增长中");
+    await expect(panel).toHaveTextContent("16 GiB");
+    await expect(panel).toHaveTextContent("20 GiB");
+    await expect(panel.querySelectorAll("[aria-live]")).toHaveLength(0);
+    await expect(canvasElement.querySelector("span.sr-only[aria-live=polite]")).toHaveTextContent(
+      "原始载荷熔断：已抑制落盘；文件系统可用空间不足；库存已就绪",
+    );
+  },
+};
+
+export const StatusRawCaptureCapturing: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const panel = canvas.getByTestId("system-status-raw-capture");
+    await expect(panel).toHaveTextContent("正常采集");
+    await expect(panel).toHaveTextContent("当前未触发抑制");
+    await expect(panel).toHaveTextContent("关闭阈值");
+    await expect(panel).toHaveTextContent("恢复阈值");
+    await expect(panel).toHaveTextContent("16 GiB");
+    await expect(canvasElement).toHaveTextContent("原始载荷熔断：正常采集");
+  },
+};
+
+export const StatusRawCaptureUnknown: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStatusOverride: {
+      ...STORYBOOK_SYSTEM_STATUS,
+      runtimePressureHealth: {
+        ...STORYBOOK_SYSTEM_STATUS.runtimePressureHealth!,
+        rawCapture: undefined,
+      },
+    } satisfies SystemStatusResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const panel = canvas.getByTestId("system-status-raw-capture");
+    await expect(panel).toHaveTextContent("未知");
+    await expect(panel).toHaveTextContent("未知");
+    await expect(panel).toHaveTextContent("过期积压趋势");
   },
 };
 

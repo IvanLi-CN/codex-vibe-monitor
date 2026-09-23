@@ -4779,6 +4779,14 @@ pub(crate) fn spawn_raw_payload_file_write(
             truncated_reason: None,
         });
     }
+    let reservation = match state.raw_capture_circuit.admit(bytes.len() as u64) {
+        Ok(reservation) => reservation,
+        Err(_) => {
+            return PendingRawPayloadWrite::Ready(storage_suppressed_raw_payload_meta(
+                bytes.len() as i64
+            ));
+        }
+    };
 
     let semaphore = state.proxy_raw_async_semaphore.clone();
     let invoke_id = invoke_id.to_string();
@@ -4806,6 +4814,7 @@ pub(crate) fn spawn_raw_payload_file_write(
         return PendingRawPayloadWrite::Task(tokio::spawn(async move {
             let mut spool = spool;
             if let Err(err) = spool.append(&bytes_for_spool) {
+                reservation.finish(0);
                 return RawPayloadMeta {
                     path: None,
                     size_bytes: bytes_for_spool.len() as i64,
@@ -4817,7 +4826,9 @@ pub(crate) fn spawn_raw_payload_file_write(
                     }),
                 };
             }
-            spool.finish(bytes_for_spool.len() as i64).await
+            let meta = spool.finish(bytes_for_spool.len() as i64).await;
+            reservation.finish(raw_payload_stored_bytes(&meta));
+            meta
         }));
     }
 
@@ -4829,7 +4840,9 @@ pub(crate) fn spawn_raw_payload_file_write(
             .await
             .expect("raw writer semaphore is live");
         let _permit = permit;
-        store_raw_payload_file(&config, &invoke_id, kind, bytes).await
+        let meta = store_raw_payload_file(&config, &invoke_id, kind, bytes).await;
+        reservation.finish(raw_payload_stored_bytes(&meta));
+        meta
     }))
 }
 
@@ -4854,6 +4867,14 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
             })
         }
         PoolReplayBodySnapshot::File { temp_file, size } => {
+            let reservation = match state.raw_capture_circuit.admit(size as u64) {
+                Ok(reservation) => reservation,
+                Err(_) => {
+                    return PendingRawPayloadWrite::Ready(storage_suppressed_raw_payload_meta(
+                        size as i64,
+                    ));
+                }
+            };
             let config = state.config.clone();
             let semaphore = state.proxy_raw_async_semaphore.clone();
             let invoke_id = invoke_id.to_string();
@@ -4864,10 +4885,22 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
                     .acquire_owned()
                     .await
                     .expect("raw writer semaphore is live");
-                store_raw_payload_snapshot_file(&config, &invoke_id, kind, source_path, size).await
+                let meta =
+                    store_raw_payload_snapshot_file(&config, &invoke_id, kind, source_path, size)
+                        .await;
+                reservation.finish(raw_payload_stored_bytes(&meta));
+                meta
             }))
         }
     }
+}
+
+fn raw_payload_stored_bytes(meta: &RawPayloadMeta) -> u64 {
+    meta.path
+        .as_deref()
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .unwrap_or_default()
 }
 
 pub(crate) fn raw_payload_path_for_kind(
@@ -4903,6 +4936,15 @@ pub(crate) fn raw_payload_meta_codec(meta: &RawPayloadMeta) -> &'static str {
         RAW_CODEC_ZSTD
     } else {
         RAW_CODEC_IDENTITY
+    }
+}
+
+fn storage_suppressed_raw_payload_meta(size_bytes: i64) -> RawPayloadMeta {
+    RawPayloadMeta {
+        path: None,
+        size_bytes,
+        truncated: false,
+        truncated_reason: Some("storage_suppressed".to_string()),
     }
 }
 
@@ -4988,15 +5030,26 @@ where
         .map_err(|err| io::Error::other(format!("raw writer task join failed: {err}")))?
 }
 
-const RAW_OVERFLOW_SPOOL_DIR: &str = ".spool";
+pub(crate) const RAW_OVERFLOW_SPOOL_DIR: &str = ".spool";
 const RAW_OVERFLOW_SPOOL_MAGIC: &[u8] = b"CVM_RAW_SPOOL_V1\n";
 pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES: u64 = 8;
+const RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE: usize = 32;
+const RAW_OVERFLOW_SPOOL_RECOVERY_SCAN_LIMIT: usize = RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE * 4;
 
-static RAW_OVERFLOW_SPOOL_RESERVATIONS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+#[derive(Default)]
+struct RawOverflowSpoolAccounting {
+    durable_bytes: std::collections::HashMap<PathBuf, u64>,
+    reserved_bytes: std::collections::HashMap<PathBuf, u64>,
+}
+
+static RAW_OVERFLOW_SPOOL_ACCOUNTING: std::sync::LazyLock<
+    std::sync::Mutex<RawOverflowSpoolAccounting>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(RawOverflowSpoolAccounting::default()));
+static RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
 struct StreamingRawPayloadChunk {
     bytes: Bytes,
@@ -5064,8 +5117,27 @@ impl RawOverflowSpool {
             .map(|limit| u64::try_from(limit).unwrap_or(u64::MAX))
             .unwrap_or(u64::MAX);
         let capture_id = nanoid::nanoid!();
-        let (path, file) =
-            create_raw_overflow_spool_segment(&directory, invoke_id, kind, codec, &capture_id, 0)?;
+        RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(capture_id.clone());
+        let (path, file) = match create_raw_overflow_spool_segment(
+            &directory,
+            invoke_id,
+            kind,
+            codec,
+            &capture_id,
+            0,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&capture_id);
+                return Err(error);
+            }
+        };
         let mut config = state.config.clone();
         config.proxy_raw_compression = codec;
         Ok(Self {
@@ -5121,6 +5193,10 @@ impl RawOverflowSpool {
             let write_result = write_raw_overflow_spool_frame(&mut self.file, frame);
             release_raw_overflow_spool_bytes(&self.directory, reservation_bytes);
             write_result?;
+            record_raw_overflow_spool_bytes(
+                &self.directory,
+                reservation_bytes.min(i64::MAX as u64) as i64,
+            );
             self.segment_payload_bytes = self
                 .segment_payload_bytes
                 .saturating_add(frame.len() as u64);
@@ -5183,10 +5259,15 @@ impl RawOverflowSpool {
                 truncated_reason: Some(format!("spool_write_failed:{err}")),
             };
         }
+        let completion_marker =
+            raw_overflow_spool_completion_marker(&self.directory, &self.capture_id);
+        let completion_marker_written =
+            fs::write(&completion_marker, self.segment_index.to_string()).is_ok();
         let mut meta = replay_raw_overflow_spool_segments(
             &self.config,
             self.semaphore.clone(),
             self.paths.clone(),
+            None,
         )
         .await;
         debug!(
@@ -5199,6 +5280,12 @@ impl RawOverflowSpool {
         );
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
             remove_raw_overflow_spool_segments(&self.paths);
+            let _ = fs::remove_file(&completion_marker);
+        } else if !completion_marker_written {
+            warn!(
+                error_kind = "completion_marker_write_failed",
+                "raw overflow spool completion marker could not be written"
+            );
         }
         if self.exceeded_payload_limit {
             meta.truncated = true;
@@ -5217,6 +5304,19 @@ impl RawOverflowSpool {
     }
 }
 
+fn raw_overflow_spool_completion_marker(directory: &Path, capture_id: &str) -> PathBuf {
+    directory.join(format!("{capture_id}.done"))
+}
+
+impl Drop for RawOverflowSpool {
+    fn drop(&mut self) {
+        RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.capture_id);
+    }
+}
+
 fn raw_overflow_payload_limit_reason(
     configured_max_bytes: Option<usize>,
     payload_limit_bytes: u64,
@@ -5230,29 +5330,42 @@ fn raw_overflow_payload_limit_reason(
     }
 }
 
-fn raw_overflow_spool_directory_bytes(directory: &Path) -> io::Result<u64> {
+pub(crate) fn bounded_raw_overflow_spool_directory_bytes(
+    directory: &Path,
+    max_entries: usize,
+) -> io::Result<(u64, bool)> {
     let mut total = 0_u64;
+    let mut matching_entries = 0_usize;
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         if entry.file_type()?.is_file()
             && entry.path().extension().and_then(|value| value.to_str()) == Some("frames")
         {
+            if matching_entries >= max_entries {
+                return Ok((total, true));
+            }
+            matching_entries += 1;
             total = total.saturating_add(entry.metadata()?.len());
         }
     }
-    Ok(total)
+    Ok((total, false))
 }
 
 fn reserve_raw_overflow_spool_bytes(directory: &Path, bytes: u64) -> io::Result<()> {
-    let mut reservations = RAW_OVERFLOW_SPOOL_RESERVATIONS
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Keep the disk sample and the in-process reservation in one critical section. A
-    // concurrent writer may otherwise observe a stale directory size after another
-    // writer commits and releases its temporary reservation.
-    let on_disk_bytes = raw_overflow_spool_directory_bytes(directory)?;
-    let reserved_bytes = reservations.get(directory).copied().unwrap_or_default();
-    if on_disk_bytes
+    let durable_bytes = accounting
+        .durable_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    let reserved_bytes = accounting
+        .reserved_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    if durable_bytes
         .saturating_add(reserved_bytes)
         .saturating_add(bytes)
         > RAW_OVERFLOW_SPOOL_MAX_BYTES
@@ -5262,7 +5375,7 @@ fn reserve_raw_overflow_spool_bytes(directory: &Path, bytes: u64) -> io::Result<
             "raw overflow spool capacity reached",
         ));
     }
-    reservations.insert(
+    accounting.reserved_bytes.insert(
         directory.to_path_buf(),
         reserved_bytes.saturating_add(bytes),
     );
@@ -5273,16 +5386,60 @@ fn release_raw_overflow_spool_bytes(directory: &Path, bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let mut reservations = RAW_OVERFLOW_SPOOL_RESERVATIONS
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(reserved_bytes) = reservations.get_mut(directory) else {
+    let Some(reserved_bytes) = accounting.reserved_bytes.get_mut(directory) else {
         return;
     };
     *reserved_bytes = reserved_bytes.saturating_sub(bytes);
     if *reserved_bytes == 0 {
-        reservations.remove(directory);
+        accounting.reserved_bytes.remove(directory);
     }
+}
+
+pub(crate) fn set_raw_overflow_spool_accounted_bytes(directory: &Path, bytes: u64) {
+    let active = RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = accounting
+        .durable_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    let reconciled = if active.is_empty() {
+        bytes
+    } else {
+        current.max(bytes)
+    };
+    accounting
+        .durable_bytes
+        .insert(directory.to_path_buf(), reconciled);
+}
+
+fn record_raw_overflow_spool_bytes(directory: &Path, delta: i64) {
+    if delta == 0 {
+        return;
+    }
+    let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = accounting
+        .durable_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    let next = if delta >= 0 {
+        current.saturating_add(delta as u64)
+    } else {
+        current.saturating_sub(delta.unsigned_abs())
+    };
+    accounting
+        .durable_bytes
+        .insert(directory.to_path_buf(), next);
 }
 
 fn create_raw_overflow_spool_segment(
@@ -5319,6 +5476,12 @@ fn create_raw_overflow_spool_segment(
         let _ = fs::remove_file(&path);
         return Err(error);
     }
+    record_raw_overflow_spool_bytes(
+        directory,
+        fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(reserved_bytes) as i64,
+    );
     let file = file?;
     Ok((path, file))
 }
@@ -5409,10 +5572,12 @@ fn read_raw_overflow_spool_segment(path: &Path) -> io::Result<(RawOverflowSpoolH
 }
 
 fn raw_overflow_spool_capture_key(path: &Path, header: &RawOverflowSpoolHeader) -> String {
-    header
-        .capture_id
-        .clone()
-        .unwrap_or_else(|| format!("legacy:{}", path.display()))
+    header.capture_id.clone().unwrap_or_else(|| {
+        format!(
+            "legacy:{}",
+            short_sha256_fingerprint(&path.to_string_lossy())
+        )
+    })
 }
 
 fn raw_overflow_spool_capture_key_from_path(path: &Path) -> Option<String> {
@@ -5457,6 +5622,7 @@ async fn replay_raw_overflow_spool_segments(
     config: &AppConfig,
     semaphore: Arc<Semaphore>,
     paths: Vec<PathBuf>,
+    circuit: Option<Arc<RawCaptureCircuitBreaker>>,
 ) -> RawPayloadMeta {
     let inspected = match run_blocking_raw_writer_io({
         let paths = paths.clone();
@@ -5472,14 +5638,29 @@ async fn replay_raw_overflow_spool_segments(
     .await
     {
         Ok(header) => header,
-        Err(err) => {
+        Err(_err) => {
             return RawPayloadMeta {
                 path: None,
                 size_bytes: 0,
                 truncated: true,
-                truncated_reason: Some(format!("spool_replay_failed:{err}")),
+                truncated_reason: Some("spool_replay_failed".to_string()),
             };
         }
+    };
+    let reservation = if let Some(circuit) = circuit {
+        let requested_bytes = paths
+            .iter()
+            .filter_map(|path| fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .sum();
+        match circuit.admit_recovery(requested_bytes) {
+            Ok(reservation) => Some(reservation),
+            Err(_) => {
+                return storage_suppressed_raw_payload_meta(requested_bytes as i64);
+            }
+        }
+    } else {
+        None
     };
     let permit = semaphore
         .acquire_owned()
@@ -5497,6 +5678,16 @@ async fn replay_raw_overflow_spool_segments(
     let (tx, mut rx) = mpsc::channel::<Bytes>(1);
     let mut replay_config = config.clone();
     replay_config.proxy_raw_compression = inspected.codec;
+    if let Some(reservation) = reservation.as_ref() {
+        let reservation_limit = usize::try_from(reservation.reserved_bytes()).unwrap_or(usize::MAX);
+        replay_config.proxy_raw_max_bytes = Some(
+            replay_config
+                .proxy_raw_max_bytes
+                .map_or(reservation_limit, |configured| {
+                    configured.min(reservation_limit)
+                }),
+        );
+    }
     let writer = tokio::spawn(async move {
         write_bounded_streaming_raw_payload_to_file(
             path,
@@ -5514,62 +5705,131 @@ async fn replay_raw_overflow_spool_segments(
         .await
         {
             Ok(payload) => payload,
-            Err(err) => {
+            Err(_err) => {
                 drop(tx);
                 let _ = writer.await;
+                if let Some(reservation) = reservation {
+                    reservation.finish(0);
+                }
                 return RawPayloadMeta {
                     path: None,
                     size_bytes: 0,
                     truncated: true,
-                    truncated_reason: Some(format!("spool_replay_failed:{err}")),
+                    truncated_reason: Some("spool_replay_failed".to_string()),
                 };
             }
         };
         if tx.send(Bytes::from(payload)).await.is_err() {
+            if let Some(reservation) = reservation {
+                reservation.finish(0);
+            }
             return RawPayloadMeta {
                 path: None,
                 size_bytes: 0,
                 truncated: true,
-                truncated_reason: Some("spool_replay_failed:raw writer closed".to_string()),
+                truncated_reason: Some("spool_replay_failed".to_string()),
             };
         }
     }
     drop(tx);
-    match writer.await {
+    let meta = match writer.await {
         Ok(meta) => meta,
-        Err(err) => RawPayloadMeta {
+        Err(_err) => RawPayloadMeta {
             path: None,
             size_bytes: 0,
             truncated: true,
-            truncated_reason: Some(format!("spool_replay_failed:{err}")),
+            truncated_reason: Some("spool_replay_failed".to_string()),
         },
+    };
+    if let Some(reservation) = reservation {
+        reservation.finish(raw_payload_stored_bytes(&meta));
     }
+    meta
 }
 
 fn remove_raw_overflow_spool_segments(paths: &[PathBuf]) {
     for path in paths {
+        if let Some(directory) = path.parent() {
+            let bytes = fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            if fs::remove_file(path).is_ok() {
+                record_raw_overflow_spool_bytes(directory, -(bytes.min(i64::MAX as u64) as i64));
+            }
+            continue;
+        }
         let _ = fs::remove_file(path);
     }
 }
 
 pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
+    recover_raw_overflow_spools_inner(config, None, None).await;
+}
+
+pub(crate) async fn recover_raw_overflow_spools_with_circuit(state: &AppState) {
+    recover_raw_overflow_spools_inner(
+        &state.config,
+        Some(state.raw_capture_circuit.clone()),
+        Some(state.proxy_raw_async_semaphore.clone()),
+    )
+    .await;
+}
+
+async fn recover_raw_overflow_spools_inner(
+    config: &AppConfig,
+    circuit: Option<Arc<RawCaptureCircuitBreaker>>,
+    writer_semaphore: Option<Arc<Semaphore>>,
+) {
     let directory = config.resolved_proxy_raw_dir().join(RAW_OVERFLOW_SPOOL_DIR);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return,
-        Err(err) => {
-            warn!(path = %directory.display(), error = %err, "failed to scan raw overflow spool directory");
+        Err(_) => {
+            warn!(
+                error_kind = "read_dir_failed",
+                "failed to scan raw overflow spool directory"
+            );
             return;
         }
     };
 
     let mut captures = HashMap::<String, Vec<(PathBuf, RawOverflowSpoolHeader)>>::new();
     let mut corrupt_captures = std::collections::HashSet::new();
-    for entry in entries.flatten() {
+    let mut active_captures_seen = std::collections::HashSet::new();
+    let mut inspected_segments = 0_usize;
+    let mut batch_truncated = false;
+    for (scanned_entries, entry) in entries.enumerate() {
+        if scanned_entries >= RAW_OVERFLOW_SPOOL_RECOVERY_SCAN_LIMIT {
+            batch_truncated = true;
+            break;
+        }
+        if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
+            batch_truncated = true;
+            break;
+        }
+        let Ok(entry) = entry else {
+            inspected_segments += 1;
+            continue;
+        };
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
+            inspected_segments += 1;
             continue;
         }
+        if let Some(active_capture) = raw_overflow_spool_capture_key_from_path(&path)
+            && RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&active_capture)
+        {
+            // Count one live capture once so a long stream cannot monopolize the
+            // bounded recovery budget with its rotated segments.
+            if active_captures_seen.insert(active_capture) {
+                inspected_segments += 1;
+            }
+            continue;
+        }
+        inspected_segments += 1;
         let header = match run_blocking_raw_writer_io({
             let path = path.clone();
             move || read_raw_overflow_spool_segment(&path).map(|(header, _)| header)
@@ -5577,8 +5837,11 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
         .await
         {
             Ok(header) => header,
-            Err(err) => {
-                warn!(path = %path.display(), error = %err, "raw overflow spool is incomplete or corrupt; retaining for inspection");
+            Err(_) => {
+                warn!(
+                    error_kind = "segment_read_failed",
+                    "raw overflow spool is incomplete or corrupt; retaining for inspection"
+                );
                 if let Some(capture_key) = raw_overflow_spool_capture_key_from_path(&path) {
                     corrupt_captures.insert(capture_key);
                 }
@@ -5591,8 +5854,8 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
             .or_default()
             .push((path, header));
     }
-
-    let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
+    let semaphore = writer_semaphore
+        .unwrap_or_else(|| Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config))));
     for (capture_key, mut segments) in captures {
         if corrupt_captures.contains(&capture_key) {
             warn!(
@@ -5605,21 +5868,46 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
         segments.sort_by_key(|(_, header)| header.segment_index);
         let header = match validate_raw_overflow_spool_segments(&segments) {
             Ok(header) => header,
-            Err(err) => {
-                warn!(error = %err, spool_segment_count = segments.len(), "raw overflow spool capture is incomplete or inconsistent; retaining for inspection");
+            Err(_) => {
+                warn!(
+                    error_kind = "segment_sequence_invalid",
+                    spool_segment_count = segments.len(),
+                    "raw overflow spool capture is incomplete or inconsistent; retaining for inspection"
+                );
                 continue;
             }
         };
+        let selected_last_segment = segments
+            .last()
+            .map(|(_, segment_header)| segment_header.segment_index)
+            .unwrap_or(header.segment_index);
         let paths = segments
             .into_iter()
             .map(|(path, _)| path)
             .collect::<Vec<_>>();
-        let meta =
-            replay_raw_overflow_spool_segments(config, semaphore.clone(), paths.clone()).await;
+        let completion_marker = raw_overflow_spool_completion_marker(&directory, &capture_key);
+        let expected_last_segment = fs::read_to_string(&completion_marker)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        if expected_last_segment.is_none() && header.capture_id.is_some() {
+            continue;
+        }
+        if (batch_truncated && expected_last_segment.is_none())
+            || expected_last_segment.is_some_and(|expected| expected != selected_last_segment)
+        {
+            continue;
+        }
+        let meta = replay_raw_overflow_spool_segments(
+            config,
+            semaphore.clone(),
+            paths.clone(),
+            circuit.clone(),
+        )
+        .await;
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
             remove_raw_overflow_spool_segments(&paths);
+            let _ = fs::remove_file(completion_marker);
             info!(
-                invoke_id = %header.invoke_id,
                 kind = %header.kind,
                 replay_count = 1,
                 spool_segment_count = paths.len(),
@@ -5627,7 +5915,6 @@ pub(crate) async fn recover_raw_overflow_spools(config: &AppConfig) {
             );
         } else {
             warn!(
-                invoke_id = %header.invoke_id,
                 kind = %header.kind,
                 spool_segment_count = paths.len(),
                 reason = ?meta.truncated_reason,
@@ -5644,6 +5931,10 @@ pub(crate) struct AsyncStreamingRawPayloadWriter {
     local_truncated_reason: Option<String>,
     local_truncated: bool,
     spool: Option<RawOverflowSpool>,
+    reservation: Option<RawCaptureReservation>,
+    reservation_shared: Option<Arc<std::sync::Mutex<Option<RawCaptureReservation>>>>,
+    reserved_payload_bytes: u64,
+    reservation_circuit: Option<Arc<RawCaptureCircuitBreaker>>,
 }
 
 static RAW_ASYNC_WRITER_QUEUED_BYTES: std::sync::atomic::AtomicUsize =
@@ -5701,6 +5992,17 @@ impl AsyncStreamingRawPayloadWriter {
         enabled: bool,
         wire_content_encoding: Option<&str>,
     ) -> Self {
+        Self::new_with_expected_size(state, invoke_id, kind, enabled, wire_content_encoding, None)
+    }
+
+    pub(crate) fn new_with_expected_size(
+        state: &AppState,
+        invoke_id: &str,
+        kind: &'static str,
+        enabled: bool,
+        wire_content_encoding: Option<&str>,
+        expected_size_bytes: Option<u64>,
+    ) -> Self {
         if !enabled {
             return Self {
                 tx: None,
@@ -5709,8 +6011,33 @@ impl AsyncStreamingRawPayloadWriter {
                 local_truncated_reason: None,
                 local_truncated: false,
                 spool: None,
+                reservation: None,
+                reservation_shared: None,
+                reserved_payload_bytes: 0,
+                reservation_circuit: None,
             };
         }
+
+        let reservation = match state
+            .raw_capture_circuit
+            .admit(expected_size_bytes.unwrap_or_default())
+        {
+            Ok(reservation) => reservation,
+            Err(_) => {
+                return Self {
+                    tx: None,
+                    meta_rx: None,
+                    observed_size_bytes: 0,
+                    local_truncated_reason: Some("storage_suppressed".to_string()),
+                    local_truncated: false,
+                    spool: None,
+                    reservation: None,
+                    reservation_shared: None,
+                    reserved_payload_bytes: 0,
+                    reservation_circuit: None,
+                };
+            }
+        };
 
         let path = raw_payload_path_for_kind(
             &state.config.resolved_proxy_raw_dir(),
@@ -5750,9 +6077,14 @@ impl AsyncStreamingRawPayloadWriter {
                         local_truncated_reason: None,
                         local_truncated: false,
                         spool: Some(spool),
+                        reservation: Some(reservation),
+                        reservation_shared: None,
+                        reserved_payload_bytes: expected_size_bytes.unwrap_or_default(),
+                        reservation_circuit: Some(state.raw_capture_circuit.clone()),
                     }
                 }
                 Err(err) => {
+                    reservation.finish(0);
                     warn!(
                         capture_path = "capture_unavailable",
                         capture_unavailable_reason = "spool_capacity",
@@ -5771,6 +6103,10 @@ impl AsyncStreamingRawPayloadWriter {
                         ),
                         local_truncated: true,
                         spool: None,
+                        reservation: None,
+                        reservation_shared: None,
+                        reserved_payload_bytes: 0,
+                        reservation_circuit: None,
                     }
                 }
             };
@@ -5785,6 +6121,8 @@ impl AsyncStreamingRawPayloadWriter {
             writer_max,
             "raw capture assigned to compression writer"
         );
+        let reservation_shared = Arc::new(std::sync::Mutex::new(Some(reservation)));
+        let reservation_shared_for_task = reservation_shared.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let meta = write_direct_streaming_raw_payload_to_file_tracked(
@@ -5794,6 +6132,11 @@ impl AsyncStreamingRawPayloadWriter {
                 codec,
                 rx,
             );
+            if let Ok(mut reservation) = reservation_shared_for_task.lock()
+                && let Some(reservation) = reservation.take()
+            {
+                reservation.finish(raw_payload_stored_bytes(&meta));
+            }
             let _ = meta_tx.send(meta);
         });
 
@@ -5804,11 +6147,15 @@ impl AsyncStreamingRawPayloadWriter {
             local_truncated_reason: None,
             local_truncated: false,
             spool: None,
+            reservation: None,
+            reservation_shared: Some(reservation_shared),
+            reserved_payload_bytes: expected_size_bytes.unwrap_or_default(),
+            reservation_circuit: Some(state.raw_capture_circuit.clone()),
         }
     }
 
     fn mark_writer_closed(&mut self, message: String) {
-        self.local_truncated = true;
+        self.local_truncated = message != "storage_suppressed";
         self.local_truncated_reason.get_or_insert_with(|| {
             if message.starts_with("capture_unavailable:") {
                 message
@@ -5824,6 +6171,29 @@ impl AsyncStreamingRawPayloadWriter {
             return;
         }
         self.observed_size_bytes = self.observed_size_bytes.saturating_add(bytes.len() as i64);
+        let required_bytes = self.observed_size_bytes.max(0) as u64;
+        let additional_bytes = required_bytes.saturating_sub(self.reserved_payload_bytes);
+        if additional_bytes > 0 {
+            let result = if let Some(reservation) = self.reservation.as_mut() {
+                reservation.extend(additional_bytes)
+            } else if let Some(reservation_shared) = self.reservation_shared.as_ref() {
+                match reservation_shared.lock() {
+                    Ok(mut reservation) => reservation
+                        .as_mut()
+                        .map_or(Ok(()), |reservation| reservation.extend(additional_bytes)),
+                    Err(_) => Err(RawCaptureAdmissionError {
+                        reason: "inventory_unready",
+                    }),
+                }
+            } else {
+                Ok(())
+            };
+            if result.is_err() {
+                self.mark_writer_closed("storage_suppressed".to_string());
+                return;
+            }
+            self.reserved_payload_bytes = required_bytes;
+        }
         if let Some(spool) = self.spool.as_mut() {
             if let Err(err) = spool.append(bytes) {
                 self.spool = None;
@@ -5854,7 +6224,11 @@ impl AsyncStreamingRawPayloadWriter {
     pub(crate) async fn finish(mut self) -> RawPayloadMeta {
         self.tx.take();
         let mut meta = if let Some(spool) = self.spool.take() {
-            spool.finish(self.observed_size_bytes).await
+            let meta = spool.finish(self.observed_size_bytes).await;
+            if let Some(reservation) = self.reservation.take() {
+                reservation.finish(raw_payload_stored_bytes(&meta));
+            }
+            meta
         } else {
             match self.meta_rx.take() {
                 Some(meta_rx) => match meta_rx.await {
@@ -5872,16 +6246,21 @@ impl AsyncStreamingRawPayloadWriter {
         meta.size_bytes = self.observed_size_bytes;
         if self.local_truncated {
             meta.truncated = true;
+        }
+        if let Some(reason) = self.local_truncated_reason.as_deref() {
             if meta.truncated_reason.is_none() {
-                meta.truncated_reason = self.local_truncated_reason.clone();
+                meta.truncated_reason = Some(reason.to_string());
             }
-            if self
-                .local_truncated_reason
-                .as_deref()
-                .is_some_and(|reason| reason.starts_with("capture_unavailable:"))
+            if (reason.starts_with("capture_unavailable:") || reason == "storage_suppressed")
                 && let Some(path) = meta.path.take()
             {
+                let stored_bytes = fs::metadata(&path)
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default();
                 let _ = fs::remove_file(path);
+                if let Some(circuit) = self.reservation_circuit.as_ref() {
+                    circuit.record_deleted_bytes(stored_bytes);
+                }
             }
         }
         meta
@@ -6503,6 +6882,10 @@ mod raw_overflow_spool_tests {
             local_truncated_reason: None,
             local_truncated: false,
             spool: None,
+            reservation: None,
+            reservation_shared: None,
+            reserved_payload_bytes: 0,
+            reservation_circuit: None,
         };
 
         writer.append(b"first");
@@ -6525,5 +6908,13 @@ mod raw_overflow_spool_tests {
             raw_overflow_payload_limit_reason(Some(2048), 1024),
             "spool_capacity_exceeded"
         );
+    }
+
+    #[test]
+    fn storage_suppression_is_not_payload_truncation() {
+        let meta = storage_suppressed_raw_payload_meta(128);
+        assert!(!meta.truncated);
+        assert_eq!(meta.truncated_reason.as_deref(), Some("storage_suppressed"));
+        assert!(meta.path.is_none());
     }
 }

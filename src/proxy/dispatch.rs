@@ -2052,6 +2052,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 "stream_invocation_drop_guard",
             )
         });
+        let upstream_response_content_length = upstream_response.content_length();
         let mut stream = upstream_response.into_bytes_stream();
         let ttfb_started = Instant::now();
         let stream_started = Instant::now();
@@ -2061,12 +2062,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut active_stream_timeout =
             prefetched_stream_timeout_for_task.or(stream_timeout_for_task);
         let mut response_preview = RawResponsePreviewBuffer::default();
-        let mut response_raw_writer = AsyncStreamingRawPayloadWriter::new(
+        let mut response_raw_writer = AsyncStreamingRawPayloadWriter::new_with_expected_size(
             state_for_task.as_ref(),
             &invoke_id_for_task,
             "response",
             proxy_settings.response_body_logging_enabled,
             upstream_content_encoding_for_task.as_deref(),
+            upstream_response_content_length,
         );
         // A pool attempt observes the same downstream response stream as its invocation.
         // Capture the bytes once and attach the finalized payload to both records below.

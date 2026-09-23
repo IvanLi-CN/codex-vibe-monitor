@@ -353,6 +353,52 @@ async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_curso
 }
 
 #[tokio::test]
+async fn system_raw_metrics_inventory_revalidates_existing_paths_after_hydration() {
+    use std::time::Duration as StdDuration;
+
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "system-status-raw-revalidation",
+        StdDuration::from_millis(100),
+    )
+    .await;
+    let raw_dir = state.config.resolved_proxy_raw_dir();
+    fs::create_dir_all(&raw_dir).expect("create raw dir");
+    let response_path = raw_dir.join("revalidated-response.bin");
+    fs::write(&response_path, b"small").expect("write initial response raw");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, raw_response, response_raw_path, response_raw_size) VALUES (?1, ?2, 'proxy', '', ?3, 5)",
+    )
+    .bind("revalidation-invocation")
+    .bind("2026-08-04T00:00:00.000Z")
+    .bind(response_path.to_string_lossy().as_ref())
+    .execute(&state.pool)
+    .await
+    .expect("insert invocation with response raw");
+
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("initial inventory refresh");
+    let initial = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load initial raw metrics");
+    assert_eq!(initial.raw_bodies.bytes, 5);
+
+    fs::write(&response_path, b"expanded-response").expect("expand response raw");
+    hydrate_raw_capture_circuit(state.as_ref())
+        .await
+        .expect("rehydrate raw circuit");
+    refresh_system_raw_payload_metrics_inventory(state.as_ref())
+        .await
+        .expect("revalidate existing raw path");
+    let refreshed = load_system_status_uncached(state.as_ref())
+        .await
+        .expect("load revalidated raw metrics");
+    assert_eq!(refreshed.raw_bodies.bytes, 17);
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write() {
     use std::time::Duration as StdDuration;
 
@@ -507,6 +553,30 @@ async fn runtime_pressure_health_serializes_without_sql() {
         payload["retentionRecovery"]["state"].as_str(),
         Some("unknown" | "healthy" | "recovering" | "deferred" | "degraded")
     ));
+    assert!(matches!(
+        payload["rawCapture"]["state"].as_str(),
+        Some("unknown" | "capturing" | "storage_suppressed")
+    ));
+    assert!(
+        payload["rawCapture"]["rawBytes"].is_null() || payload["rawCapture"]["rawBytes"].is_u64()
+    );
+    assert!(payload["rawCapture"]["reservedBytes"].is_u64());
+    assert!(payload["rawCapture"]["rawCloseBytes"].is_u64());
+    assert!(payload["rawCapture"]["rawResumeBytes"].is_u64());
+    assert!(payload["rawCapture"]["availableCloseBytes"].is_u64());
+    assert!(payload["rawCapture"]["availableResumeBytes"].is_u64());
+    let raw_capture_fields = payload["rawCapture"]
+        .as_object()
+        .expect("serialize raw capture as a bounded object");
+    for field in raw_capture_fields.keys() {
+        let normalized = field.to_ascii_lowercase();
+        assert!(
+            !["payload", "sql", "account", "path"]
+                .iter()
+                .any(|sensitive| normalized.contains(sensitive)),
+            "raw capture status must not add sensitive field {field}"
+        );
+    }
     assert!(
         payload["retentionRecovery"]["preparedCount"].is_null()
             || payload["retentionRecovery"]["preparedCount"].is_u64()
@@ -1702,6 +1772,9 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -2045,6 +2118,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
         semaphore: state.semaphore.clone(),
         proxy_request_in_flight: state.proxy_request_in_flight.clone(),
         proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
+        raw_capture_circuit: state.raw_capture_circuit.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -2108,6 +2182,7 @@ fn clone_state_with_retry_delay_overrides(
         semaphore: state.semaphore.clone(),
         proxy_request_in_flight: state.proxy_request_in_flight.clone(),
         proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
+        raw_capture_circuit: state.raw_capture_circuit.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -2199,6 +2274,9 @@ pub(crate) async fn test_state_from_existing_pool(
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+            config.resolved_proxy_raw_dir(),
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

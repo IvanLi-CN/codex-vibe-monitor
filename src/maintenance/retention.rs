@@ -39,6 +39,36 @@ tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
     static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
     static RETENTION_TRY_ARCHIVE_LOCKS: ();
+    static RETENTION_RAW_CAPTURE_CIRCUIT: RefCell<Option<Arc<RawCaptureCircuitBreaker>>>;
+}
+
+async fn mark_retention_raw_inventory_reset_intent(pool: &Pool<Sqlite>) -> Result<()> {
+    let recovery_pending = RETENTION_RAW_CAPTURE_CIRCUIT
+        .try_with(|circuit| {
+            if let Some(circuit) = circuit.borrow().as_ref() {
+                circuit.mark_inventory_preparing()
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    mark_system_raw_payload_metrics_inventory_reset_pending(pool, 128, recovery_pending).await?;
+    Ok(())
+}
+
+pub(crate) async fn run_data_retention_maintenance_with_circuit(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+    circuit: Arc<RawCaptureCircuitBreaker>,
+) -> Result<RetentionRunSummary> {
+    RETENTION_RAW_CAPTURE_CIRCUIT
+        .scope(
+            RefCell::new(Some(circuit)),
+            run_data_retention_maintenance(pool, config, dry_run, shutdown),
+        )
+        .await
 }
 
 pub(crate) async fn retention_try_archive_locks_scope<F: Future>(future: F) -> F::Output {
@@ -3967,7 +3997,15 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
-    match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
+    match run_data_retention_maintenance_with_circuit(
+        &state.pool,
+        &state.config,
+        None,
+        Some(cancel),
+        state.raw_capture_circuit.clone(),
+    )
+    .await
+    {
         Ok(summary) => {
             if summary.deferred {
                 debug!(
@@ -3977,34 +4015,8 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 invalidate_system_status_cache(state.as_ref()).await;
                 return false;
             }
-            let touched_anything = summary.touched_anything();
-            if touched_anything && !summary.dry_run {
-                let task_run = tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => return false,
-                    result = begin_system_task_run_admitted(
-                        state.as_ref(),
-                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
-                        SystemTaskKind::RetentionArchive,
-                        trigger,
-                        Some("retention maintenance completed a write pass".to_string()),
-                    ) => result.ok(),
-                };
-                if let Some(handle) = task_run.as_ref() {
-                    let (brief, detail) = summarize_retention_run_for_system_task(&summary);
-                    let _ = finish_system_task_run_reliably(
-                        state.as_ref(),
-                        Some(cancel),
-                        handle,
-                        SystemTaskStatus::Success,
-                        Some(brief),
-                        Some(detail),
-                    )
-                    .await;
-                }
-            }
-            // A cold-compression rename changes the physical path as well. Reset the
-            // incremental inventory so it cannot count both the retired and new blob.
+            // Commit the bounded inventory reset before task bookkeeping or cancellation can
+            // return. Raw path mutations must never leave the monotonic inventory stale.
             let reset_pending = match crate::system_raw_payload_metrics_inventory_reset_pending(
                 &state.pool,
             )
@@ -4041,6 +4053,32 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         invalidate_system_status_cache(state.as_ref()).await;
                         return false;
                     }
+                }
+            }
+            let touched_anything = summary.touched_anything();
+            if touched_anything && !summary.dry_run {
+                let task_run = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return false,
+                    result = begin_system_task_run_admitted(
+                        state.as_ref(),
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+                        SystemTaskKind::RetentionArchive,
+                        trigger,
+                        Some("retention maintenance completed a write pass".to_string()),
+                    ) => result.ok(),
+                };
+                if let Some(handle) = task_run.as_ref() {
+                    let (brief, detail) = summarize_retention_run_for_system_task(&summary);
+                    let _ = finish_system_task_run_reliably(
+                        state.as_ref(),
+                        Some(cancel),
+                        handle,
+                        SystemTaskStatus::Success,
+                        Some(brief),
+                        Some(detail),
+                    )
+                    .await;
                 }
             }
             invalidate_system_status_cache(state.as_ref()).await;
@@ -4439,6 +4477,7 @@ async fn run_data_retention_maintenance_inner(
     .context("failed to archive forward proxy attempts during retention")?;
     summary.forward_proxy_attempt_rows_archived += proxy_archive.0;
     summary.archive_batches_touched += proxy_archive.1;
+    summary.raw_files_removed += proxy_archive.2;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -4456,6 +4495,7 @@ async fn run_data_retention_maintenance_inner(
     .context("failed to archive pool upstream request attempts during retention")?;
     summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
     summary.archive_batches_touched += pool_attempt_archive.1;
+    summary.raw_files_removed += pool_attempt_archive.2;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -4671,6 +4711,9 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
+            if !dry_run && !prepare_raw_compression_inventory_reset(pool).await? {
+                continue;
+            }
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
                 candidate.id,
@@ -4747,6 +4790,16 @@ pub(crate) fn accumulate_raw_compression_summary(
     target.estimated_bytes_after += next.estimated_bytes_after;
 }
 
+async fn prepare_raw_compression_inventory_reset(pool: &Pool<Sqlite>) -> Result<bool> {
+    let Some(admission) = acquire_retention_write_admission("raw_metrics_inventory_reset").await
+    else {
+        return Ok(false);
+    };
+    mark_retention_raw_inventory_reset_intent(pool).await?;
+    drop(admission);
+    Ok(true)
+}
+
 pub(crate) async fn compress_cold_proxy_raw_payload_lane(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -4813,6 +4866,10 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
             rows_processed += 1;
+
+            if !dry_run && !prepare_raw_compression_inventory_reset(pool).await? {
+                continue;
+            }
 
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
@@ -5653,11 +5710,13 @@ pub(crate) async fn prune_old_invocation_details(
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
+            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
+            if !raw_paths.is_empty() {
+                mark_retention_raw_inventory_reset_intent(pool).await?;
+            }
             drop(admission);
             rows_pruned += group.len();
             archive_batches += 1;
-
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
     }
@@ -6074,11 +6133,14 @@ pub(crate) async fn archive_old_invocations(
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
+            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
+            if !raw_paths.is_empty() {
+                mark_retention_raw_inventory_reset_intent(pool).await?;
+            }
             drop(admission);
             rows_archived += group.len();
             archive_batches += 1;
             retention_recovery_record_progress();
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
         }
     }
@@ -6093,7 +6155,7 @@ pub(crate) async fn archive_timestamped_dataset(
     select_sql: &str,
     cutoff: String,
     dry_run: bool,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize)> {
     if dry_run {
         let dry_run_sql = match spec.dataset {
             "forward_proxy_attempts" => {
@@ -6136,11 +6198,13 @@ pub(crate) async fn archive_timestamped_dataset(
                 .map(|batch| batch.row_count as usize)
                 .sum(),
             batch_counts.len(),
+            0,
         ));
     }
 
     let mut rows_archived = 0usize;
     let mut archive_batches = 0usize;
+    let mut raw_files_removed = 0usize;
 
     loop {
         let candidate_limit = retention_candidate_limit(config, "timestamped_archive");
@@ -6217,7 +6281,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await,
             )?
             else {
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             if spec.dataset == "pool_upstream_request_attempts" {
                 set_archive_batch_coverage_from_local_rows(
@@ -6248,14 +6312,14 @@ pub(crate) async fn archive_timestamped_dataset(
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
                 Ok(value) => value,
-                Err(_) => return Ok((rows_archived, archive_batches)),
+                Err(_) => return Ok((rows_archived, archive_batches, raw_files_removed)),
             };
             if actual_sha256 != archive_outcome.sha256 {
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             }
             let Some(admission) = acquire_retention_write_admission("timestamped_archive").await
             else {
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
@@ -6274,7 +6338,7 @@ pub(crate) async fn archive_timestamped_dataset(
             {
                 tx.rollback().await?;
                 drop(admission);
-                return Ok((rows_archived, archive_batches));
+                return Ok((rows_archived, archive_batches, raw_files_removed));
             }
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             if spec.dataset == "pool_upstream_request_attempts" {
@@ -6410,18 +6474,26 @@ pub(crate) async fn archive_timestamped_dataset(
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
-            drop(admission);
-            rows_archived += group.len();
-            archive_batches += 1;
             if spec.dataset == "pool_upstream_request_attempts" {
                 let raw_paths =
                     filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
-                let _ = delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                if !raw_paths.is_empty() {
+                    mark_retention_raw_inventory_reset_intent(pool).await?;
+                }
+                drop(admission);
+                rows_archived += group.len();
+                archive_batches += 1;
+                raw_files_removed +=
+                    delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+            } else {
+                drop(admission);
+                rows_archived += group.len();
+                archive_batches += 1;
             }
         }
     }
 
-    Ok((rows_archived, archive_batches))
+    Ok((rows_archived, archive_batches, raw_files_removed))
 }
 
 pub(crate) fn archive_timestamped_dataset_month_key(

@@ -550,9 +550,7 @@ pub(crate) async fn store_raw_payload_file(
             meta.path = Some(path.to_string_lossy().to_string());
         }
         Err(err) => {
-            if codec != RAW_CODEC_IDENTITY {
-                let _ = fs::remove_file(&path);
-            }
+            let _ = fs::remove_file(&path);
             meta.truncated = true;
             meta.truncated_reason = Some(format!("write_failed:{err}"));
         }
@@ -1427,12 +1425,8 @@ pub(crate) fn read_proxy_raw_bytes(
             Err(err) => return Err(err),
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("raw payload file not found for path {path}"),
-        )
-    }))
+    Err(last_error
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "raw payload file not found")))
 }
 
 pub(crate) fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8>> {
@@ -1446,7 +1440,7 @@ pub(crate) fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Re
         decoder.read_to_end(&mut decoded).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("failed to decompress raw payload {}: {err}", path.display()),
+                format!("failed to decompress raw payload: {err}"),
             )
         })?;
         Ok(decoded)
@@ -1458,7 +1452,7 @@ pub(crate) fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Re
         zstd::stream::decode_all(bytes.as_slice()).map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("failed to decompress raw payload {}: {err}", path.display()),
+                format!("failed to decompress raw payload: {err}"),
             )
         })
     } else {

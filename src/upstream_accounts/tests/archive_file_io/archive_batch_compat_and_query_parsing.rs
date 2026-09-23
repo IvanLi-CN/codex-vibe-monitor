@@ -4127,6 +4127,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
     let http_clients = HttpClients::build(&config).expect("build http clients");
     let (broadcaster, _) = broadcast::channel(8);
     let proxy_raw_async_writer_limit = proxy_raw_async_writer_limit(&config);
+    let raw_capture_root = config.resolved_proxy_raw_dir();
     let pool = test_pool().await;
     Arc::new(AppState {
         config,
@@ -4153,6 +4154,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         semaphore: Arc::new(Semaphore::new(4)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
+        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(raw_capture_root)),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
