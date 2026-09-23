@@ -37,6 +37,7 @@
 - [x] Advance the repo-managed catalog to `openai-standard-2026-09-23` with the official Astra/Sol/Luna Standard short- and long-context rates.
 - [x] Refresh only unchanged temporary Sol/Luna seed rows, insert Astra idempotently, and preserve compatibility-only Terra, custom catalogs, edited rows, and persisted historical costs.
 - [x] Add the official GPT-6 set to proxy presets, Settings/routing selection, structured model identity, and `/v1/models`; keep Terra out of official discovery.
+- [x] Serialize the nullable reported-cache-write column migration with a SQLite write transaction and verify concurrent independent-pool re-entry.
 - [x] Estimate exact ordinary-input/cache-read/cache-write buckets when the upstream reports cache-write usage, preserve inferred fallback when absent, and account for actual supported/unsupported service tiers and the long-context threshold.
 - [x] Resolve valid GPT-6 date aliases while leaving invalid and preview variants unpriced; do not add local model-specific request-parameter capability validation.
 - [x] Add targeted backend/web regression coverage.
@@ -88,8 +89,8 @@ The checks below document the completed GPT-5.6 and temporary GPT-6 delivery onl
 
 - Passed: targeted Rust pricing, seed-upgrade, schema-upgrade, `/v1/models`, invocation API, legacy archive, and cache-write usage-summary tests.
 - Passed: targeted Web unit tests for GPT-6 identity, invocation detail, available model options, and demo catalog fixtures (46 tests).
-- Passed: `stateful-sqlite` (1,315 tests), `archive-file-io` (273 tests), `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings`.
-- Passed: full Web unit suite (1,551 passed, 6 skipped), `bun run typecheck:web`, Web production build, and `bun run lint:web` (85 warnings, no errors).
+- Passed on the final backend source: `stateful-sqlite` (1,316 tests), `archive-file-io` (273 tests), `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings`. The added independent-pool migration regression also passed in isolation.
+- Passed on the unchanged Web source surface before the backend-only migration repair: full Web unit suite (1,551 passed, 6 skipped), `bun run typecheck:web`, Web production build, and `bun run lint:web` (85 warnings, no errors).
 - Passed: targeted Storybook interactions for invocation cache-write detail and GPT-6 model identity (2 tests). The complete Storybook suite could not run in the testbox because its Chromium runtime lacks required system libraries; the Settings page interaction story remains manual because its existing page-wide axe audit reports unrelated accessibility violations. The complete mock-only Settings page is captured from `ui_demo`.
 - Validation note: the first full Web unit run had one unrelated flaky assertion; its isolated rerun and the subsequent full-suite retry passed.
 - Owner-confirmed and persisted: the mock-only Settings model selector, pricing table, and invocation detail showing exact upstream cache-write usage. See the GPT-6 evidence entries in the canonical spec's `Visual Evidence` section.
