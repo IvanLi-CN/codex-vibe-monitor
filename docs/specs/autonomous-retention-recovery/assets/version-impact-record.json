@@ -56,9 +56,9 @@
   "compatibility_evidence": {
     "public_api": {
       "change": "compatible",
-      "supported_consumer_range": "Clients that ignore the optional retentionRecovery and rawCapture response fields.",
+      "supported_consumer_range": "Clients that ignore the optional retentionRecovery, rawCapture, and retentionWriteHealth.rawReferenceCheckMs response fields.",
       "evidence": [
-      "SystemStatusResponse adds runtimePressureHealth.retentionRecovery and runtimePressureHealth.rawCapture without removing or changing existing fields."
+      "SystemStatusResponse adds runtimePressureHealth.retentionRecovery, runtimePressureHealth.rawCapture, and the nullable runtimePressureHealth.retentionWriteHealth.rawReferenceCheckMs timing without removing or changing existing fields."
       ]
     },
     "persistent_state": {
