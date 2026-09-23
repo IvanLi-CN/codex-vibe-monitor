@@ -49,6 +49,8 @@ struct RawCaptureCircuitState {
     backlog_non_growing: Option<bool>,
     updated_at: Option<String>,
     admission_initialized: bool,
+    inventory_generation: u64,
+    accounting_generation: u64,
 }
 
 impl Default for RawCaptureCircuitState {
@@ -77,6 +79,8 @@ impl Default for RawCaptureCircuitState {
             backlog_non_growing: test_mode.then_some(true),
             updated_at: None,
             admission_initialized: test_mode,
+            inventory_generation: 0,
+            accounting_generation: 0,
         }
     }
 }
@@ -120,54 +124,44 @@ impl RawCaptureCircuitBreaker {
     pub(crate) fn hydrate(
         &self,
         inventory_state: &str,
-        circuit_state: Option<&str>,
-        circuit_reason: Option<&str>,
-        raw_bytes: u64,
-        available_bytes: Option<u64>,
-        expired_backlog_count: Option<u64>,
-        backlog_non_growing: Option<bool>,
+        _circuit_state: Option<&str>,
+        _circuit_reason: Option<&str>,
+        _raw_bytes: u64,
+        _available_bytes: Option<u64>,
+        _expired_backlog_count: Option<u64>,
+        _backlog_non_growing: Option<bool>,
         updated_at: Option<String>,
     ) {
         let mut state = self
             .state
             .lock()
             .expect("raw capture circuit mutex poisoned");
-        state.inventory_state = inventory_state.to_string();
-        state.updated_at = updated_at;
-        if inventory_state != "ready" {
-            state.raw_bytes = None;
-            state.available_bytes = None;
-            state.expired_backlog_count = None;
-            state.backlog_non_growing = None;
-            state.state = CIRCUIT_STATE_UNKNOWN;
-            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
-            state.admission_initialized = false;
-            return;
-        }
-        state.raw_bytes = Some(raw_bytes);
-        state.available_bytes = if cfg!(test) {
-            available_bytes.or(state.available_bytes).or(Some(u64::MAX))
+        state.inventory_generation = state.inventory_generation.saturating_add(1);
+        state.inventory_state = if inventory_state == "ready" {
+            "preparing".to_string()
         } else {
-            filesystem_available_bytes(&self.raw_root)
+            inventory_state.to_string()
         };
-        state.expired_backlog_count = expired_backlog_count;
-        state.backlog_non_growing = backlog_non_growing;
-        let Some(persisted_state) = circuit_state
-            .filter(|value| matches!(*value, CIRCUIT_STATE_SUPPRESSED | CIRCUIT_STATE_CAPTURING))
-        else {
-            state.state = CIRCUIT_STATE_UNKNOWN;
-            state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
-            state.admission_initialized = false;
-            return;
-        };
-        state.state = match persisted_state {
-            CIRCUIT_STATE_SUPPRESSED => CIRCUIT_STATE_SUPPRESSED,
-            CIRCUIT_STATE_CAPTURING => CIRCUIT_STATE_CAPTURING,
-            _ => unreachable!("persisted state was validated above"),
-        };
-        state.admission_initialized = true;
-        state.reason = normalize_reason(circuit_reason);
-        evaluate_locked(&mut state, 0, false);
+        state.updated_at = updated_at;
+        state.raw_bytes = None;
+        state.available_bytes = None;
+        state.expired_backlog_count = _expired_backlog_count;
+        state.backlog_non_growing = _backlog_non_growing;
+        state.state = CIRCUIT_STATE_UNKNOWN;
+        state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
+        state.admission_initialized = false;
+    }
+
+    pub(crate) fn inventory_checkpoint(&self) -> (u64, u64, Option<u64>) {
+        let state = self
+            .state
+            .lock()
+            .expect("raw capture circuit mutex poisoned");
+        (
+            state.inventory_generation,
+            state.accounting_generation,
+            state.raw_bytes,
+        )
     }
 
     pub(crate) fn update_inventory(
@@ -177,10 +171,33 @@ impl RawCaptureCircuitBreaker {
         available_bytes: Option<u64>,
         expired_backlog_count: Option<u64>,
     ) {
+        let (generation, accounting_generation, _) = self.inventory_checkpoint();
+        let _ = self.update_inventory_if_current(
+            generation,
+            accounting_generation,
+            inventory_state,
+            raw_bytes,
+            available_bytes,
+            expired_backlog_count,
+        );
+    }
+
+    pub(crate) fn update_inventory_if_current(
+        &self,
+        generation: u64,
+        accounting_generation: u64,
+        inventory_state: &str,
+        raw_bytes: u64,
+        available_bytes: Option<u64>,
+        expired_backlog_count: Option<u64>,
+    ) -> bool {
         let mut state = self
             .state
             .lock()
             .expect("raw capture circuit mutex poisoned");
+        if state.inventory_generation != generation {
+            return false;
+        }
         state.inventory_state = inventory_state.to_string();
         state.updated_at = Some(Utc::now().to_rfc3339());
         if inventory_state != "ready" {
@@ -191,24 +208,27 @@ impl RawCaptureCircuitBreaker {
             state.admission_initialized = false;
             state.state = CIRCUIT_STATE_UNKNOWN;
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
-            return;
+            return true;
         }
-        if let (Some(previous), Some(current)) =
-            (state.expired_backlog_count, expired_backlog_count)
-        {
-            state.backlog_non_growing = Some(current <= previous);
-        } else {
-            state.backlog_non_growing = None;
-        }
+        state.backlog_non_growing = match (state.expired_backlog_count, expired_backlog_count) {
+            (Some(previous), Some(current)) => Some(current <= previous),
+            (None, Some(_)) => Some(true),
+            _ => None,
+        };
         state.expired_backlog_count = expired_backlog_count;
         state.admission_initialized = true;
-        state.raw_bytes = Some(raw_bytes);
+        state.raw_bytes = Some(if state.accounting_generation == accounting_generation {
+            raw_bytes
+        } else {
+            raw_bytes.max(state.raw_bytes.unwrap_or_default())
+        });
         state.available_bytes = if cfg!(test) {
             available_bytes.or(state.available_bytes).or(Some(u64::MAX))
         } else {
             filesystem_available_bytes(&self.raw_root)
         };
         evaluate_locked(&mut state, 0, false);
+        true
     }
 
     pub(crate) fn mark_inventory_preparing(&self) {
@@ -216,6 +236,7 @@ impl RawCaptureCircuitBreaker {
             .state
             .lock()
             .expect("raw capture circuit mutex poisoned");
+        state.inventory_generation = state.inventory_generation.saturating_add(1);
         state.inventory_state = "preparing".to_string();
         state.admission_initialized = false;
         state.raw_bytes = None;
@@ -280,6 +301,9 @@ impl RawCaptureCircuitBreaker {
         if let Some(raw_bytes) = state.raw_bytes.as_mut() {
             *raw_bytes = raw_bytes.saturating_sub(bytes);
         }
+        if bytes > 0 {
+            state.accounting_generation = state.accounting_generation.saturating_add(1);
+        }
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
         }
@@ -295,6 +319,9 @@ impl RawCaptureCircuitBreaker {
         state.reserved_bytes = state.reserved_bytes.saturating_sub(reserved_bytes);
         if let Some(raw_bytes) = state.raw_bytes.as_mut() {
             *raw_bytes = raw_bytes.saturating_add(actual_bytes);
+        }
+        if actual_bytes > 0 {
+            state.accounting_generation = state.accounting_generation.saturating_add(1);
         }
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
@@ -381,16 +408,6 @@ impl Drop for RawCaptureReservation {
     }
 }
 
-fn normalize_reason(reason: Option<&str>) -> Option<&'static str> {
-    match reason {
-        Some(CIRCUIT_REASON_RAW_STORE_LIMIT) => Some(CIRCUIT_REASON_RAW_STORE_LIMIT),
-        Some(CIRCUIT_REASON_FILESYSTEM_LOW) => Some(CIRCUIT_REASON_FILESYSTEM_LOW),
-        Some(CIRCUIT_REASON_BOTH) => Some(CIRCUIT_REASON_BOTH),
-        Some(CIRCUIT_REASON_INVENTORY_UNREADY) => Some(CIRCUIT_REASON_INVENTORY_UNREADY),
-        _ => None,
-    }
-}
-
 fn evaluate_locked(state: &mut RawCaptureCircuitState, requested_bytes: u64, reopening: bool) {
     if state.inventory_state != "ready" {
         state.state = CIRCUIT_STATE_UNKNOWN;
@@ -441,8 +458,10 @@ fn evaluate_locked(state: &mut RawCaptureCircuitState, requested_bytes: u64, reo
                 CIRCUIT_REASON_BOTH
             } else if raw_limited {
                 CIRCUIT_REASON_RAW_STORE_LIMIT
-            } else {
+            } else if filesystem_limited {
                 CIRCUIT_REASON_FILESYSTEM_LOW
+            } else {
+                state.reason.unwrap_or(CIRCUIT_REASON_INVENTORY_UNREADY)
             });
             return;
         }
@@ -508,6 +527,7 @@ mod tests {
             Some(backlog_non_growing),
             None,
         );
+        circuit.update_inventory("ready", raw_bytes, Some(available_bytes), Some(0));
         circuit
     }
 
@@ -605,5 +625,95 @@ mod tests {
             .admit(2)
             .expect_err("second reservation crosses close watermark");
         assert_eq!(error.reason, CIRCUIT_REASON_RAW_STORE_LIMIT);
+    }
+
+    #[test]
+    fn inventory_refresh_keeps_concurrent_completed_bytes() {
+        let circuit = ready(100, RAW_CAPTURE_RESUME_AVAILABLE_BYTES, true);
+        let (generation, accounting_generation, _) = circuit.inventory_checkpoint();
+        let reservation = circuit.admit(20).expect("reservation should fit");
+        reservation.finish(20);
+
+        assert!(circuit.update_inventory_if_current(
+            generation,
+            accounting_generation,
+            "ready",
+            100,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+        ));
+        assert_eq!(circuit.snapshot().raw_bytes, Some(120));
+    }
+
+    #[test]
+    fn reset_invalidates_an_in_flight_inventory_refresh() {
+        let circuit = ready(100, RAW_CAPTURE_RESUME_AVAILABLE_BYTES, true);
+        let (generation, accounting_generation, _) = circuit.inventory_checkpoint();
+        circuit.mark_inventory_preparing();
+        assert!(!circuit.update_inventory_if_current(
+            generation,
+            accounting_generation,
+            "ready",
+            100,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+        ));
+        assert_eq!(circuit.snapshot().inventory_state, "preparing");
+        assert_eq!(circuit.snapshot().state, CIRCUIT_STATE_UNKNOWN);
+    }
+
+    #[test]
+    fn hydrated_inventory_stays_fail_closed_until_a_fresh_scan() {
+        let circuit = Arc::new(RawCaptureCircuitBreaker::new(PathBuf::from("/")));
+        circuit.hydrate(
+            "ready",
+            Some(CIRCUIT_STATE_CAPTURING),
+            None,
+            0,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+            Some(true),
+            None,
+        );
+        assert_eq!(
+            circuit
+                .admit(1)
+                .expect_err("hydration must remain fail-closed")
+                .reason,
+            CIRCUIT_REASON_INVENTORY_UNREADY
+        );
+        circuit.update_inventory(
+            "ready",
+            0,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+        );
+        assert!(circuit.admit(1).is_ok());
+    }
+
+    #[test]
+    fn suppressed_reason_is_preserved_between_hysteresis_watermarks() {
+        let circuit = ready(
+            RAW_CAPTURE_CLOSE_BYTES,
+            RAW_CAPTURE_RESUME_AVAILABLE_BYTES,
+            true,
+        );
+        let error = circuit
+            .admit(0)
+            .expect_err("raw watermark should suppress capture");
+        assert_eq!(error.reason, CIRCUIT_REASON_RAW_STORE_LIMIT);
+
+        circuit.update_inventory(
+            "ready",
+            RAW_CAPTURE_RESUME_BYTES + 1,
+            Some(RAW_CAPTURE_RESUME_AVAILABLE_BYTES),
+            Some(0),
+        );
+        let snapshot = circuit.snapshot();
+        assert_eq!(snapshot.state, CIRCUIT_STATE_SUPPRESSED);
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some(CIRCUIT_REASON_RAW_STORE_LIMIT)
+        );
     }
 }

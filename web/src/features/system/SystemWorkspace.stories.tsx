@@ -864,6 +864,21 @@ export const StatusRawCaptureSuppressed: Story = {
   },
 };
 
+export const StatusRawCaptureCapturing: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const panel = canvas.getByTestId("system-status-raw-capture");
+    await expect(panel).toHaveTextContent("正常采集");
+    await expect(panel).toHaveTextContent("当前未触发抑制");
+    await expect(panel).toHaveTextContent("关闭阈值");
+    await expect(panel).toHaveTextContent("恢复阈值");
+    await expect(canvasElement).toHaveTextContent("原始载荷熔断：正常采集");
+  },
+};
+
 export const StatusRawCaptureUnknown: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],

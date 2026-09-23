@@ -410,6 +410,14 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   )
     ? (rawCapture?.inventoryState ?? "unknown")
     : "unknown";
+  const rawCaptureStateLabel = t(
+    `system.status.runtimePressure.rawCapture.states.${rawCaptureState}`,
+  );
+  const rawCaptureReasonLabel = rawCaptureReason
+    ? t(`system.status.runtimePressure.rawCapture.reasons.${rawCaptureReason}`)
+    : rawCaptureState === "capturing"
+      ? t("system.status.runtimePressure.rawCapture.reasons.none")
+      : t("system.status.runtimePressure.additiveUnknown");
   const recoveryStageLabel = (stage?: string | null) =>
     stage && RETENTION_RECOVERY_STAGES.has(stage)
       ? t(`system.status.runtimePressure.retentionRecovery.stages.${stage}`)
@@ -521,6 +529,11 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
             </p>
           )}
         </div>
+        <span className="sr-only" aria-live="polite" aria-atomic="true">
+          {t("system.status.runtimePressure.rawCapture.statusAnnouncement", {
+            state: rawCaptureStateLabel,
+          })}
+        </span>
         {health ? (
           <details className="rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
             <summary className="cursor-pointer text-sm font-semibold text-base-content">
@@ -748,18 +761,14 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     {t("system.status.runtimePressure.rawCapture.title")}
                   </h4>
                   <span className="text-xs font-medium text-base-content/70" aria-live="polite">
-                    {t(`system.status.runtimePressure.rawCapture.states.${rawCaptureState}`)}
+                    {rawCaptureStateLabel}
                   </span>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <BreakdownRow
                     label={t("system.status.runtimePressure.rawCapture.state")}
                     value={t(`system.status.runtimePressure.rawCapture.states.${rawCaptureState}`)}
-                    hint={
-                      rawCaptureReason
-                        ? t(`system.status.runtimePressure.rawCapture.reasons.${rawCaptureReason}`)
-                        : t("system.status.runtimePressure.additiveUnknown")
-                    }
+                    hint={rawCaptureReasonLabel}
                   />
                   <BreakdownRow
                     label={t("system.status.runtimePressure.rawCapture.inventory")}
@@ -792,18 +801,20 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     label={t("system.status.runtimePressure.rawCapture.rawWatermark")}
                     value={
                       rawCapture?.rawCloseBytes != null && rawCapture?.rawResumeBytes != null
-                        ? `${formatBytes(rawCapture.rawCloseBytes)} / ${formatBytes(rawCapture.rawResumeBytes)}`
+                        ? `${t("system.status.runtimePressure.rawCapture.watermarkClose")}: ${formatBytes(rawCapture.rawCloseBytes)} · ${t("system.status.runtimePressure.rawCapture.watermarkResume")}: ${formatBytes(rawCapture.rawResumeBytes)}`
                         : t("system.status.runtimePressure.states.unknown")
                     }
+                    valueTitle={t("system.status.runtimePressure.rawCapture.rawWatermark")}
                   />
                   <BreakdownRow
                     label={t("system.status.runtimePressure.rawCapture.filesystemWatermark")}
                     value={
                       rawCapture?.availableCloseBytes != null &&
                       rawCapture?.availableResumeBytes != null
-                        ? `${formatBytes(rawCapture.availableCloseBytes)} / ${formatBytes(rawCapture.availableResumeBytes)}`
+                        ? `${t("system.status.runtimePressure.rawCapture.watermarkClose")}: ${formatBytes(rawCapture.availableCloseBytes)} · ${t("system.status.runtimePressure.rawCapture.watermarkResume")}: ${formatBytes(rawCapture.availableResumeBytes)}`
                         : t("system.status.runtimePressure.states.unknown")
                     }
+                    valueTitle={t("system.status.runtimePressure.rawCapture.filesystemWatermark")}
                   />
                   <BreakdownRow
                     label={t("system.status.runtimePressure.rawCapture.backlog")}
