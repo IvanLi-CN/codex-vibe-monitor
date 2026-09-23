@@ -6006,6 +6006,8 @@ fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<Stri
                 add_path(&relative.to_string_lossy());
             }
         } else {
+            let cwd_absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+            add_path(&cwd_absolute.to_string_lossy());
             let absolute = std::path::absolute(root.join(path)).unwrap_or_else(|_| root.join(path));
             add_path(&absolute.to_string_lossy());
         }
@@ -7296,9 +7298,13 @@ mod retention_write_budget_tests {
             std::path::absolute("relative-database").expect("resolve relative database root");
         let absolute_path = absolute_root.join("proxy_raw_payloads/sample.bin");
         let absolute_compressed_path = absolute_root.join("proxy_raw_payloads/sample.bin.gz");
+        let cwd_relative_path =
+            std::path::absolute("relative-database/proxy_raw_payloads/sample.bin")
+                .expect("resolve cwd-relative raw path");
 
         assert!(aliases.contains(&absolute_path.to_string_lossy().into_owned()));
         assert!(aliases.contains(&absolute_compressed_path.to_string_lossy().into_owned()));
+        assert!(aliases.contains(&cwd_relative_path.to_string_lossy().into_owned()));
     }
 
     #[test]
