@@ -162,8 +162,7 @@ deterministic repository-local checks.
 
 ## Related ADRs
 
-None. This topic establishes an explicit, reversible repository tooling
-contract without changing a runtime or public boundary.
+None
 
 ## References
 

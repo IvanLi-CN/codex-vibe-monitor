@@ -26,6 +26,25 @@ summary, dashboard, and workflow-detail code. The parent budget is now 44,631
 physical lines, down from 45,660; the 1,049-line query module remains below
 the 2,500-line production target and is not a selected inventory entry.
 
+The second extraction moves the single contiguous summary-projection lifecycle
+region beginning with `summary_snapshot_bootstrap_keys` and ending with the
+complete `await_summary_projection_all_time_build` definition from the parent
+into `src/api/slices/invocations_and_summary/summary_projection_lifecycle.rs`.
+On the verified PR2 merge base, that region is physical lines 10,259 through
+12,016 inclusive (1,758 lines). It contains snapshot bootstrap and hydration,
+refresh routing, coverage-recovery maintenance, source-tail restoration,
+durable publication coordination, and all-time build deadline handling. The
+parent explicitly re-exports `hydrate_summary_snapshots`,
+`hydrate_summary_snapshots_with_deadline`, `refresh_summary_snapshots`,
+`SummaryCoverageRecoverySupervisor`,
+`spawn_summary_coverage_recovery_maintenance`, and
+`refresh_summary_snapshots_with_mode`, while preserving the existing test
+seams through crate-visible test-only re-exports. The parent budget is now
+42,897 physical lines, down from 44,631; the 1,761-line lifecycle module is
+below the 2,500-line production target and is not a selected inventory entry.
+The remaining parent workstream is limited to the summary-projection and
+workflow-detail responsibilities recorded in the policy.
+
 ## Inventory Contract
 
 The policy has 33 `production` entries above the 2,500-line destination target
@@ -62,6 +81,9 @@ No global Clippy pedantic configuration or new dependency is introduced.
 - `bash .github/scripts/run-rust-source-quality.sh`
 - `bun run verify:rust`
 - `bash .github/scripts/test-quality-gates-contract.sh`
+- Focused existing summary-projection/stateful SQLite coverage and
+  `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+- `cargo check --locked --all-targets --all-features`
 - `git diff --check`
 
 ## Out of Scope
