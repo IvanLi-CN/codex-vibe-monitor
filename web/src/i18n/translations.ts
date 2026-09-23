@@ -1834,7 +1834,8 @@ const baseTranslations = {
     "system.status.runtimePressure.rawCapture.reasons.filesystem_low": "Filesystem space low",
     "system.status.runtimePressure.rawCapture.reasons.both": "Raw usage and filesystem space",
     "system.status.runtimePressure.rawCapture.reasons.none": "No suppression active",
-    "system.status.runtimePressure.rawCapture.statusAnnouncement": "Raw capture circuit: {{state}}",
+    "system.status.runtimePressure.rawCapture.statusAnnouncement":
+      "Raw capture circuit: {{state}}; {{reason}}; inventory {{inventory}}",
     "system.status.runtimePressure.additiveUnknown":
       "The connected backend has not published this additive diagnostic.",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
@@ -5052,7 +5053,8 @@ const baseTranslations = {
     "system.status.runtimePressure.rawCapture.reasons.filesystem_low": "文件系统可用空间不足",
     "system.status.runtimePressure.rawCapture.reasons.both": "原始占用和文件系统空间",
     "system.status.runtimePressure.rawCapture.reasons.none": "当前未触发抑制",
-    "system.status.runtimePressure.rawCapture.statusAnnouncement": "原始载荷熔断：{{state}}",
+    "system.status.runtimePressure.rawCapture.statusAnnouncement":
+      "原始载荷熔断：{{state}}；{{reason}}；库存{{inventory}}",
     "system.status.runtimePressure.additiveUnknown": "当前后端尚未发布这一 additive 诊断字段。",
     "system.status.runtimePressure.allocatorArenas": "MALLOC_ARENA_MAX",
     "system.tasks.title": "后台任务",

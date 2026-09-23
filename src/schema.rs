@@ -5770,6 +5770,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("circuit_expired_backlog_count", "INTEGER"),
         ("circuit_backlog_non_growing", "INTEGER"),
         ("circuit_updated_at", "TEXT"),
+        ("raw_overflow_spool_bytes", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         if !raw_metrics_columns.contains(column) {
             sqlx::query(&format!(

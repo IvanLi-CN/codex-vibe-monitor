@@ -861,6 +861,12 @@ export const StatusRawCaptureSuppressed: Story = {
     await expect(panel).toHaveTextContent("原始占用水位");
     await expect(panel).toHaveTextContent("文件系统水位");
     await expect(panel).toHaveTextContent("增长中");
+    await expect(panel).toHaveTextContent("16 GiB");
+    await expect(panel).toHaveTextContent("20 GiB");
+    await expect(panel.querySelectorAll("[aria-live]")).toHaveLength(0);
+    await expect(canvasElement.querySelector("span.sr-only[aria-live=polite]")).toHaveTextContent(
+      "原始载荷熔断：已抑制落盘；文件系统可用空间不足；库存已就绪",
+    );
   },
 };
 
@@ -875,6 +881,7 @@ export const StatusRawCaptureCapturing: Story = {
     await expect(panel).toHaveTextContent("当前未触发抑制");
     await expect(panel).toHaveTextContent("关闭阈值");
     await expect(panel).toHaveTextContent("恢复阈值");
+    await expect(panel).toHaveTextContent("16 GiB");
     await expect(canvasElement).toHaveTextContent("原始载荷熔断：正常采集");
   },
 };

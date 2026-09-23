@@ -26,6 +26,12 @@ function formatBytes(value: number): string {
   return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
 }
 
+function formatGib(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 GiB";
+  const gib = value / 1024 ** 3;
+  return `${gib >= 10 || Number.isInteger(gib) ? gib.toFixed(0) : gib.toFixed(1)} GiB`;
+}
+
 function formatRecoveryTimestamp(value?: string): string {
   if (!value) return "-";
   const date = new Date(value);
@@ -418,6 +424,9 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
     : rawCaptureState === "capturing"
       ? t("system.status.runtimePressure.rawCapture.reasons.none")
       : t("system.status.runtimePressure.additiveUnknown");
+  const rawCaptureInventoryLabel = t(
+    `system.status.runtimePressure.rawCapture.inventoryStates.${rawCaptureInventoryState}`,
+  );
   const recoveryStageLabel = (stage?: string | null) =>
     stage && RETENTION_RECOVERY_STAGES.has(stage)
       ? t(`system.status.runtimePressure.retentionRecovery.stages.${stage}`)
@@ -532,6 +541,8 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {t("system.status.runtimePressure.rawCapture.statusAnnouncement", {
             state: rawCaptureStateLabel,
+            reason: rawCaptureReasonLabel,
+            inventory: rawCaptureInventoryLabel,
           })}
         </span>
         {health ? (
@@ -760,7 +771,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                   <h4 className="text-sm font-semibold text-base-content">
                     {t("system.status.runtimePressure.rawCapture.title")}
                   </h4>
-                  <span className="text-xs font-medium text-base-content/70" aria-live="polite">
+                  <span className="text-xs font-medium text-base-content/70">
                     {rawCaptureStateLabel}
                   </span>
                 </div>
@@ -801,7 +812,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     label={t("system.status.runtimePressure.rawCapture.rawWatermark")}
                     value={
                       rawCapture?.rawCloseBytes != null && rawCapture?.rawResumeBytes != null
-                        ? `${t("system.status.runtimePressure.rawCapture.watermarkClose")}: ${formatBytes(rawCapture.rawCloseBytes)} · ${t("system.status.runtimePressure.rawCapture.watermarkResume")}: ${formatBytes(rawCapture.rawResumeBytes)}`
+                        ? `${t("system.status.runtimePressure.rawCapture.watermarkClose")}: ${formatGib(rawCapture.rawCloseBytes)} · ${t("system.status.runtimePressure.rawCapture.watermarkResume")}: ${formatGib(rawCapture.rawResumeBytes)}`
                         : t("system.status.runtimePressure.states.unknown")
                     }
                     valueTitle={t("system.status.runtimePressure.rawCapture.rawWatermark")}
@@ -811,7 +822,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     value={
                       rawCapture?.availableCloseBytes != null &&
                       rawCapture?.availableResumeBytes != null
-                        ? `${t("system.status.runtimePressure.rawCapture.watermarkClose")}: ${formatBytes(rawCapture.availableCloseBytes)} · ${t("system.status.runtimePressure.rawCapture.watermarkResume")}: ${formatBytes(rawCapture.availableResumeBytes)}`
+                        ? `${t("system.status.runtimePressure.rawCapture.watermarkClose")}: ${formatGib(rawCapture.availableCloseBytes)} · ${t("system.status.runtimePressure.rawCapture.watermarkResume")}: ${formatGib(rawCapture.availableResumeBytes)}`
                         : t("system.status.runtimePressure.states.unknown")
                     }
                     valueTitle={t("system.status.runtimePressure.rawCapture.filesystemWatermark")}

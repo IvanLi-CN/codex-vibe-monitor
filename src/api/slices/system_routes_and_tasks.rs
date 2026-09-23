@@ -274,7 +274,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             state: raw_capture_snapshot.state,
             reason: raw_capture_snapshot.reason,
             inventory_state: raw_capture_snapshot.inventory_state,
-            raw_bytes: raw_capture_snapshot.raw_bytes,
+            raw_bytes: raw_capture_snapshot.physical_raw_bytes,
             available_bytes: raw_capture_snapshot.available_bytes,
             reserved_bytes: raw_capture_snapshot.reserved_bytes,
             raw_close_bytes: RAW_CAPTURE_CLOSE_BYTES,
@@ -390,6 +390,7 @@ struct SystemRawPayloadMetricsRow {
     link_inventory_cursor: i64,
     raw_count: i64,
     raw_bytes: i64,
+    raw_overflow_spool_bytes: i64,
     request_raw_count: i64,
     request_raw_bytes: i64,
     response_raw_count: i64,
@@ -996,7 +997,7 @@ pub(crate) async fn refresh_system_raw_payload_metrics_inventory(state: &AppStat
 
 pub(crate) async fn hydrate_raw_capture_circuit(state: &AppState) -> Result<()> {
     let row = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
-        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
     .await?;
@@ -1005,6 +1006,7 @@ pub(crate) async fn hydrate_raw_capture_circuit(state: &AppState) -> Result<()> 
         Some(&row.circuit_state),
         row.circuit_reason.as_deref(),
         row.raw_bytes.max(0) as u64,
+        Some(row.raw_overflow_spool_bytes.max(0) as u64),
         row.circuit_available_bytes.map(|value| value.max(0) as u64),
         row.circuit_expired_backlog_count
             .map(|value| value.max(0) as u64),
@@ -1022,10 +1024,11 @@ async fn persist_raw_capture_circuit(state: &AppState) -> Result<()> {
         SET circuit_state = ?1,
             circuit_reason = ?2,
             raw_bytes = COALESCE(?3, raw_bytes),
-            circuit_available_bytes = ?4,
-            circuit_expired_backlog_count = ?5,
-            circuit_backlog_non_growing = ?6,
-            circuit_updated_at = ?7
+            raw_overflow_spool_bytes = COALESCE(?4, raw_overflow_spool_bytes),
+            circuit_available_bytes = ?5,
+            circuit_expired_backlog_count = ?6,
+            circuit_backlog_non_growing = ?7,
+            circuit_updated_at = ?8
         WHERE singleton = 1
           AND inventory_state != 'resetting'
         "#,
@@ -1033,6 +1036,7 @@ async fn persist_raw_capture_circuit(state: &AppState) -> Result<()> {
     .bind(snapshot.state)
     .bind(snapshot.reason)
     .bind(snapshot.raw_bytes.map(|value| value as i64))
+    .bind(snapshot.spool_bytes.map(|value| value as i64))
     .bind(snapshot.available_bytes.map(|value| value as i64))
     .bind(snapshot.expired_backlog_count.map(|value| value as i64))
     .bind(snapshot.backlog_non_growing.map(i64::from))
@@ -1061,7 +1065,7 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     let (inventory_generation, accounting_generation, _) =
         state.raw_capture_circuit.inventory_checkpoint();
     let snapshot = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
-        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
     .await?;
@@ -1144,6 +1148,22 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         }
     }
 
+    let spool_directory = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join(crate::proxy::RAW_OVERFLOW_SPOOL_DIR);
+    let (spool_bytes, spool_inventory_overflow) =
+        match crate::proxy::bounded_raw_overflow_spool_directory_bytes(
+            &spool_directory,
+            SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize,
+        ) {
+            Ok(result) => result,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, false),
+            Err(error) => {
+                return Err(error).context("failed to inspect raw overflow spool inventory");
+            }
+        };
+
     let mut deltas = (0_i64, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64);
     let mut tx = state.pool.begin().await?;
     for (path, (byte_size, request_seen, response_seen)) in paths {
@@ -1170,7 +1190,8 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         .last()
         .map(|row| row.id)
         .unwrap_or(snapshot.link_inventory_cursor);
-    let state_name = if rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
+    let state_name = if !spool_inventory_overflow
+        && rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
         && link_rows.len() < SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE as usize
     {
         "ready"
@@ -1189,9 +1210,10 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
             request_raw_bytes = request_raw_bytes + ?7,
             response_raw_count = response_raw_count + ?8,
             response_raw_bytes = response_raw_bytes + ?9,
+            raw_overflow_spool_bytes = ?10,
             updated_at = datetime('now')
         WHERE singleton = 1
-          AND inventory_state = ?10
+          AND inventory_state = ?11
         "#,
     )
     .bind(state_name)
@@ -1203,6 +1225,7 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
     .bind(deltas.3)
     .bind(deltas.4)
     .bind(deltas.5)
+    .bind(Some(spool_bytes as i64))
     .bind(&snapshot.inventory_state)
     .execute(tx.as_mut())
     .await?;
@@ -1219,15 +1242,22 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
             .raw_bytes
             .saturating_sub(deltas.1.unsigned_abs().min(i64::MAX as u64) as i64) as u64
     };
+    let retention_health = retention_recovery_health_snapshot();
+    let expired_backlog_count = if state.config.retention_enabled {
+        retention_health
+            .expired_backlog_count
+            .map(|value| value as u64)
+    } else {
+        Some(0)
+    };
     if !state.raw_capture_circuit.update_inventory_if_current(
         inventory_generation,
         accounting_generation,
         state_name,
         next_raw_bytes,
         None,
-        retention_recovery_health_snapshot()
-            .expired_backlog_count
-            .map(|value| value as u64),
+        expired_backlog_count,
+        Some(spool_bytes),
     ) {
         set_system_raw_metrics_health_override(state, Some("preparing")).await;
         return Ok(0);
@@ -1441,6 +1471,8 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
             if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory batch failed");
+            } else if state.raw_capture_circuit.snapshot().inventory_state == "ready" {
+                crate::proxy::recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
             }
             tokio::select! {
                 _ = cancel.cancelled() => return,
@@ -1503,7 +1535,7 @@ async fn load_system_status_snapshot_uncached(
 
     let raw_metrics = await_system_status_refresh_operation(cancellation, async {
         Ok(sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
-        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
+        "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, raw_overflow_spool_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, circuit_state, circuit_reason, circuit_available_bytes, circuit_expired_backlog_count, circuit_backlog_non_growing, circuit_updated_at, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
     .await?)

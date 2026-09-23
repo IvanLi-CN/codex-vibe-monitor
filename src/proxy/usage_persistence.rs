@@ -5030,7 +5030,7 @@ where
         .map_err(|err| io::Error::other(format!("raw writer task join failed: {err}")))?
 }
 
-const RAW_OVERFLOW_SPOOL_DIR: &str = ".spool";
+pub(crate) const RAW_OVERFLOW_SPOOL_DIR: &str = ".spool";
 const RAW_OVERFLOW_SPOOL_MAGIC: &[u8] = b"CVM_RAW_SPOOL_V1\n";
 pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
@@ -5273,33 +5273,33 @@ fn raw_overflow_payload_limit_reason(
     }
 }
 
-fn raw_overflow_spool_directory_bytes(directory: &Path) -> io::Result<u64> {
+pub(crate) fn bounded_raw_overflow_spool_directory_bytes(
+    directory: &Path,
+    max_entries: usize,
+) -> io::Result<(u64, bool)> {
     let mut total = 0_u64;
+    let mut matching_entries = 0_usize;
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         if entry.file_type()?.is_file()
             && entry.path().extension().and_then(|value| value.to_str()) == Some("frames")
         {
+            if matching_entries >= max_entries {
+                return Ok((total, true));
+            }
+            matching_entries += 1;
             total = total.saturating_add(entry.metadata()?.len());
         }
     }
-    Ok(total)
+    Ok((total, false))
 }
 
 fn reserve_raw_overflow_spool_bytes(directory: &Path, bytes: u64) -> io::Result<()> {
     let mut reservations = RAW_OVERFLOW_SPOOL_RESERVATIONS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Keep the disk sample and the in-process reservation in one critical section. A
-    // concurrent writer may otherwise observe a stale directory size after another
-    // writer commits and releases its temporary reservation.
-    let on_disk_bytes = raw_overflow_spool_directory_bytes(directory)?;
     let reserved_bytes = reservations.get(directory).copied().unwrap_or_default();
-    if on_disk_bytes
-        .saturating_add(reserved_bytes)
-        .saturating_add(bytes)
-        > RAW_OVERFLOW_SPOOL_MAX_BYTES
-    {
+    if reserved_bytes.saturating_add(bytes) > RAW_OVERFLOW_SPOOL_MAX_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "raw overflow spool capacity reached",
