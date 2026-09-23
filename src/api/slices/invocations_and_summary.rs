@@ -5910,6 +5910,8 @@ pub(crate) fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> S
         "attempt_response_body_not_captured".to_string()
     } else if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
         "detail_pruned".to_string()
+    } else if row.response_raw_truncated_reason.as_deref() == Some("storage_suppressed") {
+        "storage_suppressed".to_string()
     } else if row.response_raw_truncated.unwrap_or_default() != 0 {
         row.response_raw_truncated_reason
             .as_deref()
@@ -5924,6 +5926,8 @@ pub(crate) fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> S
 pub(crate) fn raw_request_fallback_reason(row: &InvocationResponseBodyRow) -> String {
     if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
         "detail_pruned".to_string()
+    } else if row.request_raw_truncated_reason.as_deref() == Some("storage_suppressed") {
+        "storage_suppressed".to_string()
     } else if row.request_raw_truncated.unwrap_or_default() != 0 {
         row.request_raw_truncated_reason
             .as_deref()

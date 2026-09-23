@@ -1201,15 +1201,19 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
                 return Err(error).context("failed to inspect raw overflow spool inventory");
             }
         };
-    crate::proxy::set_raw_overflow_spool_accounted_bytes(&spool_directory, spool_bytes);
+    if !spool_inventory_overflow {
+        crate::proxy::set_raw_overflow_spool_accounted_bytes(&spool_directory, spool_bytes);
+    }
 
     let recheck_changes = recheck_rows
         .iter()
         .filter_map(|row| {
-            let current_size = resolved_raw_path_read_candidates(&row.raw_path, fallback_root)
+            let current_path = resolved_raw_path_read_candidates(&row.raw_path, fallback_root)
                 .into_iter()
-                .find(|candidate| candidate.exists())
-                .map(|candidate| count_file_size(&candidate) as i64)
+                .find(|candidate| candidate.exists());
+            let current_size = current_path
+                .as_ref()
+                .map(|candidate| count_file_size(candidate) as i64)
                 .unwrap_or_default();
             (current_size != row.byte_size).then_some((
                 row.raw_path.clone(),
@@ -1217,6 +1221,7 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
                 current_size.saturating_sub(row.byte_size),
                 row.request_seen != 0,
                 row.response_seen != 0,
+                current_path.is_some(),
             ))
         })
         .collect::<Vec<_>>();
@@ -1238,7 +1243,7 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         deltas.4 += delta.4;
         deltas.5 += delta.5;
     }
-    for (path, byte_size, delta, request_seen, response_seen) in recheck_changes {
+    for (path, byte_size, delta, request_seen, response_seen, current_present) in recheck_changes {
         sqlx::query(
             "UPDATE system_raw_payload_inventory_paths SET byte_size = ?2 WHERE raw_path = ?1",
         )
@@ -1246,6 +1251,23 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         .bind(byte_size)
         .execute(tx.as_mut())
         .await?;
+        if current_present && byte_size > 0 && delta == byte_size {
+            deltas.0 = deltas.0.saturating_add(1);
+            if request_seen {
+                deltas.2 = deltas.2.saturating_add(1);
+            }
+            if response_seen {
+                deltas.4 = deltas.4.saturating_add(1);
+            }
+        } else if !current_present && delta < 0 {
+            deltas.0 = deltas.0.saturating_sub(1);
+            if request_seen {
+                deltas.2 = deltas.2.saturating_sub(1);
+            }
+            if response_seen {
+                deltas.4 = deltas.4.saturating_sub(1);
+            }
+        }
         deltas.1 = deltas.1.saturating_add(delta);
         if request_seen {
             deltas.3 = deltas.3.saturating_add(delta);

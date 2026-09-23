@@ -5035,6 +5035,7 @@ const RAW_OVERFLOW_SPOOL_MAGIC: &[u8] = b"CVM_RAW_SPOOL_V1\n";
 pub(crate) const RAW_OVERFLOW_SPOOL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const RAW_OVERFLOW_SPOOL_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const RAW_OVERFLOW_SPOOL_FRAME_OVERHEAD_BYTES: u64 = 8;
+const RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE: usize = 32;
 
 #[derive(Default)]
 struct RawOverflowSpoolAccounting {
@@ -5045,6 +5046,9 @@ struct RawOverflowSpoolAccounting {
 static RAW_OVERFLOW_SPOOL_ACCOUNTING: std::sync::LazyLock<
     std::sync::Mutex<RawOverflowSpoolAccounting>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(RawOverflowSpoolAccounting::default()));
+static RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
 struct StreamingRawPayloadChunk {
     bytes: Bytes,
@@ -5112,8 +5116,27 @@ impl RawOverflowSpool {
             .map(|limit| u64::try_from(limit).unwrap_or(u64::MAX))
             .unwrap_or(u64::MAX);
         let capture_id = nanoid::nanoid!();
-        let (path, file) =
-            create_raw_overflow_spool_segment(&directory, invoke_id, kind, codec, &capture_id, 0)?;
+        RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(capture_id.clone());
+        let (path, file) = match create_raw_overflow_spool_segment(
+            &directory,
+            invoke_id,
+            kind,
+            codec,
+            &capture_id,
+            0,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&capture_id);
+                return Err(error);
+            }
+        };
         let mut config = state.config.clone();
         config.proxy_raw_compression = codec;
         Ok(Self {
@@ -5270,6 +5293,15 @@ impl RawOverflowSpool {
     }
 }
 
+impl Drop for RawOverflowSpool {
+    fn drop(&mut self) {
+        RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.capture_id);
+    }
+}
+
 fn raw_overflow_payload_limit_reason(
     configured_max_bytes: Option<usize>,
     payload_limit_bytes: u64,
@@ -5352,12 +5384,25 @@ fn release_raw_overflow_spool_bytes(directory: &Path, bytes: u64) {
 }
 
 pub(crate) fn set_raw_overflow_spool_accounted_bytes(directory: &Path, bytes: u64) {
+    let active = RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut accounting = RAW_OVERFLOW_SPOOL_ACCOUNTING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current = accounting
+        .durable_bytes
+        .get(directory)
+        .copied()
+        .unwrap_or_default();
+    let reconciled = if active.is_empty() {
+        bytes
+    } else {
+        current.max(bytes)
+    };
     accounting
         .durable_bytes
-        .insert(directory.to_path_buf(), bytes);
+        .insert(directory.to_path_buf(), reconciled);
 }
 
 fn record_raw_overflow_spool_bytes(directory: &Path, delta: i64) {
@@ -5591,7 +5636,7 @@ async fn replay_raw_overflow_spool_segments(
             .filter_map(|path| fs::metadata(path).ok())
             .map(|metadata| metadata.len())
             .sum();
-        match circuit.admit(requested_bytes) {
+        match circuit.admit_recovery(requested_bytes) {
             Ok(reservation) => Some(reservation),
             Err(_) => {
                 return storage_suppressed_raw_payload_meta(requested_bytes as i64);
@@ -5724,11 +5769,16 @@ async fn recover_raw_overflow_spools_inner(
 
     let mut captures = HashMap::<String, Vec<(PathBuf, RawOverflowSpoolHeader)>>::new();
     let mut corrupt_captures = std::collections::HashSet::new();
+    let mut inspected_segments = 0_usize;
     for entry in entries.flatten() {
+        if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
+            break;
+        }
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
             continue;
         }
+        inspected_segments += 1;
         let header = match run_blocking_raw_writer_io({
             let path = path.clone();
             move || read_raw_overflow_spool_segment(&path).map(|(header, _)| header)
@@ -5748,6 +5798,13 @@ async fn recover_raw_overflow_spools_inner(
             }
         };
         let capture_key = raw_overflow_spool_capture_key(&path, &header);
+        if RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&capture_key)
+        {
+            continue;
+        }
         captures
             .entry(capture_key)
             .or_default()
