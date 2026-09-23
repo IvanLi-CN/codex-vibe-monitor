@@ -1468,6 +1468,27 @@ fn parse_stream_response_payload_preserves_exact_cache_write_from_prior_usage_ev
 }
 
 #[test]
+fn parse_stream_response_payload_cache_write_only_event_preserves_prior_usage() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"input_tokens":1200,"output_tokens":40,"total_tokens":1240,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":50},"output_tokens_details":{"reasoning_tokens":10}}}}"#,
+        "event: response.in_progress",
+        r#"data: {"type":"response.in_progress","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"input_tokens_details":{"cache_write_tokens":75}}}}"#,
+    ]
+    .join("\n");
+
+    let parsed = parse_stream_response_payload(raw.as_bytes());
+
+    assert_eq!(parsed.usage.input_tokens, Some(1_200));
+    assert_eq!(parsed.usage.output_tokens, Some(40));
+    assert_eq!(parsed.usage.total_tokens, Some(1_240));
+    assert_eq!(parsed.usage.cache_input_tokens, Some(300));
+    assert_eq!(parsed.usage.reasoning_tokens, Some(10));
+    assert_eq!(parsed.usage.reported_cache_write_tokens, Some(75));
+    assert!(parsed.usage_missing_reason.is_none());
+}
+
+#[test]
 fn parse_stream_response_payload_accepts_later_exact_cache_write_zero() {
     let raw = [
         "event: response.created",
