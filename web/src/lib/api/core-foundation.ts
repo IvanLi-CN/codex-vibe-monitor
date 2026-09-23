@@ -2311,6 +2311,7 @@ export interface RuntimePressureRetentionWriteHealth {
   lockWaitMs: number;
   executeMs: number;
   commitMs: number;
+  rawReferenceCheckMs?: number;
   budgetBreachCount: number;
   deferReason?: string;
   starvationAgeMs?: number;
@@ -2544,6 +2545,11 @@ export function normalizeStringArray(value: unknown): string[] {
 export function normalizeFiniteNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return value;
+}
+
+function normalizeNonNegativeFiniteNumber(value: unknown): number | undefined {
+  const normalized = normalizeFiniteNumber(value);
+  return normalized != null && normalized >= 0 ? normalized : undefined;
 }
 
 export function normalizeRoutingStateVersion(value: unknown): RoutingStateVersion | null {
@@ -4618,6 +4624,9 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           lockWaitMs: number(retentionWriteHealth.lockWaitMs),
           executeMs: number(retentionWriteHealth.executeMs),
           commitMs: number(retentionWriteHealth.commitMs),
+          rawReferenceCheckMs: normalizeNonNegativeFiniteNumber(
+            retentionWriteHealth.rawReferenceCheckMs,
+          ),
           budgetBreachCount: number(retentionWriteHealth.budgetBreachCount),
           deferReason: optionalString(retentionWriteHealth.deferReason),
           starvationAgeMs: normalizeFiniteNumber(retentionWriteHealth.starvationAgeMs) ?? undefined,

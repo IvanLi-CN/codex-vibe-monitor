@@ -258,6 +258,7 @@ pub(crate) struct RetentionWriteHealthSnapshot {
     pub(crate) lock_wait_ms: u64,
     pub(crate) execute_ms: u64,
     pub(crate) commit_ms: u64,
+    pub(crate) raw_reference_check_ms: Option<u64>,
     pub(crate) budget_breach_count: u64,
     pub(crate) defer_reason: Option<String>,
     pub(crate) starvation_age_ms: Option<u64>,
@@ -278,6 +279,7 @@ impl Default for RetentionWriteHealthSnapshot {
             lock_wait_ms: 0,
             execute_ms: 0,
             commit_ms: 0,
+            raw_reference_check_ms: None,
             budget_breach_count: 0,
             defer_reason: None,
             starvation_age_ms: None,
@@ -609,6 +611,7 @@ fn retention_record_defer(operation: &'static str, reason: impl ToString) {
     health.snapshot.state = "deferred".to_string();
     health.snapshot.operation = Some(operation.to_string());
     health.snapshot.defer_reason = Some(reason.clone());
+    health.snapshot.raw_reference_check_ms = None;
     health.snapshot.last_error = None;
     debug!(
         operation,
@@ -630,9 +633,44 @@ pub(crate) struct RetentionWriteCommit {
     pub(crate) lock_wait: Duration,
     pub(crate) execute_elapsed: Duration,
     pub(crate) commit_elapsed: Duration,
+    pub(crate) raw_reference_check_elapsed: Option<Duration>,
     pub(crate) p1_waiter_count: usize,
     pub(crate) candidate_remaining_hint: usize,
 }
+
+macro_rules! retention_record_commit_with_reference_check {
+    (
+        $operation:expr,
+        $admission_mode:expr,
+        $rows:expr,
+        $estimated_bytes:expr,
+        $prepare_elapsed:expr,
+        $lock_wait:expr,
+        $execute_elapsed:expr,
+        $commit_elapsed:expr,
+        $raw_reference_check_elapsed:expr,
+        $p1_waiter_count:expr,
+        $candidate_remaining_hint:expr $(,)?
+    ) => {
+        $crate::maintenance::retention::record_retention_write_commit(
+            $crate::maintenance::retention::RetentionWriteCommit {
+                operation: $operation,
+                admission_mode: $admission_mode,
+                rows: $rows,
+                estimated_bytes: $estimated_bytes,
+                prepare_elapsed: $prepare_elapsed,
+                lock_wait: $lock_wait,
+                execute_elapsed: $execute_elapsed,
+                commit_elapsed: $commit_elapsed,
+                raw_reference_check_elapsed: $raw_reference_check_elapsed,
+                p1_waiter_count: $p1_waiter_count,
+                candidate_remaining_hint: $candidate_remaining_hint,
+            },
+        )
+    };
+}
+
+pub(crate) use retention_record_commit_with_reference_check;
 
 macro_rules! retention_record_commit {
     (
@@ -647,19 +685,18 @@ macro_rules! retention_record_commit {
         $p1_waiter_count:expr,
         $candidate_remaining_hint:expr $(,)?
     ) => {
-        $crate::maintenance::retention::record_retention_write_commit(
-            $crate::maintenance::retention::RetentionWriteCommit {
-                operation: $operation,
-                admission_mode: $admission_mode,
-                rows: $rows,
-                estimated_bytes: $estimated_bytes,
-                prepare_elapsed: $prepare_elapsed,
-                lock_wait: $lock_wait,
-                execute_elapsed: $execute_elapsed,
-                commit_elapsed: $commit_elapsed,
-                p1_waiter_count: $p1_waiter_count,
-                candidate_remaining_hint: $candidate_remaining_hint,
-            },
+        $crate::maintenance::retention::retention_record_commit_with_reference_check!(
+            $operation,
+            $admission_mode,
+            $rows,
+            $estimated_bytes,
+            $prepare_elapsed,
+            $lock_wait,
+            $execute_elapsed,
+            $commit_elapsed,
+            None,
+            $p1_waiter_count,
+            $candidate_remaining_hint,
         )
     };
 }
@@ -676,6 +713,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
         lock_wait,
         execute_elapsed,
         commit_elapsed,
+        raw_reference_check_elapsed,
         p1_waiter_count,
         candidate_remaining_hint,
     } = commit;
@@ -692,6 +730,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
         lock_wait,
         execute_elapsed,
         commit_elapsed,
+        raw_reference_check_elapsed,
         p1_waiter_count,
         candidate_remaining_hint,
     );
@@ -706,6 +745,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
             lock_wait_ms = lock_wait.as_millis() as u64,
             execute_ms = execute_elapsed.as_millis() as u64,
             commit_ms = commit_elapsed.as_millis() as u64,
+            raw_reference_check_ms = ?raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             p1_waiter_count,
             candidate_remaining_hint,
             "retention write transaction exceeded its micro-batch budget"
@@ -719,6 +759,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
             prepare_elapsed_ms = prepare_elapsed.as_millis() as u64,
             lock_wait_ms = lock_wait.as_millis() as u64,
             execute_ms = execute_elapsed.as_millis() as u64,
+            raw_reference_check_ms = ?raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64),
             p1_waiter_count,
             candidate_remaining_hint,
             "retention write micro-batch committed"
@@ -737,6 +778,7 @@ fn observe_retention_write_commit(
     lock_wait: Duration,
     execute_elapsed: Duration,
     commit_elapsed: Duration,
+    raw_reference_check_elapsed: Option<Duration>,
     p1_waiter_count: usize,
     candidate_remaining_hint: usize,
 ) -> bool {
@@ -761,6 +803,8 @@ fn observe_retention_write_commit(
     health.snapshot.lock_wait_ms = lock_wait.as_millis() as u64;
     health.snapshot.execute_ms = execute_elapsed.as_millis() as u64;
     health.snapshot.commit_ms = commit_elapsed.as_millis() as u64;
+    health.snapshot.raw_reference_check_ms =
+        raw_reference_check_elapsed.map(|elapsed| elapsed.as_millis() as u64);
     health.snapshot.defer_reason = None;
     health.snapshot.starvation_age_ms = if admission_mode == "fairness" {
         Some(lock_wait.as_millis() as u64)
@@ -779,6 +823,7 @@ fn retention_record_error(operation: &'static str, error: &anyhow::Error) {
         .expect("retention write health");
     health.snapshot.state = "degraded".to_string();
     health.snapshot.operation = Some(operation.to_string());
+    health.snapshot.raw_reference_check_ms = None;
     health.snapshot.last_error = Some(format!(
         "failure_fingerprint:{}",
         retention_error_fingerprint(error)
@@ -5943,9 +5988,79 @@ pub(crate) fn delete_exact_proxy_raw_path(
     Ok(())
 }
 
+fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<String> {
+    let mut aliases = std::collections::BTreeSet::new();
+    let mut add_path = |candidate: &str| {
+        aliases.insert(candidate.to_string());
+        if let Some(alternate_path) = raw_payload_alternate_db_path(candidate) {
+            aliases.insert(alternate_path);
+        }
+    };
+    add_path(path);
+    let absolute_root =
+        fallback_root.map(|root| std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()));
+    let fallback_root_relative = fallback_root.and_then(|root| {
+        if root.is_absolute() {
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| root.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        } else {
+            Some(root.to_path_buf())
+        }
+    });
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        if let Some(root) = fallback_root_relative.as_deref()
+            && let Ok(relative) = path.strip_prefix(root)
+        {
+            add_path(&relative.to_string_lossy());
+        }
+        if let Some(root) = fallback_root
+            && !root.is_absolute()
+        {
+            add_path(&root.join(path).to_string_lossy());
+        }
+    }
+    if let Some(root) = absolute_root.as_deref() {
+        if path.is_absolute() {
+            if let Ok(cwd) = std::env::current_dir()
+                && let Ok(relative) = path.strip_prefix(cwd)
+            {
+                add_path(&relative.to_string_lossy());
+            }
+            if let Ok(relative) = path.strip_prefix(root) {
+                add_path(&relative.to_string_lossy());
+                if let Some(fallback_root) = fallback_root
+                    && !fallback_root.is_absolute()
+                {
+                    add_path(&fallback_root.join(relative).to_string_lossy());
+                }
+            }
+        } else {
+            let cwd_absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+            add_path(&cwd_absolute.to_string_lossy());
+            let relative = fallback_root_relative
+                .as_deref()
+                .and_then(|root_relative| match path.strip_prefix(root_relative) {
+                    Ok(relative) => Some(relative),
+                    Err(_) => {
+                        add_path(&root_relative.join(path).to_string_lossy());
+                        None
+                    }
+                })
+                .unwrap_or(path);
+            let absolute =
+                std::path::absolute(root.join(relative)).unwrap_or_else(|_| root.join(relative));
+            add_path(&absolute.to_string_lossy());
+        }
+    }
+    aliases.into_iter().collect()
+}
+
 async fn filter_unreferenced_proxy_raw_paths(
-    pool: &Pool<Sqlite>,
+    connection: &mut sqlx::SqliteConnection,
     raw_paths: &[Option<String>],
+    fallback_root: Option<&Path>,
 ) -> Result<Vec<Option<String>>> {
     let candidates = raw_paths
         .iter()
@@ -5954,23 +6069,23 @@ async fn filter_unreferenced_proxy_raw_paths(
         .collect::<std::collections::BTreeSet<_>>();
     let mut unreferenced = Vec::with_capacity(candidates.len());
     for path in candidates {
-        let referenced = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT EXISTS(
-              SELECT 1 FROM proxy_raw_payload_blob_links
-              WHERE raw_path = ?1
-              UNION ALL
-              SELECT 1 FROM codex_invocations
-              WHERE request_raw_path = ?1 OR response_raw_path = ?1
-              UNION ALL
-              SELECT 1 FROM pool_upstream_request_attempts
-              WHERE response_raw_path = ?1
+        let mut referenced = 0;
+        for ledger_path in raw_path_ledger_aliases(&path, fallback_root) {
+            referenced = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT EXISTS(
+                  SELECT 1 FROM proxy_raw_payload_blob_links
+                  WHERE raw_path = ?1
+                )
+                "#,
             )
-            "#,
-        )
-        .bind(&path)
-        .fetch_one(pool)
-        .await?;
+            .bind(ledger_path)
+            .fetch_one(&mut *connection)
+            .await?;
+            if referenced != 0 {
+                break;
+            }
+        }
         if referenced == 0 {
             unreferenced.push(Some(path));
         }
@@ -6262,9 +6377,19 @@ pub(crate) async fn prune_old_invocation_details(
                 record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
             }
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
+            let raw_reference_check_started = Instant::now();
+            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
+            let raw_paths = filter_unreferenced_proxy_raw_paths(
+                tx.as_mut(),
+                &raw_paths,
+                raw_path_fallback_root,
+            )
+            .await?;
+            let raw_reference_check_elapsed =
+                had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
             tx.commit().await?;
-            retention_record_commit!(
+            retention_record_commit_with_reference_check!(
                 "invocation_detail_prune",
                 admission.admission_mode(),
                 group.len(),
@@ -6276,17 +6401,17 @@ pub(crate) async fn prune_old_invocation_details(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
+                raw_reference_check_elapsed,
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             if !raw_paths.is_empty() {
                 mark_retention_raw_inventory_reset_intent(pool).await?;
             }
-            drop(admission);
             rows_pruned += group.len();
             archive_batches += 1;
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+            drop(admission);
         }
     }
 
@@ -6680,9 +6805,19 @@ pub(crate) async fn archive_old_invocations(
             )
             .await?;
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
+            let raw_reference_check_started = Instant::now();
+            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
+            let raw_paths = filter_unreferenced_proxy_raw_paths(
+                tx.as_mut(),
+                &raw_paths,
+                raw_path_fallback_root,
+            )
+            .await?;
+            let raw_reference_check_elapsed =
+                had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
             tx.commit().await?;
-            retention_record_commit!(
+            retention_record_commit_with_reference_check!(
                 "invocation_archive",
                 admission.admission_mode(),
                 group.len(),
@@ -6699,18 +6834,18 @@ pub(crate) async fn archive_old_invocations(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
+                raw_reference_check_elapsed,
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
-            let raw_paths = filter_unreferenced_proxy_raw_paths(pool, &raw_paths).await?;
             if !raw_paths.is_empty() {
                 mark_retention_raw_inventory_reset_intent(pool).await?;
             }
-            drop(admission);
             rows_archived += group.len();
             archive_batches += 1;
             retention_recovery_record_progress();
             raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+            drop(admission);
         }
     }
 
@@ -7029,9 +7164,27 @@ pub(crate) async fn archive_timestamped_dataset(
                 &materialized_forward_proxy_rows,
             )
             .await?;
+            let (raw_paths, raw_reference_check_elapsed) =
+                if spec.dataset == "pool_upstream_request_attempts" {
+                    let raw_reference_check_started = Instant::now();
+                    let had_raw_reference_candidates =
+                        pool_attempt_raw_paths.iter().any(Option::is_some);
+                    let raw_paths = filter_unreferenced_proxy_raw_paths(
+                        tx.as_mut(),
+                        &pool_attempt_raw_paths,
+                        config.database_path.parent(),
+                    )
+                    .await?;
+                    (
+                        raw_paths,
+                        had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed()),
+                    )
+                } else {
+                    (Vec::new(), None)
+                };
             let commit_started = Instant::now();
             tx.commit().await?;
-            retention_record_commit!(
+            retention_record_commit_with_reference_check!(
                 "timestamped_archive",
                 admission.admission_mode(),
                 group.len(),
@@ -7040,20 +7193,19 @@ pub(crate) async fn archive_timestamped_dataset(
                 admission.lock_wait(),
                 commit_started.duration_since(execute_started),
                 commit_started.elapsed(),
+                raw_reference_check_elapsed,
                 admission.p1_waiter_count,
                 candidate_remaining_hint,
             );
             if spec.dataset == "pool_upstream_request_attempts" {
-                let raw_paths =
-                    filter_unreferenced_proxy_raw_paths(pool, &pool_attempt_raw_paths).await?;
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
-                drop(admission);
                 rows_archived += group.len();
                 archive_batches += 1;
                 raw_files_removed +=
                     delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                drop(admission);
             } else {
                 drop(admission);
                 rows_archived += group.len();
@@ -7179,6 +7331,76 @@ mod retention_write_budget_tests {
     use super::*;
 
     #[test]
+    fn raw_path_ledger_aliases_normalize_relative_database_roots() {
+        let aliases = raw_path_ledger_aliases(
+            "proxy_raw_payloads/sample.bin",
+            Some(Path::new("relative-database")),
+        );
+        let absolute_root =
+            std::path::absolute("relative-database").expect("resolve relative database root");
+        let absolute_path = absolute_root.join("proxy_raw_payloads/sample.bin");
+        let absolute_compressed_path = absolute_root.join("proxy_raw_payloads/sample.bin.gz");
+        let cwd_relative_path =
+            std::path::absolute("relative-database/proxy_raw_payloads/sample.bin")
+                .expect("resolve cwd-relative raw path");
+
+        assert!(aliases.contains(&absolute_path.to_string_lossy().into_owned()));
+        assert!(aliases.contains(&absolute_compressed_path.to_string_lossy().into_owned()));
+        assert!(aliases.contains(&cwd_relative_path.to_string_lossy().into_owned()));
+
+        let prefixed_aliases = raw_path_ledger_aliases(
+            "relative-database/proxy_raw_payloads/sample.bin",
+            Some(Path::new("relative-database")),
+        );
+        assert!(prefixed_aliases.contains(&"proxy_raw_payloads/sample.bin".to_string()));
+        assert!(prefixed_aliases.contains(&"proxy_raw_payloads/sample.bin.gz".to_string()));
+
+        let absolute_prefixed_path =
+            std::path::absolute("relative-database/proxy_raw_payloads/sample.bin")
+                .expect("resolve absolute prefixed raw path");
+        let absolute_prefixed_aliases = raw_path_ledger_aliases(
+            &absolute_prefixed_path.to_string_lossy(),
+            Some(Path::new("relative-database")),
+        );
+        assert!(
+            absolute_prefixed_aliases
+                .contains(&"relative-database/proxy_raw_payloads/sample.bin".to_string())
+        );
+        assert!(
+            absolute_prefixed_aliases
+                .contains(&"relative-database/proxy_raw_payloads/sample.bin.gz".to_string())
+        );
+
+        let absolute_fallback_prefixed_aliases = raw_path_ledger_aliases(
+            "relative-database/proxy_raw_payloads/sample.bin",
+            Some(&absolute_root),
+        );
+        assert!(
+            absolute_fallback_prefixed_aliases
+                .contains(&"proxy_raw_payloads/sample.bin".to_string())
+        );
+        assert!(
+            absolute_fallback_prefixed_aliases
+                .contains(&"proxy_raw_payloads/sample.bin.gz".to_string())
+        );
+        assert!(
+            absolute_fallback_prefixed_aliases
+                .contains(&absolute_path.to_string_lossy().into_owned())
+        );
+
+        let absolute_fallback_unprefixed_aliases =
+            raw_path_ledger_aliases("proxy_raw_payloads/sample.bin", Some(&absolute_root));
+        assert!(
+            absolute_fallback_unprefixed_aliases
+                .contains(&absolute_path.to_string_lossy().into_owned())
+        );
+        assert!(
+            absolute_fallback_unprefixed_aliases
+                .contains(&"relative-database/proxy_raw_payloads/sample.bin".to_string())
+        );
+    }
+
+    #[test]
     fn retention_write_budget_adapts_without_exceeding_hard_bounds() {
         let mut budget = RetentionWriteBudget::default();
         assert_eq!(budget.candidate_limit(1_000), RETENTION_WRITE_INITIAL_ROWS);
@@ -7213,6 +7435,7 @@ mod retention_write_budget_tests {
             Duration::ZERO,
             Duration::from_millis(251),
             Duration::ZERO,
+            None,
             0,
             0,
         ));

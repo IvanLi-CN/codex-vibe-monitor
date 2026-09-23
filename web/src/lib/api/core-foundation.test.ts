@@ -145,6 +145,36 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     expect(recovery?.quarantinedCount).toBeUndefined();
     expect(recovery?.expiredBacklogCount).toBeUndefined();
   });
+
+  it("normalizes raw reference timing as an optional non-negative duration", async () => {
+    const fetchStatus = async (rawReferenceCheckMs: unknown) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                runtimePressureHealth: {
+                  retentionWriteHealth: { state: "healthy", rawReferenceCheckMs },
+                },
+              }),
+              { status: 200 },
+            ),
+        ),
+      );
+      return fetchSystemStatus();
+    };
+
+    expect(
+      (await fetchStatus(-1)).runtimePressureHealth?.retentionWriteHealth?.rawReferenceCheckMs,
+    ).toBeUndefined();
+    expect(
+      (await fetchStatus(null)).runtimePressureHealth?.retentionWriteHealth?.rawReferenceCheckMs,
+    ).toBeUndefined();
+    expect(
+      (await fetchStatus(4.5)).runtimePressureHealth?.retentionWriteHealth?.rawReferenceCheckMs,
+    ).toBe(4.5);
+  });
 });
 
 describe("normalizePoolRoutingSelectionAudit", () => {

@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite tables retention_prepared_archives, retention_recovery_cursors, and retention_raw_reconciliation plus additive circuit and overflow-spool columns on system_raw_payload_metrics.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",
-      "to_program_version": "Candidate release from mainline v2.71.23.",
+      "to_program_version": "Candidate release from mainline v2.71.24.",
       "direct_major_skips_supported": false
     }
   },
@@ -36,16 +36,27 @@
         ],
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "dml-002",
+        "description": "Confirm raw ownership from the existing indexed blob-link ledger inside the source transaction before post-commit physical unlink; no new schema object or archive format is introduced.",
+        "order": 3,
+        "depends_on": [
+          "ddl-001"
+        ],
+        "observable": true,
+        "pauseable": true
       }
     ],
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
         "description": "No startup-wide historical backfill; legacy archive reconciliation advances at most 32 archive files, raw residual reconciliation advances at most 32 direct files, and raw inventory advances at most 128 DB references per maintenance pass.",
-        "order": 3,
+        "order": 4,
         "depends_on": [
           "ddl-001",
-          "dml-001"
+          "dml-001",
+          "dml-002"
         ],
         "observable": true,
         "pauseable": true
@@ -57,6 +68,7 @@
     "operation_sequence": [
       "ddl-001",
       "dml-001",
+      "dml-002",
       "backfill-001"
     ],
     "progress_signals": [
