@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.25",
+  "base_stable_version": "2.71.24",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-23T11:08:46Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.25",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4af6986e8fe84b6cba4be461669fc1fc2909912a",
+  "pr_number": 998,
+  "pr_title": "fix(retention): reconcile historical raw files",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.25",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.25",
+  "target_sha": "f06d54dbe47a013f0ed03c51e2c27c21e3c2a203",
+  "type_label": "type:patch"
+}
