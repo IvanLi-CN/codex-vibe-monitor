@@ -1856,6 +1856,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("input_tokens", "INTEGER"),
         ("output_tokens", "INTEGER"),
         ("cache_input_tokens", "INTEGER"),
+        ("reported_cache_write_tokens", "INTEGER"),
         ("reasoning_tokens", "INTEGER"),
         ("total_tokens", "INTEGER"),
         ("cost", "REAL"),

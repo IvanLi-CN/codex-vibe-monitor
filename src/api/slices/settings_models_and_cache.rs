@@ -1255,6 +1255,7 @@ pub(crate) struct ParsedUsage {
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reported_cache_write_tokens: Option<i64>,
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
 }
@@ -1556,6 +1557,7 @@ pub(crate) struct ProxyCostBackfillCandidate {
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
     pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reported_cache_write_tokens: Option<i64>,
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,

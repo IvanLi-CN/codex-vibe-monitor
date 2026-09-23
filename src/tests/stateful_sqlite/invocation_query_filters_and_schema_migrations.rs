@@ -12,6 +12,45 @@ use serde_json::json;
 use tokio::time::{Duration, sleep};
 
 #[tokio::test]
+async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invocations() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    let legacy_create_sql = codex_invocations_create_sql("codex_invocations")
+        .replace("            reported_cache_write_tokens INTEGER,\n", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(&pool)
+        .await
+        .expect("create pre-migration invocation schema");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, raw_response) VALUES ('legacy-usage', '2026-09-01 00:00:00', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy invocation");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate legacy invocation schema");
+
+    let reported_column = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(&pool)
+        .await
+        .expect("inspect invocation schema")
+        .into_iter()
+        .find(|row| row.get::<String, _>("name") == "reported_cache_write_tokens")
+        .expect("reported cache-write column should be added");
+    assert_eq!(reported_column.get::<i64, _>("notnull"), 0);
+    let legacy_value: Option<i64> = sqlx::query_scalar(
+        "SELECT reported_cache_write_tokens FROM codex_invocations WHERE invoke_id = 'legacy-usage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load legacy reported cache-write value");
+    assert_eq!(legacy_value, None);
+}
+
+#[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
     #[derive(sqlx::FromRow)]
@@ -943,16 +982,22 @@ async fn list_invocations_projects_payload_context_fields() {
             occurred_at,
             source,
             status,
+            input_tokens,
+            cache_input_tokens,
+            reported_cache_write_tokens,
             payload,
             raw_response
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         "#,
     )
     .bind("proxy-context-1")
     .bind("2026-02-25 10:00:00")
     .bind(SOURCE_PROXY)
     .bind("failed")
+    .bind(1000_i64)
+    .bind(300_i64)
+    .bind(250_i64)
     .bind(
         r#"{"endpoint":"/v1/responses","failureKind":"upstream_stream_error","requesterIp":"198.51.100.77","promptCacheKey":"pck-list-1","routeMode":"pool","upstreamAccountId":17,"upstreamAccountName":"pool-account-17","responseContentEncoding":"gzip, br","transport":"websocket","requestedServiceTier":"priority","serviceTier":null,"service_tier":"priority","proxyDisplayName":"jp-relay-01","proxyWeightDelta":-0.68,"reasoningEffort":"high"}"#,
     )
@@ -1001,6 +1046,9 @@ async fn list_invocations_projects_payload_context_fields() {
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.proxy_weight_delta, Some(-0.68));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(record.reported_cache_write_tokens, Some(250));
+    let serialized = serde_json::to_value(&record).expect("serialize invocation record");
+    assert_eq!(serialized["reportedCacheWriteTokens"], 250);
 }
 
 #[tokio::test]

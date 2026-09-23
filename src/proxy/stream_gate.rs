@@ -2261,6 +2261,7 @@ pub(crate) fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
         if parsed.total_tokens.is_some()
             || parsed.input_tokens.is_some()
             || parsed.output_tokens.is_some()
+            || parsed.reported_cache_write_tokens.is_some()
         {
             return Some(parsed);
         }
@@ -2270,6 +2271,7 @@ pub(crate) fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
         if parsed.total_tokens.is_some()
             || parsed.input_tokens.is_some()
             || parsed.output_tokens.is_some()
+            || parsed.reported_cache_write_tokens.is_some()
         {
             return Some(parsed);
         }
@@ -2294,6 +2296,9 @@ pub(crate) fn parse_usage_value(value: &Value) -> ParsedUsage {
                 .pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(json_value_to_i64)
         });
+    let reported_cache_write_tokens = value
+        .pointer("/input_tokens_details/cache_write_tokens")
+        .and_then(json_value_to_i64);
     let reasoning_tokens = value
         .pointer("/output_tokens_details/reasoning_tokens")
         .and_then(json_value_to_i64)
@@ -2307,6 +2312,7 @@ pub(crate) fn parse_usage_value(value: &Value) -> ParsedUsage {
         input_tokens,
         output_tokens,
         cache_input_tokens,
+        reported_cache_write_tokens,
         reasoning_tokens,
         total_tokens: value.get("total_tokens").and_then(json_value_to_i64),
     };

@@ -21,9 +21,9 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         )
         .push(INVOCATION_RESPONSE_MODEL_SQL)
         .push(
-            " AS response_model, \
+         " AS response_model, \
          input_tokens, output_tokens, \
-         cache_input_tokens, reasoning_tokens, \
+         cache_input_tokens, reported_cache_write_tokens, reasoning_tokens, \
          ",
         )
         .push(INVOCATION_REASONING_EFFORT_SQL)

@@ -2031,6 +2031,7 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cache_input_tokens: None,
+            reported_cache_write_tokens: None,
             reasoning_tokens: None,
             reasoning_effort: None,
             total_tokens: None,
@@ -4610,6 +4611,8 @@ pub(crate) struct ApiInvocation {
     pub(crate) cost_reasoning: Option<f64>,
     #[sqlx(default)]
     pub(crate) cache_write_tokens: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) reported_cache_write_tokens: Option<i64>,
     pub(crate) status: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]

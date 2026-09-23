@@ -3277,6 +3277,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
             input_tokens = ?4,
             output_tokens = ?5,
             cache_input_tokens = ?6,
+            reported_cache_write_tokens = ?43,
             reasoning_tokens = ?7,
             total_tokens = ?8,
             cost = ?9,
@@ -3365,6 +3366,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .bind(t_upstream_stream_ms)
     .bind(t_resp_parse_ms)
     .bind(t_persist_ms)
+    .bind(record.usage.reported_cache_write_tokens)
     .execute(&mut *tx)
     .await?;
 
@@ -3451,6 +3453,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         cache_write_tokens: record.usage.input_tokens.map(|input| {
             input.saturating_sub(record.usage.cache_input_tokens.unwrap_or_default().max(0))
         }),
+        reported_cache_write_tokens: record.usage.reported_cache_write_tokens,
         status: Some(record.status.clone()),
         live_phase: None,
         error_message: record.error_message.clone(),
@@ -3550,6 +3553,7 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reported_cache_write_tokens,
             reasoning_tokens,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort,
         total_tokens,

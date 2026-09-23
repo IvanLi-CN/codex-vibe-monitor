@@ -249,6 +249,7 @@ pub(crate) fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> P
             input_tokens: Some(12),
             output_tokens: Some(3),
             cache_input_tokens: Some(2),
+            reported_cache_write_tokens: None,
             reasoning_tokens: Some(0),
             total_tokens: Some(15),
         },

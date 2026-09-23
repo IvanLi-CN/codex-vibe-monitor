@@ -14714,6 +14714,7 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cache_input_tokens: None,
+            reported_cache_write_tokens: None,
             reasoning_tokens: None,
             reasoning_effort: None,
             total_tokens: None,

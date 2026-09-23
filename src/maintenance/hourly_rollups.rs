@@ -1529,6 +1529,8 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
     let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
     let cache_input_tokens =
         legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
+    let reported_cache_write_tokens =
+        legacy_compatible_archive_select_expr(archive_columns, "reported_cache_write_tokens");
     let model = legacy_compatible_archive_select_expr(archive_columns, "model");
     let cost_input = legacy_compatible_archive_select_expr(archive_columns, "cost_input");
     let cost_cache_write =
@@ -1549,6 +1551,7 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
             {input_tokens},
             {output_tokens},
             {cache_input_tokens},
+            {reported_cache_write_tokens},
             total_tokens,
             cost,
             {cost_input},
@@ -4083,6 +4086,7 @@ pub(crate) fn codex_invocations_create_sql(table_name: &str) -> String {
             input_tokens INTEGER,
             output_tokens INTEGER,
             cache_input_tokens INTEGER,
+            reported_cache_write_tokens INTEGER,
             reasoning_tokens INTEGER,
             total_tokens INTEGER,
             cost REAL,
@@ -4328,6 +4332,7 @@ async fn ensure_codex_invocations_archive_schema_in_schema(
         ("cost_cache_read", "REAL"),
         ("cost_output", "REAL"),
         ("cost_reasoning", "REAL"),
+        ("reported_cache_write_tokens", "INTEGER"),
         ("first_token_ms", "REAL"),
     ] {
         if !archive_columns.contains(column) {

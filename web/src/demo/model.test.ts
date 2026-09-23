@@ -9,6 +9,32 @@ afterEach(() => {
 });
 
 describe("demoModel", () => {
+  it("seeds official GPT-6 presets and pricing without exposing Terra", () => {
+    expect(demoModel.snapshot.settings).toMatchObject({
+      proxy: {
+        models: expect.arrayContaining(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]),
+        enabledModels: expect.arrayContaining(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]),
+      },
+      pricing: {
+        catalogVersion: "openai-standard-2026-09-23",
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            model: "gpt-6-astra",
+            inputPer1m: 10,
+            outputPer1m: 50,
+            cacheReadPer1m: 1,
+            cacheWritePer1m: 12.5,
+            source: "official",
+          }),
+          expect.objectContaining({ model: "gpt-6-terra", source: "temporary" }),
+        ]),
+      },
+    });
+
+    const settings = demoModel.snapshot.settings as { proxy: { models: string[] } };
+    expect(settings.proxy.models).not.toContain("gpt-6-terra");
+  });
+
   it("resets each scene to deterministic seed data", () => {
     demoModel.setScene("attention");
     demoModel.createAccount();

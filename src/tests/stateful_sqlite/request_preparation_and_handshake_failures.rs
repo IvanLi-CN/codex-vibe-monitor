@@ -1434,6 +1434,22 @@ fn parse_stream_response_payload_extracts_usage_and_model() {
 }
 
 #[test]
+fn parse_usage_value_preserves_reported_cache_write_tokens() {
+    let usage = parse_usage_value(&serde_json::json!({
+        "input_tokens": 1000,
+        "output_tokens": 200,
+        "total_tokens": 1200,
+        "input_tokens_details": {
+            "cached_tokens": 300,
+            "cache_write_tokens": 250
+        }
+    }));
+
+    assert_eq!(usage.cache_input_tokens, Some(300));
+    assert_eq!(usage.reported_cache_write_tokens, Some(250));
+}
+
+#[test]
 fn parse_stream_response_payload_extracts_terminal_failure_details() {
     let raw = [
         "event: response.created",
@@ -1542,6 +1558,7 @@ fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
@@ -1582,6 +1599,7 @@ fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
@@ -1621,6 +1639,7 @@ fn estimate_proxy_cost_breakdown_uses_explicit_gpt_5_6_sol_cache_read_and_write_
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
@@ -1666,6 +1685,7 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_terra_base_pricing() {
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
@@ -1705,6 +1725,7 @@ fn estimate_proxy_cost_falls_back_to_dated_gpt_5_6_luna_base_pricing() {
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
@@ -1730,15 +1751,21 @@ fn estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets() {
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
 
     for (model, dated_model, expected) in [
         (
+            "gpt-6-astra",
+            "gpt-6-astra-2026-09-23",
+            ((600.0 * 12.5) + (400.0 * 1.0) + (200.0 * 50.0)) / 1_000_000.0,
+        ),
+        (
             "gpt-6-sol",
-            "gpt-6-sol-2026-09-20",
-            ((600.0 * 6.25) + (400.0 * 0.5) + (200.0 * 30.0)) / 1_000_000.0,
+            "gpt-6-sol-2026-09-23",
+            ((600.0 * 2.5) + (400.0 * 0.2) + (200.0 * 10.0)) / 1_000_000.0,
         ),
         (
             "gpt-6-terra",
@@ -1747,8 +1774,8 @@ fn estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets() {
         ),
         (
             "gpt-6-luna",
-            "gpt-6-luna-2026-09-20",
-            ((600.0 * 0.25) + (400.0 * 0.02) + (200.0 * 1.20)) / 1_000_000.0,
+            "gpt-6-luna-2026-09-23",
+            ((600.0 * 0.125) + (400.0 * 0.01) + (200.0 * 0.5)) / 1_000_000.0,
         ),
     ] {
         assert!(catalog.models.contains_key(model));
@@ -1765,12 +1792,133 @@ fn estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets() {
 }
 
 #[test]
+fn estimate_gpt_6_uses_exact_cache_write_long_context_and_output_rate_for_reasoning() {
+    let catalog = default_pricing_catalog();
+    for (model, input_price, read_price, write_price, output_price) in [
+        ("gpt-6-astra", 10.0, 1.0, 12.5, 50.0),
+        ("gpt-6-sol", 2.0, 0.2, 2.5, 10.0),
+        ("gpt-6-luna", 0.1, 0.01, 0.125, 0.5),
+    ] {
+        let short_usage = ParsedUsage {
+            input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS),
+            output_tokens: Some(1_200),
+            cache_input_tokens: Some(40_000),
+            reported_cache_write_tokens: Some(50_000),
+            reasoning_tokens: Some(200),
+            total_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1_200),
+        };
+        let (short, estimated, _) = estimate_proxy_cost_breakdown(
+            &catalog,
+            Some(model),
+            &short_usage,
+            Some("standard"),
+            ProxyPricingMode::ResponseTier,
+        );
+        let short = short.expect("short-context cost exists");
+        let short_expected_input = (182_000.0 * input_price) / 1_000_000.0;
+        let short_expected_write = (50_000.0 * write_price) / 1_000_000.0;
+        let short_expected_read = (40_000.0 * read_price) / 1_000_000.0;
+        let short_expected_output = (1_000.0 * output_price) / 1_000_000.0;
+        let short_expected_reasoning = (200.0 * output_price) / 1_000_000.0;
+        assert!(estimated);
+        assert!((short.input - short_expected_input).abs() < 1e-12);
+        assert!((short.cache_write - short_expected_write).abs() < 1e-12);
+        assert!((short.cache_read - short_expected_read).abs() < 1e-12);
+        assert!((short.output - short_expected_output).abs() < 1e-12);
+        assert!((short.reasoning - short_expected_reasoning).abs() < 1e-12);
+
+        let mut long_usage = short_usage.clone();
+        long_usage.input_tokens = Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1);
+        long_usage.total_tokens = Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1_201);
+        let (long, estimated, _) = estimate_proxy_cost_breakdown(
+            &catalog,
+            Some(model),
+            &long_usage,
+            Some("standard"),
+            ProxyPricingMode::ResponseTier,
+        );
+        let long = long.expect("long-context cost exists");
+        assert!(estimated);
+        assert!((long.input - (182_001.0 * input_price * 2.0 / 1_000_000.0)).abs() < 1e-12);
+        assert!((long.cache_write - (50_000.0 * write_price * 2.0 / 1_000_000.0)).abs() < 1e-12);
+        assert!((long.cache_read - (40_000.0 * read_price * 2.0 / 1_000_000.0)).abs() < 1e-12);
+        assert!((long.output - (1_000.0 * output_price * 1.5 / 1_000_000.0)).abs() < 1e-12);
+        assert!((long.reasoning - (200.0 * output_price * 1.5 / 1_000_000.0)).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn estimate_gpt_6_tier_rules_only_apply_to_actual_supported_tiers() {
+    let catalog = default_pricing_catalog();
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(100),
+        cache_input_tokens: Some(100),
+        reported_cache_write_tokens: Some(200),
+        reasoning_tokens: Some(0),
+        total_tokens: Some(1_100),
+    };
+    let (standard, _, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-6-sol"),
+        &usage,
+        Some("priority"),
+        ProxyPricingMode::RequestedTier,
+    );
+    let (priority, _, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-6-sol"),
+        &usage,
+        Some("priority"),
+        ProxyPricingMode::ResponseTier,
+    );
+    assert!(
+        (priority.expect("priority cost") - standard.expect("standard cost") * 2.0).abs() < 1e-12
+    );
+
+    for tier in ["batch", "flex", "regional", "unknown-tier"] {
+        let (cost, estimated, _) = estimate_proxy_cost(
+            &catalog,
+            Some("gpt-6-sol"),
+            &usage,
+            Some(tier),
+            ProxyPricingMode::ResponseTier,
+        );
+        assert!(cost.is_none(), "actual {tier} tier remains unpriced");
+        assert!(!estimated);
+    }
+}
+
+#[test]
+fn estimate_gpt_6_returns_unknown_cost_for_inconsistent_exact_cache_write_usage() {
+    let catalog = default_pricing_catalog();
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(100),
+        cache_input_tokens: Some(400),
+        reported_cache_write_tokens: Some(601),
+        reasoning_tokens: Some(0),
+        total_tokens: Some(1_100),
+    };
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-6-astra"),
+        &usage,
+        None,
+        ProxyPricingMode::ResponseTier,
+    );
+    assert!(cost.is_none());
+    assert!(!estimated);
+}
+
+#[test]
 fn estimate_proxy_cost_rejects_invalid_or_preview_gpt_6_variants() {
     let catalog = default_pricing_catalog();
     let usage = ParsedUsage {
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1_200),
     };
@@ -1813,6 +1961,7 @@ fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
         input_tokens: Some(1000),
         output_tokens: Some(500),
         cache_input_tokens: None,
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(1500),
     };
@@ -1865,6 +2014,7 @@ fn estimate_proxy_cost_prefers_exact_model_over_dated_model_base_pricing() {
         input_tokens: Some(1000),
         output_tokens: Some(1000),
         cache_input_tokens: None,
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: Some(2000),
     };
@@ -1903,6 +2053,7 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_at_threshol
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS),
         output_tokens: Some(1_000),
         cache_input_tokens: Some(1_000),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: None,
     };
@@ -1942,6 +2093,7 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_above_threshold() 
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
         output_tokens: Some(1_000),
         cache_input_tokens: Some(1_000),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: None,
     };
@@ -1983,6 +2135,7 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_to_reasoning_cost(
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
         output_tokens: Some(1_000),
         cache_input_tokens: Some(1_000),
+        reported_cache_write_tokens: None,
         reasoning_tokens: Some(2_000),
         total_tokens: None,
     };
@@ -2025,6 +2178,7 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_above_threshol
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
         output_tokens: Some(1_000),
         cache_input_tokens: Some(999_999),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: None,
     };
@@ -2066,6 +2220,7 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_for_dated_mode
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
         output_tokens: Some(1_000),
         cache_input_tokens: Some(999_999),
+        reported_cache_write_tokens: None,
         reasoning_tokens: Some(2_000),
         total_tokens: None,
     };
@@ -2108,6 +2263,7 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_for_dated_model_su
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
         output_tokens: Some(1_000),
         cache_input_tokens: Some(1_000),
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: None,
     };
@@ -2149,6 +2305,7 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_for_other_m
         input_tokens: Some(GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS + 1),
         output_tokens: Some(1_000),
         cache_input_tokens: None,
+        reported_cache_write_tokens: None,
         reasoning_tokens: None,
         total_tokens: None,
     };
@@ -2188,6 +2345,7 @@ fn estimate_proxy_cost_applies_requested_tier_priority_multiplier_and_price_vers
         input_tokens: Some(1_000),
         output_tokens: Some(200),
         cache_input_tokens: Some(400),
+        reported_cache_write_tokens: None,
         reasoning_tokens: Some(50),
         total_tokens: Some(1_200),
     };

@@ -4890,7 +4890,8 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
             .expect("open legacy archive sqlite");
     let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL
         .replace("archive_db.", "")
-        .replace("    first_token_ms REAL,\n", "");
+        .replace("    first_token_ms REAL,\n", "")
+        .replace("    reported_cache_write_tokens INTEGER,\n", "");
     sqlx::query(&legacy_create_sql)
         .execute(&legacy_archive_pool)
         .await
@@ -4921,6 +4922,14 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         Some(0.42),
     )
     .await;
+
+    sqlx::query(
+        "UPDATE codex_invocations SET reported_cache_write_tokens = 123 WHERE invoke_id = ?1",
+    )
+    .bind("archive-into-legacy-batch")
+    .execute(&pool)
+    .await
+    .expect("set exact cache-write count before archiving");
 
     let live_row_id: i64 = sqlx::query_scalar(
         "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
@@ -4974,6 +4983,10 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         archive_columns.contains("first_token_ms"),
         "append should upgrade legacy archives with nullable TTFT storage"
     );
+    assert!(
+        archive_columns.contains("reported_cache_write_tokens"),
+        "append should upgrade legacy archives with nullable exact cache-write storage"
+    );
     let archived_first_token_ms: Option<f64> =
         sqlx::query_scalar("SELECT first_token_ms FROM codex_invocations WHERE invoke_id = ?1")
             .bind("archive-into-legacy-batch")
@@ -4981,6 +4994,14 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
             .await
             .expect("load archived TTFT");
     assert_eq!(archived_first_token_ms, None);
+    let archived_reported_cache_write_tokens: Option<i64> = sqlx::query_scalar(
+        "SELECT reported_cache_write_tokens FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("archive-into-legacy-batch")
+    .fetch_one(&archived_pool)
+    .await
+    .expect("load archived exact cache-write count");
+    assert_eq!(archived_reported_cache_write_tokens, Some(123));
     archived_pool.close().await;
 
     cleanup_temp_test_dir(&temp_dir);

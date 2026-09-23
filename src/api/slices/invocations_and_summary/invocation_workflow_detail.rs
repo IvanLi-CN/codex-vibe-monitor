@@ -564,6 +564,7 @@ fn invocation_usage_for_cost_audit(record: &ApiInvocation) -> ParsedUsage {
         input_tokens: record.input_tokens,
         output_tokens: record.output_tokens,
         cache_input_tokens: record.cache_input_tokens,
+        reported_cache_write_tokens: record.reported_cache_write_tokens,
         reasoning_tokens: record.reasoning_tokens,
         total_tokens: record.total_tokens,
     }
@@ -765,6 +766,7 @@ pub(crate) fn build_invocation_usage_summary(
     json!({
         "inputTokens": record.input_tokens,
         "cacheWriteTokens": resolve_invocation_cache_write_tokens(record),
+        "reportedCacheWriteTokens": record.reported_cache_write_tokens,
         "cacheInputTokens": record.cache_input_tokens,
         "outputTokens": record.output_tokens,
         "reasoningTokens": record.reasoning_tokens,
