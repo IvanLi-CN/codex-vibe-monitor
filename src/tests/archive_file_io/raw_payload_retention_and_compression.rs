@@ -139,7 +139,12 @@ async fn retention_finalization_keeps_compression_variant_with_another_owner() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("retention-shared-compression-variant").await;
     let compressed_path = config.proxy_raw_dir.join("shared-response.bin.gz");
-    let identity_path = config.proxy_raw_dir.join("shared-response.bin");
+    let identity_db_path = Path::new("proxy_raw_payloads/shared-response.bin");
+    let identity_path = config
+        .database_path
+        .parent()
+        .expect("database parent")
+        .join(identity_db_path);
     fs::write(&compressed_path, b"compressed-owner").expect("write compressed raw");
     fs::write(&identity_path, b"identity-owner").expect("write identity raw");
 
@@ -166,7 +171,7 @@ async fn retention_finalization_keeps_compression_variant_with_another_owner() {
         None,
         "{}",
         None,
-        Some(&identity_path),
+        Some(identity_db_path),
         Some(1),
         Some(0.0),
     )

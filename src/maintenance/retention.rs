@@ -611,6 +611,7 @@ fn retention_record_defer(operation: &'static str, reason: impl ToString) {
     health.snapshot.state = "deferred".to_string();
     health.snapshot.operation = Some(operation.to_string());
     health.snapshot.defer_reason = Some(reason.clone());
+    health.snapshot.raw_reference_check_ms = None;
     health.snapshot.last_error = None;
     debug!(
         operation,
@@ -822,6 +823,7 @@ fn retention_record_error(operation: &'static str, error: &anyhow::Error) {
         .expect("retention write health");
     health.snapshot.state = "degraded".to_string();
     health.snapshot.operation = Some(operation.to_string());
+    health.snapshot.raw_reference_check_ms = None;
     health.snapshot.last_error = Some(format!(
         "failure_fingerprint:{}",
         retention_error_fingerprint(error)
@@ -5986,9 +5988,33 @@ pub(crate) fn delete_exact_proxy_raw_path(
     Ok(())
 }
 
+fn raw_path_ledger_aliases(path: &str, fallback_root: Option<&Path>) -> Vec<String> {
+    let mut aliases = std::collections::BTreeSet::new();
+    let mut add_path = |candidate: &str| {
+        aliases.insert(candidate.to_string());
+        if let Some(alternate_path) = raw_payload_alternate_db_path(candidate) {
+            aliases.insert(alternate_path);
+        }
+    };
+    add_path(path);
+    if let Some(root) = fallback_root {
+        let path = Path::new(path);
+        if path.is_absolute() {
+            if let Ok(relative) = path.strip_prefix(root) {
+                add_path(&relative.to_string_lossy());
+            }
+        } else {
+            let absolute = root.join(path);
+            add_path(&absolute.to_string_lossy());
+        }
+    }
+    aliases.into_iter().collect()
+}
+
 async fn filter_unreferenced_proxy_raw_paths(
     connection: &mut sqlx::SqliteConnection,
     raw_paths: &[Option<String>],
+    fallback_root: Option<&Path>,
 ) -> Result<Vec<Option<String>>> {
     let candidates = raw_paths
         .iter()
@@ -5997,20 +6023,8 @@ async fn filter_unreferenced_proxy_raw_paths(
         .collect::<std::collections::BTreeSet<_>>();
     let mut unreferenced = Vec::with_capacity(candidates.len());
     for path in candidates {
-        let mut referenced = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT EXISTS(
-              SELECT 1 FROM proxy_raw_payload_blob_links
-              WHERE raw_path = ?1
-            )
-            "#,
-        )
-        .bind(&path)
-        .fetch_one(&mut *connection)
-        .await?;
-        if referenced == 0
-            && let Some(alternate_path) = raw_payload_alternate_db_path(&path)
-        {
+        let mut referenced = 0;
+        for ledger_path in raw_path_ledger_aliases(&path, fallback_root) {
             referenced = sqlx::query_scalar::<_, i64>(
                 r#"
                 SELECT EXISTS(
@@ -6019,9 +6033,12 @@ async fn filter_unreferenced_proxy_raw_paths(
                 )
                 "#,
             )
-            .bind(alternate_path)
+            .bind(ledger_path)
             .fetch_one(&mut *connection)
             .await?;
+            if referenced != 0 {
+                break;
+            }
         }
         if referenced == 0 {
             unreferenced.push(Some(path));
@@ -6316,7 +6333,12 @@ pub(crate) async fn prune_old_invocation_details(
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
             let raw_reference_check_started = Instant::now();
             let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-            let raw_paths = filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths).await?;
+            let raw_paths = filter_unreferenced_proxy_raw_paths(
+                tx.as_mut(),
+                &raw_paths,
+                raw_path_fallback_root,
+            )
+            .await?;
             let raw_reference_check_elapsed =
                 had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
@@ -6739,7 +6761,12 @@ pub(crate) async fn archive_old_invocations(
             retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
             let raw_reference_check_started = Instant::now();
             let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-            let raw_paths = filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths).await?;
+            let raw_paths = filter_unreferenced_proxy_raw_paths(
+                tx.as_mut(),
+                &raw_paths,
+                raw_path_fallback_root,
+            )
+            .await?;
             let raw_reference_check_elapsed =
                 had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
@@ -7096,9 +7123,12 @@ pub(crate) async fn archive_timestamped_dataset(
                     let raw_reference_check_started = Instant::now();
                     let had_raw_reference_candidates =
                         pool_attempt_raw_paths.iter().any(Option::is_some);
-                    let raw_paths =
-                        filter_unreferenced_proxy_raw_paths(tx.as_mut(), &pool_attempt_raw_paths)
-                            .await?;
+                    let raw_paths = filter_unreferenced_proxy_raw_paths(
+                        tx.as_mut(),
+                        &pool_attempt_raw_paths,
+                        config.database_path.parent(),
+                    )
+                    .await?;
                     (
                         raw_paths,
                         had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed()),
