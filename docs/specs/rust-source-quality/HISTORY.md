@@ -40,3 +40,21 @@ Validation evidence for these extractions is the focused existing
 summary-projection/stateful SQLite coverage, the stateful SQLite backend
 profile, the Rust source-quality runner, all-target Cargo checking, and
 `git diff --check`.
+
+The workflow-detail region is now a third named child module under the same
+parent. Its verified-base boundary is the complete
+`fetch_invocation_pool_attempts` definition through the complete
+`fetch_invocation_request_body` definition, physical lines 2,992 through
+5,421 inclusive (2,430 moved lines). Pool-attempt retrieval, workflow identity
+and response models, hero/timeline construction, upstream-account attempt
+hydration, workflow-detail reads, request/response body retrieval and raw-body
+fallbacks, summary construction, record detail, and their handlers remain
+behaviorally unchanged. The resulting child is 2,436 physical lines; the
+parent decreases from 42,897 to 40,532 physical lines. The child remains below
+the production target and is not added to the inventory. The remaining parent
+workstream is the named summary-projection models/builders plus dashboard
+activity/network and summary/history/suggestions/stats responsibilities.
+
+The focused workflow-detail audit test passed after the move. Full delivery
+validation remains the stateful SQLite backend profile, the Rust source-quality
+runner, all-target Cargo checking, and `git diff --check`.

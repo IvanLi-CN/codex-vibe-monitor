@@ -21,8 +21,8 @@
     {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
-      "line_budget": 42897,
-      "next_module_workstream": "Split the remaining summary-projection and workflow-detail responsibilities into dedicated modules."
+      "line_budget": 40532,
+      "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
       "path": "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings.rs",
