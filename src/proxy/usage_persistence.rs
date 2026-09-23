@@ -5811,7 +5811,6 @@ async fn recover_raw_overflow_spools_inner(
             inspected_segments += 1;
             continue;
         }
-        inspected_segments += 1;
         if let Some(active_capture) = raw_overflow_spool_capture_key_from_path(&path)
             && RAW_OVERFLOW_SPOOL_ACTIVE_CAPTURES
                 .lock()
@@ -5825,6 +5824,7 @@ async fn recover_raw_overflow_spools_inner(
             }
             continue;
         }
+        inspected_segments += 1;
         let header = match run_blocking_raw_writer_io({
             let path = path.clone();
             move || read_raw_overflow_spool_segment(&path).map(|(header, _)| header)
@@ -5848,9 +5848,6 @@ async fn recover_raw_overflow_spools_inner(
             .entry(capture_key)
             .or_default()
             .push((path, header));
-    }
-    if inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE {
-        batch_truncated = true;
     }
     let semaphore = writer_semaphore
         .unwrap_or_else(|| Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config))));
