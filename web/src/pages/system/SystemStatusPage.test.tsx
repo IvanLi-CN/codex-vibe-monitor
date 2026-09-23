@@ -160,7 +160,10 @@ describe("SystemStatusPage", () => {
     expect(host?.textContent ?? "").toContain("归档与逻辑体量");
     expect(host?.textContent ?? "").toContain("已追踪项目存储");
     expect(host?.textContent ?? "").toContain(
-      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积未知时总量保持未知，也不代表完整物理文件系统占用。",
+      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积不可用时保持未知，也不代表完整物理文件系统占用。",
+    );
+    expect(host?.textContent ?? "").not.toContain(
+      "先展示服务能够验证的项目存储，再标明 raw 盘点是否覆盖物理存储。",
     );
     expect(
       host?.querySelectorAll('[data-testid="system-status-project-disk-formula"]'),
