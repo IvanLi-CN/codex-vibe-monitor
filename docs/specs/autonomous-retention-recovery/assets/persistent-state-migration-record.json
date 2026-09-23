@@ -7,7 +7,7 @@
     "version_impact": "patch"
   },
   "durable_state": {
-    "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, artifact digest/size, bounded retry/quarantine state, legacy reconciliation cursor, startup raw-path revalidation cursor, and additive raw-capture circuit measurements including overflow-spool bytes.",
+    "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, artifact digest/size, bounded retry/quarantine state, legacy reconciliation cursor, startup raw-path revalidation cursor, recovery-pending hysteresis marker, and additive raw-capture circuit measurements including overflow-spool bytes.",
     "storage_implementation": "SQLite tables retention_prepared_archives and retention_recovery_cursors plus additive circuit and overflow-spool columns on system_raw_payload_metrics.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",

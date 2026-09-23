@@ -11,6 +11,7 @@ pub(crate) const RAW_CAPTURE_RESUME_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 pub(crate) const RAW_CAPTURE_CLOSE_AVAILABLE_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 pub(crate) const RAW_CAPTURE_RESUME_AVAILABLE_BYTES: u64 = 30 * 1024 * 1024 * 1024;
 const RAW_CAPTURE_RESERVATION_OVERHEAD_BYTES: u64 = 64 * 1024;
+const RAW_CAPTURE_RESERVATION_EXPANSION_FACTOR: u64 = 2;
 
 const CIRCUIT_STATE_UNKNOWN: &str = "unknown";
 const CIRCUIT_STATE_CAPTURING: &str = "capturing";
@@ -28,6 +29,7 @@ pub(crate) struct RawCaptureCircuitSnapshot {
     pub(crate) raw_bytes: Option<u64>,
     pub(crate) spool_bytes: Option<u64>,
     pub(crate) physical_raw_bytes: Option<u64>,
+    pub(crate) recovery_pending: bool,
     pub(crate) available_bytes: Option<u64>,
     pub(crate) reserved_bytes: u64,
     pub(crate) expired_backlog_count: Option<u64>,
@@ -57,6 +59,7 @@ struct RawCaptureCircuitState {
     accounting_generation: u64,
     resume_hysteresis: bool,
     resume_reason: Option<&'static str>,
+    recovery_pending: bool,
 }
 
 impl Default for RawCaptureCircuitState {
@@ -90,6 +93,7 @@ impl Default for RawCaptureCircuitState {
             accounting_generation: 0,
             resume_hysteresis: false,
             resume_reason: None,
+            recovery_pending: false,
         }
     }
 }
@@ -122,6 +126,7 @@ impl RawCaptureCircuitBreaker {
             physical_raw_bytes: state
                 .raw_bytes
                 .map(|bytes| bytes.saturating_add(state.spool_bytes.unwrap_or_default())),
+            recovery_pending: state.recovery_pending,
             available_bytes: state.available_bytes,
             reserved_bytes: state.reserved_bytes,
             expired_backlog_count: state.expired_backlog_count,
@@ -139,11 +144,38 @@ impl RawCaptureCircuitBreaker {
         inventory_state: &str,
         circuit_state: Option<&str>,
         circuit_reason: Option<&str>,
+        raw_bytes: u64,
+        spool_bytes: Option<u64>,
+        available_bytes: Option<u64>,
+        expired_backlog_count: Option<u64>,
+        backlog_non_growing: Option<bool>,
+        updated_at: Option<String>,
+    ) {
+        self.hydrate_with_recovery_pending(
+            inventory_state,
+            circuit_state,
+            circuit_reason,
+            raw_bytes,
+            spool_bytes,
+            available_bytes,
+            expired_backlog_count,
+            backlog_non_growing,
+            false,
+            updated_at,
+        );
+    }
+
+    pub(crate) fn hydrate_with_recovery_pending(
+        &self,
+        inventory_state: &str,
+        circuit_state: Option<&str>,
+        circuit_reason: Option<&str>,
         _raw_bytes: u64,
         _spool_bytes: Option<u64>,
         _available_bytes: Option<u64>,
         _expired_backlog_count: Option<u64>,
         _backlog_non_growing: Option<bool>,
+        recovery_pending: bool,
         updated_at: Option<String>,
     ) {
         let mut state = self
@@ -164,6 +196,7 @@ impl RawCaptureCircuitBreaker {
         state.backlog_non_growing = _backlog_non_growing;
         state.resume_hysteresis = circuit_state == Some(CIRCUIT_STATE_SUPPRESSED);
         state.resume_reason = normalize_reason(circuit_reason);
+        state.recovery_pending = recovery_pending || state.resume_hysteresis;
         state.state = CIRCUIT_STATE_UNKNOWN;
         state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
         state.admission_initialized = false;
@@ -225,8 +258,12 @@ impl RawCaptureCircuitBreaker {
         state.updated_at = Some(Utc::now().to_rfc3339());
         if inventory_state != "ready" {
             state.raw_bytes = None;
-            state.spool_bytes = None;
-            state.available_bytes = None;
+            state.spool_bytes = spool_bytes;
+            state.available_bytes = if cfg!(test) {
+                available_bytes.or(Some(u64::MAX))
+            } else {
+                filesystem_available_bytes(&self.raw_root)
+            };
             state.backlog_non_growing = None;
             state.admission_initialized = false;
             state.state = CIRCUIT_STATE_UNKNOWN;
@@ -261,6 +298,7 @@ impl RawCaptureCircuitBreaker {
             if state.backlog_non_growing == Some(true) {
                 state.resume_hysteresis = false;
                 state.resume_reason = None;
+                state.recovery_pending = false;
             }
         }
         evaluate_locked(&mut state, 0, reopening);
@@ -284,6 +322,7 @@ impl RawCaptureCircuitBreaker {
             });
         if preserve_suppression {
             state.resume_hysteresis = true;
+            state.recovery_pending = true;
             state.resume_reason = state
                 .resume_reason
                 .or(state.reason)
@@ -332,8 +371,7 @@ impl RawCaptureCircuitBreaker {
                 });
             }
         }
-        let reservation_bytes =
-            requested_bytes.saturating_add(RAW_CAPTURE_RESERVATION_OVERHEAD_BYTES);
+        let reservation_bytes = capture_reservation_bytes(requested_bytes);
         evaluate_locked(&mut state, reservation_bytes, false);
         if state.state != CIRCUIT_STATE_CAPTURING {
             return Err(RawCaptureAdmissionError {
@@ -359,11 +397,15 @@ impl RawCaptureCircuitBreaker {
         if !cfg!(test) {
             state.available_bytes = filesystem_available_bytes(&self.raw_root);
         }
-        if state.inventory_state != "ready"
-            || !state.admission_initialized
-            || state.raw_bytes.is_none()
-            || state.available_bytes.is_none()
-            || state.backlog_non_growing != Some(true)
+        let spool_only_recovery = state.inventory_state != "ready"
+            && state.spool_bytes.is_some()
+            && state.available_bytes.is_some();
+        if !spool_only_recovery
+            && (state.inventory_state != "ready"
+                || !state.admission_initialized
+                || state.raw_bytes.is_none()
+                || state.available_bytes.is_none()
+                || state.backlog_non_growing != Some(true))
         {
             state.state = CIRCUIT_STATE_UNKNOWN;
             state.reason = Some(CIRCUIT_REASON_INVENTORY_UNREADY);
@@ -371,8 +413,27 @@ impl RawCaptureCircuitBreaker {
                 reason: CIRCUIT_REASON_INVENTORY_UNREADY,
             });
         }
-        let reservation_bytes =
-            requested_bytes.saturating_add(RAW_CAPTURE_RESERVATION_OVERHEAD_BYTES);
+        let reservation_bytes = capture_reservation_bytes(requested_bytes);
+        let replacement_bytes =
+            reservation_bytes.saturating_sub(state.spool_bytes.unwrap_or_default());
+        let projected_raw = state
+            .raw_bytes
+            .unwrap_or_default()
+            .saturating_add(state.spool_bytes.unwrap_or_default())
+            .saturating_add(state.reserved_bytes)
+            .saturating_add(replacement_bytes);
+        let replacement_only = requested_bytes <= state.spool_bytes.unwrap_or_default()
+            && (spool_only_recovery
+                || matches!(
+                    state.reason,
+                    Some(CIRCUIT_REASON_RAW_STORE_LIMIT | CIRCUIT_REASON_BOTH)
+                ));
+        if projected_raw >= RAW_CAPTURE_CLOSE_BYTES && !replacement_only {
+            state.reason = Some(CIRCUIT_REASON_RAW_STORE_LIMIT);
+            return Err(RawCaptureAdmissionError {
+                reason: CIRCUIT_REASON_RAW_STORE_LIMIT,
+            });
+        }
         if state.available_bytes.is_some_and(|bytes| {
             bytes
                 .saturating_sub(state.reserved_bytes)
@@ -460,13 +521,14 @@ impl RawCaptureCircuitBreaker {
                 reason: CIRCUIT_REASON_INVENTORY_UNREADY,
             });
         }
-        evaluate_locked(&mut state, requested_bytes, false);
+        let reservation_bytes = capture_extension_bytes(requested_bytes);
+        evaluate_locked(&mut state, reservation_bytes, false);
         if state.state != CIRCUIT_STATE_CAPTURING {
             return Err(RawCaptureAdmissionError {
                 reason: state.reason.unwrap_or(CIRCUIT_REASON_INVENTORY_UNREADY),
             });
         }
-        state.reserved_bytes = state.reserved_bytes.saturating_add(requested_bytes);
+        state.reserved_bytes = state.reserved_bytes.saturating_add(reservation_bytes);
         Ok(())
     }
 }
@@ -488,7 +550,9 @@ impl RawCaptureReservation {
             return Ok(());
         }
         self.circuit.reserve_additional(additional_bytes)?;
-        self.reserved_bytes = self.reserved_bytes.saturating_add(additional_bytes);
+        self.reserved_bytes = self
+            .reserved_bytes
+            .saturating_add(capture_extension_bytes(additional_bytes));
         Ok(())
     }
 
@@ -505,6 +569,14 @@ impl Drop for RawCaptureReservation {
             self.circuit.release_reservation(self.reserved_bytes);
         }
     }
+}
+
+fn capture_reservation_bytes(requested_bytes: u64) -> u64 {
+    capture_extension_bytes(requested_bytes).saturating_add(RAW_CAPTURE_RESERVATION_OVERHEAD_BYTES)
+}
+
+fn capture_extension_bytes(requested_bytes: u64) -> u64 {
+    requested_bytes.saturating_mul(RAW_CAPTURE_RESERVATION_EXPANSION_FACTOR)
 }
 
 fn evaluate_locked(state: &mut RawCaptureCircuitState, requested_bytes: u64, reopening: bool) {
@@ -730,7 +802,7 @@ mod tests {
     #[test]
     fn reservations_count_against_the_close_watermark() {
         let circuit = ready(
-            RAW_CAPTURE_CLOSE_BYTES - RAW_CAPTURE_RESERVATION_OVERHEAD_BYTES - 10,
+            RAW_CAPTURE_CLOSE_BYTES - capture_reservation_bytes(9) - 1,
             RAW_CAPTURE_RESUME_AVAILABLE_BYTES,
             true,
         );

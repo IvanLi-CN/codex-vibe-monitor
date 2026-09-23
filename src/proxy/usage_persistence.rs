@@ -5258,6 +5258,10 @@ impl RawOverflowSpool {
                 truncated_reason: Some(format!("spool_write_failed:{err}")),
             };
         }
+        let completion_marker =
+            raw_overflow_spool_completion_marker(&self.directory, &self.capture_id);
+        let completion_marker_written =
+            fs::write(&completion_marker, self.segment_index.to_string()).is_ok();
         let mut meta = replay_raw_overflow_spool_segments(
             &self.config,
             self.semaphore.clone(),
@@ -5275,6 +5279,12 @@ impl RawOverflowSpool {
         );
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
             remove_raw_overflow_spool_segments(&self.paths);
+            let _ = fs::remove_file(&completion_marker);
+        } else if !completion_marker_written {
+            warn!(
+                error_kind = "completion_marker_write_failed",
+                "raw overflow spool completion marker could not be written"
+            );
         }
         if self.exceeded_payload_limit {
             meta.truncated = true;
@@ -5291,6 +5301,10 @@ impl RawOverflowSpool {
         }
         meta
     }
+}
+
+fn raw_overflow_spool_completion_marker(directory: &Path, capture_id: &str) -> PathBuf {
+    directory.join(format!("{capture_id}.done"))
 }
 
 impl Drop for RawOverflowSpool {
@@ -5778,7 +5792,6 @@ async fn recover_raw_overflow_spools_inner(
         if path.extension().and_then(|value| value.to_str()) != Some("frames") {
             continue;
         }
-        inspected_segments += 1;
         let header = match run_blocking_raw_writer_io({
             let path = path.clone();
             move || read_raw_overflow_spool_segment(&path).map(|(header, _)| header)
@@ -5805,11 +5818,13 @@ async fn recover_raw_overflow_spools_inner(
         {
             continue;
         }
+        inspected_segments += 1;
         captures
             .entry(capture_key)
             .or_default()
             .push((path, header));
     }
+    let batch_truncated = inspected_segments >= RAW_OVERFLOW_SPOOL_RECOVERY_BATCH_SIZE;
 
     let semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(config)));
     for (capture_key, mut segments) in captures {
@@ -5837,6 +5852,16 @@ async fn recover_raw_overflow_spools_inner(
             .into_iter()
             .map(|(path, _)| path)
             .collect::<Vec<_>>();
+        let completion_marker = raw_overflow_spool_completion_marker(&directory, &capture_key);
+        let expected_last_segment = fs::read_to_string(&completion_marker)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        let selected_last_segment = header.segment_index;
+        if (batch_truncated && expected_last_segment.is_none())
+            || expected_last_segment.is_some_and(|expected| expected != selected_last_segment)
+        {
+            continue;
+        }
         let meta = replay_raw_overflow_spool_segments(
             config,
             semaphore.clone(),
@@ -5846,6 +5871,7 @@ async fn recover_raw_overflow_spools_inner(
         .await;
         if meta.path.is_some() || meta.truncated_reason.as_deref() == Some("max_bytes_exceeded") {
             remove_raw_overflow_spool_segments(&paths);
+            let _ = fs::remove_file(completion_marker);
             info!(
                 kind = %header.kind,
                 replay_count = 1,
