@@ -2547,6 +2547,11 @@ export function normalizeFiniteNumber(value: unknown): number | undefined {
   return value;
 }
 
+function normalizeNonNegativeFiniteNumber(value: unknown): number | undefined {
+  const normalized = normalizeFiniteNumber(value);
+  return normalized != null && normalized >= 0 ? normalized : undefined;
+}
+
 export function normalizeRoutingStateVersion(value: unknown): RoutingStateVersion | null {
   const payload = (value ?? {}) as Record<string, unknown>;
   return typeof payload.epoch === "string" &&
@@ -4619,8 +4624,9 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
           lockWaitMs: number(retentionWriteHealth.lockWaitMs),
           executeMs: number(retentionWriteHealth.executeMs),
           commitMs: number(retentionWriteHealth.commitMs),
-          rawReferenceCheckMs:
-            normalizeFiniteNumber(retentionWriteHealth.rawReferenceCheckMs) ?? undefined,
+          rawReferenceCheckMs: normalizeNonNegativeFiniteNumber(
+            retentionWriteHealth.rawReferenceCheckMs,
+          ),
           budgetBreachCount: number(retentionWriteHealth.budgetBreachCount),
           deferReason: optionalString(retentionWriteHealth.deferReason),
           starvationAgeMs: normalizeFiniteNumber(retentionWriteHealth.starvationAgeMs) ?? undefined,
