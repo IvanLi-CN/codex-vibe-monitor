@@ -147,20 +147,16 @@ test.describe("Dashboard render performance", () => {
             performance.getEntriesByName("dashboard-data-ready-start")[0]?.startTime ?? 0,
         }));
         expect(dataReadyStart).toBeGreaterThan(0);
-        const rangeTabs = runPage.locator('[role="tablist"]').first().locator('[role="tab"]');
-        const todayRangeTab = rangeTabs.nth(0);
-        const yesterdayRangeTab = rangeTabs.nth(1);
         await runPage.evaluate(() => {
           localStorage.removeItem("dashboard.performanceDiagnostics.enabled.v1");
           localStorage.setItem("dashboard.performanceDiagnostics.enabled.v1", "1");
         });
         await expect.poll(() => readDashboardDiagnostics(runPage)).toBe(0);
         const updateStart = await runPage.evaluate(() => performance.now());
-        await yesterdayRangeTab.click();
-        await expect(yesterdayRangeTab).toHaveAttribute("aria-selected", "true");
-        await expect(runPage.getByTestId("dashboard-activity-range-yesterday")).toBeVisible();
-        await todayRangeTab.click();
-        await expect(todayRangeTab).toHaveAttribute("aria-selected", "true");
+        const metricTabs = runPage.locator('[role="tablist"]').nth(1).locator('[role="tab"]');
+        const totalCostTab = metricTabs.nth(1);
+        await totalCostTab.click();
+        await expect(totalCostTab).toHaveAttribute("aria-selected", "true");
         await expect(runPage.getByTestId("dashboard-today-activity-chart")).toBeVisible();
         await expect.poll(() => readDashboardDiagnostics(runPage)).toBeGreaterThan(0);
         const updateEnd = await runPage.evaluate(() => performance.now());
