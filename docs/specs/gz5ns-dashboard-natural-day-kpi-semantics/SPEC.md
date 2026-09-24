@@ -187,7 +187,7 @@
   evidence_surface: `page`
   sensitive_exclusion: `N/A`
   scenario: `Dashboard today with minute-day local performance fixture`
-  evidence_note: `固定本地数据下核对七卡内容、次数图、图例和时间轴；图表的可见网格位置与优化前一致。`
+  evidence_note: `固定本地数据下核对七卡内容、次数图、图例和时间轴；今日活动图为 1170 个分钟点，昨日比较序列为 1440 个分钟点，图表的可见网格位置与优化前一致。`
   PR: include
   ![Dashboard minute-day KPI performance fixture](./assets/dashboard-kpi-minute-day-performance.png)
 
