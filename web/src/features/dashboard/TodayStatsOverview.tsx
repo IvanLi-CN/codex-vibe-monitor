@@ -1,4 +1,11 @@
-import { type KeyboardEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Alert } from "../../components/ui/alert";
 import { Chip } from "../../components/ui/chip";
 import { Tooltip } from "../../components/ui/tooltip";
@@ -519,9 +526,10 @@ export function TodayStatsOverview({
     responseTimeSnapshot?.dayAverageMs,
     comparisonResponseTimeSnapshot?.dayAverageMs,
   );
-  const sameProgressUsage = buildSameProgressUsageSnapshot(timeseries, comparisonTimeseries, {
-    timeZone,
-  });
+  const sameProgressUsage = useMemo(
+    () => buildSameProgressUsageSnapshot(timeseries, comparisonTimeseries, { timeZone }),
+    [timeseries, comparisonTimeseries, timeZone],
+  );
   const totalCostDelta = percentDelta(
     totalCost,
     isToday

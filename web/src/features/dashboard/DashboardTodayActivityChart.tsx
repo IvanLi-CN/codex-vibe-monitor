@@ -1129,7 +1129,11 @@ function DashboardTodayActivityChartImpl({
                 barGap="-100%"
                 stackOffset="sign"
               >
-                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="3 3"
+                  verticalValues={xAxisTicks}
+                />
                 <XAxis
                   dataKey="index"
                   type="number"
@@ -1276,7 +1280,11 @@ function DashboardTodayActivityChartImpl({
                 data={visibleTenMinuteTrendData}
                 margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               >
-                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="3 3"
+                  verticalValues={xAxisTicks}
+                />
                 <XAxis
                   dataKey="index"
                   type="number"
@@ -1360,7 +1368,11 @@ function DashboardTodayActivityChartImpl({
                 data={visibleChartData}
                 margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               >
-                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="3 3"
+                  verticalValues={xAxisTicks}
+                />
                 <XAxis
                   dataKey="index"
                   type="number"

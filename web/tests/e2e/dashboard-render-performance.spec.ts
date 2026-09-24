@@ -1,8 +1,9 @@
 import { expect, type Page, test } from "@playwright/test";
 
 const DASHBOARD_PERFORMANCE_URL =
-  "/#/dashboard?demoScene=operational&demoTheme=light&demoViewport=default";
+  "/#/dashboard?demoScene=operational&demoTheme=light&demoViewport=default&demoPerformanceTimeseries=minute-day";
 const MEASURED_RUN_COUNT = 5;
+const SUSTAINED_UPDATE_COUNT = 6;
 const LONG_TASK_LIMIT_MS = 200;
 
 type LongTaskEntry = {
@@ -40,6 +41,7 @@ type RunMetrics = {
   run: number;
   dataReady: PhaseMetrics;
   dataUpdate: PhaseMetrics;
+  sustainedUpdates: PhaseMetrics;
 };
 
 function summarizeLongTasks(entries: LongTaskEntry[], startTime: number, endTime: number) {
@@ -85,7 +87,8 @@ async function readDashboardDiagnostics(page: Page) {
 }
 
 test.describe("Dashboard render performance", () => {
-  test.setTimeout(180_000);
+  test.setTimeout(360_000);
+  test.use({ timezoneId: "Asia/Shanghai" });
 
   test.beforeAll(() => {
     if (process.env.E2E_PRODUCTION_BUILD !== "1") {
@@ -124,6 +127,7 @@ test.describe("Dashboard render performance", () => {
     });
 
     const runMetrics: RunMetrics[] = [];
+    let yesterdayFixturePointCount = 0;
     for (let run = 0; run <= MEASURED_RUN_COUNT; run += 1) {
       const runPage = run === 0 ? page : await page.context().newPage();
       await runPage.setViewportSize({ width: 1440, height: 1000 });
@@ -156,6 +160,14 @@ test.describe("Dashboard render performance", () => {
             performance.getEntriesByName("dashboard-data-ready-start")[0]?.startTime ?? 0,
         }));
         expect(dataReadyStart).toBeGreaterThan(0);
+        if (run === 0) {
+          yesterdayFixturePointCount = await runPage.evaluate(async () => {
+            const response = await fetch("/api/stats/timeseries?range=yesterday&bucket=1m");
+            const data = (await response.json()) as { points: unknown[] };
+            return data.points.length;
+          });
+          expect(yesterdayFixturePointCount).toBe(24 * 60);
+        }
         await runPage.evaluate(() => {
           localStorage.removeItem("dashboard.performanceDiagnostics.enabled.v1");
           localStorage.setItem("dashboard.performanceDiagnostics.enabled.v1", "1");
@@ -187,6 +199,34 @@ test.describe("Dashboard render performance", () => {
           .toBeGreaterThan(0);
         const updateEnd = await runPage.evaluate(() => performance.now());
         await runPage.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+        const sustainedStart = await runPage.evaluate(() => performance.now());
+        for (let update = 0; update < SUSTAINED_UPDATE_COUNT; update += 1) {
+          const before = await readDashboardDiagnostics(runPage);
+          await runPage.evaluate(() => {
+            const trigger = (
+              window as Window & {
+                __CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__?: () => void;
+              }
+            ).__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__;
+            if (!trigger) throw new Error("Demo timeseries update trigger is unavailable");
+            trigger();
+          });
+          await expect
+            .poll(
+              () =>
+                readDashboardDiagnostics(runPage).then((value) => value.todayChartDataCommitCount),
+              { timeout: 12_000 },
+            )
+            .toBeGreaterThan(before.todayChartDataCommitCount);
+          await expect
+            .poll(
+              () => readDashboardDiagnostics(runPage).then((value) => value.todayChartRenderCount),
+              { timeout: 12_000 },
+            )
+            .toBeGreaterThan(before.todayChartRenderCount);
+        }
+        const sustainedEnd = await runPage.evaluate(() => performance.now());
+        await runPage.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
         const longTaskState = await readLongTaskState(runPage);
         expect(longTaskState.observerSupported).toBe(true);
         expect(longTaskState.observerActive).toBe(true);
@@ -196,6 +236,11 @@ test.describe("Dashboard render performance", () => {
             run,
             dataReady: summarizeLongTasks(longTaskState.entries, dataReadyStart, readyAt),
             dataUpdate: summarizeLongTasks(longTaskState.entries, updateStart, updateEnd),
+            sustainedUpdates: summarizeLongTasks(
+              longTaskState.entries,
+              sustainedStart,
+              sustainedEnd,
+            ),
           });
         }
       } finally {
@@ -205,13 +250,19 @@ test.describe("Dashboard render performance", () => {
       }
     }
 
-    const allPhases = runMetrics.flatMap((metrics) => [metrics.dataReady, metrics.dataUpdate]);
+    const allPhases = runMetrics.flatMap((metrics) => [
+      metrics.dataReady,
+      metrics.dataUpdate,
+      metrics.sustainedUpdates,
+    ]);
     expect(runMetrics).toHaveLength(MEASURED_RUN_COUNT);
     const evidence = {
       viewport: "1440x1000",
       productionBuild: true,
       warmupRuns: 1,
       measuredRuns: MEASURED_RUN_COUNT,
+      yesterdayFixturePointCount,
+      sustainedUpdatesPerRun: SUSTAINED_UPDATE_COUNT,
       longTaskObserver: "required-and-active",
       runMetrics,
       maxLongTaskMs: Math.max(...allPhases.map((phase) => phase.maxLongTaskMs)),

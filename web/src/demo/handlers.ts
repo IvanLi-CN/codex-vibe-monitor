@@ -11,6 +11,7 @@ import {
   DEMO_ROUTE_COMBINATIONS,
   type DemoModelRouteFixture,
 } from "./model-routing-workload";
+import { demoSearchParamsFromLocation } from "./runtime";
 
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
 const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
@@ -1637,10 +1638,48 @@ function demoDashboardActivitySummary(accounts: ReturnType<typeof demoDashboardA
   };
 }
 
-function timeseries() {
+function performanceNaturalDayTimeseries(range: "today" | "yesterday", revision: number) {
+  const todayStart = new Date(demoNow());
+  todayStart.setHours(0, 0, 0, 0);
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+  const start = range === "today" ? todayStart.getTime() : yesterdayStart.getTime();
+  const end = range === "today" ? Date.parse(demoNow()) : todayStart.getTime();
+  const count = Math.floor((end - start) / 60_000);
+
+  return {
+    rangeStart: new Date(start).toISOString(),
+    rangeEnd: new Date(end).toISOString(),
+    bucketSeconds: 60,
+    effectiveBucket: "1m",
+    availableBuckets: ["1m"],
+    points: Array.from({ length: count }, (_, index) => {
+      const bucketStart = start + index * 60_000;
+      const totalCount = 3 + (index % 5) + (range === "today" ? revision : 0);
+      return {
+        bucketStart: new Date(bucketStart).toISOString(),
+        bucketEnd: new Date(bucketStart + 60_000).toISOString(),
+        totalCount,
+        successCount: totalCount - 1,
+        failureCount: 1,
+        totalTokens: totalCount * 3_200,
+        cacheInputTokens: totalCount * 720,
+        totalCost: Number((totalCount * 0.018).toFixed(4)),
+      };
+    }),
+  };
+}
+
+function timeseries(range: string | null) {
   const empty = demoModel.snapshot.scene === "empty";
   const revision =
     typeof window === "undefined" ? 0 : (window.__CVM_DEMO_TIMESERIES_REVISION__ ?? 0);
+  const performanceFixture =
+    typeof window !== "undefined" &&
+    demoSearchParamsFromLocation().get("demoPerformanceTimeseries") === "minute-day";
+  if (performanceFixture && (range === "today" || range === "yesterday")) {
+    return performanceNaturalDayTimeseries(range, revision);
+  }
   const start = Date.parse(demoNow()) - 24 * 3_600_000;
   return {
     rangeStart: new Date(start).toISOString(),
@@ -3055,7 +3094,7 @@ export async function handleDemoRequest(request: Request) {
       accounts: demoDashboardActivityAccounts(),
     });
   }
-  if (pathname === "/api/stats/timeseries") return json(timeseries());
+  if (pathname === "/api/stats/timeseries") return json(timeseries(url.searchParams.get("range")));
   if (pathname === "/api/stats/parallel-work")
     return json(parallelWork(), { headers: { ETag: "demo-parallel-work" } });
   if (pathname === "/api/stats/errors")

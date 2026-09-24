@@ -238,6 +238,71 @@ function render(ui: React.ReactNode) {
 }
 
 describe("TodayStatsOverview", () => {
+  it("reuses same-progress comparisons on live-clock rerenders and refreshes changed series", () => {
+    const timeseries = buildTimeseriesWithLatency();
+    const comparisonTimeseries = {
+      ...timeseries,
+      rangeStart: "2026-04-09T00:00:00.000Z",
+      rangeEnd: "2026-04-09T00:08:00.000Z",
+      points: timeseries.points.map((point) => ({
+        ...point,
+        bucketStart: point.bucketStart.replace("2026-04-10", "2026-04-09"),
+        bucketEnd: point.bucketEnd.replace("2026-04-10", "2026-04-09"),
+      })),
+    };
+    const NativeDateTimeFormat = Intl.DateTimeFormat;
+    function constructFormatter(...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      return new NativeDateTimeFormat(...args);
+    }
+    const formatter = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(constructFormatter);
+    const props = {
+      stats: {
+        totalCount: 12,
+        successCount: 10,
+        failureCount: 2,
+        totalCost: 1.2,
+        totalTokens: 9999,
+      },
+      loading: false,
+      timeseries,
+      comparisonTimeseries,
+    };
+    const progressFormatterCount = () =>
+      formatter.mock.calls.filter(
+        ([locale, options]) => locale === "en-US" && options?.hourCycle === "h23",
+      ).length;
+
+    try {
+      render(<TodayStatsOverview {...props} now={new Date("2026-04-10T00:08:00.000Z")} />);
+      const firstRenderCount = progressFormatterCount();
+      expect(firstRenderCount).toBeGreaterThan(0);
+
+      act(() => {
+        root?.render(<TodayStatsOverview {...props} now={new Date("2026-04-10T00:08:15.000Z")} />);
+      });
+      expect(progressFormatterCount()).toBe(firstRenderCount);
+
+      const updatedComparisonTimeseries = {
+        ...comparisonTimeseries,
+        points: comparisonTimeseries.points.map((point, index) =>
+          index === 0 ? { ...point, totalCost: point.totalCost + 1 } : point,
+        ),
+      };
+      act(() => {
+        root?.render(
+          <TodayStatsOverview
+            {...props}
+            comparisonTimeseries={updatedComparisonTimeseries}
+            now={new Date("2026-04-10T00:08:15.000Z")}
+          />,
+        );
+      });
+      expect(progressFormatterCount()).toBeGreaterThan(firstRenderCount);
+    } finally {
+      formatter.mockRestore();
+    }
+  });
+
   it("prefers explicit current snapshot metrics over model-performance totals for TPM and first-byte card values", async () => {
     render(
       <TodayStatsOverview

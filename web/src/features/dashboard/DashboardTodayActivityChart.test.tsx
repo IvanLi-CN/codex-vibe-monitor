@@ -33,9 +33,15 @@ vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => (
     <div data-testid="responsive">{children}</div>
   ),
-  CartesianGrid: () => <div data-testid="grid" />,
-  XAxis: ({ domain }: { domain?: [number, number] }) => (
-    <div data-testid="x-axis" data-domain={domain == null ? "" : domain.join(":")} />
+  CartesianGrid: ({ verticalValues }: { verticalValues?: number[] }) => (
+    <div data-testid="grid" data-vertical-values={verticalValues?.join(",")} />
+  ),
+  XAxis: ({ domain, ticks }: { domain?: [number, number]; ticks?: number[] }) => (
+    <div
+      data-testid="x-axis"
+      data-domain={domain == null ? "" : domain.join(":")}
+      data-axis-ticks={ticks?.join(",")}
+    />
   ),
   YAxis: ({
     yAxisId,
@@ -1018,6 +1024,23 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-domain="0:1439"');
     expect(html).toContain('data-dashboard-count-bars="true" data-bar-size="1"');
     expect(html.match(/<path /g)).toHaveLength(4);
+  });
+
+  it("shares the bounded X-axis ticks with vertical grid lines in every chart mode", () => {
+    for (const metric of ["totalCount", "totalTokens", "trend"] as const) {
+      const html = renderToStaticMarkup(
+        <DashboardTodayActivityChart
+          response={response}
+          loading={false}
+          error={null}
+          metric={metric}
+        />,
+      );
+      const axisTicks = html.match(/data-axis-ticks="([^"]+)"/)?.[1];
+      const verticalValues = html.match(/data-vertical-values="([^"]+)"/)?.[1];
+      expect(axisTicks?.split(",")).toHaveLength(12);
+      expect(verticalValues).toBe(axisTicks);
+    }
   });
 
   it("aggregates dense count data for compact viewports and frees chart width from the latency axis", () => {
