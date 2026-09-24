@@ -74,7 +74,7 @@ async fn account_activity_v2_priority_selection_cancellation_does_not_poison_sql
     let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
     let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
     let started_at = std::time::Instant::now();
-    let selection_deadline = started_at + std::time::Duration::from_millis(100);
+    let selection_deadline = started_at + std::time::Duration::from_secs(2);
     let selection_pool = pool.clone();
     let selection = tokio::spawn(async move {
         crate::select_active_account_activity_v2_priority_buckets_with_deadline(
@@ -92,8 +92,9 @@ async fn account_activity_v2_priority_selection_cancellation_does_not_poison_sql
         )
         .await
     });
-    installed_rx
+    tokio::time::timeout(std::time::Duration::from_secs(5), installed_rx)
         .await
+        .expect("progress-handler installation signal is bounded")
         .expect("signal after installing sqlite progress handler");
     selection.abort();
     assert!(
@@ -163,7 +164,7 @@ async fn account_activity_v2_priority_selection_internal_timeout_closes_installe
     let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
     let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
     let started_at = std::time::Instant::now();
-    let selection_deadline = started_at + std::time::Duration::from_millis(100);
+    let selection_deadline = started_at + std::time::Duration::from_secs(2);
     let selection_pool = pool.clone();
     let selection = tokio::spawn(async move {
         crate::select_active_account_activity_v2_priority_buckets_with_deadline(
@@ -181,8 +182,9 @@ async fn account_activity_v2_priority_selection_internal_timeout_closes_installe
         )
         .await
     });
-    installed_rx
+    tokio::time::timeout(std::time::Duration::from_secs(5), installed_rx)
         .await
+        .expect("progress-handler installation signal is bounded")
         .expect("signal after installing sqlite progress handler");
     tokio::time::sleep_until(tokio::time::Instant::from_std(selection_deadline)).await;
     resume_tx.send(()).expect("resume selection after deadline");
