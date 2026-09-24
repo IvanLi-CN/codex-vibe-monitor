@@ -160,6 +160,8 @@ The canonical upstream usage field is `usage.input_tokens_details.cache_write_to
 - Given a later stream event reports cache-read (`cached_tokens`) and/or cache-write (`input_tokens_details.cache_write_tokens`) details without input, output, or reasoning counts, when usage is merged, then each reported detail (including an explicit zero) is updated while every omitted prior input, output, reasoning, and total count is preserved.
 - Given a WebSocket `response.created` or `response.in_progress` event reports cache usage without aggregate counts, when the turn is tracked, then the usage accumulator retains those details without emitting a terminal invocation; if that turn is interrupted after a first token, its terminal snapshot includes the accumulated details.
 - Given a later WebSocket terminal event for the same response identity reports richer usage, when the earlier terminal row is already persisted, then the writer updates the existing row's usage and cost fields and recomputes its affected hourly rollups without changing terminal status or adding another invocation; unchanged and non-WebSocket terminal duplicates remain idempotently skipped.
+- Given a WebSocket terminal refresh targets an existing terminal invocation, when the incoming usage omits any previously known dimension or adds no previously unknown dimension, then the persisted usage, cost, and rollups remain unchanged; a refresh is allowed only when it retains every known dimension and supplies at least one previously unknown dimension.
+- Given a persisted invocation has an exact reported cache-write count, when a later runtime usage update omits that nullable field, then the exact stored value remains unchanged; a new row with no reported value remains `NULL`, and a later explicit zero is stored as `0`.
 - Given `model=gpt-6-astra`, `input_tokens=1000`, `cache_read_tokens=400`, `cache_write_tokens=200`, and `output_tokens=200`, when cost is estimated at the short-context Standard tier, then 400 ordinary input Tokens bill at `10 / 1M`, 400 cache-read Tokens at `1 / 1M`, 200 cache-write Tokens at `12.5 / 1M`, and 200 output Tokens at `50 / 1M`, reconciling to `$0.0169`.
 - Given `model=gpt-6-astra`, `input_tokens=1000`, and `cache_read_tokens=400` with no upstream cache-write field, when cost is estimated, then 600 Tokens are represented as inferred cache writes and no exact upstream cache-write count is claimed.
 - Given a GPT-6 invocation with more than `272000` input Tokens, when cost is estimated, then input/cache rates are twice and output/reasoning rates are 1.5 times their Standard short-context rates.
@@ -213,8 +215,10 @@ The GPT-6 evidence below records the owner-confirmed formal-model selector, pric
 - source_type: ui_demo
 - target_program: mock-only
 - capture_scope: viewport
-- requested_viewport: desktop
-- viewport_strategy: ui-demo source viewport
+- requested_viewport: 2320x1363
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: System Settings model selector
@@ -226,8 +230,10 @@ The GPT-6 evidence below records the owner-confirmed formal-model selector, pric
 - source_type: ui_demo
 - target_program: mock-only
 - capture_scope: viewport
-- requested_viewport: desktop
-- viewport_strategy: ui-demo source viewport
+- requested_viewport: 2320x1363
+- viewport_strategy: ui-demo-source
+- margin_policy: trim_only
+- evidence_surface: page
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: System Settings pricing table
@@ -238,9 +244,11 @@ The GPT-6 evidence below records the owner-confirmed formal-model selector, pric
 
 - source_type: storybook_canvas
 - target_program: mock-only
-- capture_scope: story canvas
-- requested_viewport: desktop
-- viewport_strategy: Storybook viewport
+- capture_scope: element
+- requested_viewport: 2320x1363
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: Invocations/InvocationWorkflowDetailPanel SuccessfulTokenCostAudit
@@ -251,9 +259,11 @@ The GPT-6 evidence below records the owner-confirmed formal-model selector, pric
 
 - source_type: storybook_canvas
 - target_program: mock-only
-- capture_scope: story canvas
-- requested_viewport: desktop
-- viewport_strategy: Storybook viewport
+- capture_scope: element
+- requested_viewport: 2320x1363
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: Components/ModelIdentity InvalidDatedGPT6Alias
