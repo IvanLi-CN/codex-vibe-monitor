@@ -26,7 +26,7 @@
 ### Health Contract and Interface
 
 - `/api/system/status` adds optional `runtimePressureHealth.retentionRecovery` diagnostics for health state, current stage, prepared/quarantined/expired backlog counts and age, last progress, next retry, and a sanitized failure fingerprint.
-- Older or incomplete responses normalize the recovery state to `unknown`. Counts remain null until a successful database refresh measures them; System Status normalizes null or missing counts to unknown and exposes healthy, recovering, and degraded scenarios alongside Runtime Pressure details.
+- Older or incomplete responses normalize the recovery state to `unknown`. Counts remain null until a successful database refresh measures them; System Status normalizes null or missing counts to unknown and exposes healthy, recovering, deferred, and degraded scenarios alongside Runtime Pressure details. Deferred snapshots retain a sanitized `deferReason` and durable `consecutiveFailureCount` when present.
 - Missing or partial backlog/prepared/quarantined counters remain unknown in the UI rather than being presented as zero.
 - Status fields, UI copy, and structured recovery logs expose the recovery snapshot fields without raw content, SQL/bindings, account identifiers, or complete paths.
 - Runtime Pressure renders an unmeasured raw-reference confirmation as `-`; measured values are emitted only for transactions that performed the ledger confirmation.

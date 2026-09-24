@@ -1071,6 +1071,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .expect("load first-pass legacy cursor");
     assert!(first_pass_cursor.ends_with("part-000000000000001f-000000000000001f-legacy.sqlite.gz"));
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due for the next bounded pass");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("resume bounded legacy reconciliation pass");
@@ -1085,6 +1092,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     let late_file = archive_dir.join("aaa-late.sqlite.gz");
     fs::write(&late_file, b"late unverified legacy segment")
         .expect("write lexically earlier segment after the cursor advanced");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due before wrapping");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("tail scan should wrap the cursor after exhaustion");
@@ -1096,6 +1110,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .expect("load wrapped legacy cursor");
     assert!(cursor_after_wrap.is_empty());
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due after wrapping");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("scan again from the beginning after cursor wrap");
@@ -1160,6 +1181,13 @@ async fn legacy_retention_reconciliation_does_not_starve_after_a_truncated_refer
             .expect("count unreferenced archive after first pass");
     assert_eq!(first_pass_unreferenced, 0);
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due before the resumed pass");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("resume after truncated legacy reconciliation pass");

@@ -139,7 +139,7 @@
   evidence_note: shows the recovery diagnostics within the mobile System Status viewport
   image:
   ![Mobile System Status retention recovery](./assets/retention-recovery-mobile.png)
-- Healthy, recovering, degraded, and missing-field `unknown` states are covered by System Workspace Storybook interactions.
+- Healthy, recovering, deferred, degraded, and missing-field `unknown` states are covered by System Workspace Storybook interactions. Deferred recovery carries a sanitized `deferReason` and durable `consecutiveFailureCount` when present.
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
