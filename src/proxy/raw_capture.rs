@@ -432,7 +432,10 @@ pub(crate) fn estimate_proxy_cost_breakdown(
 
     let cache_read_price = pricing.effective_cache_read_per_1m();
     if official_gpt_6_model
-        && (usage.cache_input_tokens.is_some_and(|tokens| tokens < 0)
+        && (usage
+            .input_tokens
+            .is_some_and(|tokens| tokens < 0 || cache_input_tokens > tokens)
+            || usage.cache_input_tokens.is_some_and(|tokens| tokens < 0)
             || usage.reasoning_tokens.is_some_and(|tokens| tokens < 0)
             || reasoning_tokens > output_tokens)
     {

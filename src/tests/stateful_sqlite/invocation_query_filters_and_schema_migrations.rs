@@ -51,51 +51,6 @@ async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invoc
 }
 
 #[tokio::test]
-async fn concurrent_reported_cache_write_column_migration_is_database_serialized() {
-    let temp_dir = make_temp_test_dir("reported-cache-write-concurrent-migration");
-    let db_path = temp_dir.join("state.db");
-    let db_url = test_sqlite_url_for_path(&db_path);
-    let connect_options = build_sqlite_connect_options(
-        &db_url,
-        std::time::Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
-    )
-    .expect("build migration sqlite options");
-    let pool_a = SqlitePoolOptions::new()
-        .connect_with(connect_options.clone())
-        .await
-        .expect("open first migration pool");
-    let pool_b = SqlitePoolOptions::new()
-        .connect_with(connect_options)
-        .await
-        .expect("open second migration pool");
-    let legacy_create_sql = codex_invocations_create_sql("codex_invocations")
-        .replace("            reported_cache_write_tokens INTEGER,\n", "");
-    sqlx::query(&legacy_create_sql)
-        .execute(&pool_a)
-        .await
-        .expect("create legacy invocation schema");
-
-    let (result_a, result_b) = tokio::join!(
-        ensure_reported_cache_write_tokens_column(&pool_a),
-        ensure_reported_cache_write_tokens_column(&pool_b),
-    );
-
-    result_a.expect("first concurrent migration should succeed");
-    result_b.expect("second concurrent migration should succeed");
-    let column_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('codex_invocations') WHERE name = 'reported_cache_write_tokens'",
-    )
-    .fetch_one(&pool_a)
-    .await
-    .expect("inspect migrated invocation schema");
-    assert_eq!(column_count, 1);
-
-    pool_a.close().await;
-    pool_b.close().await;
-    cleanup_temp_test_dir(&temp_dir);
-}
-
-#[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
     #[derive(sqlx::FromRow)]

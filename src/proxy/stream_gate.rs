@@ -662,7 +662,6 @@ pub(crate) fn decode_response_payload_for_preview_parse<'a>(
     if encodings.is_empty() {
         return (Cow::Borrowed(bytes), None);
     }
-
     let mut decoded = bytes.to_vec();
     for encoding in encodings.iter().rev() {
         match decode_single_content_encoding_lossy(decoded.as_slice(), encoding) {
@@ -812,9 +811,10 @@ impl StreamResponsePayloadParser {
                         && parsed_usage.input_tokens.is_none()
                         && parsed_usage.output_tokens.is_none()
                         && parsed_usage.cache_input_tokens.is_none()
-                        && parsed_usage.reasoning_tokens.is_none()
-                        && parsed_usage.total_tokens.is_none();
+                        && parsed_usage.reasoning_tokens.is_none();
                     if cache_write_only {
+                        self.usage.total_tokens =
+                            parsed_usage.total_tokens.or(self.usage.total_tokens);
                         parsed_usage = self.usage.clone();
                     }
                     parsed_usage.reported_cache_write_tokens = reported_cache_write_tokens;

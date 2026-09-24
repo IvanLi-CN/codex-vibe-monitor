@@ -1473,7 +1473,7 @@ fn parse_stream_response_payload_cache_write_only_event_preserves_prior_usage() 
         "event: response.created",
         r#"data: {"type":"response.created","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"input_tokens":1200,"output_tokens":40,"total_tokens":1240,"input_tokens_details":{"cached_tokens":300,"cache_write_tokens":50},"output_tokens_details":{"reasoning_tokens":10}}}}"#,
         "event: response.in_progress",
-        r#"data: {"type":"response.in_progress","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"input_tokens_details":{"cache_write_tokens":75}}}}"#,
+        r#"data: {"type":"response.in_progress","response":{"id":"resp_test","model":"gpt-6-sol","status":"in_progress","usage":{"total_tokens":1240,"input_tokens_details":{"cache_write_tokens":75}}}}"#,
     ]
     .join("\n");
 

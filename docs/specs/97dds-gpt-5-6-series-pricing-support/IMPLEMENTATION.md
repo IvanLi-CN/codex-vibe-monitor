@@ -27,7 +27,7 @@
 - [x] Keep GPT-6 chart legends on the product's compact identity pattern: series swatch, identity-colored 16px glyph, and reasoning label without a tile.
 - [x] Group GPT-5.6 invocation-card model identity, reasoning effort, and FAST metadata in a reusable visual cluster while preserving legacy non-target and mismatch layouts.
 - [x] Tighten the grouped Dashboard context cluster to a fixed 20px model segment, one tone-matched reasoning marker, 4px sibling spacing, no internal vertical separators, and omission of missing reasoning values while preserving FAST accessibility.
-- [x] Add direct temporary GPT-6 Sol/Terra/Luna catalog presets using the matching GPT-5.6 rates and preserve custom catalog rows during the catalog version upgrade.
+- [x] Record the initial temporary GPT-6 Sol/Terra/Luna seed using matching GPT-5.6 rates; the formal catalog migration below supersedes Sol/Luna with official pricing and retains Terra for compatibility only.
 - [x] Validate calendar dates in dated model aliases and keep invalid or preview variants unpriced.
 - [x] Restrict online proxy cost repair to null-cost terminal rows, keep existing persisted pricing fields immutable, refresh affected hourly rollups, and expose bounded progress in System Tasks.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
