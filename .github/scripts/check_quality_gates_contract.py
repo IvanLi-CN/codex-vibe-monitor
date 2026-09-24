@@ -618,21 +618,38 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         require(
             "records-filter-overlay.spec.ts" in e2e_run
             and "demo-runtime.spec.ts" in e2e_run
-            and "dashboard-working-conversations-layout.spec.ts" in e2e_run,
+            and "dashboard-working-conversations-layout.spec.ts" in e2e_run
+            and "dashboard-render-performance.spec.ts" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression specs",
         )
         require(
             "--output=test-results/records-overlay" in e2e_run
             and "--output=test-results/demo-runtime" in e2e_run
-            and "--output=test-results/dashboard-working-conversations" in e2e_run,
+            and "--output=test-results/dashboard-working-conversations" in e2e_run
+            and "--output=test-results/dashboard-render-performance" in e2e_run,
             "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate all Playwright result directories",
         )
+        expected_e2e_run = "\n".join(
+            [
+                "set -euo pipefail",
+                "records_status=0",
+                "demo_status=0",
+                "dashboard_status=0",
+                "performance_status=0",
+                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \\",
+                "  bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts || records_status=$?",
+                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \\",
+                "  bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts || demo_status=$?",
+                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \\",
+                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts || dashboard_status=$?",
+                "E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \\",
+                "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?",
+                "exit $(( records_status || demo_status || dashboard_status || performance_status ))",
+            ]
+        )
         require(
-            "dashboard_status=0" in e2e_run
-            and "dashboard_pid=$!" in e2e_run
-            and 'wait "$dashboard_pid" || dashboard_status=$?' in e2e_run
-            and "exit $(( records_status || demo_status || dashboard_status ))" in e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must propagate Dashboard Playwright status",
+            e2e_run.strip() == expected_e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all four Playwright specs serially and propagate each status",
         )
         require(
             "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,
