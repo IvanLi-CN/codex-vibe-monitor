@@ -24,7 +24,7 @@ import {
   type DashboardWorkingConversationInvocationSelection,
   formatDashboardWorkingConversationSequenceId,
 } from "../lib/dashboardWorkingConversations";
-import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
+import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts.page-local-shared";
 
 export default function DashboardPage() {
   const { t } = useTranslation();
@@ -82,7 +82,6 @@ export default function DashboardPage() {
     true,
     includeUpstreamAccountActivity,
   );
-
   useEffect(() => {
     if (
       selectedInvocation != null &&

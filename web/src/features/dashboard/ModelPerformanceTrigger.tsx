@@ -1,10 +1,15 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { type KeyboardEvent, lazy, type ReactNode, Suspense, useEffect, useState } from "react";
 import { Dialog, DialogCloseIcon, DialogContent, DialogTitle } from "../../components/ui/dialog";
 import { Tooltip } from "../../components/ui/tooltip";
 import { useTranslation } from "../../i18n";
 import type { ModelPerformance } from "../../lib/api";
 import { cn } from "../../lib/utils";
-import { ModelPerformanceDetails } from "./ModelPerformanceDetails";
+
+const LazyModelPerformanceDetails = lazy(() =>
+  import("./ModelPerformanceDetails").then(({ ModelPerformanceDetails }) => ({
+    default: ModelPerformanceDetails,
+  })),
+);
 
 const COMPACT_MEDIA_QUERY = "(max-width: 767px)";
 
@@ -18,6 +23,26 @@ function useCompactPresentation() {
     return () => media.removeEventListener("change", sync);
   }, []);
   return compact;
+}
+
+function ModelPerformanceDetailsBoundary({
+  title,
+  performance,
+  presentation,
+}: {
+  title: string;
+  performance: ModelPerformance;
+  presentation?: "tooltip" | "drawer";
+}) {
+  return (
+    <Suspense fallback={<div className="min-h-16 min-w-40" aria-hidden="true" />}>
+      <LazyModelPerformanceDetails
+        title={title}
+        performance={performance}
+        presentation={presentation}
+      />
+    </Suspense>
+  );
 }
 
 export function ModelPerformanceTrigger({
@@ -38,7 +63,7 @@ export function ModelPerformanceTrigger({
   const { t } = useTranslation();
   const compact = useCompactPresentation();
   const [open, setOpen] = useState(false);
-  const details = <ModelPerformanceDetails title={title} performance={performance} />;
+  const details = <ModelPerformanceDetailsBoundary title={title} performance={performance} />;
   const handleDesktopKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -89,7 +114,7 @@ export function ModelPerformanceTrigger({
             <DialogCloseIcon aria-label={t("dashboard.modelPerformance.close")} />
           </div>
           <div className="max-h-[calc(min(100dvh-1rem,46rem)-4.5rem)] overflow-y-auto px-4 py-4 sm:px-5">
-            <ModelPerformanceDetails
+            <ModelPerformanceDetailsBoundary
               title={title}
               performance={performance}
               presentation="drawer"

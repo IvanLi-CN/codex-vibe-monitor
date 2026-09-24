@@ -1,6 +1,5 @@
 import {
   memo,
-  type ReactElement,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
@@ -11,14 +10,15 @@ import {
 import {
   Area,
   AreaChart,
-  Bar,
   CartesianGrid,
   ComposedChart,
+  Customized,
   Legend,
   Line,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
+  usePlotArea,
   XAxis,
   YAxis,
 } from "recharts";
@@ -163,6 +163,14 @@ function shiftViewport(
   );
 }
 
+function buildChartTickIndexes(startIndex: number, endIndex: number, maxTickCount: number) {
+  if (endIndex <= startIndex) return [startIndex];
+  const tickCount = Math.min(maxTickCount, endIndex - startIndex + 1);
+  return Array.from({ length: tickCount }, (_, index) =>
+    Math.round(startIndex + ((endIndex - startIndex) * index) / (tickCount - 1)),
+  );
+}
+
 function isSameViewport(left: ChartViewport, right: ChartViewport) {
   return left.startIndex === right.startIndex && left.endIndex === right.endIndex;
 }
@@ -253,63 +261,6 @@ interface TooltipPayloadEntry {
   payload?: DashboardTodayMinuteDatum;
 }
 
-interface FailureBarShapeProps {
-  fill?: string;
-  x?: number | string;
-  y?: number | string;
-  width?: number | string;
-  height?: number | string;
-}
-
-function NegativeFailureBarShape({
-  fill = "currentColor",
-  x,
-  y,
-  width,
-  height,
-}: FailureBarShapeProps): ReactElement | null {
-  const rectX = Number(x);
-  const rectY = Number(y);
-  const rectWidth = Number(width);
-  const rectHeight = Number(height);
-
-  if (
-    !Number.isFinite(rectX) ||
-    !Number.isFinite(rectY) ||
-    !Number.isFinite(rectWidth) ||
-    !Number.isFinite(rectHeight) ||
-    rectWidth === 0 ||
-    rectHeight === 0
-  ) {
-    return null;
-  }
-
-  const left = Math.min(rectX, rectX + rectWidth);
-  const right = Math.max(rectX, rectX + rectWidth);
-  const top = Math.min(rectY, rectY + rectHeight);
-  const bottom = Math.max(rectY, rectY + rectHeight);
-  const normalizedWidth = right - left;
-  const normalizedHeight = bottom - top;
-  const radius = Math.min(3, normalizedWidth / 2, normalizedHeight / 2);
-
-  return (
-    <path
-      data-dashboard-failure-bar-shape="negative"
-      d={[
-        `M${left},${top}`,
-        `H${right}`,
-        `V${bottom - radius}`,
-        `Q${right},${bottom} ${right - radius},${bottom}`,
-        `H${left + radius}`,
-        `Q${left},${bottom} ${left},${bottom - radius}`,
-        "Z",
-      ].join(" ")}
-      fill={fill}
-      stroke="none"
-    />
-  );
-}
-
 interface ChartTooltipContentProps {
   active?: boolean;
   label?: string | number;
@@ -398,6 +349,144 @@ function TokenBreakdownLegend({
         </span>
       ))}
     </div>
+  );
+}
+
+type CountBarSeriesKey =
+  | "chartSuccessCount"
+  | "chartRunningInFlightCount"
+  | "chartQueuedInFlightCount"
+  | "chartFailureCountNegative";
+
+function appendCountBarPath(
+  commands: string[],
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  roundedEdge: "bottom" | "none" | "top",
+) {
+  const left = x;
+  const right = x + width;
+  const top = y;
+  const bottom = y + height;
+  const radius = roundedEdge === "none" ? 0 : Math.min(3, width / 2, Math.abs(height) / 2);
+  if (radius <= 0) {
+    commands.push(`M${left},${top}h${width}v${height}h${-width}Z`);
+    return;
+  }
+
+  if (roundedEdge === "bottom") {
+    commands.push(
+      `M${left},${top}H${right}V${bottom - radius}Q${right},${bottom} ${right - radius},${bottom}H${left + radius}Q${left},${bottom} ${left},${bottom - radius}Z`,
+    );
+    return;
+  }
+
+  commands.push(
+    `M${left},${bottom}V${top + radius}Q${left},${top} ${left + radius},${top}H${right - radius}Q${right},${top} ${right},${top + radius}V${bottom}Z`,
+  );
+}
+
+function buildCountBarPath(
+  data: readonly DashboardTodayMinuteDatum[],
+  dataKey: CountBarSeriesKey,
+  xScale: (value: number) => number | undefined,
+  yScale: (value: number) => number | undefined,
+  barSize: number,
+) {
+  const commands: string[] = [];
+  for (const point of data) {
+    const value = point[dataKey];
+    if (value == null || value === 0) continue;
+
+    const success = point.chartSuccessCount ?? 0;
+    const running = point.chartRunningInFlightCount ?? 0;
+    const queued = point.chartQueuedInFlightCount ?? 0;
+    const startValue =
+      dataKey === "chartRunningInFlightCount"
+        ? success
+        : dataKey === "chartQueuedInFlightCount"
+          ? success + running
+          : 0;
+    const endValue =
+      dataKey === "chartRunningInFlightCount"
+        ? success + running
+        : dataKey === "chartQueuedInFlightCount"
+          ? success + running + queued
+          : value;
+    const x = xScale(point.index);
+    const startY = yScale(startValue);
+    const endY = yScale(endValue);
+    if (
+      x == null ||
+      startY == null ||
+      endY == null ||
+      ![x, startY, endY].every(Number.isFinite) ||
+      startY === endY
+    ) {
+      continue;
+    }
+    appendCountBarPath(
+      commands,
+      x - barSize / 2,
+      Math.min(startY, endY),
+      barSize,
+      Math.abs(endY - startY),
+      dataKey === "chartQueuedInFlightCount"
+        ? "top"
+        : dataKey === "chartFailureCountNegative"
+          ? "bottom"
+          : "none",
+    );
+  }
+  return commands.join("");
+}
+
+function DashboardCountBars({
+  data,
+  barSize,
+  countAxisBound,
+  colors,
+  xDomain,
+}: {
+  data: readonly DashboardTodayMinuteDatum[];
+  barSize: number;
+  countAxisBound: number;
+  colors: {
+    success: string;
+    running: string;
+    queued: string;
+    failure: string;
+  };
+  xDomain: [number, number];
+}) {
+  const plotArea = usePlotArea();
+  const xSpan = xDomain[1] - xDomain[0];
+  if (!plotArea || xSpan <= 0 || countAxisBound <= 0) return null;
+
+  const xScale = (value: number) => plotArea.x + ((value - xDomain[0]) / xSpan) * plotArea.width;
+  const yScale = (value: number) =>
+    plotArea.y + ((countAxisBound - value) / (countAxisBound * 2)) * plotArea.height;
+
+  const series: Array<{ key: CountBarSeriesKey; color: string }> = [
+    { key: "chartSuccessCount", color: colors.success },
+    { key: "chartRunningInFlightCount", color: colors.running },
+    { key: "chartQueuedInFlightCount", color: colors.queued },
+    { key: "chartFailureCountNegative", color: colors.failure },
+  ];
+
+  return (
+    <g data-dashboard-count-bars="true" data-bar-size={barSize}>
+      {series.map(({ key, color }) => (
+        <path
+          key={key}
+          d={buildCountBarPath(data, key, xScale, yScale, barSize)}
+          fill={color}
+          stroke="none"
+        />
+      ))}
+    </g>
   );
 }
 
@@ -577,6 +666,15 @@ function DashboardTodayActivityChartImpl({
   const viewportSpan = visibleWindow.endIndex - visibleWindow.startIndex + 1;
   const isZoomed = chartData.length > 0 && viewportSpan < chartData.length;
   const xDomain: [number, number] = [visibleWindow.startIndex, visibleWindow.endIndex];
+  const xAxisTicks = useMemo(
+    () =>
+      buildChartTickIndexes(
+        visibleWindow.startIndex,
+        visibleWindow.endIndex,
+        isCompactViewport ? 6 : 12,
+      ),
+    [isCompactViewport, visibleWindow.endIndex, visibleWindow.startIndex],
+  );
   const visibleCountChartData = useMemo(
     () =>
       isCompactViewport
@@ -1036,6 +1134,7 @@ function DashboardTodayActivityChartImpl({
                   dataKey="index"
                   type="number"
                   domain={xDomain}
+                  ticks={xAxisTicks}
                   minTickGap={28}
                   axisLine={{ stroke: chartColors.gridLine }}
                   tickLine={{ stroke: chartColors.gridLine }}
@@ -1090,51 +1189,67 @@ function DashboardTodayActivityChartImpl({
                   )}
                 />
                 <Legend
-                  wrapperStyle={{
-                    color: chartColors.axisText,
-                    fontSize: isCompactViewport ? 11 : 12,
-                  }}
+                  content={() => (
+                    <TokenBreakdownLegend
+                      compact={isCompactViewport}
+                      items={[
+                        {
+                          id: "success",
+                          label: countSeriesNames.success,
+                          color: chartColors.success,
+                        },
+                        {
+                          id: "running",
+                          label: countSeriesNames.running,
+                          color: chartColors.running,
+                        },
+                        {
+                          id: "queued",
+                          label: countSeriesNames.queued,
+                          color: chartColors.queued,
+                        },
+                        {
+                          id: "failure",
+                          label: countSeriesNames.failures,
+                          color: chartColors.failure,
+                        },
+                        {
+                          id: "firstToken",
+                          label: countSeriesNames.firstToken,
+                          color: chartColors.firstByte,
+                          line: true,
+                        },
+                      ]}
+                    />
+                  )}
+                  wrapperStyle={{ color: chartColors.axisText }}
                 />
                 <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
-                <Bar
+                <Customized
+                  component={
+                    <DashboardCountBars
+                      data={visibleCountChartData}
+                      barSize={countBarSize}
+                      countAxisBound={countAxisBound}
+                      colors={{
+                        success: chartColors.success,
+                        running: chartColors.running,
+                        queued: chartColors.queued,
+                        failure: chartColors.failure,
+                      }}
+                      xDomain={xDomain}
+                    />
+                  }
+                />
+                <Line
                   yAxisId="count"
+                  type="linear"
                   dataKey="chartSuccessCount"
-                  name={countSeriesNames.success}
-                  stackId="positive"
-                  fill={chartColors.success}
-                  barSize={countBarSize}
-                  radius={[0, 0, 0, 0]}
-                  isAnimationActive={animate}
-                />
-                <Bar
-                  yAxisId="count"
-                  dataKey="chartRunningInFlightCount"
-                  name={countSeriesNames.running}
-                  stackId="positive"
-                  fill={chartColors.running}
-                  barSize={countBarSize}
-                  radius={[0, 0, 0, 0]}
-                  isAnimationActive={animate}
-                />
-                <Bar
-                  yAxisId="count"
-                  dataKey="chartQueuedInFlightCount"
-                  name={countSeriesNames.queued}
-                  stackId="positive"
-                  fill={chartColors.queued}
-                  barSize={countBarSize}
-                  radius={[3, 3, 0, 0]}
-                  isAnimationActive={animate}
-                />
-                <Bar
-                  yAxisId="count"
-                  dataKey="chartFailureCountNegative"
-                  name={countSeriesNames.failures}
-                  stackId="positive"
-                  fill={chartColors.failure}
-                  barSize={countBarSize}
-                  shape={<NegativeFailureBarShape />}
-                  isAnimationActive={animate}
+                  stroke="transparent"
+                  strokeWidth={0}
+                  dot={false}
+                  activeDot={false}
+                  isAnimationActive={false}
                 />
                 {!isCompactViewport ? (
                   <Line
@@ -1166,6 +1281,7 @@ function DashboardTodayActivityChartImpl({
                   dataKey="index"
                   type="number"
                   domain={xDomain}
+                  ticks={xAxisTicks}
                   minTickGap={28}
                   axisLine={{ stroke: chartColors.gridLine }}
                   tickLine={{ stroke: chartColors.gridLine }}
@@ -1249,6 +1365,7 @@ function DashboardTodayActivityChartImpl({
                   dataKey="index"
                   type="number"
                   domain={xDomain}
+                  ticks={xAxisTicks}
                   minTickGap={28}
                   axisLine={{ stroke: chartColors.gridLine }}
                   tickLine={{ stroke: chartColors.gridLine }}

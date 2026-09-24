@@ -62,6 +62,16 @@ function isPwaInstallIconEntry(entry: PwaManifestEntry): boolean {
   );
 }
 
+function manualChunkForApplicationRuntime(id: string): string | undefined {
+  if (id.includes("/node_modules/recharts/")) {
+    return "recharts";
+  }
+  if (id.endsWith("/src/i18n/translations.ts")) {
+    return "runtime-translations";
+  }
+  return undefined;
+}
+
 function createPwaPlugins() {
   const pwaPlugins = VitePWA({
     injectRegister: false,
@@ -213,12 +223,19 @@ export function createAppViteConfig(mode: string): UserConfig {
           },
         }
       : undefined,
-    build: demo
-      ? {
-          outDir: env.VITE_BUILD_OUT_DIR ?? "demo-dist",
-          emptyOutDir: true,
-        }
-      : undefined,
+    build: {
+      ...(demo
+        ? {
+            outDir: env.VITE_BUILD_OUT_DIR ?? "demo-dist",
+            emptyOutDir: true,
+          }
+        : {}),
+      rollupOptions: {
+        output: {
+          manualChunks: manualChunkForApplicationRuntime,
+        },
+      },
+    },
     test: {
       setupFiles: "./src/test-setup.ts",
       maxWorkers: 4,

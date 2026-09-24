@@ -346,6 +346,29 @@ vi.mock("./account-pool/UpstreamAccounts", () => ({
     ) : null,
 }));
 
+vi.mock("./account-pool/UpstreamAccounts.page-local-shared", () => ({
+  SharedUpstreamAccountDetailDrawer: ({
+    open,
+    accountId,
+    initialTab,
+    onClose,
+  }: {
+    open: boolean;
+    accountId: number | null;
+    initialTab?: "overview" | "routing";
+    onClose: () => void;
+  }) =>
+    open ? (
+      <div data-testid="shared-upstream-account-detail-drawer-mock">
+        <span data-testid="shared-upstream-account-drawer-account-id">{accountId}</span>
+        <span data-testid="shared-upstream-account-drawer-tab">{initialTab ?? "overview"}</span>
+        <button type="button" data-testid="shared-upstream-account-drawer-close" onClick={onClose}>
+          close account drawer
+        </button>
+      </div>
+    ) : null,
+}));
+
 vi.mock("../theme", () => ({
   useTheme: () => ({ themeMode: "light" }),
 }));

@@ -1639,6 +1639,8 @@ function demoDashboardActivitySummary(accounts: ReturnType<typeof demoDashboardA
 
 function timeseries() {
   const empty = demoModel.snapshot.scene === "empty";
+  const revision =
+    typeof window === "undefined" ? 0 : (window.__CVM_DEMO_TIMESERIES_REVISION__ ?? 0);
   const start = Date.parse(demoNow()) - 24 * 3_600_000;
   return {
     rangeStart: new Date(start).toISOString(),
@@ -1651,7 +1653,7 @@ function timeseries() {
       : Array.from({ length: 24 }, (_, index) => ({
           bucketStart: new Date(start + index * 3_600_000).toISOString(),
           bucketEnd: new Date(start + (index + 1) * 3_600_000).toISOString(),
-          totalCount: 920 + index * 61,
+          totalCount: 920 + index * 61 + revision,
           successCount: 886 + index * 57,
           failureCount: 34 + (index % 3),
           totalTokens: 104_000_000 + index * 4_200_000,

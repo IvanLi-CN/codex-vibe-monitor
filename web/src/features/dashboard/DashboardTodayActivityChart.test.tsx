@@ -75,6 +75,8 @@ vi.mock("recharts", () => ({
       </div>
     );
   },
+  usePlotArea: () => ({ x: 0, y: 0, width: 1440, height: 320 }),
+  Customized: ({ component }: { component: ReactNode }) => component,
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
   Area: ({
@@ -128,28 +130,6 @@ vi.mock("recharts", () => ({
       data-dot={dot === false ? "false" : dot ? "visible" : ""}
       data-connect-nulls={String(connectNulls ?? "")}
       data-data-length={String(data?.length ?? "")}
-    />
-  ),
-  Bar: ({
-    stackId,
-    dataKey,
-    barSize,
-    radius,
-    shape,
-  }: {
-    stackId?: string;
-    dataKey?: string;
-    barSize?: number;
-    radius?: number[];
-    shape?: ReactNode;
-  }) => (
-    <div
-      data-testid="bar-series"
-      data-stack-id={stackId ?? ""}
-      data-data-key={dataKey ?? ""}
-      data-bar-size={String(barSize ?? "")}
-      data-radius={radius == null ? "" : radius.join(":")}
-      data-has-shape={shape == null ? "false" : "true"}
     />
   ),
   AreaChart: ({ children }: { children: ReactNode }) => (
@@ -1035,18 +1015,9 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-stack-offset="sign"');
     expect(html).toContain('data-data-length="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
-    expect(html).toContain('data-data-key="chartSuccessCount"');
-    expect(html).toContain('data-data-key="chartRunningInFlightCount"');
-    expect(html).toContain('data-data-key="chartQueuedInFlightCount"');
-    expect(html).toContain('data-data-key="chartFailureCountNegative"');
-    expect(html).toContain('data-bar-size="1"');
-    expect(html).toContain('data-stack-id="positive"');
     expect(html).toContain('data-domain="0:1439"');
-    expect(html).toContain(
-      'data-stack-id="positive" data-data-key="chartFailureCountNegative" data-bar-size="1" data-radius="" data-has-shape="true"',
-    );
-    expect(html.match(/data-stack-id="positive"/g)).toHaveLength(4);
-    expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
+    expect(html).toContain('data-dashboard-count-bars="true" data-bar-size="1"');
+    expect(html.match(/<path /g)).toHaveLength(4);
   });
 
   it("aggregates dense count data for compact viewports and frees chart width from the latency axis", () => {
@@ -1064,11 +1035,13 @@ describe("DashboardTodayActivityChart", () => {
       expect(
         host?.querySelector('[data-testid="composed-chart"]')?.getAttribute("data-data-length"),
       ).toBe("72");
-      expect(host?.querySelectorAll('[data-testid="bar-series"][data-bar-size="4"]')).toHaveLength(
-        4,
-      );
+      expect(
+        host?.querySelector('[data-dashboard-count-bars="true"]')?.getAttribute("data-bar-size"),
+      ).toBe("4");
       expect(host?.querySelector('[data-testid="y-axis"][data-y-axis-id="latency"]')).toBeNull();
-      expect(host?.querySelector('[data-testid="line-series"]')).toBeNull();
+      expect(
+        host?.querySelector('[data-testid="line-series"][data-data-key="chartFirstTokenAvgMs"]'),
+      ).toBeNull();
       expect(
         host
           ?.querySelector('[data-testid="y-axis"][data-y-axis-id="count"]')
@@ -1099,7 +1072,9 @@ describe("DashboardTodayActivityChart", () => {
     expect(Number(section.dataset.visibleStartIndex)).toBeGreaterThan(0);
     expect(Number(section.dataset.visibleEndIndex)).toBeLessThan(1439);
     expect(
-      Number(section.querySelector('[data-testid="bar-series"]')?.getAttribute("data-bar-size")),
+      Number(
+        section.querySelector('[data-dashboard-count-bars="true"]')?.getAttribute("data-bar-size"),
+      ),
     ).toBeGreaterThan(1);
     expect(latestChartData).toHaveLength(Number(section.dataset.visibleSpan));
 
@@ -1335,9 +1310,8 @@ describe("DashboardTodayActivityChart", () => {
     dispatchWheel(layer, { deltaY: -600, clientX: 500 });
     await flushAnimationFrame();
 
-    const bars = host?.querySelectorAll('[data-testid="bar-series"]');
-    expect(bars?.length).toBe(4);
-    expect(Number(bars?.[0]?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
+    const bars = host?.querySelector('[data-dashboard-count-bars="true"]');
+    expect(Number(bars?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
   });
 
   it("applies the same horizontal viewport to trend mode data", async () => {

@@ -106,7 +106,6 @@ interface BuildInvocationDetailViewModelOptions {
   t: Translator;
   locale: string;
   localeTag: string;
-  nowMs?: number;
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
   renderAccountValue: InvocationAccountValueRenderer;

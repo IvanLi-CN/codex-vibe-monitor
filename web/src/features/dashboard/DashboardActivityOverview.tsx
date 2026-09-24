@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Chip } from "../../components/ui/chip";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
@@ -13,8 +13,8 @@ import { metricAccent } from "../../lib/chartTheme";
 import { recordTodayChartDataCommit } from "../../lib/dashboardPerformanceDiagnostics";
 import { useTheme } from "../../theme";
 import { StatsCards } from "../stats/StatsCards";
-import { DashboardNetworkActivityChart } from "./DashboardNetworkActivityChart";
-import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
+import type { DashboardNetworkActivityChartProps } from "./DashboardNetworkActivityChart";
+import type { DashboardTodayActivityChartProps } from "./DashboardTodayActivityChart";
 import {
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
   type DashboardActivityRangeKey,
@@ -37,6 +37,52 @@ type DashboardOverviewLocale = "zh-CN" | "en-US";
 
 const LIVE_RATE_REFRESH_MS = 15_000;
 export const DASHBOARD_TOP_CHART_DATA_COMMIT_INTERVAL_MS = 5_000;
+
+const loadDashboardNetworkActivityChart = () =>
+  import("./DashboardNetworkActivityChart").then(({ DashboardNetworkActivityChart }) => ({
+    default: DashboardNetworkActivityChart,
+  }));
+const loadDashboardTodayActivityChart = () =>
+  import("./DashboardTodayActivityChart").then(({ DashboardTodayActivityChart }) => ({
+    default: DashboardTodayActivityChart,
+  }));
+const LazyDashboardNetworkActivityChart = lazy(loadDashboardNetworkActivityChart);
+const LazyDashboardTodayActivityChart = lazy(loadDashboardTodayActivityChart);
+
+if (import.meta.env.MODE !== "test") {
+  void loadDashboardTodayActivityChart().catch(() => undefined);
+}
+
+function DashboardTodayActivityChartBoundary(props: DashboardTodayActivityChartProps) {
+  return (
+    <Suspense
+      fallback={
+        <div
+          className="h-80 w-full animate-pulse rounded-xl border border-base-300/70 bg-base-200/55"
+          aria-hidden="true"
+        />
+      }
+    >
+      <LazyDashboardTodayActivityChart {...props} />
+    </Suspense>
+  );
+}
+
+function DashboardNetworkActivityChartBoundary(props: DashboardNetworkActivityChartProps) {
+  return (
+    <Suspense
+      fallback={
+        <div
+          className="flex min-h-[23rem] items-center justify-center rounded-2xl border border-base-300/60"
+          aria-hidden="true"
+        />
+      }
+    >
+      <LazyDashboardNetworkActivityChart {...props} />
+    </Suspense>
+  );
+}
+
 const RANGE_OPTIONS: Array<{ key: DashboardActivityRangeKey; labelKey: string }> = [
   { key: "today", labelKey: "dashboard.activityOverview.rangeToday" },
   { key: "yesterday", labelKey: "dashboard.activityOverview.rangeYesterday" },
@@ -712,7 +758,7 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
 }) {
   if (metric === "network") {
     return (
-      <DashboardNetworkActivityChart
+      <DashboardNetworkActivityChartBoundary
         response={networkResponse}
         loading={networkLoading && networkResponse == null}
         error={networkError}
@@ -720,7 +766,7 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
     );
   }
   return (
-    <DashboardTodayActivityChart
+    <DashboardTodayActivityChartBoundary
       response={response}
       loading={loading}
       error={error}
@@ -817,7 +863,7 @@ function Dashboard24HourRangePanel({
         error={snapshotActive ? null : (error ?? dashboardActivityError)}
       />
       {metric === "network" ? (
-        <DashboardNetworkActivityChart
+        <DashboardNetworkActivityChartBoundary
           response={networkData}
           loading={networkLoading && networkData == null}
           error={networkError}
@@ -1011,7 +1057,7 @@ function Dashboard24HourSnapshotRangePanel({
         error={null}
       />
       {metric === "network" ? (
-        <DashboardNetworkActivityChart
+        <DashboardNetworkActivityChartBoundary
           response={bundle.networkTimeseries ?? null}
           loading={false}
           error={null}

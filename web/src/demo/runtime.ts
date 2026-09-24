@@ -26,6 +26,13 @@ const SCENE_VALUES = new Set<DemoScene>([
 const THEME_VALUES = new Set<DemoTheme>(["light", "dark"]);
 const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390", "mobile393"]);
 
+declare global {
+  interface Window {
+    __CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__?: () => void;
+    __CVM_DEMO_TIMESERIES_REVISION__?: number;
+  }
+}
+
 function hashSearchFromLocation(
   location: Location | undefined = typeof window === "undefined" ? undefined : window.location,
 ) {
@@ -96,16 +103,22 @@ export async function initializeDemoRuntime(): Promise<void> {
 
   const [
     { demoModel },
+    { publishDemoRealtime },
     { installDemoFetchFallback },
     { installDemoEventSource },
     { handleDemoRequest },
   ] = await Promise.all([
     import("./model"),
+    import("./events"),
     import("./fallback"),
     import("./event-source"),
     import("./handlers"),
   ]);
   demoModel.setScene(sceneFromLocation());
+  window.__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__ = () => {
+    window.__CVM_DEMO_TIMESERIES_REVISION__ = (window.__CVM_DEMO_TIMESERIES_REVISION__ ?? 0) + 1;
+    publishDemoRealtime({ type: "records", records: [] });
+  };
   installDemoFetchFallback(handleDemoRequest);
   installDemoEventSource();
   if (!shouldStartDemoServiceWorker()) return;
