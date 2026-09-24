@@ -39,6 +39,7 @@
 - [x] Add the official GPT-6 set to proxy presets, Settings/routing selection, structured model identity, and `/v1/models`; keep Terra out of official discovery.
 - [x] Serialize the nullable reported-cache-write column migration with a SQLite write transaction and verify concurrent independent-pool re-entry.
 - [x] Estimate exact ordinary-input/cache-read/cache-write buckets when the upstream reports cache-write usage, preserve inferred fallback when absent, and account for actual supported/unsupported service tiers and the long-context threshold.
+- [x] Merge partial streaming cache-read/cache-write detail updates without erasing omitted aggregate usage fields.
 - [x] Resolve valid GPT-6 date aliases while leaving invalid and preview variants unpriced; do not add local model-specific request-parameter capability validation.
 - [x] Restrict GPT-6 model identity icons to exact IDs and calendar-valid dated aliases; retain invalid dated aliases as original text.
 - [x] Add targeted backend/web regression coverage.
@@ -90,8 +91,8 @@ The checks below document the completed GPT-5.6 and temporary GPT-6 delivery onl
 
 - Passed: targeted Rust pricing, seed-upgrade, schema-upgrade, `/v1/models`, invocation API, legacy archive, and cache-write usage-summary tests.
 - Passed: targeted Web unit tests for GPT-6 identity, invocation detail, available model options, and demo catalog fixtures (46 tests).
-- Previously passed before the final review repair and base refresh: `stateful-sqlite` (1,316 tests), `archive-file-io` (274 tests), `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings`. The independent-pool migration regression also passed in isolation.
-- Previously passed before the final review repair and base refresh: full Web unit suite (1,557 passed, 6 skipped), `bun run typecheck:web`, Web production build, and `bun run lint:web` (85 warnings, no errors).
+- Passed on the base-synchronized candidate: `stateful-sqlite` (1,320 passed, 1,454 skipped), `archive-file-io` (276 passed, 2,498 skipped), `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, Rust source-quality policy checks, and `cargo check --locked --all-targets --all-features`.
+- Passed on the unchanged Web/render sources in this candidate: full Web unit suite (1,557 passed, 6 skipped), `bun run typecheck:web`, Web production build, and `bun run lint:web` (85 warnings, no errors). The final stream-merge repair and base refresh only changed Rust sources and tests.
 - Previously passed: targeted Storybook interactions for invocation cache-write detail, GPT-6 model identity, and invalid dated GPT-6 fallback (2 Storybook tests). The complete Storybook suite could not run in the testbox because its Chromium runtime lacks required system libraries; the Settings page interaction story remains manual because its existing page-wide axe audit reports unrelated accessibility violations. The complete mock-only Settings page is captured from `ui_demo`.
 - Added regression coverage for exact cache-write cost splits on existing explicit-price rows, inconsistent reported counts, and preservation across later usage-bearing stream events including an explicit zero. `cargo test cache_write -- --nocapture` passed (9 tests).
 - Validation note: the first full Web unit run had one unrelated flaky assertion; its isolated rerun and the subsequent full-suite retry passed.
