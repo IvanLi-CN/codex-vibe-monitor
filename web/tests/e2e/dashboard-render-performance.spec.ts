@@ -46,7 +46,7 @@ type RunMetrics = {
 
 function summarizeLongTasks(entries: LongTaskEntry[], startTime: number, endTime: number) {
   const durations = entries
-    .filter((entry) => entry.startTime >= startTime && entry.startTime < endTime)
+    .filter((entry) => entry.startTime < endTime && entry.startTime + entry.duration > startTime)
     .map((entry) => entry.duration)
     .sort((left, right) => left - right);
   const p95Index = Math.max(0, Math.ceil(durations.length * 0.95) - 1);
@@ -98,6 +98,26 @@ test.describe("Dashboard render performance", () => {
     }
   });
 
+  test("counts tasks overlapping a measurement boundary", () => {
+    expect(
+      summarizeLongTasks(
+        [
+          { startTime: 80, duration: 70 },
+          { startTime: 150, duration: 75 },
+          { startTime: 225, duration: 60 },
+        ],
+        100,
+        200,
+      ),
+    ).toEqual({
+      longTaskCount: 2,
+      maxLongTaskMs: 75,
+      over50msCount: 2,
+      totalBlockingTimeMs: 45,
+      p95LongTaskMs: 75,
+    });
+  });
+
   test("keeps data-ready and same-scale update renders below the long-task budget", async ({
     page,
   }) => {
@@ -127,6 +147,7 @@ test.describe("Dashboard render performance", () => {
     });
 
     const runMetrics: RunMetrics[] = [];
+    let todayFixturePointCount = 0;
     let yesterdayFixturePointCount = 0;
     for (let run = 0; run <= MEASURED_RUN_COUNT; run += 1) {
       const runPage = run === 0 ? page : await page.context().newPage();
@@ -161,11 +182,20 @@ test.describe("Dashboard render performance", () => {
         }));
         expect(dataReadyStart).toBeGreaterThan(0);
         if (run === 0) {
-          yesterdayFixturePointCount = await runPage.evaluate(async () => {
-            const response = await fetch("/api/stats/timeseries?range=yesterday&bucket=1m");
-            const data = (await response.json()) as { points: unknown[] };
-            return data.points.length;
+          const fixturePointCounts = await runPage.evaluate(async () => {
+            const pointCount = async (range: "today" | "yesterday") => {
+              const response = await fetch(`/api/stats/timeseries?range=${range}&bucket=1m`);
+              const data = (await response.json()) as { points: unknown[] };
+              return data.points.length;
+            };
+            return {
+              today: await pointCount("today"),
+              yesterday: await pointCount("yesterday"),
+            };
           });
+          todayFixturePointCount = fixturePointCounts.today;
+          yesterdayFixturePointCount = fixturePointCounts.yesterday;
+          expect(todayFixturePointCount).toBe(19 * 60 + 30);
           expect(yesterdayFixturePointCount).toBe(24 * 60);
         }
         await runPage.evaluate(() => {
@@ -261,6 +291,7 @@ test.describe("Dashboard render performance", () => {
       productionBuild: true,
       warmupRuns: 1,
       measuredRuns: MEASURED_RUN_COUNT,
+      todayFixturePointCount,
       yesterdayFixturePointCount,
       sustainedUpdatesPerRun: SUSTAINED_UPDATE_COUNT,
       longTaskObserver: "required-and-active",
