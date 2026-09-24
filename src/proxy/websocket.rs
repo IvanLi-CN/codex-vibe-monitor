@@ -2501,6 +2501,7 @@ pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
         .map(parse_usage_value)
         .unwrap_or_default();
     if (usage.input_tokens.is_none() || usage.output_tokens.is_none())
+        && usage.reported_cache_write_tokens.is_none()
         && !ws_terminal_event_is_failure_without_usage(text)
     {
         return None;
@@ -4366,6 +4367,27 @@ mod websocket_tests {
         assert_eq!(event.usage.cache_input_tokens, Some(2));
         assert_eq!(event.usage.total_tokens, Some(10));
         assert!(!event.contains_encrypted_content);
+    }
+
+    #[test]
+    fn websocket_usage_event_accepts_reported_cache_write_without_input_or_output_counts() {
+        let event = parse_ws_usage_event(
+            r#"{
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens_details": {
+                            "cache_write_tokens": 250
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("cache-write-only usage event");
+
+        assert_eq!(event.usage.reported_cache_write_tokens, Some(250));
+        assert_eq!(event.usage.input_tokens, None);
+        assert_eq!(event.usage.output_tokens, None);
     }
 
     #[test]
