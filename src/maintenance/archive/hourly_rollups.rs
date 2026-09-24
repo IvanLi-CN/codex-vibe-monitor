@@ -3183,6 +3183,31 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
 const ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT: usize = 2;
 const ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET: Duration = Duration::from_secs(2);
 
+#[cfg(test)]
+pub(crate) struct ActiveAccountActivityV2ProgressHandlerTestPause {
+    pub(crate) installed: tokio::sync::oneshot::Sender<()>,
+    pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
+}
+
+struct ActiveAccountActivityV2ProgressConnection {
+    connection: sqlx::pool::PoolConnection<Sqlite>,
+    progress_handler_installed: bool,
+}
+
+impl ActiveAccountActivityV2ProgressConnection {
+    fn close_on_drop(&mut self) {
+        self.connection.close_on_drop();
+    }
+}
+
+impl Drop for ActiveAccountActivityV2ProgressConnection {
+    fn drop(&mut self) {
+        if self.progress_handler_installed {
+            self.connection.close_on_drop();
+        }
+    }
+}
+
 pub(crate) fn build_active_account_activity_v2_archive_epoch_coverage_query(
     prefix: &'static str,
     oldest_bucket: i64,
@@ -3248,7 +3273,20 @@ async fn select_active_account_activity_v2_priority_buckets(
     current_bucket: i64,
     started_at: Instant,
 ) -> Result<Option<Vec<i64>>> {
-    select_active_account_activity_v2_priority_buckets_with_deadline(
+    #[cfg(test)]
+    let selection = select_active_account_activity_v2_priority_buckets_with_deadline(
+        pool,
+        current_bucket,
+        started_at,
+        started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
+        None,
+        1_000,
+        false,
+        None,
+    )
+    .await;
+    #[cfg(not(test))]
+    let selection = select_active_account_activity_v2_priority_buckets_with_deadline(
         pool,
         current_bucket,
         started_at,
@@ -3257,7 +3295,8 @@ async fn select_active_account_activity_v2_priority_buckets(
         1_000,
         false,
     )
-    .await
+    .await;
+    selection
 }
 
 pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_deadline(
@@ -3268,6 +3307,9 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     progress_handler_ops: i32,
     progress_abort_on_probe: bool,
+    #[cfg(test)] test_pause_after_handler_install: Option<
+        ActiveAccountActivityV2ProgressHandlerTestPause,
+    >,
 ) -> Result<Option<Vec<i64>>> {
     let selection_deadline = std::cmp::min(
         selection_deadline,
@@ -3276,16 +3318,20 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         return Ok(None);
     };
-    let mut connection = match timeout(remaining_budget, pool.acquire()).await {
+    let connection = match timeout(remaining_budget, pool.acquire()).await {
         Ok(connection) => connection?,
         Err(_) => return Ok(None),
+    };
+    let mut connection = ActiveAccountActivityV2ProgressConnection {
+        connection,
+        progress_handler_installed: false,
     };
     let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         connection.close_on_drop();
         return Ok(None);
     };
     let lock_timed_out = {
-        let handle_result = timeout(remaining_budget, connection.lock_handle()).await;
+        let handle_result = timeout(remaining_budget, connection.connection.lock_handle()).await;
         match handle_result {
             Ok(Ok(mut handle)) => {
                 handle.set_progress_handler(progress_handler_ops, move || {
@@ -3303,6 +3349,14 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             Err(_) => true,
         }
     };
+    if !lock_timed_out {
+        connection.progress_handler_installed = true;
+    }
+    #[cfg(test)]
+    if let Some(pause) = test_pause_after_handler_install {
+        let _ = pause.installed.send(());
+        let _ = pause.resume.await;
+    }
     if lock_timed_out {
         connection.close_on_drop();
         return Ok(None);
@@ -3316,7 +3370,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         let oldest_live_occurred_at = sqlx::query_scalar::<_, Option<String>>(
             "SELECT MIN(occurred_at) FROM codex_invocations",
         )
-        .fetch_one(&mut *connection)
+        .fetch_one(&mut *connection.connection)
         .await?;
         let Some(oldest_live_occurred_at) = oldest_live_occurred_at else {
             return Ok(Vec::new());
@@ -3347,7 +3401,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
         .bind(oldest_bucket)
         .bind(current_bucket)
-        .fetch_all(&mut *connection)
+        .fetch_all(&mut *connection.connection)
         .await?;
         let mut covered_buckets = HashSet::new();
         for bucket_start_epoch in covered_bucket_rows {
@@ -3364,7 +3418,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             current_bucket,
         )
         .build_query_as::<(i64, i64)>()
-        .fetch_all(&mut *connection)
+        .fetch_all(&mut *connection.connection)
         .await?;
 
         let mut active_month_keys = Vec::new();
@@ -3384,7 +3438,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         let archive_legacy_month_rows =
             build_active_account_activity_v2_legacy_coverage_query("", &active_month_keys)
                 .build_query_scalar::<String>()
-                .fetch_all(&mut *connection)
+                .fetch_all(&mut *connection.connection)
                 .await?;
         let mut archive_legacy_month_keys = HashSet::new();
         for month_key in archive_legacy_month_rows {
@@ -3471,7 +3525,8 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 return Ok(None);
             };
             let cleanup_succeeded = {
-                let cleanup_result = timeout(remaining_budget, connection.lock_handle()).await;
+                let cleanup_result =
+                    timeout(remaining_budget, connection.connection.lock_handle()).await;
                 match cleanup_result {
                     Ok(Ok(mut handle)) => {
                         handle.remove_progress_handler();
@@ -3481,6 +3536,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 }
             };
             if cleanup_succeeded {
+                connection.progress_handler_installed = false;
                 Err(error)
             } else {
                 connection.close_on_drop();
@@ -3503,7 +3559,8 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 return Ok(None);
             };
             let cleanup_succeeded = {
-                let cleanup_result = timeout(remaining_budget, connection.lock_handle()).await;
+                let cleanup_result =
+                    timeout(remaining_budget, connection.connection.lock_handle()).await;
                 match cleanup_result {
                     Ok(Ok(mut handle)) => {
                         handle.remove_progress_handler();
@@ -3513,6 +3570,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 }
             };
             if cleanup_succeeded {
+                connection.progress_handler_installed = false;
                 Ok(Some(selection))
             } else {
                 connection.close_on_drop();
