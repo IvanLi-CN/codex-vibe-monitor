@@ -803,22 +803,8 @@ impl StreamResponsePayloadParser {
                         self.service_tier_rank = rank;
                     }
                 }
-                if let Some(mut parsed_usage) = extract_usage_from_payload(&value) {
-                    let reported_cache_write_tokens = parsed_usage
-                        .reported_cache_write_tokens
-                        .or(self.usage.reported_cache_write_tokens);
-                    let cache_write_only = parsed_usage.reported_cache_write_tokens.is_some()
-                        && parsed_usage.input_tokens.is_none()
-                        && parsed_usage.output_tokens.is_none()
-                        && parsed_usage.cache_input_tokens.is_none()
-                        && parsed_usage.reasoning_tokens.is_none();
-                    if cache_write_only {
-                        self.usage.total_tokens =
-                            parsed_usage.total_tokens.or(self.usage.total_tokens);
-                        parsed_usage = self.usage.clone();
-                    }
-                    parsed_usage.reported_cache_write_tokens = reported_cache_write_tokens;
-                    self.usage = parsed_usage;
+                if let Some(parsed_usage) = extract_usage_from_payload(&value) {
+                    self.usage = merge_stream_usage_update(&self.usage, parsed_usage);
                     self.usage_found = true;
                 }
                 if value_contains_encrypted_content(&value) {
