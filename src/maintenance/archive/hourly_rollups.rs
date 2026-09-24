@@ -3189,6 +3189,39 @@ pub(crate) struct ActiveAccountActivityV2ProgressHandlerTestPause {
     pub(crate) resume: tokio::sync::oneshot::Receiver<()>,
 }
 
+pub(crate) struct ActiveAccountActivityV2ProgressHandlerOptions {
+    progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    progress_handler_ops: i32,
+    progress_abort_on_probe: bool,
+    #[cfg(test)]
+    test_pause_after_handler_install: Option<ActiveAccountActivityV2ProgressHandlerTestPause>,
+}
+
+impl ActiveAccountActivityV2ProgressHandlerOptions {
+    pub(crate) fn new(
+        progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        progress_handler_ops: i32,
+        progress_abort_on_probe: bool,
+    ) -> Self {
+        Self {
+            progress_probe,
+            progress_handler_ops,
+            progress_abort_on_probe,
+            #[cfg(test)]
+            test_pause_after_handler_install: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_after_handler_install(
+        mut self,
+        pause: ActiveAccountActivityV2ProgressHandlerTestPause,
+    ) -> Self {
+        self.test_pause_after_handler_install = Some(pause);
+        self
+    }
+}
+
 struct ActiveAccountActivityV2ProgressConnection {
     connection: sqlx::pool::PoolConnection<Sqlite>,
     progress_handler_installed: bool,
@@ -3273,30 +3306,14 @@ async fn select_active_account_activity_v2_priority_buckets(
     current_bucket: i64,
     started_at: Instant,
 ) -> Result<Option<Vec<i64>>> {
-    #[cfg(test)]
-    let selection = select_active_account_activity_v2_priority_buckets_with_deadline(
+    select_active_account_activity_v2_priority_buckets_with_deadline(
         pool,
         current_bucket,
         started_at,
         started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
-        None,
-        1_000,
-        false,
-        None,
+        ActiveAccountActivityV2ProgressHandlerOptions::new(None, 1_000, false),
     )
-    .await;
-    #[cfg(not(test))]
-    let selection = select_active_account_activity_v2_priority_buckets_with_deadline(
-        pool,
-        current_bucket,
-        started_at,
-        started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
-        None,
-        1_000,
-        false,
-    )
-    .await;
-    selection
+    .await
 }
 
 pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_deadline(
@@ -3304,12 +3321,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     current_bucket: i64,
     started_at: Instant,
     selection_deadline: Instant,
-    progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    progress_handler_ops: i32,
-    progress_abort_on_probe: bool,
-    #[cfg(test)] test_pause_after_handler_install: Option<
-        ActiveAccountActivityV2ProgressHandlerTestPause,
-    >,
+    progress_options: ActiveAccountActivityV2ProgressHandlerOptions,
 ) -> Result<Option<Vec<i64>>> {
     let selection_deadline = std::cmp::min(
         selection_deadline,
@@ -3326,6 +3338,9 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         connection,
         progress_handler_installed: false,
     };
+    let progress_probe = progress_options.progress_probe;
+    let progress_handler_ops = progress_options.progress_handler_ops;
+    let progress_abort_on_probe = progress_options.progress_abort_on_probe;
     let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         connection.close_on_drop();
         return Ok(None);
@@ -3353,7 +3368,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         connection.progress_handler_installed = true;
     }
     #[cfg(test)]
-    if let Some(pause) = test_pause_after_handler_install {
+    if let Some(pause) = progress_options.test_pause_after_handler_install {
         let _ = pause.installed.send(());
         let _ = pause.resume.await;
     }

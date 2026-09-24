@@ -18037,10 +18037,11 @@ async fn account_activity_v2_priority_selection_skips_interrupted_sqlite_round()
         current_hour_epoch,
         started_at,
         started_at + std::time::Duration::from_secs(1),
-        Some(progress_probe.clone()),
-        1,
-        true,
-        None,
+        crate::ActiveAccountActivityV2ProgressHandlerOptions::new(
+            Some(progress_probe.clone()),
+            1,
+            true,
+        ),
     )
     .await
     .expect("handle interrupted selection round");
@@ -18052,9 +18053,12 @@ async fn account_activity_v2_priority_selection_skips_interrupted_sqlite_round()
 async fn account_activity_v2_priority_selection_cancellation_does_not_poison_sqlite_pool() {
     let temp_dir = make_temp_test_dir("account-activity-v2-progress-handler-cancel");
     let db_path = temp_dir.join("state.sqlite");
+    let connect_options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&test_sqlite_url_for_path(&db_path))
+        .connect_with(connect_options)
         .await
         .expect("connect single-connection file-backed sqlite pool");
     crate::ensure_schema(&pool)
@@ -18084,13 +18088,13 @@ async fn account_activity_v2_priority_selection_cancellation_does_not_poison_sql
             align_bucket_epoch(Utc::now().timestamp(), 3_600, 0),
             started_at,
             selection_deadline,
-            None,
-            1,
-            false,
-            Some(crate::ActiveAccountActivityV2ProgressHandlerTestPause {
-                installed: installed_tx,
-                resume: resume_rx,
-            }),
+            crate::ActiveAccountActivityV2ProgressHandlerOptions::new(None, 1, false)
+                .pause_after_handler_install(
+                    crate::ActiveAccountActivityV2ProgressHandlerTestPause {
+                        installed: installed_tx,
+                        resume: resume_rx,
+                    },
+                ),
         )
         .await
     });
@@ -18130,10 +18134,7 @@ async fn account_activity_v2_priority_selection_cancellation_does_not_poison_sql
         align_bucket_epoch(Utc::now().timestamp(), 3_600, 0),
         reuse_started_at,
         reuse_started_at + std::time::Duration::from_secs(2),
-        None,
-        1_000,
-        false,
-        None,
+        crate::ActiveAccountActivityV2ProgressHandlerOptions::new(None, 1_000, false),
     )
     .await
     .expect("complete selection and remove sqlite progress handler")
@@ -18153,9 +18154,12 @@ async fn account_activity_v2_priority_selection_cancellation_does_not_poison_sql
 async fn account_activity_v2_priority_selection_internal_timeout_closes_installed_handler() {
     let temp_dir = make_temp_test_dir("account-activity-v2-progress-handler-timeout");
     let db_path = temp_dir.join("state.sqlite");
+    let connect_options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&test_sqlite_url_for_path(&db_path))
+        .connect_with(connect_options)
         .await
         .expect("connect single-connection file-backed sqlite pool");
     crate::ensure_schema(&pool)
@@ -18173,13 +18177,13 @@ async fn account_activity_v2_priority_selection_internal_timeout_closes_installe
             align_bucket_epoch(Utc::now().timestamp(), 3_600, 0),
             started_at,
             selection_deadline,
-            None,
-            1,
-            false,
-            Some(crate::ActiveAccountActivityV2ProgressHandlerTestPause {
-                installed: installed_tx,
-                resume: resume_rx,
-            }),
+            crate::ActiveAccountActivityV2ProgressHandlerOptions::new(None, 1, false)
+                .pause_after_handler_install(
+                    crate::ActiveAccountActivityV2ProgressHandlerTestPause {
+                        installed: installed_tx,
+                        resume: resume_rx,
+                    },
+                ),
         )
         .await
     });
@@ -18459,10 +18463,7 @@ async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage
         current_hour_epoch,
         selection_started_at,
         selection_started_at + Duration::from_secs(2),
-        None,
-        1_000,
-        false,
-        None,
+        crate::ActiveAccountActivityV2ProgressHandlerOptions::new(None, 1_000, false),
     )
     .await
     .expect("select priority coverage against archive fixture")
