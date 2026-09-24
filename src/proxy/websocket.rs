@@ -2142,6 +2142,7 @@ pub(crate) struct WsUsageTracker {
     runtime_snapshot_published: bool,
     runtime_snapshot_invoke_id: Option<String>,
     first_token_ms: Option<f64>,
+    usage: WebSocketUsageAccumulator,
 }
 
 impl WsUsageTracker {
@@ -2168,6 +2169,7 @@ impl WsUsageTracker {
             runtime_snapshot_published: false,
             runtime_snapshot_invoke_id: None,
             first_token_ms: None,
+            usage: WebSocketUsageAccumulator::default(),
         }
     }
 
@@ -2181,6 +2183,7 @@ impl WsUsageTracker {
         self.runtime_snapshot_published = false;
         self.runtime_snapshot_invoke_id = None;
         self.first_token_ms = None;
+        self.usage.reset();
     }
 
     fn stream_duration_ms(&self) -> Option<f64> {
@@ -2221,7 +2224,7 @@ impl WsUsageTracker {
         if self.observe_first_token_text(text) {
             self.publish_first_token_runtime_snapshot(state).await;
         }
-        let Some(event) = parse_ws_usage_event(text) else {
+        let Some(mut event) = parse_ws_usage_event(text) else {
             if ws_terminal_event_is_failure_without_usage(text)
                 && let Some((reason_code, http_status)) = ws_terminal_temporary_classification(text)
                 && let Some(attempt_id) = self.attempt_id
@@ -2256,10 +2259,11 @@ impl WsUsageTracker {
             }
             return;
         };
+        event.usage = self.usage.update(event.usage);
         self.ordinal = self.ordinal.saturating_add(1);
         let response_id_override = self.response_id.clone();
         let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
-        let stream_duration_ms = ws_usage_event_is_terminal(&event)
+        let stream_duration_ms = ws_event_type_has_billable_usage(event.event_type.as_str())
             .then(|| self.stream_duration_ms())
             .flatten();
         if let Err(err) = persist_ws_usage_event(
@@ -2358,7 +2362,7 @@ impl WsUsageTracker {
             response_status: Some("incomplete".to_string()),
             model: self.trace.request_model.clone(),
             service_tier: None,
-            usage: ParsedUsage::default(),
+            usage: self.usage.snapshot(),
             contains_encrypted_content: self.request_contains_encrypted_content,
         };
         let raw_event = serde_json::json!({
@@ -2500,10 +2504,7 @@ pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
         .pointer("/response/usage")
         .map(parse_usage_value)
         .unwrap_or_default();
-    if (usage.input_tokens.is_none() || usage.output_tokens.is_none())
-        && usage.reported_cache_write_tokens.is_none()
-        && !ws_terminal_event_is_failure_without_usage(text)
-    {
+    if !has_ws_usage(&usage, ws_terminal_event_is_failure_without_usage(text)) {
         return None;
     }
     Some(WsUsageEvent {
@@ -2914,10 +2915,6 @@ pub(crate) fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool 
             .is_some_and(|status| status.eq_ignore_ascii_case("completed")),
         _ => false,
     }
-}
-
-fn ws_usage_event_is_terminal(event: &WsUsageEvent) -> bool {
-    ws_event_type_has_billable_usage(event.event_type.as_str())
 }
 
 pub(crate) async fn persist_ws_usage_event(

@@ -2260,6 +2260,7 @@ pub(crate) fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
         if parsed.total_tokens.is_some()
             || parsed.input_tokens.is_some()
             || parsed.output_tokens.is_some()
+            || parsed.cache_input_tokens.is_some()
             || parsed.reported_cache_write_tokens.is_some()
         {
             return Some(parsed);
@@ -2270,6 +2271,7 @@ pub(crate) fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
         if parsed.total_tokens.is_some()
             || parsed.input_tokens.is_some()
             || parsed.output_tokens.is_some()
+            || parsed.cache_input_tokens.is_some()
             || parsed.reported_cache_write_tokens.is_some()
         {
             return Some(parsed);
