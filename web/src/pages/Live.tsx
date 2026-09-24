@@ -21,7 +21,7 @@ import type { TranslationKey } from "../i18n";
 import { useTranslation } from "../i18n";
 import type { PromptCacheConversationSelection } from "../lib/api";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
-import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
+import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts.page-local-shared";
 
 const LIMIT_OPTIONS = [20, 50, 100];
 const PROMPT_CACHE_SELECTION_STORAGE_KEY = "codex-vibe-monitor.live.prompt-cache-selection";

@@ -238,7 +238,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe("TodayStatsOverview", () => {
-  it("prefers explicit current snapshot metrics over model-performance totals for TPM and first-byte card values", () => {
+  it("prefers explicit current snapshot metrics over model-performance totals for TPM and first-byte card values", async () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -291,6 +291,11 @@ describe("TodayStatsOverview", () => {
     const tpmTrigger = host?.querySelector('[aria-label="TPM dashboard.modelPerformance.title"]');
     act(() => {
       tpmTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain(
+        "dashboard.modelPerformance.total",
+      );
     });
     expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain(
       "dashboard.modelPerformance.total",

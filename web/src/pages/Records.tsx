@@ -41,7 +41,7 @@ import {
   RECORDS_PAGE_SIZE_OPTIONS,
   validateInvocationRecordsDraft,
 } from "../lib/invocationRecords";
-import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
+import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts.page-local-shared";
 
 const inputClassName =
   "h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60";

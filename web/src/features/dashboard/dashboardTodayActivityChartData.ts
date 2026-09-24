@@ -198,6 +198,10 @@ export function buildTodayMinuteChartData(
   let cumulativeCacheWriteTokens = 0;
   let cumulativeOutputTokens = 0;
   let cumulativeReasoningTokens = 0;
+  let tenMinuteCacheTokens = 0;
+  let tenMinuteTotalTokens = 0;
+  let hourlyCacheTokens = 0;
+  let hourlyTotalTokens = 0;
   const hasCompleteTokenBreakdown = Array.from(pointMap.values()).every((point) => {
     if (point.totalTokens <= 0) return true;
     return (
@@ -259,21 +263,30 @@ export function buildTodayMinuteChartData(
     cumulativeOutputTokens += visibleOutputTokens;
     cumulativeReasoningTokens += clampedReasoningTokens;
 
-    const rollingCacheHitRate = (windowMinutes: number) => {
-      if (!hasCompleteTokenBreakdown || isFuture) return null;
-
-      const rollingWindowStart = Math.max(startMs, epochMs - (windowMinutes - 1) * MINUTE_MS);
-      let rollingCacheTokens = 0;
-      let rollingTotalTokens = 0;
-      for (let cursor = rollingWindowStart; cursor <= epochMs; cursor += MINUTE_MS) {
-        const rollingPoint = pointMap.get(cursor);
-        rollingCacheTokens += Math.max(rollingPoint?.cacheInputTokens ?? 0, 0);
-        rollingTotalTokens += Math.max(rollingPoint?.totalTokens ?? 0, 0);
-      }
-      return rollingTotalTokens > 0 ? rollingCacheTokens / rollingTotalTokens : null;
-    };
-    const cacheHitRate = rollingCacheHitRate(TREND_CHART_BUCKET_MINUTES);
-    const hourlyCacheHitRate = rollingCacheHitRate(HOURLY_CACHE_HIT_WINDOW_MINUTES);
+    const currentCacheTokens = Math.max(point?.cacheInputTokens ?? 0, 0);
+    const currentTotalTokens = Math.max(point?.totalTokens ?? 0, 0);
+    tenMinuteCacheTokens += currentCacheTokens;
+    tenMinuteTotalTokens += currentTotalTokens;
+    hourlyCacheTokens += currentCacheTokens;
+    hourlyTotalTokens += currentTotalTokens;
+    const tenMinuteExpiredPoint = pointMap.get(epochMs - TREND_CHART_BUCKET_MINUTES * MINUTE_MS);
+    const hourlyExpiredPoint = pointMap.get(epochMs - HOURLY_CACHE_HIT_WINDOW_MINUTES * MINUTE_MS);
+    if (tenMinuteExpiredPoint) {
+      tenMinuteCacheTokens -= Math.max(tenMinuteExpiredPoint.cacheInputTokens ?? 0, 0);
+      tenMinuteTotalTokens -= Math.max(tenMinuteExpiredPoint.totalTokens ?? 0, 0);
+    }
+    if (hourlyExpiredPoint) {
+      hourlyCacheTokens -= Math.max(hourlyExpiredPoint.cacheInputTokens ?? 0, 0);
+      hourlyTotalTokens -= Math.max(hourlyExpiredPoint.totalTokens ?? 0, 0);
+    }
+    const cacheHitRate =
+      !hasCompleteTokenBreakdown || isFuture || tenMinuteTotalTokens <= 0
+        ? null
+        : tenMinuteCacheTokens / tenMinuteTotalTokens;
+    const hourlyCacheHitRate =
+      !hasCompleteTokenBreakdown || isFuture || hourlyTotalTokens <= 0
+        ? null
+        : hourlyCacheTokens / hourlyTotalTokens;
 
     const currentDate = new Date(epochMs);
     data.push({

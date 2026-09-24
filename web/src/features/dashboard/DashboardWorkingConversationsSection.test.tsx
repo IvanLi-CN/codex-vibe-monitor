@@ -6818,6 +6818,20 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useRealTimers();
   });
 
+  it("does not start the timing clock for unmounted upstream account rows", () => {
+    vi.useFakeTimers();
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.livePhase = "requesting";
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamTtfbMs = null;
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = null;
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+
+    renderSection(createResponse([]), { upstreamAccountActivity: upstreamActivity });
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("keeps in-progress upstream account recent response time unavailable", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
     upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = 0;

@@ -871,24 +871,28 @@ describe("DashboardActivityOverview", () => {
     );
   });
 
-  it("shows the network metric only on today, yesterday, and 24 hours, and switches those ranges to the network chart", () => {
+  it("shows the network metric only on today, yesterday, and 24 hours, and switches those ranges to the network chart", async () => {
     installSummaryMocks();
 
     render(<DashboardActivityOverview />);
 
     clickTab("Network");
-    expect(
-      host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
-    ).toBe("points:2;loading:false;error:null");
+    await vi.waitFor(() => {
+      expect(
+        host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
+      ).toBe("points:2;loading:false;error:null");
+    });
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')).toBeNull();
     expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("today", true, undefined);
 
     clickTab("24 Hours");
     expect(host?.textContent).toContain("Network");
     clickTab("Network");
-    expect(
-      host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
-    ).toBe("points:2;loading:false;error:null");
+    await vi.waitFor(() => {
+      expect(
+        host?.querySelector('[data-testid="dashboard-network-activity-chart-mock"]')?.textContent,
+      ).toBe("points:2;loading:false;error:null");
+    });
     expect(host?.querySelector('[data-testid="heatmap-24h"]')).toBeNull();
     expect(hookMocks.useDashboardNetworkTimeseries).toHaveBeenCalledWith("1d", true, undefined);
 

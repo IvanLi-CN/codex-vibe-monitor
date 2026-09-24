@@ -41,7 +41,7 @@ type DashboardNetworkTooltipPayloadEntry = {
   payload?: ChartDatum;
 };
 
-interface DashboardNetworkActivityChartProps {
+export interface DashboardNetworkActivityChartProps {
   response?: DashboardNetworkTimeseriesResponse | null;
   loading: boolean;
   error?: string | null;

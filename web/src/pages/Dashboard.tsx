@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
@@ -24,7 +24,7 @@ import {
   type DashboardWorkingConversationInvocationSelection,
   formatDashboardWorkingConversationSequenceId,
 } from "../lib/dashboardWorkingConversations";
-import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
+import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts.page-local-shared";
 
 export default function DashboardPage() {
   const { t } = useTranslation();
@@ -82,6 +82,18 @@ export default function DashboardPage() {
     true,
     includeUpstreamAccountActivity,
   );
+  const dataReadyMarkRef = useRef(false);
+
+  if (
+    !dataReadyMarkRef.current &&
+    dashboardActivity != null &&
+    !workingCardsLoading &&
+    typeof window !== "undefined" &&
+    (window as Window & { __dashboardPerformance?: unknown }).__dashboardPerformance != null
+  ) {
+    dataReadyMarkRef.current = true;
+    performance.mark("dashboard-data-ready-start");
+  }
 
   useEffect(() => {
     if (

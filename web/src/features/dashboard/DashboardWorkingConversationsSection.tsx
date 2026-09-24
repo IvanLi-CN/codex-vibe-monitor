@@ -1,5 +1,6 @@
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
+  memo,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -29,6 +30,7 @@ import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segm
 import { SelectField } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
+import { useDashboardLiveClock } from "../../hooks/useDashboardLiveClock";
 import {
   resolveUpstreamAccountRecentPreviewLimit,
   useDashboardUpstreamAccountActivity,
@@ -475,19 +477,18 @@ function formatStatusLabel(status: string) {
   return normalized;
 }
 
-function CompactLatencyPills({
+const CompactLatencyPills = memo(function CompactLatencyPills({
   invocation,
-  nowMs,
   localeTag,
   t,
   className,
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
-  nowMs: number;
   localeTag: string;
   t: ReturnType<typeof useTranslation>["t"];
   className?: string;
 }) {
+  const nowMs = useDashboardLiveClock(invocation.isInFlight);
   const presentationRef = useRef<{
     key: string;
     value: InvocationCompactTimingPresentation;
@@ -604,7 +605,7 @@ function CompactLatencyPills({
       ))}
     </div>
   );
-}
+});
 
 function DashboardImageToolIconChip({
   endpointDisplay,
@@ -2031,10 +2032,9 @@ function AccountSegmentList({
   );
 }
 
-function AccountRecentInvocationRow({
+const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
   invocation,
   locale,
-  nowMs,
   detailsLayout,
   onOpenUpstreamAccount,
   onOpenConversation,
@@ -2042,7 +2042,6 @@ function AccountRecentInvocationRow({
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
   locale: "zh" | "en";
-  nowMs: number;
   detailsLayout: "stacked" | "split";
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
@@ -2121,7 +2120,6 @@ function AccountRecentInvocationRow({
         t,
         locale,
         localeTag,
-        nowMs,
         numberFormatter,
         currencyFormatter,
         renderAccountValue,
@@ -2132,7 +2130,6 @@ function AccountRecentInvocationRow({
       invocation.record,
       locale,
       localeTag,
-      nowMs,
       numberFormatter,
       renderAccountValue,
       t,
@@ -2302,7 +2299,7 @@ function AccountRecentInvocationRow({
             t={t}
           />
           {!shouldGroupModelContext ? fastIndicator : null}
-          <CompactLatencyPills invocation={invocation} nowMs={nowMs} localeTag={localeTag} t={t} />
+          <CompactLatencyPills invocation={invocation} localeTag={localeTag} t={t} />
         </div>
         <div
           data-testid="dashboard-upstream-account-recent-details-row"
@@ -2372,7 +2369,7 @@ function AccountRecentInvocationRow({
       ) : null}
     </div>
   );
-}
+});
 
 function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier" }) {
   const { t } = useTranslation();
@@ -2403,13 +2400,12 @@ function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier" }) {
   );
 }
 
-function InvocationSlot({
+const InvocationSlot = memo(function InvocationSlot({
   invocation,
   label,
   slotKind,
   conversationSequenceId,
   promptCacheKey,
-  nowMs,
   locale,
   interactionsDisabled = false,
   onOpenUpstreamAccount,
@@ -2420,7 +2416,6 @@ function InvocationSlot({
   slotKind: "current" | "previous" | "earlier";
   conversationSequenceId: string;
   promptCacheKey: string;
-  nowMs: number;
   locale: "zh" | "en";
   interactionsDisabled?: boolean;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -2508,7 +2503,6 @@ function InvocationSlot({
         t,
         locale,
         localeTag,
-        nowMs,
         numberFormatter,
         currencyFormatter,
         renderAccountValue,
@@ -2519,7 +2513,6 @@ function InvocationSlot({
       invocation.record,
       locale,
       localeTag,
-      nowMs,
       numberFormatter,
       renderAccountValue,
       t,
@@ -2721,7 +2714,6 @@ function InvocationSlot({
           </div>
           <CompactLatencyPills
             invocation={invocation}
-            nowMs={nowMs}
             localeTag={localeTag}
             t={t}
             className="shrink-0 flex-nowrap text-[10px]"
@@ -2820,7 +2812,7 @@ function InvocationSlot({
       </div>
     </div>
   );
-}
+});
 
 function resolveDashboardWorkingConversationColumnCount(width: number) {
   if (width >= 1660) return 4;
@@ -2915,12 +2907,11 @@ function chunkDashboardUpstreamAccountRows(
   return rows;
 }
 
-function DashboardUpstreamAccountActivityCard({
+const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAccountActivityCard({
   account,
   routingStateVersion,
   locale,
   localeTag,
-  nowMs,
   recentPreviewLimit,
   onOpenUpstreamAccount,
   onOpenConversation,
@@ -2934,7 +2925,6 @@ function DashboardUpstreamAccountActivityCard({
   routingStateVersion?: RoutingStateVersion | null;
   locale: "zh" | "en";
   localeTag: string;
-  nowMs: number;
   recentPreviewLimit: number;
   onOpenUpstreamAccount?: (
     accountId: number,
@@ -3940,7 +3930,6 @@ function DashboardUpstreamAccountActivityCard({
                   key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
                   invocation={invocation}
                   locale={locale}
-                  nowMs={nowMs}
                   detailsLayout={recentDetailsLayout}
                   onOpenUpstreamAccount={onOpenUpstreamAccount}
                   onOpenConversation={onOpenConversation}
@@ -3952,7 +3941,7 @@ function DashboardUpstreamAccountActivityCard({
       </div>
     </article>
   );
-}
+});
 
 function DashboardUpstreamAccountGridSkeleton() {
   return (
@@ -4114,7 +4103,6 @@ export function DashboardWorkingConversationsSection({
   const [upstreamAccountSort, setUpstreamAccountSort] = useState<DashboardWorkspaceSort>(() =>
     readDashboardWorkspaceSort(DASHBOARD_UPSTREAM_ACCOUNT_SORT_STORAGE_KEY),
   );
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [containerWidth, setContainerWidth] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 0 : window.innerWidth,
@@ -4183,12 +4171,6 @@ export function DashboardWorkingConversationsSection({
   const setGridContainerRef = useCallback((node: HTMLDivElement | null) => {
     setGridElement(node);
   }, []);
-  const hasInFlightCards = cards.some(
-    (card) =>
-      card.currentInvocation.isInFlight ||
-      card.previousInvocation?.isInFlight === true ||
-      card.earlierInvocation?.isInFlight === true,
-  );
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
   const networkDownloadLabel = t("dashboard.activityOverview.networkDownload");
@@ -4315,16 +4297,6 @@ export function DashboardWorkingConversationsSection({
       ),
     [upstreamAccountActivity, upstreamAccountSort],
   );
-  const hasInFlightUpstreamAccountRecent = useMemo(
-    () =>
-      upstreamAccounts.some((account) =>
-        account.recentInvocations.some(
-          (preview) => buildDashboardWorkingConversationInvocationModel(preview).isInFlight,
-        ),
-      ),
-    [upstreamAccounts],
-  );
-  const hasLiveTimingRows = hasInFlightCards || hasInFlightUpstreamAccountRecent;
   const totalNetworkSpeed = useMemo(
     () => ({
       uploadBytesPerSecond: Math.max(
@@ -4769,19 +4741,6 @@ export function DashboardWorkingConversationsSection({
       ),
     );
   }, [cards.length, columnCount, virtualRows]);
-
-  useEffect(() => {
-    if (!hasLiveTimingRows) return;
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => {
-      setNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [hasLiveTimingRows]);
-
-  useEffect(() => {
-    setNowMs(Date.now());
-  }, [cards]);
 
   useEffect(() => {
     const updateLayoutMetrics = () => {
@@ -5729,7 +5688,6 @@ export function DashboardWorkingConversationsSection({
                     routingStateVersion={upstreamAccountActivity?.routingStateVersion}
                     locale={locale}
                     localeTag={localeTag}
-                    nowMs={nowMs}
                     recentPreviewLimit={upstreamAccountRecentPreviewLimit}
                     onOpenUpstreamAccount={onOpenUpstreamAccount}
                     onOpenConversation={onOpenConversation}
@@ -6030,7 +5988,6 @@ export function DashboardWorkingConversationsSection({
                                   slotKind="current"
                                   conversationSequenceId={card.conversationSequenceId}
                                   promptCacheKey={card.promptCacheKey}
-                                  nowMs={nowMs}
                                   locale={locale}
                                   interactionsDisabled={selectionModeEnabled}
                                   onOpenUpstreamAccount={onOpenUpstreamAccount}
@@ -6043,7 +6000,6 @@ export function DashboardWorkingConversationsSection({
                                     slotKind="previous"
                                     conversationSequenceId={card.conversationSequenceId}
                                     promptCacheKey={card.promptCacheKey}
-                                    nowMs={nowMs}
                                     locale={locale}
                                     interactionsDisabled={selectionModeEnabled}
                                     onOpenUpstreamAccount={onOpenUpstreamAccount}
@@ -6059,7 +6015,6 @@ export function DashboardWorkingConversationsSection({
                                     slotKind="earlier"
                                     conversationSequenceId={card.conversationSequenceId}
                                     promptCacheKey={card.promptCacheKey}
-                                    nowMs={nowMs}
                                     locale={locale}
                                     interactionsDisabled={selectionModeEnabled}
                                     onOpenUpstreamAccount={onOpenUpstreamAccount}

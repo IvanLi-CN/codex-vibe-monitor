@@ -106,8 +106,10 @@ describe("App routes", () => {
     root = null;
   });
 
-  it("redirects the legacy settings route to /system/settings", () => {
-    renderApp("/settings");
+  it("redirects the legacy settings route to /system/settings", async () => {
+    await act(async () => {
+      renderApp("/settings");
+    });
 
     expect(host?.textContent ?? "").toContain("system settings page");
     expect(host?.querySelector('[data-testid="location"]')?.textContent).toBe("/system/settings");

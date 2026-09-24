@@ -106,7 +106,11 @@ describe("ModelPerformanceTrigger", () => {
     await act(async () => {
       trigger?.dispatchEvent(new FocusEvent("focus", { bubbles: true }));
       trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      await Promise.resolve();
+    });
+    await vi.waitFor(() => {
+      expect(
+        document.body.querySelector('[data-testid="model-performance-table-model-context"]'),
+      ).not.toBeNull();
     });
 
     const tooltip = document.body.querySelector('[role="tooltip"]');
@@ -142,7 +146,11 @@ describe("ModelPerformanceTrigger", () => {
 
     await act(async () => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(
+          document.body.querySelector('[data-testid="model-performance-drawer-content"]'),
+        ).not.toBeNull();
+      });
     });
 
     const dialog = document.body.querySelector('[role="dialog"]');
@@ -180,7 +188,9 @@ describe("ModelPerformanceTrigger", () => {
     const trigger = host?.querySelector('[aria-label="Open model performance details"]');
     await act(async () => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+      });
     });
 
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("2 h");
@@ -193,7 +203,11 @@ describe("ModelPerformanceTrigger", () => {
     const trigger = host?.querySelector('[aria-label="Open model performance details"]');
     await act(async () => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(
+          document.body.querySelector('[data-testid="model-performance-empty"]'),
+        ).not.toBeNull();
+      });
     });
     expect(document.body.querySelector('[data-testid="model-performance-empty"]')).not.toBeNull();
 
@@ -208,7 +222,11 @@ describe("ModelPerformanceTrigger", () => {
     const unavailableTrigger = host?.querySelector('[aria-label="Open model performance details"]');
     await act(async () => {
       unavailableTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
+      await vi.waitFor(() => {
+        expect(
+          document.body.querySelector('[data-testid="model-performance-unavailable"]'),
+        ).not.toBeNull();
+      });
     });
     expect(
       document.body.querySelector('[data-testid="model-performance-unavailable"]'),
