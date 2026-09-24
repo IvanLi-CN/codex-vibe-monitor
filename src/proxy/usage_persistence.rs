@@ -3224,7 +3224,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
             input_tokens = ?4,
             output_tokens = ?5,
             cache_input_tokens = ?6,
-            reported_cache_write_tokens = ?43,
+            reported_cache_write_tokens = COALESCE(?43, reported_cache_write_tokens),
             reasoning_tokens = ?7,
             total_tokens = ?8,
             cost = ?9,

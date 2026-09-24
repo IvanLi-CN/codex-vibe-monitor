@@ -1640,7 +1640,7 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                         cache_input_tokens = ?3,
                         reasoning_tokens = ?4,
                         total_tokens = ?5,
-                        reported_cache_write_tokens = ?6
+                        reported_cache_write_tokens = COALESCE(?6, reported_cache_write_tokens)
                     WHERE id = ?7
                       AND source = ?8
                       AND total_tokens IS NULL

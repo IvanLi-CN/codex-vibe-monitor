@@ -39,6 +39,39 @@ pub(crate) fn merge_websocket_usage_update(
     }
 }
 
+pub(crate) fn websocket_usage_is_strictly_richer(
+    previous: &ParsedUsage,
+    incoming: &ParsedUsage,
+) -> bool {
+    let previous_fields = [
+        previous.input_tokens,
+        previous.output_tokens,
+        previous.cache_input_tokens,
+        previous.reported_cache_write_tokens,
+        previous.reasoning_tokens,
+        previous.total_tokens,
+    ];
+    let incoming_fields = [
+        incoming.input_tokens,
+        incoming.output_tokens,
+        incoming.cache_input_tokens,
+        incoming.reported_cache_write_tokens,
+        incoming.reasoning_tokens,
+        incoming.total_tokens,
+    ];
+
+    let preserves_previous_fields = previous_fields
+        .iter()
+        .zip(incoming_fields)
+        .all(|(previous, incoming)| previous.is_none() || incoming.is_some());
+    let adds_known_field = previous_fields
+        .iter()
+        .zip(incoming_fields)
+        .any(|(previous, incoming)| previous.is_none() && incoming.is_some());
+
+    preserves_previous_fields && adds_known_field
+}
+
 #[derive(Default)]
 pub(crate) struct WebSocketUsageAccumulator {
     usage: ParsedUsage,

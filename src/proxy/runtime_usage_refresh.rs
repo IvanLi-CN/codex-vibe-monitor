@@ -7,6 +7,12 @@ pub(crate) struct PersistedInvocationIdentityRow {
     pub(crate) failure_kind: Option<String>,
     pub(crate) source: String,
     pub(crate) model: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reported_cache_write_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+    pub(crate) total_tokens: Option<i64>,
     pub(crate) error_message: Option<String>,
     pub(crate) payload: Option<String>,
 }
@@ -18,7 +24,9 @@ pub(crate) async fn load_persisted_invocation_identity_tx(
 ) -> Result<Option<PersistedInvocationIdentityRow>> {
     sqlx::query_as::<_, PersistedInvocationIdentityRow>(
         r#"
-        SELECT id, status, failure_kind, source, model, error_message, payload
+        SELECT id, status, failure_kind, source, model, input_tokens, output_tokens,
+               cache_input_tokens, reported_cache_write_tokens, reasoning_tokens,
+               total_tokens, error_message, payload
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
         ORDER BY id DESC
@@ -86,6 +94,17 @@ pub(crate) fn websocket_terminal_usage_refresh_allowed(
         && existing.source.eq_ignore_ascii_case(SOURCE_PROXY)
         && websocket_terminal_payload(existing.payload.as_deref())
         && websocket_terminal_payload(incoming.payload.as_deref())
+        && websocket_usage_is_strictly_richer(
+            &ParsedUsage {
+                input_tokens: existing.input_tokens,
+                output_tokens: existing.output_tokens,
+                cache_input_tokens: existing.cache_input_tokens,
+                reported_cache_write_tokens: existing.reported_cache_write_tokens,
+                reasoning_tokens: existing.reasoning_tokens,
+                total_tokens: existing.total_tokens,
+            },
+            &incoming.usage,
+        )
 }
 
 pub(crate) fn preserve_websocket_terminal_rollup_metadata(
@@ -150,6 +169,20 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
           AND json_valid(payload)
           AND LOWER(TRIM(COALESCE(json_extract(payload, '$.transport'), ''))) = 'websocket'
           AND json_extract(payload, '$.streamTerminalEvent') IS NOT NULL
+          AND (input_tokens IS NULL OR ?3 IS NOT NULL)
+          AND (output_tokens IS NULL OR ?4 IS NOT NULL)
+          AND (cache_input_tokens IS NULL OR ?5 IS NOT NULL)
+          AND (reported_cache_write_tokens IS NULL OR ?6 IS NOT NULL)
+          AND (reasoning_tokens IS NULL OR ?7 IS NOT NULL)
+          AND (total_tokens IS NULL OR ?8 IS NOT NULL)
+          AND (
+                (input_tokens IS NULL AND ?3 IS NOT NULL)
+                OR (output_tokens IS NULL AND ?4 IS NOT NULL)
+                OR (cache_input_tokens IS NULL AND ?5 IS NOT NULL)
+                OR (reported_cache_write_tokens IS NULL AND ?6 IS NOT NULL)
+                OR (reasoning_tokens IS NULL AND ?7 IS NOT NULL)
+                OR (total_tokens IS NULL AND ?8 IS NOT NULL)
+          )
         "#,
     )
     .bind(id)

@@ -1,47 +1,57 @@
 use super::*;
 
 #[tokio::test]
-async fn concurrent_reported_cache_write_column_migration_is_database_serialized() {
-    let temp_dir = make_temp_test_dir("reported-cache-write-concurrent-migration");
-    let db_path = temp_dir.join("state.db");
-    let db_url = test_sqlite_url_for_path(&db_path);
-    let connect_options = build_sqlite_connect_options(
-        &db_url,
-        std::time::Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+async fn usage_backfill_without_exact_cache_write_preserves_existing_value() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
-    .expect("build migration sqlite options");
-    let pool_a = SqlitePoolOptions::new()
-        .connect_with(connect_options.clone())
-        .await
-        .expect("open first migration pool");
-    let pool_b = SqlitePoolOptions::new()
-        .connect_with(connect_options)
-        .await
-        .expect("open second migration pool");
-    let legacy_create_sql = codex_invocations_create_sql("codex_invocations")
-        .replace("            reported_cache_write_tokens INTEGER,\n", "");
-    sqlx::query(&legacy_create_sql)
-        .execute(&pool_a)
-        .await
-        .expect("create legacy invocation schema");
+    .await;
+    let temp_dir = make_temp_test_dir("cache-write-backfill-preserves-exact");
+    let raw_response_path = temp_dir.join("response.json");
+    let raw_response = br#"{"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}"#;
+    fs::write(&raw_response_path, raw_response).expect("write raw response payload");
 
-    let (result_a, result_b) = tokio::join!(
-        ensure_reported_cache_write_tokens_column(&pool_a),
-        ensure_reported_cache_write_tokens_column(&pool_b),
+    let mut record = test_proxy_capture_record(
+        "cache-write-backfill-preserves-exact",
+        "2026-09-24 14:00:00",
     );
+    record.usage = ParsedUsage {
+        reported_cache_write_tokens: Some(50),
+        ..ParsedUsage::default()
+    };
+    record.resp_raw.path = Some(raw_response_path.to_string_lossy().into_owned());
+    record.resp_raw.size_bytes = raw_response.len() as i64;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin partial invocation write");
+    persist_proxy_capture_runtime_record_tx(tx.as_mut(), record.clone(), false)
+        .await
+        .expect("persist partial invocation with exact cache-write usage");
+    tx.commit().await.expect("commit partial invocation");
 
-    result_a.expect("first concurrent migration should succeed");
-    result_b.expect("second concurrent migration should succeed");
-    let column_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('codex_invocations') WHERE name = 'reported_cache_write_tokens'",
+    let row_id =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&record.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load partial invocation id");
+    let outcome = backfill_proxy_usage_tokens_up_to_id(&state.pool, row_id, None)
+        .await
+        .expect("backfill token counts from the retained raw response");
+    assert_eq!(outcome.updated, 1);
+
+    let usage = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT total_tokens, reported_cache_write_tokens FROM codex_invocations WHERE id = ?1",
     )
-    .fetch_one(&pool_a)
+    .bind(row_id)
+    .fetch_one(&state.pool)
     .await
-    .expect("inspect migrated invocation schema");
-    assert_eq!(column_count, 1);
+    .expect("load backfilled invocation usage");
+    assert_eq!(usage.0, Some(120));
+    assert_eq!(usage.1, Some(50));
 
-    pool_a.close().await;
-    pool_b.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 
