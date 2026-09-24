@@ -10,8 +10,8 @@
     "description": "Nullable reported cache-write Token counts on invocation records, future invocation archives, and repo-managed pricing catalog version and seed rows. Existing invocation costs and historical exact cache-write counts are not rewritten.",
     "storage_implementation": "SQLite codex_invocations.reported_cache_write_tokens plus invocation archive datasets and the existing SQLite pricing catalog.",
     "source_compatibility_range": {
-      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including the current candidate base 9d11017e572a4f96a1ea5205f195a97c2a1da8d2.",
-      "to_program_version": "Candidate release based on mainline commit 9d11017e572a4f96a1ea5205f195a97c2a1da8d2.",
+      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including the current candidate base e170a7baf8ee9bcd72d53524a8994cfc52cd957c.",
+      "to_program_version": "Candidate release based on mainline commit e170a7baf8ee9bcd72d53524a8994cfc52cd957c.",
       "direct_major_skips_supported": false
     }
   },
