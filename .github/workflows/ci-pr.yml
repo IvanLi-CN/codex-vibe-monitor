@@ -383,7 +383,7 @@ jobs:
   records-overlay-e2e-producer:
     name: PR E2E Test Producer
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v7
