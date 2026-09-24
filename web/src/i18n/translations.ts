@@ -1794,6 +1794,8 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.stages.preparing": "Preparing",
     "system.status.runtimePressure.retentionRecovery.stages.publishing": "Publishing",
     "system.status.runtimePressure.retentionRecovery.stages.finalizing": "Finalizing",
+    "system.status.runtimePressure.retentionRecovery.stages.prepared_reconcile":
+      "Prepared reconciliation",
     "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "Orphan sweep",
     "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile":
       "Legacy reconciliation",
@@ -1807,6 +1809,12 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.retryHint": "Next retry {{retry}}.",
     "system.status.runtimePressure.retentionRecovery.failureHint":
       "Failure stage {{stage}} · {{fingerprint}}.",
+    "system.status.runtimePressure.retentionRecovery.deferHint": "Deferred: {{reason}}.",
+    "system.status.runtimePressure.retentionRecovery.failureCountHint":
+      "Consecutive failures: {{count}}.",
+    "system.status.runtimePressure.retentionRecovery.deferReasons.sqlite_pressure":
+      "SQLite pressure",
+    "system.status.runtimePressure.retentionRecovery.deferReasons.retry_backoff": "retry backoff",
     "system.status.runtimePressure.rawCapture.title": "Raw capture circuit",
     "system.status.runtimePressure.rawCapture.state": "Capture state",
     "system.status.runtimePressure.rawCapture.states.capturing": "Capturing",
@@ -5018,6 +5026,7 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.stages.preparing": "准备中",
     "system.status.runtimePressure.retentionRecovery.stages.publishing": "发布中",
     "system.status.runtimePressure.retentionRecovery.stages.finalizing": "最终化",
+    "system.status.runtimePressure.retentionRecovery.stages.prepared_reconcile": "准备归档对账",
     "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "孤儿清扫",
     "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile": "遗留对账",
     "system.status.runtimePressure.retentionRecovery.stages.status_refresh": "状态刷新",
@@ -5030,6 +5039,10 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.retryHint": "下次重试：{{retry}}。",
     "system.status.runtimePressure.retentionRecovery.failureHint":
       "失败阶段 {{stage}} · {{fingerprint}}。",
+    "system.status.runtimePressure.retentionRecovery.deferHint": "已延后：{{reason}}。",
+    "system.status.runtimePressure.retentionRecovery.failureCountHint": "连续失败：{{count}}。",
+    "system.status.runtimePressure.retentionRecovery.deferReasons.sqlite_pressure": "SQLite 压力",
+    "system.status.runtimePressure.retentionRecovery.deferReasons.retry_backoff": "重试退避",
     "system.status.runtimePressure.rawCapture.title": "原始载荷熔断",
     "system.status.runtimePressure.rawCapture.state": "落盘状态",
     "system.status.runtimePressure.rawCapture.states.capturing": "正常采集",

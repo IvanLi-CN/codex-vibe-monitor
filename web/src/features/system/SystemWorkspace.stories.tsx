@@ -637,6 +637,8 @@ function retentionRecoveryStatus(
         nextRetryAt: state === "healthy" ? undefined : "2026-06-22T08:05:00Z",
         failureStage: state === "degraded" ? "status_refresh" : undefined,
         failureFingerprint: state === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+        deferReason: state === "recovering" ? "sqlite_pressure" : undefined,
+        consecutiveFailureCount: state === "degraded" ? 4 : 0,
       },
     },
   };
@@ -830,6 +832,9 @@ export const StatusRetentionRecoveryRecovering: Story = {
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
       "发布中",
     );
+    await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
+      "SQLite 压力",
+    );
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("42");
   },
 };
@@ -844,6 +849,7 @@ export const StatusRetentionRecoveryDegraded: Story = {
     const recovery = canvas.getByTestId("system-status-retention-recovery");
     await expect(recovery).toHaveTextContent("最终化");
     await expect(recovery).toHaveTextContent("失败阶段 状态刷新 · 7d38a1c0b4c8e2f1");
+    await expect(recovery).toHaveTextContent("连续失败：4");
   },
 };
 

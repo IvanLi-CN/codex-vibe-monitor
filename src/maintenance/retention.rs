@@ -33,6 +33,16 @@ const RETENTION_RECOVERY_QUARANTINE_GRACE_SECS: i64 = 24 * 60 * 60;
 const RETENTION_RECOVERY_STATE_PREPARING: &str = "preparing";
 const RETENTION_RECOVERY_STATE_PUBLISHED: &str = "published";
 const RETENTION_RECOVERY_STATE_QUARANTINED: &str = "quarantined";
+const RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE: &str = "detail_prune";
+const RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE: &str = "invocation_archive";
+const RETENTION_RECOVERY_PREPARED_SCOPE: &str = "prepared_archives";
+const RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE: &str = "sqlite_pressure";
+const RETENTION_RECOVERY_DEFER_RETRY_BACKOFF: &str = "retry_backoff";
+const RETENTION_RECOVERY_PRESSURE_RETRY_SECS: i64 = 5 * 60;
+const RETENTION_RECOVERY_PROGRESS_RETRY_SECS: i64 = 15;
+const RETENTION_RECOVERY_EMPTY_RETRY_SECS: i64 = 5 * 60;
+const RETENTION_RECOVERY_FAILURE_BACKOFF_SECS: [i64; 5] =
+    [5 * 60, 10 * 60, 20 * 60, 40 * 60, 60 * 60];
 
 static SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
 static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -303,6 +313,8 @@ pub(crate) struct RetentionRecoveryHealthSnapshot {
     pub(crate) next_retry_at: Option<String>,
     pub(crate) failure_stage: Option<String>,
     pub(crate) failure_fingerprint: Option<String>,
+    pub(crate) defer_reason: Option<String>,
+    pub(crate) consecutive_failure_count: Option<u32>,
 }
 
 impl Default for RetentionRecoveryHealthSnapshot {
@@ -318,6 +330,8 @@ impl Default for RetentionRecoveryHealthSnapshot {
             next_retry_at: None,
             failure_stage: None,
             failure_fingerprint: None,
+            defer_reason: None,
+            consecutive_failure_count: None,
         }
     }
 }
@@ -348,6 +362,8 @@ fn retention_recovery_record_progress() {
         .expect("retention recovery health");
     health.state = "healthy".to_string();
     health.last_progress_at = Some(format_utc_iso(Utc::now()));
+    health.defer_reason = None;
+    health.consecutive_failure_count = Some(0);
 }
 
 fn retention_recovery_set_current_prepared_key(prepared_key: &str) {
@@ -377,6 +393,7 @@ fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error)
     health.state = "degraded".to_string();
     health.failure_stage = Some(stage.to_string());
     health.failure_fingerprint = Some(fingerprint);
+    health.defer_reason = Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF.to_string());
 }
 
 pub(crate) fn retention_error_fingerprint(error: &anyhow::Error) -> String {
@@ -390,6 +407,10 @@ fn retention_recovery_record_deferred(stage: &'static str) {
         .expect("retention recovery health");
     health.state = "deferred".to_string();
     health.stage = Some(stage.to_string());
+    health.defer_reason = Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE.to_string());
+    health.next_retry_at = Some(format_utc_iso(
+        Utc::now() + chrono::Duration::seconds(RETENTION_RECOVERY_PRESSURE_RETRY_SECS),
+    ));
 }
 
 fn retention_recovery_log_event(
@@ -414,6 +435,8 @@ fn retention_recovery_log_event(
                 retention_recovery_next_retry_at = ?health.next_retry_at,
                 retention_recovery_failure_stage = ?health.failure_stage,
                 retention_recovery_failure_fingerprint = ?health.failure_fingerprint,
+                retention_recovery_defer_reason = ?health.defer_reason,
+                retention_recovery_consecutive_failure_count = ?health.consecutive_failure_count,
                 "retention recovery diagnostics"
             )
         };
@@ -1329,6 +1352,7 @@ struct RetentionPreparedArchiveDescriptor {
     file_path: String,
     source_ids_json: String,
     source_identity_sha256: String,
+    publication_kind: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1423,6 +1447,7 @@ fn retention_prepared_archive_descriptor(
     group_key: &str,
     candidates: &[InvocationArchiveCandidate],
     source_identity_sha256: String,
+    publication_kind: &'static str,
 ) -> Result<RetentionPreparedArchiveDescriptor> {
     let mut ids = candidates
         .iter()
@@ -1472,7 +1497,19 @@ fn retention_prepared_archive_descriptor(
         file_path,
         source_ids_json,
         source_identity_sha256,
+        publication_kind,
     })
+}
+
+fn retention_recovery_publication_kind_from_path(file_path: &str) -> Option<&'static str> {
+    let file_name = Path::new(file_path).file_name()?.to_str()?;
+    if file_name.contains("live-mirror") {
+        Some(RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE)
+    } else if file_name.ends_with(".sqlite.gz") {
+        Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE)
+    } else {
+        None
+    }
 }
 
 fn retention_live_mirror_archive_path(
@@ -1520,6 +1557,22 @@ async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConf
         )
         .fetch_one(pool)
         .await?;
+    let scheduler = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT next_retry_at, consecutive_failure_count, last_failure_fingerprint, defer_reason, last_progress_at
+         FROM retention_recovery_cursors WHERE scope = ?1",
+    )
+    .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+    .fetch_optional(pool)
+    .await?;
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let (expired_backlog_count, oldest_backlog_at) = sqlx::query_as::<_, (i64, Option<String>)>(
         r#"
@@ -1543,8 +1596,21 @@ async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConf
     health.quarantined_count = Some(quarantined_count.max(0) as usize);
     health.expired_backlog_count = Some(expired_backlog_count.max(0) as usize);
     health.oldest_backlog_age_secs = oldest_backlog_age_secs;
-    health.next_retry_at = next_retry_at;
-    if health.quarantined_count.is_some_and(|count| count > 0) {
+    health.next_retry_at = scheduler
+        .as_ref()
+        .and_then(|row| row.0.clone())
+        .or(next_retry_at);
+    if let Some((_, count, fingerprint, defer_reason, last_progress_at)) = scheduler {
+        health.consecutive_failure_count = Some(count.max(0) as u32);
+        health.failure_fingerprint = fingerprint.or_else(|| health.failure_fingerprint.clone());
+        health.defer_reason = defer_reason;
+        if last_progress_at.is_some() {
+            health.last_progress_at = last_progress_at;
+        }
+    }
+    if health.defer_reason.is_some() {
+        health.state = "deferred".to_string();
+    } else if health.quarantined_count.is_some_and(|count| count > 0) {
         health.state = "degraded".to_string();
     } else if health.prepared_count.is_some_and(|count| count > 0)
         || health.expired_backlog_count.is_some_and(|count| count > 0)
@@ -1563,6 +1629,7 @@ async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConf
         health.state = "healthy".to_string();
         health.failure_stage = None;
         health.failure_fingerprint = None;
+        health.consecutive_failure_count = Some(0);
     }
     Ok(())
 }
@@ -1604,11 +1671,12 @@ async fn retention_recovery_record_preparing(
             file_path,
             source_ids_json,
             source_identity_sha256,
+            publication_kind,
             state,
             attempt_count,
             next_retry_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, NULL)
         ON CONFLICT(dataset, file_path) DO UPDATE SET
             prepared_key = excluded.prepared_key,
             dataset = excluded.dataset,
@@ -1618,6 +1686,7 @@ async fn retention_recovery_record_preparing(
             file_path = excluded.file_path,
             source_ids_json = excluded.source_ids_json,
             source_identity_sha256 = excluded.source_identity_sha256,
+            publication_kind = excluded.publication_kind,
             state = CASE
                 WHEN retention_prepared_archives.state = 'quarantined'
                     THEN retention_prepared_archives.state
@@ -1637,6 +1706,7 @@ async fn retention_recovery_record_preparing(
     .bind(&descriptor.file_path)
     .bind(&descriptor.source_ids_json)
     .bind(&descriptor.source_identity_sha256)
+    .bind(descriptor.publication_kind)
     .bind(RETENTION_RECOVERY_STATE_PREPARING)
     .execute(tx.as_mut())
     .await?;
@@ -1694,9 +1764,8 @@ pub(crate) async fn retention_recovery_persist_failure(
     .await?
     .unwrap_or(0)
     .max(0) as u32;
-    let retry_seconds = 30_u64
-        .saturating_mul(1_u64 << attempt_count.min(7))
-        .min(3_600);
+    let retry_seconds =
+        RETENTION_RECOVERY_FAILURE_BACKOFF_SECS[attempt_count.saturating_sub(1).min(4) as usize];
     // Preserve the first quarantine timestamp so repeated identity collisions cannot postpone
     // the bounded cleanup window forever.
     sqlx::query(
@@ -1729,11 +1798,26 @@ pub(crate) async fn retention_recovery_persist_failure(
     .bind(quarantine)
     .bind(RETENTION_RECOVERY_STATE_QUARANTINED)
     .bind(stage)
-    .bind(fingerprint)
+    .bind(&fingerprint)
     .bind(format!("+{retry_seconds} seconds"))
     .bind(prepared_key)
     .bind(stage)
     .bind(observed_artifact_sha256.as_deref())
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE retention_recovery_cursors
+         SET next_retry_at = datetime('now', ?1),
+             consecutive_failure_count = consecutive_failure_count + 1,
+             last_failure_fingerprint = ?2,
+             defer_reason = ?3,
+             updated_at = datetime('now')
+         WHERE scope = ?4",
+    )
+    .bind(format!("+{retry_seconds} seconds"))
+    .bind(&fingerprint)
+    .bind(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
+    .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
     .execute(pool)
     .await?;
     retention_record_commit!(
@@ -1871,7 +1955,7 @@ async fn verify_prepared_retention_archive_artifact(
     descriptor: &RetentionPreparedArchiveDescriptor,
     archive_path: &Path,
     expected_sha256: &str,
-) -> Result<()> {
+) -> Result<i64> {
     if descriptor.dataset != "codex_invocations" {
         bail!("unsupported prepared archive dataset for recovery verification");
     }
@@ -1928,7 +2012,244 @@ async fn verify_prepared_retention_archive_artifact(
     if sha256_hex_file(archive_path)? != expected_sha256 {
         bail!("prepared archive artifact digest verification failed");
     }
+    Ok(archive_ids.len() as i64)
+}
+
+fn retention_recovery_archive_outcome(
+    config: &AppConfig,
+    descriptor: &RetentionPreparedArchiveDescriptor,
+    candidates: &[InvocationArchiveCandidate],
+    artifact_sha256: &str,
+    row_count: i64,
+) -> Result<ArchiveBatchOutcome> {
+    let (layout, writer_version) = if descriptor.part_key.is_some() {
+        (ARCHIVE_LAYOUT_SEGMENT_V1, ARCHIVE_WRITER_VERSION_SEGMENT_V1)
+    } else {
+        (
+            ARCHIVE_LAYOUT_LEGACY_MONTH,
+            ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+        )
+    };
+    let mut outcome = ArchiveBatchOutcome {
+        dataset: descriptor.dataset,
+        month_key: descriptor.month_key.clone(),
+        day_key: descriptor.day_key.clone(),
+        part_key: descriptor.part_key.clone(),
+        file_path: descriptor.file_path.clone(),
+        sha256: artifact_sha256.to_string(),
+        source_identity_sha256: Some(descriptor.source_identity_sha256.clone()),
+        row_count,
+        upstream_last_activity: Vec::new(),
+        coverage_start_at: None,
+        coverage_end_at: None,
+        archive_expires_at: None,
+        summary_source_kind: if descriptor.publication_kind
+            == RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE
+        {
+            SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+        } else {
+            SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+        },
+        layout,
+        codec: ARCHIVE_FILE_CODEC_GZIP,
+        writer_version,
+        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        superseded_by: None,
+    };
+    set_archive_batch_coverage_from_local_rows(
+        &mut outcome,
+        candidates
+            .iter()
+            .map(|candidate| candidate.occurred_at.as_str()),
+        (descriptor.publication_kind == RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE)
+            .then_some(config.invocation_archive_ttl_days),
+    )?;
+    if descriptor.publication_kind == RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE {
+        outcome.archive_expires_at = Some(shanghai_archive_expiry_from_reference_timestamp(
+            &format_utc_iso(Utc::now()),
+            config.invocation_archive_ttl_days,
+        )?);
+    }
+    Ok(outcome)
+}
+
+async fn retention_recovery_update_detail_rows_tx(
+    tx: &mut sqlx::SqliteConnection,
+    ids: &[i64],
+    candidates: &[InvocationArchiveCandidate],
+) -> Result<()> {
+    let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
+    );
+    query
+        .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
+        .push(", detail_pruned_at = ")
+        .push_bind(pruned_at)
+        .push(", detail_prune_reason = ")
+        .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+        .push(" WHERE id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(")");
+    query.build().execute(&mut *tx).await?;
+    if let Some(latest) = candidates
+        .iter()
+        .map(|candidate| candidate.occurred_at.as_str())
+        .max()
+    {
+        record_parallel_work_unrecoverable_detail_tx(&mut *tx, latest).await?;
+    }
     Ok(())
+}
+
+async fn retention_recovery_finalize_published(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    descriptor: &RetentionPreparedArchiveDescriptor,
+    path: &Path,
+    artifact_sha256: &str,
+) -> Result<usize> {
+    let source_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)
+        .context("decode prepared archive source ids for finalization")?;
+    let candidates = load_invocation_archive_candidates_by_ids(pool, &source_ids).await?;
+    if candidates.len() != source_ids.len() {
+        bail!("prepared archive source identity verification failed: source rows are missing");
+    }
+    let row_count =
+        verify_prepared_retention_archive_artifact(pool, descriptor, path, artifact_sha256).await?;
+    let outcome = retention_recovery_archive_outcome(
+        config,
+        descriptor,
+        &candidates,
+        artifact_sha256,
+        row_count,
+    )?;
+    let raw_paths = candidates
+        .iter()
+        .flat_map(|candidate| {
+            [
+                candidate.request_raw_path.clone(),
+                candidate.response_raw_path.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let Some(admission) = acquire_retention_write_admission("retention_recovery_finalize").await
+    else {
+        return Err(retention_write_deferred("retention_recovery_finalize"));
+    };
+    let mut tx = pool.begin().await?;
+    if descriptor.publication_kind == RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE {
+        upsert_archive_batch_manifest(tx.as_mut(), &outcome).await?;
+        mark_archive_batch_historical_rollups_materialized_tx(
+            tx.as_mut(),
+            descriptor.dataset,
+            &outcome.file_path,
+        )
+        .await?;
+        retention_recovery_verify_publication_tx(tx.as_mut(), descriptor, artifact_sha256).await?;
+        retention_recovery_update_detail_rows_tx(tx.as_mut(), &source_ids, &candidates).await?;
+    } else if descriptor.publication_kind == RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE {
+        let materialized_rows = candidates
+            .iter()
+            .map(invocation_archive_candidate_to_hourly_source_record)
+            .collect::<Vec<_>>();
+        stage_invocation_archive_batch_manifest(tx.as_mut(), &outcome).await?;
+        mark_archive_batch_historical_rollups_materialized_tx(
+            tx.as_mut(),
+            descriptor.dataset,
+            &outcome.file_path,
+        )
+        .await?;
+        upsert_invocation_rollups(tx.as_mut(), &candidates).await?;
+        let snapshot_archive_batch_id = load_archive_batch_id_for_file_tx(
+            tx.as_mut(),
+            descriptor.dataset,
+            &outcome.month_key,
+            &outcome.file_path,
+        )
+        .await?;
+        let invoke_ids_by_row_id = candidates
+            .iter()
+            .map(|candidate| (candidate.id, candidate.invoke_id.clone()))
+            .collect::<HashMap<_, _>>();
+        let snapshot_page = SummaryArchiveSnapshotPage {
+            archive_batch_id: snapshot_archive_batch_id,
+            manifest_sha256: outcome.sha256.clone(),
+            page_index: 0,
+            coverage_start: outcome.coverage_start_at.clone().ok_or_else(|| {
+                anyhow!("authoritative archive is missing Snapshot start coverage")
+            })?,
+            coverage_end: outcome
+                .coverage_end_at
+                .clone()
+                .ok_or_else(|| anyhow!("authoritative archive is missing Snapshot end coverage"))?,
+            row_count: u32::try_from(materialized_rows.len())
+                .context("Summary Archive Snapshot row count overflow")?,
+            payload: encode_summary_archive_snapshot_v2_payload(
+                &materialized_rows,
+                &invoke_ids_by_row_id,
+            )?,
+        };
+        store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &snapshot_page).await?;
+        if !summary_archive_snapshot_has_proof_tx(
+            tx.as_mut(),
+            snapshot_archive_batch_id,
+            &outcome.sha256,
+        )
+        .await?
+        {
+            bail!("retention Summary Snapshot V2 semantic proof validation failed");
+        }
+        store_summary_archive_snapshot_v2_final_proof_tx(
+            tx.as_mut(),
+            snapshot_archive_batch_id,
+            &outcome.sha256,
+        )
+        .await?;
+        retention_recovery_verify_publication_tx(tx.as_mut(), descriptor, artifact_sha256).await?;
+        delete_rows_by_ids(tx.as_mut(), descriptor.dataset, &source_ids).await?;
+        mark_retention_archived_hourly_rollup_targets_tx(
+            tx.as_mut(),
+            descriptor.dataset,
+            &materialized_rows,
+            &[],
+        )
+        .await?;
+        for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+            mark_hourly_rollup_archive_replayed_tx(
+                tx.as_mut(),
+                target,
+                descriptor.dataset,
+                &outcome.file_path,
+            )
+            .await?;
+        }
+        finalize_invocation_archive_batch_publication_tx(tx.as_mut(), &outcome.file_path).await?;
+    } else {
+        bail!("unsupported prepared archive publication kind");
+    }
+    retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
+    let raw_paths =
+        filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths, config.database_path.parent())
+            .await?;
+    tx.commit().await?;
+    drop(admission);
+    if !raw_paths.is_empty()
+        && let Err(error) = mark_retention_raw_inventory_reset_intent(pool).await
+    {
+        warn!(
+            error = %error,
+            "published retention recovery committed but raw inventory reset intent was not recorded"
+        );
+    }
+    let removed = delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+    retention_recovery_record_progress();
+    Ok(removed)
 }
 
 async fn retention_recovery_delete_tx(
@@ -2041,11 +2362,84 @@ pub(crate) fn retention_archive_path_is_owned(config: &AppConfig, path: &Path) -
     })
 }
 
+async fn retention_recovery_schedule_prepared_cursor(
+    pool: &Pool<Sqlite>,
+    retry_secs: i64,
+    defer_reason: Option<&str>,
+    reset_failure_count: bool,
+    failure_fingerprint: Option<&str>,
+) -> Result<()> {
+    let Some(admission) = acquire_retention_write_admission("retention_recovery_scheduler").await
+    else {
+        if let Some(reason) = defer_reason {
+            let mut health = RETENTION_RECOVERY_HEALTH
+                .lock()
+                .expect("retention recovery health");
+            health.state = "deferred".to_string();
+            health.stage = Some("prepared_reconcile".to_string());
+            health.defer_reason = Some(reason.to_string());
+            health.next_retry_at = Some(format_utc_iso(
+                Utc::now() + chrono::Duration::seconds(retry_secs),
+            ));
+        }
+        return Ok(());
+    };
+    let next_retry_at = if retry_secs > 0 {
+        Some(format!("+{retry_secs} seconds"))
+    } else {
+        None
+    };
+    let query = if reset_failure_count {
+        "UPDATE retention_recovery_cursors
+         SET next_retry_at = CASE WHEN ?1 IS NULL THEN NULL ELSE datetime('now', ?1) END,
+             consecutive_failure_count = 0,
+             last_failure_fingerprint = ?2,
+             defer_reason = ?3,
+             last_progress_at = CASE WHEN ?4 = 1 THEN datetime('now') ELSE last_progress_at END,
+             updated_at = datetime('now')
+         WHERE scope = ?5"
+    } else {
+        "UPDATE retention_recovery_cursors
+         SET next_retry_at = CASE WHEN ?1 IS NULL THEN NULL ELSE datetime('now', ?1) END,
+             last_failure_fingerprint = ?2,
+             defer_reason = ?3,
+             last_progress_at = CASE WHEN ?4 = 1 THEN datetime('now') ELSE last_progress_at END,
+             updated_at = datetime('now')
+         WHERE scope = ?5"
+    };
+    sqlx::query(query)
+        .bind(next_retry_at)
+        .bind(failure_fingerprint)
+        .bind(defer_reason)
+        .bind(i64::from(reset_failure_count))
+        .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+        .execute(pool)
+        .await?;
+    drop(admission);
+    Ok(())
+}
+
 async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
-    retention_recovery_set_stage("legacy_reconcile");
+    retention_recovery_set_stage("prepared_reconcile");
+    let not_due: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(next_retry_at > datetime('now'), 0)
+         FROM retention_recovery_cursors WHERE scope = ?1",
+    )
+    .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(0);
+    if not_due != 0 {
+        return Ok(());
+    }
+    let Some(probe) = acquire_retention_write_admission("retention_recovery_probe").await else {
+        retention_recovery_record_deferred("prepared_reconcile");
+        return Ok(());
+    };
+    drop(probe);
     let rows = sqlx::query_as::<
         _,
         (
@@ -2060,12 +2454,13 @@ async fn reconcile_retention_prepared_archives(
             String,
             String,
             Option<String>,
+            Option<String>,
         ),
     >(
         r#"
         SELECT prepared_key, file_path, state, artifact_sha256, quarantined_at,
                month_key, day_key, part_key, source_ids_json, source_identity_sha256,
-               staged_file_path
+               staged_file_path, publication_kind
         FROM retention_prepared_archives
         WHERE (
             state IN ('preparing', 'published')
@@ -2098,6 +2493,8 @@ async fn reconcile_retention_prepared_archives(
     .bind(RETENTION_RECOVERY_LEGACY_SCAN_BATCH as i64)
     .fetch_all(pool)
     .await?;
+    let mut progressed = false;
+    let mut encountered_failure = false;
     for (
         prepared_key,
         file_path,
@@ -2110,6 +2507,7 @@ async fn reconcile_retention_prepared_archives(
         source_ids_json,
         source_identity_sha256,
         staged_file_path,
+        publication_kind,
     ) in rows
     {
         let path = Path::new(&file_path);
@@ -2238,6 +2636,21 @@ async fn reconcile_retention_prepared_archives(
         let _archive_lock = retention_archive_file_lock(path)?;
         if state == RETENTION_RECOVERY_STATE_PREPARING && path.is_file() {
             let actual_sha = sha256_hex_file(path)?;
+            let publication_kind = match publication_kind.as_deref() {
+                Some(RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE) => {
+                    Some(RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE)
+                }
+                Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE) => {
+                    Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE)
+                }
+                _ => retention_recovery_publication_kind_from_path(&file_path),
+            };
+            let Some(publication_kind) = publication_kind else {
+                let error = anyhow!("prepared archive publication kind could not be inferred");
+                retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
+                    .await?;
+                continue;
+            };
             let descriptor = RetentionPreparedArchiveDescriptor {
                 prepared_key: prepared_key.clone(),
                 dataset: "codex_invocations",
@@ -2247,11 +2660,13 @@ async fn reconcile_retention_prepared_archives(
                 file_path: file_path.clone(),
                 source_ids_json,
                 source_identity_sha256,
+                publication_kind,
             };
             if let Err(error) =
                 verify_prepared_retention_archive_artifact(pool, &descriptor, path, &actual_sha)
                     .await
             {
+                encountered_failure = true;
                 retention_recovery_persist_failure(pool, &prepared_key, "legacy_reconcile", &error)
                     .await?;
                 continue;
@@ -2283,6 +2698,7 @@ async fn reconcile_retention_prepared_archives(
             if updated.rows_affected() == 0 {
                 continue;
             }
+            progressed = true;
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PUBLISHED {
@@ -2308,6 +2724,53 @@ async fn reconcile_retention_prepared_archives(
                 )
                 .await?;
                 drop(admission);
+            } else {
+                let publication_kind = match publication_kind.as_deref() {
+                    Some(RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE) => {
+                        Some(RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE)
+                    }
+                    Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE) => {
+                        Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE)
+                    }
+                    _ => retention_recovery_publication_kind_from_path(&file_path),
+                };
+                let Some(publication_kind) = publication_kind else {
+                    let error = anyhow!("prepared archive publication kind could not be inferred");
+                    retention_recovery_persist_failure(
+                        pool,
+                        &prepared_key,
+                        "legacy_reconcile",
+                        &error,
+                    )
+                    .await?;
+                    continue;
+                };
+                let descriptor = RetentionPreparedArchiveDescriptor {
+                    prepared_key: prepared_key.clone(),
+                    dataset: "codex_invocations",
+                    month_key,
+                    day_key,
+                    part_key,
+                    file_path: file_path.clone(),
+                    source_ids_json,
+                    source_identity_sha256,
+                    publication_kind,
+                };
+                if let Err(error) = retention_recovery_finalize_published(
+                    pool,
+                    config,
+                    &descriptor,
+                    path,
+                    artifact_sha256.as_deref().unwrap_or_default(),
+                )
+                .await
+                {
+                    encountered_failure = true;
+                    retention_recovery_persist_failure(pool, &prepared_key, "finalizing", &error)
+                        .await?;
+                } else {
+                    progressed = true;
+                }
             }
         } else if state == RETENTION_RECOVERY_STATE_QUARANTINED {
             let expired = quarantined_at.is_some()
@@ -2328,10 +2791,8 @@ async fn reconcile_retention_prepared_archives(
                 .unwrap_or_default()
                     != 0;
             if expired {
-                let _archive_lock = retention_archive_file_lock(path)?;
-                let artifact_matches = artifact_sha256.as_deref().is_some_and(|expected| {
-                    path.is_file() && sha256_hex_file(path).ok().as_deref() == Some(expected)
-                });
+                let owned_artifact =
+                    !path.exists() || retention_archive_path_is_owned(config, path);
                 let Some(admission) =
                     acquire_retention_write_admission("retention_recovery_quarantine_cleanup")
                         .await
@@ -2357,21 +2818,38 @@ async fn reconcile_retention_prepared_archives(
                 .bind(&prepared_key)
                 .fetch_one(tx.as_mut())
                 .await?;
-                if manifest_exists == 0 && active_prepared_exists == 0 {
-                    if artifact_matches && path.is_file() {
+                if manifest_exists == 0 && active_prepared_exists == 0 && owned_artifact {
+                    if path.is_file() {
                         fs::remove_file(path).with_context(
                             || "failed to remove expired quarantined archive artifact",
                         )?;
                     }
-                    sqlx::query("DELETE FROM retention_prepared_archives WHERE prepared_key = ?1")
-                        .bind(prepared_key)
-                        .execute(tx.as_mut())
-                        .await?;
+                    let deleted = sqlx::query(
+                        "DELETE FROM retention_prepared_archives WHERE prepared_key = ?1",
+                    )
+                    .bind(prepared_key)
+                    .execute(tx.as_mut())
+                    .await?;
+                    progressed |= deleted.rows_affected() == 1;
                 }
                 tx.commit().await?;
                 drop(admission);
             }
         }
+    }
+    if !encountered_failure {
+        retention_recovery_schedule_prepared_cursor(
+            pool,
+            if progressed {
+                RETENTION_RECOVERY_PROGRESS_RETRY_SECS
+            } else {
+                RETENTION_RECOVERY_EMPTY_RETRY_SECS
+            },
+            None,
+            true,
+            None,
+        )
+        .await?;
     }
     retention_recovery_refresh_counts(pool, config).await?;
     Ok(())
@@ -3806,6 +4284,7 @@ async fn verify_legacy_retention_archive_segment(
         &day_key,
         &candidates,
         source_identity,
+        RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE,
     )?;
     if descriptor.file_path != archive_path.to_string_lossy()
         || descriptor.part_key.as_deref() != Some(part_key)
@@ -4644,7 +5123,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         "failed to inspect system raw metrics inventory reset state"
                     );
                     invalidate_system_status_cache(state.as_ref()).await;
-                    return false;
+                    false
                 }
             };
             if summary.raw_files_compressed > 0
@@ -4660,12 +5139,10 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                             "system raw metrics inventory reset deferred; preserving retry schedule"
                         );
                         invalidate_system_status_cache(state.as_ref()).await;
-                        return false;
                     }
                     Err(error) => {
                         warn!(error = %error, "failed to reset system raw metrics inventory after retention");
                         invalidate_system_status_cache(state.as_ref()).await;
-                        return false;
                     }
                 }
             }
@@ -5033,7 +5510,13 @@ async fn run_data_retention_maintenance_inner(
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
     if !dry_run {
-        retention_recovery_set_stage("status_refresh");
+        let preserve_recovery_stage = matches!(
+            retention_recovery_health_snapshot().stage.as_deref(),
+            Some("prepared_reconcile")
+        );
+        if !preserve_recovery_stage {
+            retention_recovery_set_stage("status_refresh");
+        }
         if let Err(error) = retention_recovery_refresh_counts(pool, config).await {
             retention_recovery_record_failure("status_refresh", &error);
             retention_recovery_log_event(
@@ -6226,6 +6709,7 @@ pub(crate) async fn prune_old_invocation_details(
                 &group_key,
                 &load_invocation_archive_candidates_by_ids(pool, &ids).await?,
                 source_identity_sha256,
+                RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE,
             )?;
             descriptor.file_path = retention_live_mirror_archive_path(
                 config,
@@ -6554,6 +7038,7 @@ pub(crate) async fn archive_old_invocations(
                 &group_key,
                 &group,
                 source_identity_sha256,
+                RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE,
             )?;
             retention_recovery_set_current_prepared_key(&descriptor.prepared_key);
             if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {

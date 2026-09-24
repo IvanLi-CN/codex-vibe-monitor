@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add crash-safe autonomous archive recovery, bounded historical raw-file reconciliation, an additive raw-capture circuit contract, and System Status health fields.",
+    "description": "Add crash-safe autonomous archive recovery finalization and quarantine retirement, bounded historical raw-file reconciliation, an additive raw-capture circuit contract, and System Status health fields.",
     "release_unit_description": "Autonomous retention recovery and raw capture circuit breaker.",
     "affected_contracts": [
       "public-api",
@@ -27,14 +27,16 @@
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-      "description": "No public API or durable-state compatibility scope drift."
+        "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery, rawCapture, and rawReferenceCheckMs diagnostics that remain unknown until measured, idempotent archive/raw reconciliation tables and cursors, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
+      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery, rawCapture, and rawReferenceCheckMs diagnostics that remain unknown until measured, idempotent publication-kind and prepared-recovery cursor columns, archive/raw reconciliation tables and cursors, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
       "reassessed_at": "2026-09-23T00:00:00+08:00",
       "evidence": [
         "src/api/slices/system_routes_and_tasks.rs",
         "src/schema.rs",
         "src/maintenance/retention.rs",
+        "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
+        "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
         "web/src/lib/api/core-foundation.ts",
         "web/src/pages/system/SystemStatusPage.tsx"
       ]
@@ -58,7 +60,7 @@
       "change": "compatible",
       "supported_consumer_range": "Clients that ignore the optional retentionRecovery, rawCapture, and retentionWriteHealth.rawReferenceCheckMs response fields.",
       "evidence": [
-      "SystemStatusResponse adds runtimePressureHealth.retentionRecovery, runtimePressureHealth.rawCapture, and the nullable runtimePressureHealth.retentionWriteHealth.rawReferenceCheckMs timing without removing or changing existing fields."
+        "SystemStatusResponse adds runtimePressureHealth.retentionRecovery, runtimePressureHealth.rawCapture, and the nullable runtimePressureHealth.retentionWriteHealth.rawReferenceCheckMs timing without removing or changing existing fields."
       ]
     },
     "persistent_state": {
@@ -66,7 +68,7 @@
       "state_description": "Prepared archive journal, bounded legacy and historical-raw reconciliation cursors and raw quarantine ledger, and raw-capture circuit measurements.",
       "source_program_compatibility_range": "Supported earlier v2.71.x database schemas.",
       "evidence": [
-      "New tables and raw-capture columns are created with idempotent CREATE TABLE/ALTER TABLE guards.",
+        "New tables and raw-capture columns are created with idempotent CREATE TABLE/ALTER TABLE guards.",
         "Earlier programs ignore the new tables and raw-capture columns; candidate can operate on an earlier schema."
       ]
     }

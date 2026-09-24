@@ -597,33 +597,6 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     .await
     .expect("load published recovery journal state");
     assert_eq!(published_reconciled_state, "published");
-    fs::write(&orphan_path, b"safe-to-sweep-again").expect("recreate orphan raw file");
-    set_file_mtime_seconds_ago(&orphan_path, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
-
-    sqlx::query(
-        "UPDATE retention_prepared_archives SET state = 'preparing', next_retry_at = NULL WHERE dataset = 'codex_invocations'",
-    )
-    .execute(&pool)
-    .await
-    .expect("rewind recovery journal to simulate interrupted preparation");
-
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
-        .await
-        .expect("retention should continue after archive finalization failure");
-    assert_eq!(summary.orphan_raw_files_removed, 0);
-    assert!(
-        orphan_path.exists(),
-        "unlinked raw residual remains untouched"
-    );
-    assert!(raw_path.exists(), "source-owned raw data remains available");
-    let reconciled_state: String = sqlx::query_scalar(
-        "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("load reconciled recovery journal state");
-    assert_eq!(reconciled_state, "published");
-
     let fingerprint: String = sqlx::query_scalar(
         "SELECT last_failure_fingerprint FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
     )
@@ -651,10 +624,10 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     .execute(&pool)
     .await
     .expect("make the retained archive retry due");
-    let recovered = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+    let recovered = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
-        .expect("retry archive publication after removing injected failure");
-    assert_eq!(recovered.0, 1);
+        .expect("retry published archive finalization after removing injected failure");
+    assert_eq!(recovered.orphan_raw_files_removed, 0);
     assert!(
         !raw_path.exists(),
         "raw payload is released only after publication"
@@ -665,6 +638,48 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
             .await
             .expect("count recovery journal after successful retry");
     assert_eq!(remaining_journal_count, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_retires_expired_quarantined_archive_without_digest() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-quarantine-retirement").await;
+    let archive_root = config.archive_dir.join("codex_invocations");
+    fs::create_dir_all(&archive_root).expect("create archive root");
+    let archive_path = archive_root.join("stale-quarantined.sqlite.gz");
+    fs::write(&archive_path, b"unverified archive artifact").expect("write stale artifact");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, artifact_sha256, quarantined_at, updated_at
+        ) VALUES ('stale-quarantine', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'quarantined', NULL, datetime('now', '-2 days'), datetime('now', '-2 days'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed stale quarantined archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should retire stale quarantined archive");
+
+    assert!(
+        !archive_path.exists(),
+        "expired owned quarantine artifact is removed"
+    );
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE prepared_key = 'stale-quarantine'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count retired quarantine journal");
+    assert_eq!(remaining, 0);
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

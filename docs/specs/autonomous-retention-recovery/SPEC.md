@@ -25,6 +25,7 @@
 - Outputs: Either an atomically finalized archive plus source transition, or unchanged live source ownership.
 - Raw-owner finalization MUST prove the path and its `.bin`/`.bin.gz` storage variant have no remaining links in `proxy_raw_payload_blob_links` within the same source transaction; a committed transaction is required before any physical raw unlink.
 - A `live_mirror` detail-prune archive is a prepared, source-identity-verified recovery artifact whose live canonical row remains online; it MUST NOT become a Summary or rollup authority. Its manifest, prepared-ledger removal, structured-field transition, and raw-owner release still commit together.
+- Every prepared archive MUST persist its publication kind as `detail_prune` or `invocation_archive`. A legacy row with a null kind MAY be recovered only when its deterministic path proves the kind; otherwise it MUST be quarantined without guessing the source transformation.
 
 ### REQ-ARR-002
 
@@ -39,6 +40,7 @@
 
 - The system MUST make archive finalization, raw-owner release, filesystem-safe inventory reset, Prepared Archive reconciliation, and raw residual reconciliation independently resumable stages of one Retention Recovery lifecycle. Raw reconciliation MUST remain outside the proxy request path and MUST NOT block archive publication or structured invocation persistence. Filesystem availability remains the safety signal for candidates that cannot pass the raw identity, reference, or quarantine gates.
 - A failure in one stage MUST report that stage and schedule bounded retry/backoff without preventing a separately safe stage from making progress.
+- Prepared-archive reconciliation MUST have its own durable retry deadline, failure count, failure fingerprint, defer reason, and last-progress timestamp. Inventory reset delay or failure MUST NOT cancel or repeat an already committed archive finalization.
 - All database mutations in this lifecycle MUST retain maintenance write admission and MUST yield to P1 terminal and interactive proxy writes.
 - The raw-owner link confirmation MUST use the path index on the link ledger rather than scanning owner tables while maintenance admission is held. Relative database roots MUST be normalized before checking relative/absolute ledger aliases, including both `.bin` and `.bin.gz` variants.
 
@@ -169,9 +171,33 @@
   evidence_surface: page
   story_id_or_title: System/SystemWorkspace/StatusRetentionRecoveryHealthy
   state: healthy retention recovery with measured raw reference confirmation
-  evidence_note: shows Runtime Pressure with retention write health, raw reference confirmation timing, recovery stage, and raw capture diagnostics.
+  evidence_note: shows the complete System Status page with retention write health, recovery stage, and raw capture diagnostics.
   image:
-  ![System Status retention reference confirmation](./assets/raw-reference-finalization-v2-runtime-details.png)
+  ![System Status retention recovery healthy](./assets/retention-recovery-liveness-healthy.png)
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x900
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  story_id_or_title: System/SystemWorkspace/StatusRetentionRecoveryRecovering
+  state: recovering retention with prepared reconciliation deferred by SQLite pressure
+  evidence_note: shows the recovery stage, deferred reason, retry schedule, and failure count without exposing sensitive data.
+  image:
+  ![System Status retention recovery recovering](./assets/retention-recovery-liveness-recovering.png)
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x900
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  story_id_or_title: System/SystemWorkspace/StatusRetentionRecoveryDegraded
+  state: degraded retention finalization with sanitized failure fingerprint
+  evidence_note: shows the failure stage, bounded retry metadata, and sanitized failure fingerprint in Runtime Pressure.
+  image:
+  ![System Status retention recovery degraded](./assets/retention-recovery-liveness-degraded.png)
 
 ## References
 
