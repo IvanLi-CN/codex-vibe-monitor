@@ -1807,14 +1807,14 @@ const baseTranslations = {
       "Prepared artifacts remain source-owned until final publication.",
     "system.status.runtimePressure.retentionRecovery.progress": "Last progress",
     "system.status.runtimePressure.retentionRecovery.retryHint": "Next retry {{retry}}.",
-    "system.status.runtimePressure.retentionRecovery.failureHint":
-      "Failure stage {{stage}} · {{fingerprint}}.",
     "system.status.runtimePressure.retentionRecovery.deferHint": "Deferred: {{reason}}.",
-    "system.status.runtimePressure.retentionRecovery.failureCountHint":
-      "Consecutive failures: {{count}}.",
     "system.status.runtimePressure.retentionRecovery.deferReasons.sqlite_pressure":
       "SQLite pressure",
     "system.status.runtimePressure.retentionRecovery.deferReasons.retry_backoff": "retry backoff",
+    "system.status.runtimePressure.retentionRecovery.failureCountHint":
+      "Consecutive failures: {{count}}.",
+    "system.status.runtimePressure.retentionRecovery.failureHint":
+      "Failure stage {{stage}} · {{fingerprint}}.",
     "system.status.runtimePressure.rawCapture.title": "Raw capture circuit",
     "system.status.runtimePressure.rawCapture.state": "Capture state",
     "system.status.runtimePressure.rawCapture.states.capturing": "Capturing",
@@ -5026,7 +5026,7 @@ const baseTranslations = {
     "system.status.runtimePressure.retentionRecovery.stages.preparing": "准备中",
     "system.status.runtimePressure.retentionRecovery.stages.publishing": "发布中",
     "system.status.runtimePressure.retentionRecovery.stages.finalizing": "最终化",
-    "system.status.runtimePressure.retentionRecovery.stages.prepared_reconcile": "准备归档对账",
+    "system.status.runtimePressure.retentionRecovery.stages.prepared_reconcile": "准备对账",
     "system.status.runtimePressure.retentionRecovery.stages.orphan_sweep": "孤儿清扫",
     "system.status.runtimePressure.retentionRecovery.stages.legacy_reconcile": "遗留对账",
     "system.status.runtimePressure.retentionRecovery.stages.status_refresh": "状态刷新",

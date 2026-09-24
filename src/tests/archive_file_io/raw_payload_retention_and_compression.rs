@@ -686,6 +686,111 @@ async fn retention_retires_expired_quarantined_archive_without_digest() {
 }
 
 #[tokio::test]
+async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-invalid-publication-kind").await;
+    let archive_root = config.archive_dir.join("codex_invocations");
+    fs::create_dir_all(&archive_root).expect("create archive root");
+    let archive_path = archive_root.join("legacy-unknown-kind.sqlite.gz");
+    fs::write(&archive_path, b"unverified legacy artifact").expect("write legacy artifact");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, publication_kind, updated_at
+        ) VALUES ('invalid-publication-kind', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'preparing', 'unsupported_kind', datetime('now'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed invalid publication kind");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should isolate invalid publication kind");
+
+    let (state, next_retry_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT state, next_retry_at FROM retention_prepared_archives WHERE prepared_key = 'invalid-publication-kind'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invalid publication kind journal");
+    assert_eq!(state, "quarantined");
+    assert_eq!(next_retry_at, None);
+    assert!(
+        archive_path.exists(),
+        "quarantine retains the artifact for evidence"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_pressure_defer_persists_prepared_retry_cursor() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-prepared-pressure-cursor").await;
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, updated_at
+        ) VALUES ('pressure-cursor', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'preparing', datetime('now'))
+        "#,
+    )
+    .bind(
+        config
+            .archive_dir
+            .join("codex_invocations")
+            .join("missing.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .expect("seed prepared pressure cursor");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = NULL, defer_reason = NULL WHERE scope = 'prepared_archives'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make prepared cursor due");
+
+    let pressure_gate = std::sync::Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        std::time::Duration::from_secs(60),
+    ));
+    let _busy_permit = pressure_gate
+        .try_begin_background("retention_prepared_pressure_cursor")
+        .expect("occupy the test background pressure slot");
+    crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
+        .scope(
+            pressure_gate,
+            run_data_retention_maintenance(&pool, &config, Some(false), None),
+        )
+        .await
+        .expect("pressure defer should keep independent retention stages alive");
+
+    let (next_retry_at, defer_reason): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load durable prepared pressure cursor");
+    assert!(
+        next_retry_at.is_some(),
+        "pressure retry deadline must survive refresh"
+    );
+    assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_finalization_rejects_source_content_changed_after_archive_copy() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("retention-source-content-identity").await;

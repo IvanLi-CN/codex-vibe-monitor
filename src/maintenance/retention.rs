@@ -1741,10 +1741,20 @@ pub(crate) async fn retention_recovery_persist_failure(
     let fingerprint = retention_recovery_health_snapshot()
         .failure_fingerprint
         .unwrap_or_default();
-    let quarantine = error.to_string().contains("identity collision")
-        || error.to_string().contains("verification failed");
+    let error_text = error.to_string();
+    let quarantine = error_text.contains("identity collision")
+        || error_text.contains("verification failed")
+        || error_text.contains("publication kind");
     let Some(admission) = acquire_retention_write_admission("retention_recovery_failure").await
     else {
+        retention_recovery_persist_scheduler_cursor_without_pressure(
+            pool,
+            RETENTION_RECOVERY_PRESSURE_RETRY_SECS,
+            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
+            false,
+            Some(&fingerprint),
+        )
+        .await?;
         retention_recovery_record_deferred(stage);
         return Err(retention_write_deferred("retention_recovery_failure"));
     };
@@ -2238,16 +2248,26 @@ async fn retention_recovery_finalize_published(
         filter_unreferenced_proxy_raw_paths(tx.as_mut(), &raw_paths, config.database_path.parent())
             .await?;
     tx.commit().await?;
+    let inventory_intent_recorded = if raw_paths.is_empty() {
+        true
+    } else {
+        match mark_retention_raw_inventory_reset_intent(pool).await {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "published retention recovery committed but raw inventory reset intent was not recorded; retaining raw files for a later orphan sweep"
+                );
+                false
+            }
+        }
+    };
     drop(admission);
-    if !raw_paths.is_empty()
-        && let Err(error) = mark_retention_raw_inventory_reset_intent(pool).await
-    {
-        warn!(
-            error = %error,
-            "published retention recovery committed but raw inventory reset intent was not recorded"
-        );
-    }
-    let removed = delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+    let removed = if inventory_intent_recorded {
+        delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?
+    } else {
+        0
+    };
     retention_recovery_record_progress();
     Ok(removed)
 }
@@ -2372,6 +2392,18 @@ async fn retention_recovery_schedule_prepared_cursor(
     let Some(admission) = acquire_retention_write_admission("retention_recovery_scheduler").await
     else {
         if let Some(reason) = defer_reason {
+            // The scheduler row is the one bounded state transition that must survive a
+            // pressure-gated restart. It does not inspect archive data or touch the filesystem,
+            // so persist it through the foreground-aware SQLite coordinator without consuming a
+            // background pressure slot.
+            retention_recovery_persist_scheduler_cursor_without_pressure(
+                pool,
+                retry_secs,
+                Some(reason),
+                reset_failure_count,
+                failure_fingerprint,
+            )
+            .await?;
             let mut health = RETENTION_RECOVERY_HEALTH
                 .lock()
                 .expect("retention recovery health");
@@ -2419,6 +2451,61 @@ async fn retention_recovery_schedule_prepared_cursor(
     Ok(())
 }
 
+async fn retention_recovery_persist_scheduler_cursor_without_pressure(
+    pool: &Pool<Sqlite>,
+    retry_secs: i64,
+    defer_reason: Option<&str>,
+    reset_failure_count: bool,
+    failure_fingerprint: Option<&str>,
+) -> Result<()> {
+    #[cfg(test)]
+    let coordinator = RETENTION_TEST_WRITE_COORDINATOR
+        .try_with(std::sync::Arc::clone)
+        .unwrap_or_else(|_| {
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        });
+    #[cfg(not(test))]
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let Some(write_permit) = coordinator.try_acquire(
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+    ) else {
+        return Ok(());
+    };
+    let next_retry_at = if retry_secs > 0 {
+        Some(format!("+{retry_secs} seconds"))
+    } else {
+        None
+    };
+    let query = if reset_failure_count {
+        "UPDATE retention_recovery_cursors
+         SET next_retry_at = CASE WHEN ?1 IS NULL THEN NULL ELSE datetime('now', ?1) END,
+             consecutive_failure_count = 0,
+             last_failure_fingerprint = ?2,
+             defer_reason = ?3,
+             last_progress_at = CASE WHEN ?4 = 1 THEN datetime('now') ELSE last_progress_at END,
+             updated_at = datetime('now')
+         WHERE scope = ?5"
+    } else {
+        "UPDATE retention_recovery_cursors
+         SET next_retry_at = CASE WHEN ?1 IS NULL THEN NULL ELSE datetime('now', ?1) END,
+             last_failure_fingerprint = ?2,
+             defer_reason = ?3,
+             last_progress_at = CASE WHEN ?4 = 1 THEN datetime('now') ELSE last_progress_at END,
+             updated_at = datetime('now')
+         WHERE scope = ?5"
+    };
+    sqlx::query(query)
+        .bind(next_retry_at)
+        .bind(failure_fingerprint)
+        .bind(defer_reason)
+        .bind(i64::from(reset_failure_count))
+        .bind(RETENTION_RECOVERY_PREPARED_SCOPE)
+        .execute(pool)
+        .await?;
+    drop(write_permit);
+    Ok(())
+}
+
 async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -2436,6 +2523,14 @@ async fn reconcile_retention_prepared_archives(
         return Ok(());
     }
     let Some(probe) = acquire_retention_write_admission("retention_recovery_probe").await else {
+        retention_recovery_persist_scheduler_cursor_without_pressure(
+            pool,
+            RETENTION_RECOVERY_PRESSURE_RETRY_SECS,
+            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
+            false,
+            None,
+        )
+        .await?;
         retention_recovery_record_deferred("prepared_reconcile");
         return Ok(());
     };
@@ -2633,8 +2728,8 @@ async fn reconcile_retention_prepared_archives(
             }
             continue;
         }
-        let _archive_lock = retention_archive_file_lock(path)?;
         if state == RETENTION_RECOVERY_STATE_PREPARING && path.is_file() {
+            let _archive_lock = retention_archive_file_lock(path)?;
             let actual_sha = sha256_hex_file(path)?;
             let publication_kind = match publication_kind.as_deref() {
                 Some(RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE) => {
@@ -2643,7 +2738,18 @@ async fn reconcile_retention_prepared_archives(
                 Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE) => {
                     Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE)
                 }
-                _ => retention_recovery_publication_kind_from_path(&file_path),
+                Some(_) => {
+                    let error = anyhow!("prepared archive publication kind is invalid");
+                    retention_recovery_persist_failure(
+                        pool,
+                        &prepared_key,
+                        "legacy_reconcile",
+                        &error,
+                    )
+                    .await?;
+                    continue;
+                }
+                None => retention_recovery_publication_kind_from_path(&file_path),
             };
             let Some(publication_kind) = publication_kind else {
                 let error = anyhow!("prepared archive publication kind could not be inferred");
@@ -2702,6 +2808,7 @@ async fn reconcile_retention_prepared_archives(
             continue;
         }
         if state == RETENTION_RECOVERY_STATE_PUBLISHED {
+            let _archive_lock = retention_archive_file_lock(path)?;
             let valid = path.is_file()
                 && artifact_sha256.as_deref().is_some_and(|expected| {
                     sha256_hex_file(path).ok().as_deref() == Some(expected)
@@ -2732,7 +2839,18 @@ async fn reconcile_retention_prepared_archives(
                     Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE) => {
                         Some(RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE)
                     }
-                    _ => retention_recovery_publication_kind_from_path(&file_path),
+                    Some(_) => {
+                        let error = anyhow!("prepared archive publication kind is invalid");
+                        retention_recovery_persist_failure(
+                            pool,
+                            &prepared_key,
+                            "legacy_reconcile",
+                            &error,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    None => retention_recovery_publication_kind_from_path(&file_path),
                 };
                 let Some(publication_kind) = publication_kind else {
                     let error = anyhow!("prepared archive publication kind could not be inferred");
@@ -2791,8 +2909,6 @@ async fn reconcile_retention_prepared_archives(
                 .unwrap_or_default()
                     != 0;
             if expired {
-                let owned_artifact =
-                    !path.exists() || retention_archive_path_is_owned(config, path);
                 let Some(admission) =
                     acquire_retention_write_admission("retention_recovery_quarantine_cleanup")
                         .await
@@ -2801,6 +2917,10 @@ async fn reconcile_retention_prepared_archives(
                         "retention_recovery_quarantine_cleanup",
                     ));
                 };
+                // Hold the archive lock before resolving ownership and keep it through the
+                // delete/ledger transaction so a replacement cannot win between the check and
+                // physical removal.
+                let _archive_lock = retention_archive_file_lock(path)?;
                 let mut tx = pool.begin().await?;
                 let (manifest_exists, active_prepared_exists) = sqlx::query_as::<_, (i64, i64)>(
                     r#"
@@ -2818,6 +2938,8 @@ async fn reconcile_retention_prepared_archives(
                 .bind(&prepared_key)
                 .fetch_one(tx.as_mut())
                 .await?;
+                let owned_artifact =
+                    !path.exists() || retention_archive_path_is_owned(config, path);
                 if manifest_exists == 0 && active_prepared_exists == 0 && owned_artifact {
                     if path.is_file() {
                         fs::remove_file(path).with_context(

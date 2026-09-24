@@ -628,7 +628,7 @@ function retentionRecoveryStatus(
           state === "healthy"
             ? "orphan_sweep"
             : state === "recovering"
-              ? "publishing"
+              ? "prepared_reconcile"
               : "finalizing",
         preparedCount: state === "healthy" ? 0 : 18,
         quarantinedCount: state === "degraded" ? 3 : 1,
@@ -830,12 +830,17 @@ export const StatusRetentionRecoveryRecovering: Story = {
       "恢复中",
     );
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
-      "发布中",
+      "准备对账",
     );
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent(
       "SQLite 压力",
     );
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("42");
+    await expect(
+      canvas
+        .getByTestId("system-status-retention-recovery")
+        .querySelector("span.sr-only[aria-live=polite]"),
+    ).toHaveTextContent("SQLite 压力");
   },
 };
 
