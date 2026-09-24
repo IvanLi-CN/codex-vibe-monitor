@@ -178,6 +178,19 @@
 
 ## Visual Evidence
 
+- source_type: `ui_demo`
+  target_program: `mock-only`
+  capture_scope: `element`
+  requested_viewport: `1440x1000`
+  viewport_strategy: `ui-demo-source`
+  margin_policy: `trim_only`
+  evidence_surface: `page`
+  sensitive_exclusion: `N/A`
+  scenario: `Dashboard today with minute-day local performance fixture`
+  evidence_note: `固定本地数据下核对七卡内容、次数图、图例和时间轴；图表的可见网格位置与优化前一致。`
+  PR: include
+  ![Dashboard minute-day KPI performance fixture](./assets/dashboard-kpi-minute-day-performance.png)
+
 - SHA `b37da68e`
   source_type: `storybook_canvas`
   target_program: `mock-only`
