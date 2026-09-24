@@ -46,8 +46,13 @@ pub(crate) struct WebSocketUsageAccumulator {
 
 impl WebSocketUsageAccumulator {
     pub(crate) fn update(&mut self, update: ParsedUsage) -> ParsedUsage {
+        self.update_with_change(update).0
+    }
+
+    pub(crate) fn update_with_change(&mut self, update: ParsedUsage) -> (ParsedUsage, bool) {
+        let previous = self.usage.clone();
         self.usage = merge_websocket_usage_update(&self.usage, update);
-        self.usage.clone()
+        (self.usage.clone(), self.usage != previous)
     }
 
     pub(crate) fn snapshot(&self) -> ParsedUsage {
@@ -59,9 +64,46 @@ impl WebSocketUsageAccumulator {
     }
 }
 
+pub(crate) fn websocket_event_contains_usage(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "response.created"
+            | "response.in_progress"
+            | "response.completed"
+            | "response.done"
+            | "response.failed"
+    )
+}
+
+pub(crate) fn websocket_event_is_terminal(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "response.completed" | "response.done" | "response.failed"
+    )
+}
+
+pub(crate) fn ws_text_event_is_terminal(event_text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(event_text) else {
+        return false;
+    };
+    value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(websocket_event_is_terminal)
+}
+
 pub(crate) fn has_ws_usage(usage: &ParsedUsage, failure_without_usage: bool) -> bool {
     failure_without_usage
         || (usage.input_tokens.is_some() && usage.output_tokens.is_some())
         || usage.reported_cache_write_tokens.is_some()
         || usage.cache_input_tokens.is_some()
+}
+
+pub(crate) fn has_any_usage_tokens(usage: &ParsedUsage) -> bool {
+    usage.total_tokens.is_some()
+        || usage.input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.cache_input_tokens.is_some()
+        || usage.reported_cache_write_tokens.is_some()
+        || usage.reasoning_tokens.is_some()
 }

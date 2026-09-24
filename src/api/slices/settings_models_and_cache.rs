@@ -1250,7 +1250,7 @@ pub(crate) async fn invalidate_prompt_cache_conversations_cache(
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ParsedUsage {
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,

@@ -2259,11 +2259,15 @@ impl WsUsageTracker {
             }
             return;
         };
-        event.usage = self.usage.update(event.usage);
+        let (usage, usage_changed) = self.usage.update_with_change(event.usage);
+        event.usage = usage;
+        if !websocket_event_is_terminal(event.event_type.as_str()) {
+            return;
+        }
         self.ordinal = self.ordinal.saturating_add(1);
         let response_id_override = self.response_id.clone();
         let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
-        let stream_duration_ms = ws_event_type_has_billable_usage(event.event_type.as_str())
+        let stream_duration_ms = websocket_event_is_terminal(event.event_type.as_str())
             .then(|| self.stream_duration_ms())
             .flatten();
         if let Err(err) = persist_ws_usage_event(
@@ -2282,6 +2286,7 @@ impl WsUsageTracker {
             response_id_override.as_deref(),
             self.first_token_ms,
             stream_duration_ms,
+            usage_changed,
         )
         .await
         {
@@ -2388,6 +2393,7 @@ impl WsUsageTracker {
             self.response_id.as_deref(),
             Some(first_token_ms),
             self.stream_duration_ms(),
+            false,
         )
         .await
         {
@@ -2407,7 +2413,7 @@ pub(crate) struct WsUsageEvent {
     response_status: Option<String>,
     model: Option<String>,
     service_tier: Option<String>,
-    usage: ParsedUsage,
+    pub(crate) usage: ParsedUsage,
     contains_encrypted_content: bool,
 }
 
@@ -2497,7 +2503,7 @@ fn ws_response_id_from_text(text: &str) -> Option<String> {
 pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let event_type = value.get("type")?.as_str()?.trim().to_string();
-    if !ws_event_type_has_billable_usage(event_type.as_str()) {
+    if !websocket_event_contains_usage(event_type.as_str()) {
         return None;
     }
     let usage = value
@@ -2535,13 +2541,6 @@ pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
         usage,
         contains_encrypted_content: value_contains_encrypted_content(&value),
     })
-}
-
-pub(crate) fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "response.completed" | "response.done" | "response.failed"
-    )
 }
 
 fn ws_terminal_event_is_failure_without_usage(text: &str) -> bool {
@@ -2635,16 +2634,6 @@ pub(crate) fn websocket_account_uses_official_openai_base_url(
         .upstream_base_url
         .host_str()
         .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
-}
-
-pub(crate) fn ws_text_event_is_terminal(event_type: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(event_type) else {
-        return false;
-    };
-    value
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(ws_event_type_has_billable_usage)
 }
 
 pub(crate) fn ws_upstream_close_requires_retry(
@@ -2933,6 +2922,7 @@ pub(crate) async fn persist_ws_usage_event(
     response_id_override: Option<&str>,
     first_token_ms: Option<f64>,
     stream_duration_ms: Option<f64>,
+    allow_duplicate_usage_refresh: bool,
 ) -> Result<()> {
     let proxy_settings = state.proxy_model_settings.read().await.clone();
     let model = event.model.as_deref();
@@ -3146,6 +3136,7 @@ pub(crate) async fn persist_ws_usage_event(
                 t_persist_ms: 0.0,
             },
         },
+        allow_duplicate_usage_refresh,
     )
     .await
 }
@@ -4593,11 +4584,11 @@ mod websocket_tests {
     }
 
     #[test]
-    fn websocket_usage_event_rejects_non_terminal_or_partial_usage() {
+    fn websocket_usage_event_accepts_non_terminal_usage_and_rejects_partial_terminal_usage() {
         assert!(parse_ws_usage_event(
             r#"{"type":"response.in_progress","response":{"usage":{"input_tokens":7,"output_tokens":3}}}"#
         )
-        .is_none());
+        .is_some());
         assert!(
             parse_ws_usage_event(
                 r#"{"type":"response.completed","response":{"usage":{"input_tokens":7}}}"#
@@ -4872,4 +4863,7 @@ mod websocket_tests {
             Some(AxumWsMessage::Binary(vec![1, 2, 3]))
         );
     }
+
+    #[path = "usage_tests.rs"]
+    mod usage_tests;
 }

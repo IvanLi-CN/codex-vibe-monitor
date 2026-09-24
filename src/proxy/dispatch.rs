@@ -1,9 +1,7 @@
 use super::*;
 
 pub(crate) fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
-    response_info.usage.total_tokens.is_some()
-        || response_info.usage.input_tokens.is_some()
-        || response_info.usage.output_tokens.is_some()
+    has_any_usage_tokens(&response_info.usage)
 }
 
 pub(crate) fn proxy_stream_failure_origin_from_usage_reason(

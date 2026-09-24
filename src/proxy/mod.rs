@@ -24,6 +24,7 @@ mod request_entry;
     reason = "Route-selection adapters preserve established call-site contracts."
 )]
 mod route_selection;
+mod runtime_usage_refresh;
 mod stream_gate;
 mod upstream_transport;
 mod usage_merge;
@@ -45,6 +46,7 @@ pub(crate) use raw_capture::*;
 pub(crate) use raw_capture_circuit::*;
 pub(crate) use request_entry::*;
 pub(crate) use route_selection::*;
+pub(crate) use runtime_usage_refresh::*;
 pub(crate) use stream_gate::*;
 pub(crate) use upstream_transport::*;
 pub(crate) use usage_merge::*;

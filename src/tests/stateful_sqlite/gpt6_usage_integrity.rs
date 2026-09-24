@@ -10,6 +10,59 @@ fn websocket_usage_event_accepts_cache_read_only_terminal_usage() {
 }
 
 #[test]
+fn websocket_usage_event_accepts_partial_usage_and_usage_free_failure() {
+    let partial = parse_ws_usage_event(
+        r#"{"type":"response.in_progress","response":{"id":"resp_partial","usage":{"input_tokens_details":{"cached_tokens":325}}}}"#,
+    )
+    .expect("partial websocket usage event");
+    assert_eq!(partial.usage.cache_input_tokens, Some(325));
+    assert!(!ws_text_event_is_terminal(
+        r#"{"type":"response.in_progress"}"#
+    ));
+
+    let failed = parse_ws_usage_event(
+        r#"{"type":"response.failed","response":{"id":"resp_failed","status":"failed"}}"#,
+    )
+    .expect("usage-free response.failed event");
+    assert!(ws_text_event_is_terminal(r#"{"type":"response.failed"}"#));
+
+    let mut accumulator = WebSocketUsageAccumulator::default();
+    accumulator.update(partial.usage);
+    let accumulated = accumulator.update(failed.usage);
+    assert_eq!(accumulated.cache_input_tokens, Some(325));
+}
+
+#[test]
+fn proxy_stream_usage_observed_accepts_cache_only_counts() {
+    let response_info = ResponseCaptureInfo {
+        model: Some("gpt-6-sol".to_string()),
+        contains_encrypted_content: false,
+        usage: ParsedUsage {
+            cache_input_tokens: Some(325),
+            ..ParsedUsage::default()
+        },
+        usage_missing_reason: None,
+        service_tier: None,
+        compaction_response_kind: None,
+        stream_terminal_event: None,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: None,
+    };
+
+    assert!(crate::proxy::proxy_stream_usage_observed(&response_info));
+
+    let cache_write_only = ResponseCaptureInfo {
+        usage: ParsedUsage {
+            reported_cache_write_tokens: Some(50),
+            ..ParsedUsage::default()
+        },
+        ..response_info
+    };
+    assert!(crate::proxy::proxy_stream_usage_observed(&cache_write_only));
+}
+
+#[test]
 fn parse_stream_response_payload_cache_read_only_update_preserves_prior_usage() {
     let raw = [
         "event: response.created",
@@ -93,4 +146,128 @@ fn estimate_gpt_6_returns_unknown_cost_when_cache_read_exceeds_input_without_exa
 
     assert!(cost.is_none());
     assert!(!estimated);
+}
+
+#[tokio::test]
+async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "gpt6-websocket-terminal-usage-refresh";
+    let occurred_at = "2026-09-24 12:00:00";
+    let mut initial = test_proxy_capture_record(invoke_id, occurred_at);
+    initial.model = Some("gpt-6-sol".to_string());
+    initial.usage = ParsedUsage {
+        input_tokens: Some(1_200),
+        output_tokens: Some(40),
+        cache_input_tokens: Some(300),
+        reasoning_tokens: Some(10),
+        total_tokens: Some(1_240),
+        ..ParsedUsage::default()
+    };
+    initial.cost = Some(0.01);
+    initial.price_version = Some("openai-standard-2026-09-23".to_string());
+    initial.payload = Some(
+        mark_websocket_payload_transport(
+            r#"{"endpoint":"/v1/responses","streamTerminalEvent":"response.completed"}"#
+                .to_string(),
+        )
+        .expect("mark websocket payload"),
+    );
+
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), initial, true)
+        .await
+        .expect("enqueue first websocket terminal");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    let first_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load initial websocket terminal");
+
+    let mut richer = test_proxy_capture_record(invoke_id, occurred_at);
+    richer.model = Some("gpt-6-sol".to_string());
+    richer.usage = ParsedUsage {
+        input_tokens: Some(1_200),
+        output_tokens: Some(40),
+        cache_input_tokens: Some(325),
+        reported_cache_write_tokens: Some(50),
+        reasoning_tokens: Some(10),
+        total_tokens: Some(1_240),
+    };
+    richer.cost = Some(0.02);
+    richer.price_version = Some("openai-standard-2026-09-23".to_string());
+    richer.payload = Some(
+        mark_websocket_payload_transport(
+            r#"{"endpoint":"/v1/responses","streamTerminalEvent":"response.done"}"#.to_string(),
+        )
+        .expect("mark websocket payload"),
+    );
+
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), richer, true)
+        .await
+        .expect("enqueue richer websocket terminal");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+
+    let mut non_websocket_duplicate = test_proxy_capture_record(invoke_id, occurred_at);
+    non_websocket_duplicate.usage.cache_input_tokens = Some(999);
+    non_websocket_duplicate.cost = Some(0.99);
+    persist_and_broadcast_proxy_capture_terminal_record(
+        state.as_ref(),
+        non_websocket_duplicate,
+        false,
+    )
+    .await
+    .expect("skip unrelated duplicate terminal");
+
+    let refreshed = sqlx::query_as::<_, (i64, String, Option<i64>, Option<i64>, Option<f64>)>(
+        r#"
+        SELECT id, status, cache_input_tokens, reported_cache_write_tokens, cost
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load refreshed websocket terminal");
+    assert_eq!(refreshed.0, first_id);
+    assert_eq!(refreshed.1, "success");
+    assert_eq!(refreshed.2, Some(325));
+    assert_eq!(refreshed.3, Some(50));
+    assert_eq!(refreshed.4, Some(0.02));
+
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count terminal invocation rows");
+    assert_eq!(count, 1);
+
+    let rollup = sqlx::query_as::<_, (i64, f64)>(
+        "SELECT total_tokens, total_cost FROM invocation_rollup_hourly WHERE source = 'proxy'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load refreshed proxy rollup");
+    assert_eq!(rollup.0, 1_240);
+    assert_f64_close(rollup.1, 0.02);
 }
