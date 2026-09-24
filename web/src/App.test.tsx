@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Outlet, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import App, { AppErrorBoundary } from "./App";
 
 vi.mock("./features/app-shell/AppLayout", () => ({
   AppLayout: () => <Outlet />,
@@ -113,5 +113,29 @@ describe("App routes", () => {
 
     expect(host?.textContent ?? "").toContain("system settings page");
     expect(host?.querySelector('[data-testid="location"]')?.textContent).toBe("/system/settings");
+  });
+
+  it("keeps a rejected lazy route recoverable", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    function RejectedRoute() {
+      throw new Error("chunk failed");
+    }
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+
+    await act(async () => {
+      root?.render(
+        <AppErrorBoundary>
+          <RejectedRoute />
+        </AppErrorBoundary>,
+      );
+    });
+
+    expect(host.textContent).toContain("页面加载失败");
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+    expect(host.textContent).toContain("重新加载");
+    consoleError.mockRestore();
   });
 });

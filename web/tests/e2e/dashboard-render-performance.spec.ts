@@ -17,6 +17,7 @@ type DashboardPerformanceWindow = Window & {
     longTaskObserverSupported: boolean;
   };
   __dashboardPerformanceDiagnostics__?: {
+    todayChartDataCommitCount: number;
     todayChartRenderCount: number;
   };
 };
@@ -75,7 +76,11 @@ async function readLongTaskState(page: Page) {
 async function readDashboardDiagnostics(page: Page) {
   return page.evaluate(() => {
     const performanceWindow = window as DashboardPerformanceWindow;
-    return performanceWindow.__dashboardPerformanceDiagnostics__?.todayChartRenderCount ?? 0;
+    const diagnostics = performanceWindow.__dashboardPerformanceDiagnostics__;
+    return {
+      todayChartDataCommitCount: diagnostics?.todayChartDataCommitCount ?? 0,
+      todayChartRenderCount: diagnostics?.todayChartRenderCount ?? 0,
+    };
   });
 }
 
@@ -136,7 +141,11 @@ test.describe("Dashboard render performance", () => {
         await expect(
           runPage.getByTestId("dashboard-working-conversation-card").first(),
         ).toBeVisible();
-        await expect.poll(() => readDashboardDiagnostics(runPage)).toBeGreaterThan(0);
+        await expect
+          .poll(() =>
+            readDashboardDiagnostics(runPage).then((value) => value.todayChartRenderCount),
+          )
+          .toBeGreaterThan(0);
 
         await runPage.waitForFunction(
           () => performance.getEntriesByName("dashboard-data-ready-start").length > 0,
@@ -151,14 +160,31 @@ test.describe("Dashboard render performance", () => {
           localStorage.removeItem("dashboard.performanceDiagnostics.enabled.v1");
           localStorage.setItem("dashboard.performanceDiagnostics.enabled.v1", "1");
         });
-        await expect.poll(() => readDashboardDiagnostics(runPage)).toBe(0);
+        await expect
+          .poll(() =>
+            readDashboardDiagnostics(runPage).then((value) => value.todayChartRenderCount),
+          )
+          .toBe(0);
         const updateStart = await runPage.evaluate(() => performance.now());
-        const metricTabs = runPage.locator('[role="tablist"]').nth(1).locator('[role="tab"]');
-        const totalCostTab = metricTabs.nth(1);
-        await totalCostTab.click();
-        await expect(totalCostTab).toHaveAttribute("aria-selected", "true");
-        await expect(runPage.getByTestId("dashboard-today-activity-chart")).toBeVisible();
-        await expect.poll(() => readDashboardDiagnostics(runPage)).toBeGreaterThan(0);
+        await runPage.evaluate(() => {
+          const trigger = (
+            window as Window & {
+              __CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__?: () => void;
+            }
+          ).__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__;
+          if (!trigger) throw new Error("Demo timeseries update trigger is unavailable");
+          trigger();
+        });
+        await expect
+          .poll(() =>
+            readDashboardDiagnostics(runPage).then((value) => value.todayChartDataCommitCount),
+          )
+          .toBeGreaterThan(0);
+        await expect
+          .poll(() =>
+            readDashboardDiagnostics(runPage).then((value) => value.todayChartRenderCount),
+          )
+          .toBeGreaterThan(0);
         const updateEnd = await runPage.evaluate(() => performance.now());
         await runPage.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
         const longTaskState = await readLongTaskState(runPage);
