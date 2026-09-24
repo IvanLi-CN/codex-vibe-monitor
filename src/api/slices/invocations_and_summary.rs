@@ -37558,15 +37558,24 @@ mod request_compression_query_tests {
                 url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
             )
             .await;
-            use chrono::Datelike;
-
-            let historical_at = Utc::now() - ChronoDuration::days(3);
-            let historical_at = if historical_at.weekday() == chrono::Weekday::Sun {
-                historical_at - ChronoDuration::hours(12)
-            } else {
-                historical_at
-            };
-            let historical_at = db_occurred_at_lower_bound(historical_at);
+            let projection_end = Utc::now() + ChronoDuration::seconds(1);
+            let protected = summary_projection_boundary_buckets(projection_end);
+            let (historical_at, bucket) = (0_i64..32)
+                .find_map(|index| {
+                    let candidate = db_occurred_at_lower_bound(
+                        projection_end
+                            - ChronoDuration::hours(72 + index * 3)
+                            - ChronoDuration::minutes(30),
+                    );
+                    let bucket = align_bucket_epoch(
+                        parse_to_utc_datetime(&candidate)?.timestamp(),
+                        3_600,
+                        0,
+                    );
+                    (!(-1_i64..=1).any(|delta| protected.contains(&(bucket + delta * 3_600))))
+                        .then_some((candidate, bucket))
+                })
+                .expect("bounded identity fixture must avoid every Summary boundary bucket");
             sqlx::query(
                 "WITH RECURSIVE rows(value) AS (\
                      SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1\
@@ -37586,13 +37595,6 @@ mod request_compression_query_tests {
                     .fetch_one(&state.pool)
                     .await
                     .expect("load historical identity high watermark");
-            let bucket = align_bucket_epoch(
-                parse_to_utc_datetime(&historical_at)
-                    .expect("parse historical identity timestamp")
-                    .timestamp(),
-                3_600,
-                0,
-            );
             sqlx::query(
                 "INSERT INTO invocation_rollup_hourly\
                  (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost)\
@@ -37621,7 +37623,6 @@ mod request_compression_query_tests {
             .execute(&state.pool)
             .await
             .expect("advance global live cursor beyond historical identities");
-
             let (result, hydrated_rows) =
                 SUMMARY_PROJECTION_TEST_HISTORICAL_IDENTITY_HYDRATION_ROWS
                     .scope(Cell::new(0), async {
@@ -37638,7 +37639,6 @@ mod request_compression_query_tests {
                 "a zero tail must not admit the over-budget historical identity population"
             );
             state.pool.close().await;
-
             let Json(response) = fetch_summary(
                 State(state),
                 Query(SummaryQuery {
