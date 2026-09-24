@@ -58,3 +58,22 @@ activity/network and summary/history/suggestions/stats responsibilities.
 The focused workflow-detail audit test passed after the move. Full delivery
 validation remains the stateful SQLite backend profile, the Rust source-quality
 runner, all-target Cargo checking, and `git diff --check`.
+
+The Dashboard Activity snapshot-cache state and invalidation region is now a
+fourth named child module under `settings_models_and_cache`. The complete
+cache selection, entry, terminal-delta, read-model, in-flight, cache-state,
+flight-guard, memory-estimate, selection-fingerprint, and invalidation
+responsibilities move into
+`src/api/slices/settings_models_and_cache/dashboard_activity_cache.rs` while
+existing crate-visible consumers retain the parent paths through explicit
+re-exports. The parent decreases from 2,555 to 2,293 physical lines and the
+279-line child remains below the production target. The parent candidate is
+removed from the quality policy inventory, leaving 32 production and 23
+test/helper candidates (55 entries total); no further source-quality split is
+planned from this parent. Runtime behavior, persistence, schema, SSE, and
+public API contracts remain unchanged.
+
+Validation for this extraction is the focused Dashboard Activity cache tests,
+both lightweight and stateful SQLite backend profiles, rustfmt, all-target
+Cargo checking, all-target Clippy, the Rust source-quality runner, and
+`git diff --check`.

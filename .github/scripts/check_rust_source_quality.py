@@ -278,8 +278,8 @@ def validate_policy(
         else:
             if not isinstance(baseline.get("commit"), str) or not re.fullmatch(r"[0-9a-f]{40}", baseline["commit"]):
                 errors.append("policy.baseline.commit must be a full lowercase commit SHA")
-            if baseline.get("production_candidates") != 33:
-                errors.append("policy.baseline.production_candidates must remain 33")
+            if baseline.get("production_candidates") != 32:
+                errors.append("policy.baseline.production_candidates must remain 32")
             if baseline.get("test_helper_candidates") != 23:
                 errors.append("policy.baseline.test_helper_candidates must remain 23")
             expected_entries = baseline.get("inventory_entries")
