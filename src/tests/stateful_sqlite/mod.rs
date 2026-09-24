@@ -96,6 +96,7 @@ pub(crate) async fn fetch_summary_from_memory_snapshot(
     fetch_summary(State(state), Query(params)).await
 }
 
+mod account_activity_v2_progress_handler;
 mod invocation_query_filters_and_schema_migrations;
 mod oauth_route_body_rewrite_and_timeout;
 #[expect(
