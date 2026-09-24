@@ -140,6 +140,7 @@
 - Given 今日连续分钟存在 Token，When 查看缓存命中率折线，Then 10 分钟线每点使用当前分钟及前 9 分钟、1 小时参考线每点使用当前分钟及前 59 分钟的 `ΣcacheInputTokens / ΣtotalTokens`；无流量窗口与未来分钟返回 `null` 且折线断开。
 - Given 昨日 Tokens 图，When 分量完整，Then 仅展示四层累计面积与总计图例，不展示今日缓存命中率折线或右轴。
 - Given 任一有 Token 的桶缺少新分量或 `inputTokens + outputTokens != totalTokens`，When Dashboard 或账号详情构造 Tokens 图，Then 整张图回退单层累计总 Tokens，不局部混用或以零伪造细分。
+- Given 自然日图表初次挂载且默认视口已覆盖当前整日，When 视口归一化结果与现有起止索引相同，Then 不得仅因归一化触发第二次图表渲染。
 - Given `TodayStatsOverview` 任一主值、右上 comparison 或底部 secondary 在仓库支持的桌面 viewport 内接近溢出，When 自适应格式化生效，Then 标签语义保留且 label 保持单行；若同一 tile 的横向空间仍不足，则右上 comparison、左下 secondary、右下 secondary 必须自动下沉到主值下方逐行展示，数值只允许通过降小数、compact 或 compact 邻近单位回退来缩短，不允许出现省略号截断数值。
 - Given `Today Token` 等 `B/M` 临界值主值在紧张宽度下渲染，When `1.05B` 放不下但 `1.0B` 仍可放下，Then 应优先显示 `1.0B`；只有更高信息量候选都放不下时，才允许进一步退化到 `1B` 或邻近单位整数值。
 - Given 同一 KPI 容器在阈值附近反复收到重复 `ResizeObserver` / resize 回调，When 当前候选仍能在现有可用宽度内放下，Then 共享候选选择器不得在两个不同长度的表示之间来回翻转。

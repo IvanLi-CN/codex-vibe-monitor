@@ -13,6 +13,7 @@ import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
 
 let latestChartData: Array<Record<string, unknown>> = [];
+let composedChartRenderCount = 0;
 const storage = new Map<string, string>();
 const localStorageMock = {
   getItem: (key: string) => storage.get(key) ?? null,
@@ -152,6 +153,7 @@ vi.mock("recharts", () => ({
     data?: Array<Record<string, unknown>>;
     stackOffset?: string;
   }) => {
+    composedChartRenderCount += 1;
     latestChartData = data ?? [];
     return (
       <div
@@ -256,6 +258,7 @@ afterEach(() => {
   host = null;
   root = null;
   latestChartData = [];
+  composedChartRenderCount = 0;
   window.localStorage.clear();
   resetDashboardPerformanceDiagnostics();
 });
@@ -380,6 +383,19 @@ async function flushAnimationFrame() {
 }
 
 describe("DashboardTodayActivityChart", () => {
+  it("does not rerender the count chart when the initial viewport already covers the day", () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(composedChartRenderCount).toBe(1);
+  });
+
   it("builds a continuous minute series and preserves cumulative totals", () => {
     const data = buildTodayMinuteChartData(response, {
       now: new Date(2026, 3, 8, 0, 3, 22),
