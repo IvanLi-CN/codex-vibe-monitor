@@ -2,9 +2,9 @@
   "schema_version": 1,
   "baseline": {
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
-    "production_candidates": 33,
+    "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 56,
+    "inventory_entries": 55,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -35,12 +35,6 @@
       "role": "production",
       "line_budget": 5853,
       "next_module_workstream": "Split prompt-cache timeseries query, aggregation, and flush/restart lifecycle."
-    },
-    {
-      "path": "src/api/slices/settings_models_and_cache.rs",
-      "role": "production",
-      "line_budget": 2555,
-      "next_module_workstream": "Split settings model capture, cache persistence, and dashboard projection."
     },
     {
       "path": "src/api/slices/subscriptions.rs",

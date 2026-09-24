@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 56 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 55 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -64,12 +64,28 @@ lines. The parent keeps explicit crate-visible re-exports for routes,
 subscriptions, sibling slices, and the existing inline tests; no tests or
 resource buckets move.
 
+The fourth source-quality extraction moves the contiguous Dashboard Activity
+snapshot-cache state and invalidation region beginning with
+`DashboardActivitySnapshotSelection` and ending with
+`invalidate_dashboard_activity_snapshots_with_accounts` from
+`src/api/slices/settings_models_and_cache.rs` into
+`src/api/slices/settings_models_and_cache/dashboard_activity_cache.rs`. The
+child preserves the cache models, read model, singleflight guard, memory
+estimate, selection fingerprint, and selection/account invalidation behavior;
+the parent explicitly re-exports the crate-visible symbols used by the
+invocation-summary, subscriptions, prompt-cache/timeseries, runtime, memory,
+SQLite writer, account-routing, and stateful SQLite test callers. The parent
+is now 2,293 physical lines and the child is 279 physical lines, so the child
+is below the 2,500-line production target and is not a selected inventory
+entry. The parent candidate is removed from the policy inventory; no further
+source-quality extraction is planned from this parent.
+
 ## Inventory Contract
 
-The policy has 33 `production` entries above the 2,500-line destination target
+The policy has 32 `production` entries above the 2,500-line destination target
 and 23 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 56 paths; a long path absent from the inventory is
+The checker only reads those 55 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
