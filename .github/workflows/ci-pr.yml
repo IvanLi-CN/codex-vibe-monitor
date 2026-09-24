@@ -419,10 +419,14 @@ jobs:
           cat /tmp/codex-vibe-monitor-vite.log || true
           exit 1
 
-      - name: Start mock-only Web Demo server
+      - name: Build production Web Demo for performance E2E
+        working-directory: web
+        run: bun run demo:build
+
+      - name: Start production Web Demo server
         working-directory: web
         run: |
-          bun run demo:dev -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
+          bun run demo:preview -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
           echo $! > /tmp/codex-vibe-monitor-demo.pid
 
       - name: Wait for Web Demo readiness
@@ -445,6 +449,7 @@ jobs:
           records_status=0
           demo_status=0
           dashboard_status=0
+          performance_status=0
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
             bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
           records_pid=$!
@@ -454,9 +459,14 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \
             bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts &
           dashboard_pid=$!
+          E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \
+            bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts &
+          performance_pid=$!
           wait "$records_pid" || records_status=$?
           wait "$demo_pid" || demo_status=$?
           wait "$dashboard_pid" || dashboard_status=$?
+          wait "$performance_pid" || performance_status=$?
+          dashboard_status=$(( dashboard_status || performance_status ))
           exit $(( records_status || demo_status || dashboard_status ))
 
       - name: Upload Playwright diagnostics
@@ -468,6 +478,7 @@ jobs:
             web/playwright-report-records
             web/playwright-report-demo
             web/playwright-report-dashboard
+            web/playwright-report-dashboard-performance
             web/test-results
           if-no-files-found: ignore
 
