@@ -4779,7 +4779,7 @@ async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() 
     .await
     .expect("load actionable journal state");
     assert_eq!(due_state.0, "quarantined");
-    assert_eq!(due_state.1.as_deref(), Some("legacy_reconcile"));
+    assert_eq!(due_state.1.as_deref(), Some("prepared_reconcile"));
     let unexpired_quarantine_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined' AND prepared_key LIKE 'unexpired-quarantine-%'",
     )

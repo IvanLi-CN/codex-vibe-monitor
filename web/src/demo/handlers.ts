@@ -2072,7 +2072,7 @@ function systemStatus() {
           runtimeState === "degraded"
             ? "degraded"
             : runtimeState === "deferred"
-              ? "recovering"
+              ? "deferred"
               : "healthy",
         stage:
           runtimeState === "degraded"

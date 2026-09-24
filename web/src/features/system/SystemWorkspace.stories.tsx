@@ -612,24 +612,28 @@ function runtimePressureStatus(
 }
 
 function retentionRecoveryStatus(
-  state: "healthy" | "recovering" | "degraded",
+  state: "healthy" | "recovering" | "deferred" | "degraded",
 ): SystemStatusResponse {
-  const status = runtimePressureStatus(state === "healthy" ? "healthy" : "degraded");
+  const status = runtimePressureStatus(
+    state === "healthy" ? "healthy" : state === "deferred" ? "deferred" : "degraded",
+  );
   const base = status.runtimePressureHealth!;
   return {
     ...status,
     runtimePressureHealth: {
       ...base,
-      state: state === "degraded" ? "degraded" : "healthy",
+      state: state === "degraded" ? "degraded" : state === "deferred" ? "deferred" : "healthy",
       retentionRecovery: {
         ...base.retentionRecovery!,
         state,
         stage:
           state === "healthy"
             ? "orphan_sweep"
-            : state === "recovering"
+            : state === "deferred"
               ? "prepared_reconcile"
-              : "finalizing",
+              : state === "recovering"
+                ? "prepared_reconcile"
+                : "finalizing",
         preparedCount: state === "healthy" ? 0 : 18,
         quarantinedCount: state === "degraded" ? 3 : 1,
         expiredBacklogCount: state === "healthy" ? 0 : 42,
@@ -637,7 +641,7 @@ function retentionRecoveryStatus(
         nextRetryAt: state === "healthy" ? undefined : "2026-06-22T08:05:00Z",
         failureStage: state === "degraded" ? "status_refresh" : undefined,
         failureFingerprint: state === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
-        deferReason: state === "recovering" ? "sqlite_pressure" : undefined,
+        deferReason: state === "recovering" || state === "deferred" ? "sqlite_pressure" : undefined,
         consecutiveFailureCount: state === "degraded" ? 4 : 0,
       },
     },
@@ -836,11 +840,26 @@ export const StatusRetentionRecoveryRecovering: Story = {
       "SQLite 压力",
     );
     await expect(canvas.getByTestId("system-status-retention-recovery")).toHaveTextContent("42");
-    await expect(
-      canvas
-        .getByTestId("system-status-retention-recovery")
-        .querySelector("span.sr-only[aria-live=polite]"),
-    ).toHaveTextContent("SQLite 压力");
+    await expect(canvas.getByTestId("system-status-retention-recovery-live")).toHaveTextContent(
+      "SQLite 压力",
+    );
+  },
+};
+
+export const StatusRetentionRecoveryDeferred: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: retentionRecoveryStatus("deferred") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const recovery = canvas.getByTestId("system-status-retention-recovery");
+    await expect(recovery).toHaveTextContent("已延后");
+    await expect(recovery).toHaveTextContent("准备对账");
+    await expect(recovery).toHaveTextContent("SQLite 压力");
+    await expect(canvas.getByTestId("system-status-retention-recovery-live")).toHaveTextContent(
+      "SQLite 压力",
+    );
   },
 };
 

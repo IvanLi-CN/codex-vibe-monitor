@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite tables retention_prepared_archives, retention_recovery_cursors, and retention_raw_reconciliation plus additive circuit and overflow-spool columns on system_raw_payload_metrics.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",
-      "to_program_version": "Candidate release from mainline v2.71.24.",
+      "to_program_version": "Candidate release from mainline v2.71.30-1-ge9af61b2.",
       "direct_major_skips_supported": false
     }
   },

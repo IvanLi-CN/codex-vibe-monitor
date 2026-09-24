@@ -711,18 +711,71 @@ async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
         .await
         .expect("retention should isolate invalid publication kind");
 
-    let (state, next_retry_at): (String, Option<String>) = sqlx::query_as(
-        "SELECT state, next_retry_at FROM retention_prepared_archives WHERE prepared_key = 'invalid-publication-kind'",
+    let (state, next_retry_at, last_failure_stage): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+        "SELECT state, next_retry_at, last_failure_stage FROM retention_prepared_archives WHERE prepared_key = 'invalid-publication-kind'",
     )
     .fetch_one(&pool)
     .await
     .expect("load invalid publication kind journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
+    let (failure_count, defer_reason): (i64, Option<String>) = sqlx::query_as(
+        "SELECT consecutive_failure_count, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load durable invalid-kind failure cursor");
+    assert_eq!(failure_count, 1);
+    assert_eq!(defer_reason.as_deref(), Some("retry_backoff"));
     assert!(
         archive_path.exists(),
         "quarantine retains the artifact for evidence"
     );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_quarantines_missing_published_archive_instead_of_retrying() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-missing-published-archive").await;
+    let archive_path = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("missing-published.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, artifact_sha256, updated_at
+        ) VALUES ('missing-published-archive', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'published', 'expected-sha', datetime('now'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed missing published archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should quarantine missing published archive");
+
+    let (state, next_retry_at, last_failure_stage): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT state, next_retry_at, last_failure_stage
+             FROM retention_prepared_archives
+             WHERE prepared_key = 'missing-published-archive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load missing published archive journal");
+    assert_eq!(state, "quarantined");
+    assert_eq!(next_retry_at, None);
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

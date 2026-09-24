@@ -44,12 +44,13 @@
     "verified": {
       "impact": "patch",
       "reasoning": "Linux profiles and focused Web regressions verify additive schema re-entry, fail-closed raw capture admission including unknown-length stream bounds and non-truncating suppression, hysteretic watermarks, bounded physical inventory reset after every raw-mutating maintenance entry point, sanitized startup recovery diagnostics, unmeasured-byte unknown semantics, P1-gated failure persistence, full source/archive-column identity, transaction rollback/retry without source loss, indexed raw ownership confirmation with post-commit unlink, independent retention stages, bounded legacy reconciliation, additive status serialization, translated Storybook states, typecheck, lint, and production build.",
-      "verified_at": "2026-09-24T12:42:00+08:00",
+      "verified_at": "2026-09-24T14:41:00+08:00",
       "evidence": [
         "stateful-sqlite profile: 1306 passed, including raw-capture status serialization and schema re-entry",
         "archive-file-io profile: 277 passed, including bounded archive recovery, quarantined retirement, and raw-link finalization",
         "Web units: 1542 passed; System Workspace Storybook interactions: 98 passed; typecheck, lint, and production build passed",
-        "Local empirical retention recovery pressure and failure scenarios: 4 passed; Linux cargo check, Clippy, formatting, and diff checks passed",
+        "Local empirical retention recovery pressure and failure scenarios: 6 passed; Linux cargo check, Clippy, formatting, and diff checks passed",
+        "Final candidate after recovery-liveness hardening is the validated source for the evidence above",
         "Headless Storybook canvas evidence captured for healthy, recovering, and degraded retention recovery states and confirmed by the owner"
       ]
     }

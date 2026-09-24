@@ -613,6 +613,18 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
             inventory: rawCaptureInventoryLabel,
           })}
         </span>
+        <span
+          className="sr-only"
+          data-testid="system-status-retention-recovery-live"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {[
+            t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`),
+            recoveryStageLabel(recovery?.stage),
+            recoveryHints || t("system.status.runtimePressure.additiveUnknown"),
+          ].join(" · ")}
+        </span>
         {health ? (
           <details className="rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
             <summary className="cursor-pointer text-sm font-semibold text-base-content">
@@ -798,13 +810,6 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     {t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`)}
                   </span>
                 </div>
-                <span className="sr-only" aria-live="polite" aria-atomic="true">
-                  {[
-                    t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`),
-                    recoveryStageLabel(recovery?.stage),
-                    recoveryHints || t("system.status.runtimePressure.additiveUnknown"),
-                  ].join(" · ")}
-                </span>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <BreakdownRow
                     label={t("system.status.runtimePressure.retentionRecovery.stage")}
