@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.34",
+  "base_stable_version": "2.71.33",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-24T13:51:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.34",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f730ab004ca9eb23199e86c89f64ddcc94eb33b3",
+  "pr_number": 1011,
+  "pr_title": "perf(web): isolate dashboard live timing renders",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.34",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.34",
+  "target_sha": "ade8dcfed2ef1da12bfba55658710451dcc10bfe",
+  "type_label": "type:patch"
+}
