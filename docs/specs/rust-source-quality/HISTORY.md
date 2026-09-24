@@ -68,10 +68,17 @@ responsibilities move into
 existing crate-visible consumers retain the parent paths through explicit
 re-exports. The parent decreases from 2,555 to 2,293 physical lines and the
 279-line child remains below the production target. The parent candidate is
-removed from the quality policy inventory, leaving 32 production and 23
-test/helper candidates (55 entries total); no further source-quality split is
-planned from this parent. Runtime behavior, persistence, schema, SSE, and
-public API contracts remain unchanged.
+removed from the quality policy inventory. Runtime behavior, persistence,
+schema, SSE, and public API contracts remain unchanged.
+
+The OAuth bridge test module is now a fifth named child module. The complete
+test block moves from `src/oauth_bridge.rs` to
+`src/oauth_bridge/tests.rs`; the parent retains the same test module path
+and private-item access. The parent is 2,040 physical lines and the child is
+720 physical lines, both below their targets. The current inventory therefore
+has 31 production and 23 test/helper candidates (54 entries total), while
+the immutable preparation baseline remains 32 and 23. No production OAuth
+bridge logic, test names, assertions, or public behavior changed.
 
 Validation for this extraction is the focused Dashboard Activity cache tests,
 both lightweight and stateful SQLite backend profiles, rustfmt, all-target

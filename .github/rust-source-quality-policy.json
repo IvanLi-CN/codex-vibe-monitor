@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 55,
+    "inventory_entries": 54,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -95,12 +95,6 @@
       "role": "production",
       "line_budget": 3269,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
-    },
-    {
-      "path": "src/oauth_bridge.rs",
-      "role": "production",
-      "line_budget": 2762,
-      "next_module_workstream": "Split OAuth bridge request rewriting, header forwarding, installation state, and test support."
     },
     {
       "path": "src/proxy/dispatch.rs",

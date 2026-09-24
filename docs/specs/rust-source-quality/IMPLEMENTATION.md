@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 55 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 54 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -80,12 +80,20 @@ is below the 2,500-line production target and is not a selected inventory
 entry. The parent candidate is removed from the policy inventory; no further
 source-quality extraction is planned from this parent.
 
+The OAuth bridge extraction moves the complete contiguous `#[cfg(test)] mod tests` block from `src/oauth_bridge.rs` into
+`src/oauth_bridge/tests.rs`. The parent keeps the same
+`#[cfg(test)] mod tests;` declaration, so the test module path, private-item
+access, test names, and assertions remain unchanged. The parent is 2,040
+physical lines and the test helper is 720 physical lines; both are below their
+respective targets, so `src/oauth_bridge.rs` is removed from the policy
+inventory.
+
 ## Inventory Contract
 
-The policy has 32 `production` entries above the 2,500-line destination target
+The policy has 31 `production` entries above the 2,500-line destination target
 and 23 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 55 paths; a long path absent from the inventory is
+The checker only reads those 54 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
