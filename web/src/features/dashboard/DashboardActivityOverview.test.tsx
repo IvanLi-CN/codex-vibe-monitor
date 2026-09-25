@@ -13,6 +13,7 @@ const hookMocks = vi.hoisted(() => ({
   useTimeseries: vi.fn(),
   useParallelWorkStats: vi.fn(),
   useDashboardNetworkTimeseries: vi.fn(),
+  useDashboardActivitySnapshot: vi.fn(),
 }));
 
 const componentState = vi.hoisted(() => ({
@@ -37,6 +38,10 @@ vi.mock("../../hooks/useParallelWorkStats", () => ({
 
 vi.mock("../../hooks/useDashboardNetworkTimeseries", () => ({
   useDashboardNetworkTimeseries: hookMocks.useDashboardNetworkTimeseries,
+}));
+
+vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
+  useDashboardActivitySnapshot: hookMocks.useDashboardActivitySnapshot,
 }));
 
 vi.mock("../../lib/sse", () => ({
@@ -309,6 +314,17 @@ function useSummaryStoreValue(window: string) {
 }
 
 beforeAll(() => {
+  hookMocks.useDashboardActivitySnapshot.mockReturnValue({
+    data: null,
+    isLoading: false,
+    isRefreshing: false,
+    error: null,
+    reload: vi.fn(),
+    recentLoading: false,
+    recentError: null,
+    recentInvocationLimit: 0,
+    retryRecent: vi.fn(),
+  });
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: localStorageMock,

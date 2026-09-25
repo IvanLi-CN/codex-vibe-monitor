@@ -295,7 +295,7 @@ export function DashboardInvocationTimeline({
 
       <div className="overflow-x-auto rounded-lg border border-base-content/10 bg-base-300/20">
         <div className="min-w-[680px] p-3">
-          <div className="mb-2 flex items-center gap-2 text-[11px] text-base-content/55">
+          <div className="sticky top-0 z-10 mb-2 flex items-center gap-2 bg-base-300/95 py-1 text-[11px] text-base-content/55">
             <span className="w-12 shrink-0">
               {t("dashboard.activityOverview.timelineLaneAxis")}
             </span>
@@ -315,99 +315,107 @@ export function DashboardInvocationTimeline({
           </div>
 
           <div
-            className="relative flex"
-            onPointerMove={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              const ratio = Math.min(
-                1,
-                Math.max(0, (event.clientX - rect.left - 48) / Math.max(1, rect.width - 112)),
-              );
-              const hoverStepMs = Math.max(1_000, Math.min(15_000, windowSpan / 240));
-              const nextHoverMs =
-                plotWindow.startMs + Math.round((ratio * windowSpan) / hoverStepMs) * hoverStepMs;
-              const now = performance.now();
-              if (now - lastHoverUpdateMs.current < 50) return;
-              lastHoverUpdateMs.current = now;
-              setHoverMs((current) => (current === nextHoverMs ? current : nextHoverMs));
-            }}
-            onPointerLeave={() => setHoverMs(null)}
+            data-testid="dashboard-invocation-timeline-lanes"
+            className="max-h-[32rem] overflow-y-auto overscroll-contain"
           >
-            <div className="relative w-12 shrink-0" style={{ height: `${laneCount * 30 + 12}px` }}>
-              <span className="absolute left-0 top-1 text-[10px] text-base-content/50">
-                {laneCount}
-              </span>
-              <span className="absolute bottom-1 left-0 text-[10px] text-base-content/50">1</span>
-            </div>
-            <div className="relative flex-1" style={{ height: `${laneCount * 30 + 12}px` }}>
-              {Array.from({ length: laneCount }, (_, lane) => (
-                <div
-                  key={`lane-${lane}`}
-                  className="absolute inset-x-0 border-t border-dashed border-base-content/10"
-                  style={{ top: `${lane * 30 + 14}px` }}
-                />
-              ))}
-              {lanes.map((item) => {
-                const status = resolveStatus(item.record);
-                const left = Math.max(0, Math.min(100, xFor(item.startMs)));
-                const right = Math.max(left, Math.min(100, xFor(item.endMs)));
-                const width = Math.max(0.25, right - left);
-                const marker =
-                  item.record.firstTokenMs != null
-                    ? Math.max(left, Math.min(100, xFor(item.startMs + item.record.firstTokenMs)))
-                    : null;
-                const statusLabel =
-                  {
-                    success: t("dashboard.activityOverview.timelineStatusSuccess"),
-                    requesting: t("dashboard.activityOverview.timelineStatusRequesting"),
-                    responding: t("dashboard.activityOverview.timelineStatusResponding"),
-                    queued: t("dashboard.activityOverview.timelineStatusQueued"),
-                    failed: t("dashboard.activityOverview.timelineStatusFailed"),
-                    unknown: t("dashboard.activityOverview.timelineStatusUnknown"),
-                    interrupted: t("dashboard.activityOverview.timelineStatusUnknown"),
-                  }[status] ?? t("dashboard.activityOverview.timelineStatusUnknown");
-                return (
-                  <button
-                    type="button"
-                    key={`${item.record.invokeId}:${item.record.occurredAt}`}
-                    className={`absolute flex appearance-none items-center overflow-visible rounded border px-1 text-left text-[10px] font-medium shadow-sm ${statusClass(status)}`}
-                    aria-label={`${item.record.invokeId} · ${statusLabel} · ${formatDuration(item.record)}`}
-                    style={{
-                      left: `${left}%`,
-                      top: `${item.lane * 30 + 5}px`,
-                      width: `${width}%`,
-                      minWidth: "3px",
-                      height: "18px",
-                    }}
-                    title={`${item.record.invokeId} · ${formatDuration(item.record)}`}
-                    onFocus={() => setHoverMs((item.startMs + item.endMs) / 2)}
-                    onBlur={() => setHoverMs(null)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        setHoverMs((item.startMs + item.endMs) / 2);
-                      }
-                    }}
-                  >
-                    <span className="truncate">{item.record.invokeId.slice(0, 8)}</span>
-                    {marker != null ? (
-                      <span
-                        className="absolute -top-1 h-5 w-px bg-base-content"
-                        style={{ left: `${((marker - left) / Math.max(width, 0.25)) * 100}%` }}
-                      />
-                    ) : null}
-                  </button>
+            <div
+              className="relative flex"
+              onPointerMove={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                const ratio = Math.min(
+                  1,
+                  Math.max(0, (event.clientX - rect.left - 48) / Math.max(1, rect.width - 112)),
                 );
-              })}
-              {hoverMs != null ? (
-                <div
-                  className="pointer-events-none absolute inset-y-0 w-px bg-info/80"
-                  style={{ left: `${xFor(hoverMs)}%` }}
-                />
-              ) : null}
-            </div>
-            <div className="w-16 shrink-0 text-right text-[10px] text-base-content/50">
-              <span>{Math.round(ttft.maxValue)} ms</span>
-              <span className="absolute bottom-0 right-0">0 ms</span>
+                const hoverStepMs = Math.max(1_000, Math.min(15_000, windowSpan / 240));
+                const nextHoverMs =
+                  plotWindow.startMs + Math.round((ratio * windowSpan) / hoverStepMs) * hoverStepMs;
+                const now = performance.now();
+                if (now - lastHoverUpdateMs.current < 50) return;
+                lastHoverUpdateMs.current = now;
+                setHoverMs((current) => (current === nextHoverMs ? current : nextHoverMs));
+              }}
+              onPointerLeave={() => setHoverMs(null)}
+            >
+              <div
+                className="relative w-12 shrink-0"
+                style={{ height: `${laneCount * 30 + 12}px` }}
+              >
+                <span className="absolute left-0 top-1 text-[10px] text-base-content/50">
+                  {laneCount}
+                </span>
+                <span className="absolute bottom-1 left-0 text-[10px] text-base-content/50">1</span>
+              </div>
+              <div className="relative flex-1" style={{ height: `${laneCount * 30 + 12}px` }}>
+                {Array.from({ length: laneCount }, (_, lane) => (
+                  <div
+                    key={`lane-${lane}`}
+                    className="absolute inset-x-0 border-t border-dashed border-base-content/10"
+                    style={{ top: `${lane * 30 + 14}px` }}
+                  />
+                ))}
+                {lanes.map((item) => {
+                  const status = resolveStatus(item.record);
+                  const left = Math.max(0, Math.min(100, xFor(item.startMs)));
+                  const right = Math.max(left, Math.min(100, xFor(item.endMs)));
+                  const width = Math.max(0.25, right - left);
+                  const marker =
+                    item.record.firstTokenMs != null
+                      ? Math.max(left, Math.min(100, xFor(item.startMs + item.record.firstTokenMs)))
+                      : null;
+                  const statusLabel =
+                    {
+                      success: t("dashboard.activityOverview.timelineStatusSuccess"),
+                      requesting: t("dashboard.activityOverview.timelineStatusRequesting"),
+                      responding: t("dashboard.activityOverview.timelineStatusResponding"),
+                      queued: t("dashboard.activityOverview.timelineStatusQueued"),
+                      failed: t("dashboard.activityOverview.timelineStatusFailed"),
+                      unknown: t("dashboard.activityOverview.timelineStatusUnknown"),
+                      interrupted: t("dashboard.activityOverview.timelineStatusInterrupted"),
+                    }[status] ?? t("dashboard.activityOverview.timelineStatusUnknown");
+                  return (
+                    <button
+                      type="button"
+                      key={`${item.record.invokeId}:${item.record.occurredAt}`}
+                      className={`absolute flex appearance-none items-center overflow-visible rounded border px-1 text-left text-[10px] font-medium shadow-sm ${statusClass(status)}`}
+                      aria-label={`${item.record.invokeId} · ${statusLabel} · ${formatDuration(item.record)}`}
+                      style={{
+                        left: `${left}%`,
+                        top: `${item.lane * 30 + 5}px`,
+                        width: `${width}%`,
+                        minWidth: "3px",
+                        height: "18px",
+                      }}
+                      title={`${item.record.invokeId} · ${formatDuration(item.record)}`}
+                      onFocus={() => setHoverMs((item.startMs + item.endMs) / 2)}
+                      onBlur={() => setHoverMs(null)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setHoverMs((item.startMs + item.endMs) / 2);
+                        }
+                      }}
+                    >
+                      <span className="truncate">{item.record.invokeId.slice(0, 8)}</span>
+                      {marker != null ? (
+                        <span
+                          className="absolute -top-1 h-5 w-px bg-base-content"
+                          style={{ left: `${((marker - left) / Math.max(width, 0.25)) * 100}%` }}
+                        />
+                      ) : null}
+                    </button>
+                  );
+                })}
+                {hoverMs != null ? (
+                  <div
+                    className="pointer-events-none absolute inset-y-0 w-px bg-info/80"
+                    style={{ left: `${xFor(hoverMs)}%` }}
+                  />
+                ) : null}
+              </div>
+              <div className="w-16 shrink-0 text-right text-[10px] text-base-content/50">
+                <span>{Math.round(ttft.maxValue)} ms</span>
+                <span className="absolute bottom-0 right-0">0 ms</span>
+              </div>
             </div>
           </div>
 
@@ -469,6 +477,7 @@ export function DashboardInvocationTimeline({
           ["responding", t("dashboard.activityOverview.timelineStatusResponding")],
           ["queued", t("dashboard.activityOverview.timelineStatusQueued")],
           ["failed", t("dashboard.activityOverview.timelineStatusFailed")],
+          ["interrupted", t("dashboard.activityOverview.timelineStatusInterrupted")],
           ["unknown", t("dashboard.activityOverview.timelineStatusUnknown")],
         ].map(([status, label]) => (
           <span key={status} className="inline-flex items-center gap-1">
