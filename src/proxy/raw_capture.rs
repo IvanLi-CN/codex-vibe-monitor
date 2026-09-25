@@ -482,7 +482,7 @@ pub(crate) fn estimate_proxy_cost_breakdown(
             false
         } else {
             match actual_tier.as_deref() {
-                None | Some("default") | Some("standard") => false,
+                None | Some("standard") => false,
                 Some("priority") | Some("fast") => true,
                 Some(_) => return (None, false, price_version),
             }

@@ -140,6 +140,29 @@ fn gpt_6_api_key_request_tier_hint_without_response_tier_stays_standard() {
     );
 }
 
+#[test]
+fn gpt_6_default_actual_tier_does_not_fall_back_to_standard() {
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(100),
+        total_tokens: Some(1_100),
+        ..ParsedUsage::default()
+    };
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &default_pricing_catalog(),
+        Some("gpt-6-astra"),
+        &usage,
+        Some("default"),
+        ProxyPricingMode::ResponseTier,
+    );
+
+    assert!(
+        cost.is_none(),
+        "unsupported actual tier must have unknown cost"
+    );
+    assert!(!estimated, "unsupported actual tier must not be estimated");
+}
+
 #[tokio::test]
 async fn concurrent_reported_cache_write_column_migration_is_database_serialized() {
     let temp_dir = make_temp_test_dir("reported-cache-write-concurrent-migration");
