@@ -378,7 +378,11 @@ function DashboardNaturalDayRangePanel({
         networkLoading={networkLoading}
         networkError={networkError}
         upstreamAccountId={upstreamAccountId}
-        liveRevision={liveRevision ?? dashboardActivity?.liveRevision}
+        liveRevision={
+          timeseriesRange === "today"
+            ? (liveRevision ?? dashboardActivity?.liveRevision)
+            : undefined
+        }
       />
     </div>
   );
@@ -1406,7 +1410,6 @@ export function DashboardActivityOverview({
             dashboardActivity={dashboardActivity}
             dashboardActivityLoading={dashboardActivityLoading}
             dashboardActivityError={dashboardActivityError}
-            liveRevision={timelineLiveRevision}
           />
         ) : null}
         {showSnapshotEmptyState ? null : activeRange === "1d" &&

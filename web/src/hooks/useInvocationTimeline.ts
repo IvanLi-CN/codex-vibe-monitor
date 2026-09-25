@@ -108,12 +108,13 @@ export function useInvocationTimeline({
       const liveDelta = priorBounds ? bounds.endMs - priorBounds.endMs : 0;
       const followsLiveEnd =
         liveDelta > 0 && priorBounds != null && Math.abs(current.endMs - priorBounds.endMs) <= 1;
-      return clampWindow(
+      const next = clampWindow(
         followsLiveEnd
           ? { startMs: current.startMs + liveDelta, endMs: current.endMs + liveDelta }
           : current,
         bounds,
       );
+      return next.startMs === current.startMs && next.endMs === current.endMs ? current : next;
     });
   }, [bounds, boundsContextKey, closedNaturalDay, response]);
 
@@ -175,12 +176,13 @@ export function useInvocationTimeline({
   );
 
   // liveRevision is an explicit SSE-driven refresh trigger for the stable callback.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: liveRevision intentionally retriggers the fetch.
+  const liveRefreshRevision = closedNaturalDay ? undefined : liveRevision;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: liveRefreshRevision intentionally retriggers the fetch.
   useEffect(() => {
     if (!enabled) return;
     if (!closedNaturalDay && !liveRefreshAllowed) return;
     void refresh();
-  }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh, liveRevision]);
+  }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh, liveRefreshRevision]);
 
   useEffect(() => {
     if (!enabled || closedNaturalDay || !liveRefreshAllowed) return;

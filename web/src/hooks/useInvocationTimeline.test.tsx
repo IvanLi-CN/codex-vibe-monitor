@@ -61,10 +61,19 @@ function render(ui: React.ReactNode) {
   });
 }
 
-function Probe({ response }: { response: TimeseriesResponse }) {
+function Probe({
+  response,
+  closedNaturalDay = false,
+  liveRevision,
+}: {
+  response: TimeseriesResponse;
+  closedNaturalDay?: boolean;
+  liveRevision?: number;
+}) {
   const { data } = useInvocationTimeline({
     response,
-    closedNaturalDay: false,
+    closedNaturalDay,
+    liveRevision,
   });
   return <output data-testid="invoke-id">{data?.records[0]?.invokeId ?? ""}</output>;
 }
@@ -124,5 +133,46 @@ describe("useInvocationTimeline", () => {
       await Promise.resolve();
     });
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("current-invoke");
+  });
+
+  it("does not refresh a closed day when the live revision changes", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("closed-day"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} closedNaturalDay liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={response} closedNaturalDay liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refetch when a live response keeps the same time bounds", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("stable-window"));
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const nextResponse = { ...firstResponse, points: [] };
+
+    render(<Probe response={firstResponse} liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={nextResponse} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
   });
 });
