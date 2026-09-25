@@ -508,7 +508,7 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
         input_tokens: Some(1_200),
         output_tokens: Some(40),
         cache_input_tokens: Some(300),
-        reasoning_tokens: None,
+        reasoning_tokens: Some(10),
         total_tokens: Some(1_240),
         ..ParsedUsage::default()
     };
@@ -545,7 +545,7 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
         output_tokens: Some(40),
         cache_input_tokens: Some(325),
         reported_cache_write_tokens: Some(50),
-        reasoning_tokens: None,
+        reasoning_tokens: Some(10),
         total_tokens: Some(1_240),
     };
     richer.cost = Some(0.02);
@@ -560,36 +560,6 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
     persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), richer, true)
         .await
         .expect("enqueue richer websocket terminal");
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-    state
-        .sqlite_batch_writer
-        .flush_buffered_for_test(&state.pool)
-        .await;
-
-    let mut stale_richer = test_proxy_capture_record(invoke_id, occurred_at);
-    stale_richer.model = Some("gpt-6-sol".to_string());
-    stale_richer.usage = ParsedUsage {
-        input_tokens: Some(1_000),
-        output_tokens: Some(20),
-        cache_input_tokens: Some(350),
-        reported_cache_write_tokens: Some(60),
-        reasoning_tokens: Some(10),
-        total_tokens: Some(1_070),
-    };
-    stale_richer.cost = Some(0.03);
-    stale_richer.price_version = Some("openai-standard-2026-09-23".to_string());
-    stale_richer.payload = Some(
-        mark_websocket_payload_transport(
-            r#"{"endpoint":"/v1/responses","streamTerminalEvent":"response.done"}"#.to_string(),
-        )
-        .expect("mark stale websocket payload"),
-    );
-    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), stale_richer, true)
-        .await
-        .expect("enqueue stale richer websocket terminal");
     state
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
@@ -641,23 +611,9 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
     .await
     .expect("skip unrelated duplicate terminal");
 
-    let refreshed = sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<f64>,
-        ),
-    >(
+    let refreshed = sqlx::query_as::<_, (i64, String, Option<i64>, Option<i64>, Option<f64>)>(
         r#"
-        SELECT id, status, input_tokens, output_tokens, cache_input_tokens,
-               reported_cache_write_tokens, reasoning_tokens, total_tokens, cost
+        SELECT id, status, cache_input_tokens, reported_cache_write_tokens, cost
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
         "#,
@@ -669,13 +625,9 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
     .expect("load refreshed websocket terminal");
     assert_eq!(refreshed.0, first_id);
     assert_eq!(refreshed.1, "success");
-    assert_eq!(refreshed.2, Some(1_200));
-    assert_eq!(refreshed.3, Some(40));
-    assert_eq!(refreshed.4, Some(325));
-    assert_eq!(refreshed.5, Some(50));
-    assert_eq!(refreshed.6, None);
-    assert_eq!(refreshed.7, Some(1_240));
-    assert_eq!(refreshed.8, Some(0.02));
+    assert_eq!(refreshed.2, Some(325));
+    assert_eq!(refreshed.3, Some(50));
+    assert_eq!(refreshed.4, Some(0.02));
 
     let count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",

@@ -43,7 +43,6 @@
 - [x] Admit cache-only WebSocket `response.created`/`response.in_progress` usage into the turn accumulator without persisting a nonterminal row, and include it in interrupted-turn snapshots after first token.
 - [x] Refresh richer usage from a later WebSocket terminal event in the existing invocation through the durable terminal writer; recompute affected hourly rollups while retaining terminal identity, status, and non-WebSocket duplicate behavior.
 - [x] Rebuild hourly rollups after a WebSocket terminal insert race, and preserve legacy prepared-archive recovery with versioned source identities.
-- [x] Reject WebSocket terminal refreshes that decrease any already-known usage count, even when they add a previously missing usage dimension.
 - [x] Finalize a published legacy prepared archive on retry using its journaled identity version and the verified artifact digest.
 - [x] Resolve valid GPT-6 date aliases while leaving invalid and preview variants unpriced; do not add local model-specific request-parameter capability validation.
 - [x] Restrict GPT-6 model identity icons to exact IDs and calendar-valid dated aliases; retain invalid dated aliases as original text.

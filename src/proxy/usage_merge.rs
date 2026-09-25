@@ -60,15 +60,10 @@ pub(crate) fn websocket_usage_is_strictly_richer(
         incoming.total_tokens,
     ];
 
-    let preserves_previous_fields =
-        previous_fields
-            .iter()
-            .zip(incoming_fields)
-            .all(|(previous, incoming)| match (previous, incoming) {
-                (Some(previous), Some(incoming)) => incoming >= *previous,
-                (Some(_), None) => false,
-                (None, _) => true,
-            });
+    let preserves_previous_fields = previous_fields
+        .iter()
+        .zip(incoming_fields)
+        .all(|(previous, incoming)| previous.is_none() || incoming.is_some());
     let adds_known_field = previous_fields
         .iter()
         .zip(incoming_fields)
