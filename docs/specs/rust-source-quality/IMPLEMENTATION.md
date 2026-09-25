@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 54 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 53 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -88,12 +88,21 @@ physical lines and the test helper is 720 physical lines; both are below their
 respective targets, so `src/oauth_bridge.rs` is removed from the policy
 inventory.
 
+The service-tier backfill extraction moves the complete contiguous test group
+from the verified baseline parent lines 34 through 193 inclusive into
+`src/tests/stateful_sqlite/proxy_backfill_and_cost_repairs/service_tier_backfill.rs`.
+The group contains the three service-tier backfill tests and keeps their names,
+bodies, assertions, fixtures, thresholds, and `stateful_sqlite` resource bucket
+unchanged. The parent is now 2,948 physical lines and the child is 162 physical
+lines, so both are below the 3,000-line test/helper target. The parent is
+removed from the policy inventory; no production runtime behavior changes.
+
 ## Inventory Contract
 
 The policy has 31 `production` entries above the 2,500-line destination target
-and 23 `test_helper` entries above the 3,000-line destination target. Each
+and 22 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 54 paths; a long path absent from the inventory is
+The checker only reads those 53 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
@@ -124,7 +133,8 @@ No global Clippy pedantic configuration or new dependency is introduced.
 - `bash .github/scripts/run-rust-source-quality.sh`
 - `bun run verify:rust`
 - `bash .github/scripts/test-quality-gates-contract.sh`
-- Focused existing summary-projection/stateful SQLite coverage and
+- Focused service-tier backfill, summary-projection, and stateful SQLite coverage,
+  including `cargo test backfill_invocation_service_tiers -- --nocapture`, and
   focused workflow-detail coverage, including
   `cargo test workflow_usage_audit_only_attaches_to_last_success_like_attempt -- --nocapture`,
   followed by `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
@@ -133,6 +143,6 @@ No global Clippy pedantic configuration or new dependency is introduced.
 
 ## Out of Scope
 
-No Rust production/test module moves, public protocol changes, persistence
+No additional production runtime changes, public protocol changes, persistence
 changes, release behavior, Web changes, Docker execution, or runtime acceptance
 evidence belong to this implementation state.

@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 54,
+    "inventory_entries": 53,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -209,12 +209,6 @@
       "role": "test_helper",
       "line_budget": 6302,
       "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/proxy_backfill_and_cost_repairs.rs",
-      "role": "test_helper",
-      "line_budget": 3107,
-      "next_module_workstream": "Split proxy backfill/cost repair fixtures by early/late backfill, rollups, and locks."
     },
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
