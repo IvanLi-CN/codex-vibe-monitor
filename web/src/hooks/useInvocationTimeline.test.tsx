@@ -175,4 +175,26 @@ describe("useInvocationTimeline", () => {
 
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
   });
+
+  it("uses one request when the live time bounds advance", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("advancing-window"));
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const nextResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+
+    render(<Probe response={firstResponse} liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={nextResponse} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
 });
