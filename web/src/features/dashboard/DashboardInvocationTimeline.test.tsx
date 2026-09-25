@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { InvocationTimelineRecord } from "../../lib/api";
+import type { InvocationTimelineRecord, InvocationTimelineResponse } from "../../lib/api";
 import {
   assignInvocationTimelineLanes,
   getInvocationTimelineLaneCount,
+  shouldFallbackForInvalidTimelineBounds,
 } from "./DashboardInvocationTimeline";
 
 function record(
@@ -85,5 +86,24 @@ describe("assignInvocationTimelineLanes", () => {
 
     expect(lanes.map((item) => item.lane)).toEqual([0, 1, 2, 0]);
     expect(getInvocationTimelineLaneCount(lanes)).toBe(3);
+  });
+});
+
+describe("shouldFallbackForInvalidTimelineBounds", () => {
+  it("falls back when a response exists without valid bounds", () => {
+    const response = {
+      rangeStart: "not-a-date",
+      rangeEnd: "2026-03-26T12:00:00.000Z",
+      bucketSeconds: 300,
+      points: [],
+    };
+
+    expect(shouldFallbackForInvalidTimelineBounds(response, null, null)).toBe(true);
+    expect(shouldFallbackForInvalidTimelineBounds(response, { startMs: 1, endMs: 2 }, null)).toBe(
+      false,
+    );
+    expect(
+      shouldFallbackForInvalidTimelineBounds(response, null, {} as InvocationTimelineResponse),
+    ).toBe(false);
   });
 });
