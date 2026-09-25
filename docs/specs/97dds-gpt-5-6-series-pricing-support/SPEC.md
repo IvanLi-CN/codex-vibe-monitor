@@ -78,6 +78,7 @@ scan/update/skip counters, cursor, and drained-or-continuing state.
 - Do not promote the temporary `gpt-6-terra` compatibility row into the official model list or invent a generic `gpt-6` placeholder model id.
 - Do not locally validate model-specific request parameter capabilities; upstream validation errors remain authoritative.
 - Do not change legacy model pricing rules except where schema plumbing is required for backward compatibility.
+- Do not expand stream event admission for reasoning-only partial usage updates in this topic; address that behavior under a separate contract.
 
 ## Requirements
 
@@ -170,6 +171,7 @@ The canonical upstream usage field is `usage.input_tokens_details.cache_write_to
 - Given a GPT-6 invocation with reasoning Tokens, when cost is estimated, then those Tokens use the output rate without a separate reasoning-price row.
 - Given `gpt-6-astra-2026-09-23`, `gpt-6-sol-2026-09-23`, or `gpt-6-luna-2026-09-23`, when cost is estimated, then the matching base pricing row is used rather than `unknown`.
 - Given an invalid GPT-6 date suffix such as `gpt-6-sol-2026-99-99` or a preview variant such as `gpt-6-astra-preview`, when cost is estimated, then the model remains unpriced.
+- Given a custom pricing catalog with an exact row for an invalid GPT-6 date suffix or preview variant, when cost is estimated, then the model remains unpriced; the exact `gpt-6-terra` compatibility row remains usable.
 - Given an invalid dated GPT-6 alias such as `gpt-6-astra-2026-99-99`, when its model identity is rendered, then the complete identifier remains plain text and receives no official GPT-6 icon.
 - Given a repo-managed catalog containing temporary `gpt-6-terra`, when official GPT-6 preset and `/v1/models` lists are generated, then Terra remains excluded while direct compatibility pricing remains intact.
 - Given a GPT-6 model that rejects a request parameter, when the proxy forwards it, then this project does not perform model-specific capability validation and upstream validation remains authoritative.

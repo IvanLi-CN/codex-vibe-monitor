@@ -2050,6 +2050,66 @@ fn estimate_proxy_cost_rejects_invalid_or_preview_gpt_6_variants() {
 }
 
 #[test]
+fn estimate_proxy_cost_rejects_invalid_gpt_6_variants_even_with_exact_custom_prices() {
+    let mut catalog = default_pricing_catalog();
+    for model in [
+        "gpt-6-astra-2026-02-29",
+        "gpt-6-astra-preview",
+        "gpt-6-terra-2026-02-29",
+        "gpt-6-terra-preview",
+    ] {
+        catalog.models.insert(
+            model.to_string(),
+            ModelPricing {
+                input_per_1m: 1.0,
+                output_per_1m: 2.0,
+                cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        );
+    }
+    let usage = ParsedUsage {
+        input_tokens: Some(100),
+        output_tokens: Some(20),
+        total_tokens: Some(120),
+        ..ParsedUsage::default()
+    };
+
+    for model in [
+        "gpt-6-astra-2026-02-29",
+        "gpt-6-astra-preview",
+        "gpt-6-terra-2026-02-29",
+        "gpt-6-terra-preview",
+    ] {
+        let (cost, estimated, _) = estimate_proxy_cost(
+            &catalog,
+            Some(model),
+            &usage,
+            None,
+            ProxyPricingMode::ResponseTier,
+        );
+        assert!(cost.is_none(), "{model} should remain unpriced");
+        assert!(!estimated, "{model} should not be estimated");
+    }
+
+    let (terra_cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-6-terra"),
+        &usage,
+        None,
+        ProxyPricingMode::ResponseTier,
+    );
+    assert!(
+        estimated,
+        "the exact Terra compatibility row remains usable"
+    );
+    assert!(terra_cost.is_some());
+}
+
+#[test]
 fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
     let catalog = PricingCatalog {
         version: "unit-test".to_string(),

@@ -267,6 +267,27 @@ pub(crate) fn resolve_pricing_for_model<'a>(
     catalog: &'a PricingCatalog,
     model: &str,
 ) -> Option<&'a ModelPricing> {
+    const GPT_6_PRICING_MODELS: [&str; 4] =
+        ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6-terra"];
+
+    for base in GPT_6_PRICING_MODELS {
+        if model == base {
+            return catalog.models.get(base);
+        }
+        if model
+            .strip_prefix(base)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+        {
+            if dated_model_alias_base(model) == Some(base) {
+                return catalog
+                    .models
+                    .get(model)
+                    .or_else(|| catalog.models.get(base));
+            }
+            return None;
+        }
+    }
+
     if let Some(pricing) = catalog.models.get(model) {
         return Some(pricing);
     }
