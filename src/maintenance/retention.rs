@@ -121,6 +121,8 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_RAW_DIRECTORY_P1_PROBES:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_FILE_METADATA_CHECKS:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_RAW_UNLINK_FAILURE:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
 }
@@ -216,6 +218,14 @@ fn retention_test_raw_directory_entry_event() {
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     });
+}
+
+fn retention_raw_file_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    #[cfg(test)]
+    let _ = RETENTION_TEST_RAW_FILE_METADATA_CHECKS.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    fs::symlink_metadata(path)
 }
 
 #[cfg(test)]
@@ -1026,6 +1036,14 @@ impl RetentionWriteAdmission {
     }
 }
 
+async fn acquire_retention_filesystem_pressure_slot(
+    operation: &'static str,
+) -> Option<crate::db_pressure::DbBackgroundPermit> {
+    acquire_retention_write_admission(operation)
+        .await
+        .map(RetentionWriteAdmission::release_write_permit_keep_pressure_slot)
+}
+
 pub(super) async fn acquire_retention_write_admission(
     operation: &'static str,
 ) -> Option<RetentionWriteAdmission> {
@@ -1043,6 +1061,29 @@ pub(super) async fn acquire_retention_write_admission(
         retention_record_defer(operation, reason);
         return None;
     }
+    let (mut write_permit, coordinator_snapshot) =
+        acquire_retention_write_coordinator(operation).await?;
+    match pressure_gate.try_begin_background(operation) {
+        Ok(pressure_permit) => Some(RetentionWriteAdmission {
+            write_permit,
+            _pressure_permit: pressure_permit,
+            p1_waiter_count: coordinator_snapshot.p1_waiter_count,
+        }),
+        Err(reason) => {
+            retention_record_defer(operation, reason);
+            write_permit.revoke_fairness_admission();
+            drop(write_permit);
+            None
+        }
+    }
+}
+
+async fn acquire_retention_write_coordinator(
+    operation: &'static str,
+) -> Option<(
+    crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
+    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
+)> {
     #[cfg(test)]
     let coordinator = RETENTION_TEST_WRITE_COORDINATOR
         .try_with(std::sync::Arc::clone)
@@ -1063,24 +1104,11 @@ pub(super) async fn acquire_retention_write_admission(
                 .await,
         ),
     };
-    let Some(mut write_permit) = write_permit else {
+    let Some(write_permit) = write_permit else {
         retention_record_defer(operation, "shutdown");
         return None;
     };
-    let coordinator_snapshot = coordinator.snapshot().await;
-    match pressure_gate.try_begin_background(operation) {
-        Ok(pressure_permit) => Some(RetentionWriteAdmission {
-            write_permit,
-            _pressure_permit: pressure_permit,
-            p1_waiter_count: coordinator_snapshot.p1_waiter_count,
-        }),
-        Err(reason) => {
-            retention_record_defer(operation, reason);
-            write_permit.revoke_fairness_admission();
-            drop(write_permit);
-            None
-        }
-    }
+    Some((write_permit, coordinator.snapshot().await))
 }
 
 #[derive(Debug, Default)]
@@ -4313,6 +4341,36 @@ async fn clear_retention_raw_reconciliation_row(
     Ok(())
 }
 
+async fn clear_retention_raw_reconciliation_row_with_pressure_slot(
+    pool: &Pool<Sqlite>,
+    raw_path: &str,
+    file_identity: Option<&str>,
+) -> Result<()> {
+    let Some((write_permit, _snapshot)) =
+        acquire_retention_write_coordinator("raw_reconciliation_ledger_cleanup").await
+    else {
+        return Err(retention_write_deferred(
+            "raw_reconciliation_ledger_cleanup",
+        ));
+    };
+    if let Some(file_identity) = file_identity {
+        sqlx::query(
+            "DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1 AND file_identity = ?2",
+        )
+        .bind(raw_path)
+        .bind(file_identity)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(raw_path)
+            .execute(pool)
+            .await?;
+    }
+    drop(write_permit);
+    Ok(())
+}
+
 async fn cleanup_missing_retention_raw_reconciliation_rows(
     pool: &Pool<Sqlite>,
     raw_root: &Path,
@@ -4358,37 +4416,35 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
             progressed = Some(row.raw_path.as_str());
             continue;
         }
-        match fs::symlink_metadata(&row.raw_path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                if let Err(error) = clear_retention_raw_reconciliation_row(
-                    pool,
-                    &row.raw_path,
-                    Some(&row.file_identity),
-                )
-                .await
-                {
+        let Some(_pressure_permit) =
+            acquire_retention_filesystem_pressure_slot("raw_reconciliation_ledger_metadata").await
+        else {
+            return Err(retention_write_deferred(
+                "raw_reconciliation_ledger_metadata",
+            ));
+        };
+        let metadata_missing_or_non_file =
+            match retention_raw_file_metadata(Path::new(&row.raw_path)) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                Ok(metadata) if !metadata.file_type().is_file() => true,
+                Err(_) => {
                     failures += 1;
-                    if is_retention_write_deferred(&error) {
-                        return Err(error);
-                    }
+                    false
                 }
+                Ok(_) => false,
+            };
+        if metadata_missing_or_non_file
+            && let Err(error) = clear_retention_raw_reconciliation_row_with_pressure_slot(
+                pool,
+                &row.raw_path,
+                Some(&row.file_identity),
+            )
+            .await
+        {
+            failures += 1;
+            if is_retention_write_deferred(&error) {
+                return Err(error);
             }
-            Ok(metadata) if !metadata.file_type().is_file() => {
-                if let Err(error) = clear_retention_raw_reconciliation_row(
-                    pool,
-                    &row.raw_path,
-                    Some(&row.file_identity),
-                )
-                .await
-                {
-                    failures += 1;
-                    if is_retention_write_deferred(&error) {
-                        return Err(error);
-                    }
-                }
-            }
-            Err(_) => failures += 1,
-            Ok(_) => {}
         }
         progressed = Some(row.raw_path.as_str());
     }
@@ -4511,16 +4567,32 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             return Ok(result);
         }
     };
+    let Some(_reference_resolution_pressure_permit) =
+        acquire_retention_filesystem_pressure_slot("raw_reconciliation_reference_resolution").await
+    else {
+        return Err(retention_write_deferred(
+            "raw_reconciliation_reference_resolution",
+        ));
+    };
     let referenced_candidates = retention_raw_candidates_with_links(
         config,
         &candidate_paths,
         &linked_paths,
         effective_fallback_root,
     );
+    drop(_reference_resolution_pressure_permit);
 
     for path in &candidate_paths {
         let path = normalize_path_for_compare(path);
-        let metadata = match fs::symlink_metadata(&path) {
+        let Some(_metadata_pressure_permit) =
+            acquire_retention_filesystem_pressure_slot("raw_reconciliation_candidate_metadata")
+                .await
+        else {
+            return Err(retention_write_deferred(
+                "raw_reconciliation_candidate_metadata",
+            ));
+        };
+        let metadata = match retention_raw_file_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -4529,6 +4601,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
+        drop(_metadata_pressure_permit);
         let raw_path = path.to_string_lossy().into_owned();
         let file_identity = retention_raw_file_identity(&metadata);
         let byte_size = match i64::try_from(metadata.len()) {

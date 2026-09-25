@@ -1842,6 +1842,15 @@ async fn raw_orphan_sweep_pressure_rejection_performs_no_directory_io() {
         b"candidate",
     )
     .expect("write raw candidate");
+    let ledger_path = config.proxy_raw_dir.join("pressure-ledger.bin");
+    fs::write(&ledger_path, b"ledger-candidate").expect("write ledger candidate");
+    sqlx::query(
+        "INSERT INTO retention_raw_reconciliation (raw_path, file_identity, byte_size, quarantined_at) VALUES (?1, 'pressure-ledger', 16, datetime('now'))",
+    )
+    .bind(ledger_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("seed raw reconciliation ledger row");
     let pressure_gate = std::sync::Arc::new(crate::db_pressure::DbPressureGate::new(
         1,
         std::time::Duration::from_secs(60),
@@ -1851,6 +1860,7 @@ async fn raw_orphan_sweep_pressure_rejection_performs_no_directory_io() {
         .expect("occupy the test background pressure slot");
     let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let entries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let metadata_checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut traversal = RetentionRawDirectoryTraversal::default();
     let result = crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
         .scope(
@@ -1859,7 +1869,16 @@ async fn raw_orphan_sweep_pressure_rejection_performs_no_directory_io() {
                 opens.clone(),
                 crate::maintenance::RETENTION_TEST_RAW_DIRECTORY_ENTRIES.scope(
                     entries.clone(),
-                    sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal),
+                    crate::maintenance::RETENTION_TEST_RAW_FILE_METADATA_CHECKS.scope(
+                        metadata_checks.clone(),
+                        sweep_orphan_proxy_raw_files_slice(
+                            &pool,
+                            &config,
+                            None,
+                            false,
+                            &mut traversal,
+                        ),
+                    ),
                 ),
             ),
         )
@@ -1868,6 +1887,11 @@ async fn raw_orphan_sweep_pressure_rejection_performs_no_directory_io() {
     assert!(result.is_err());
     assert_eq!(opens.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert_eq!(entries.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        metadata_checks.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "pressure rejection must not inspect raw files referenced by the ledger"
+    );
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
