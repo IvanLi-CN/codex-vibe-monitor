@@ -1992,6 +1992,8 @@ function systemStatus() {
   const pressureState = demoModel.snapshot.scene.replace("runtime-pressure-", "");
   const runtimeState = pressureState === demoModel.snapshot.scene ? "healthy" : pressureState;
   const accountingError = runtimeState === "accounting-error";
+  const rawOrphanSweepState =
+    runtimeState === "deferred" || runtimeState === "degraded" ? runtimeState : "idle";
   return {
     liveInvocationsCount: 128_076,
     successCount: 124_882,
@@ -2090,6 +2092,22 @@ function systemStatus() {
         failureFingerprint: runtimeState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
         deferReason: runtimeState === "deferred" ? "sqlite_pressure" : undefined,
         consecutiveFailureCount: runtimeState === "degraded" ? 3 : 0,
+      },
+      rawOrphanSweep: {
+        state: rawOrphanSweepState,
+        inspectedEntries: rawOrphanSweepState === "deferred" ? undefined : 96,
+        referencedSkipped: 12,
+        quarantined: rawOrphanSweepState === "degraded" ? 3 : 2,
+        removed: rawOrphanSweepState === "degraded" ? 0 : 1,
+        lastProgressAt: "2026-09-21T03:00:00Z",
+        nextRetryAt: rawOrphanSweepState === "idle" ? undefined : "2026-09-21T03:05:00Z",
+        deferReason:
+          rawOrphanSweepState === "deferred"
+            ? "sqlite_pressure"
+            : rawOrphanSweepState === "degraded"
+              ? "retry_backoff"
+              : undefined,
+        failureFingerprint: rawOrphanSweepState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
       },
       dashboardProjection: {
         mode: "auto",

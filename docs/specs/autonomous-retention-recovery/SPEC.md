@@ -212,6 +212,17 @@
   evidence_note: shows the failure stage, bounded retry metadata, and sanitized failure fingerprint in Runtime Pressure.
   image:
   ![System Status retention recovery degraded](./assets/retention-recovery-liveness-degraded.png)
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1440x1100
+  viewport_strategy: devtools-emulate
+  margin_policy: trim_only
+  evidence_surface: page
+  state: idle raw orphan sweep with deterministic mock counters
+  evidence_note: shows the per-slice directory-entry cap, referenced-file skips, quarantine and release counts; values are fixture data, not production telemetry.
+  image:
+  ![System Status raw orphan sweep](./assets/raw-orphan-sweep-desktop.png)
 
 ## References
 

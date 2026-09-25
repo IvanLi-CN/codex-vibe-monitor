@@ -520,6 +520,9 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert!(payload["databasePressure"]["sqliteBusyEvents"].is_u64());
     assert!(payload["databasePressure"]["sqliteLockedEvents"].is_u64());
     assert!(payload["databasePressure"]["poolAcquireTimeoutEvents"].is_u64());
+    assert_eq!(payload["rawOrphanSweep"]["state"], "unknown");
+    assert!(payload["rawOrphanSweep"]["inspectedEntries"].is_null());
+    assert!(payload["rawOrphanSweep"]["failureFingerprint"].is_null());
     assert_eq!(payload["dashboardProjection"]["mode"], "auto");
     assert_eq!(payload["dashboardProjection"]["livePathDbReadCount"], 0);
     assert!(payload["dashboardProjection"]["buildCount"].is_u64());
@@ -639,6 +642,18 @@ fn default_retention_recovery_snapshot_serializes_unmeasured_counts_as_null() {
     assert!(payload["preparedCount"].is_null());
     assert!(payload["quarantinedCount"].is_null());
     assert!(payload["expiredBacklogCount"].is_null());
+}
+
+#[test]
+fn default_raw_orphan_sweep_snapshot_serializes_unmeasured_counts_as_null() {
+    let payload = serde_json::to_value(crate::maintenance::RawOrphanSweepHealthSnapshot::default())
+        .expect("serialize default raw orphan sweep health");
+
+    assert_eq!(payload["state"], "unknown");
+    assert!(payload["inspectedEntries"].is_null());
+    assert!(payload["referencedSkipped"].is_null());
+    assert!(payload["quarantined"].is_null());
+    assert!(payload["removed"].is_null());
 }
 
 #[tokio::test]

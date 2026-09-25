@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add crash-safe autonomous archive recovery finalization and quarantine retirement, bounded historical raw-file reconciliation, an additive raw-capture circuit contract, and System Status health fields.",
-    "release_unit_description": "Autonomous retention recovery and raw capture circuit breaker.",
+    "description": "Add crash-safe autonomous archive recovery finalization and quarantine retirement, bounded historical raw-file reconciliation, an additive raw-capture circuit contract, a separately scheduled bounded orphan sweep, and System Status health fields.",
+    "release_unit_description": "Autonomous retention recovery, raw capture circuit breaker, and raw orphan sweep throughput.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -18,9 +18,10 @@
     "planned": {
       "impact": "patch",
       "reasoning": "The system-status fields are optional/additive; new counters may be unknown until measured. New SQLite tables and raw-capture columns are additive and earlier binaries may ignore them. No existing field or archive format is changed.",
-      "assessed_at": "2026-09-21T00:00:00+08:00",
+      "assessed_at": "2026-09-25T00:00:00+08:00",
       "evidence": [
-        "docs/specs/autonomous-retention-recovery/SPEC.md"
+        "docs/specs/autonomous-retention-recovery/SPEC.md",
+        "docs/adr/0018-bounded-raw-orphan-sweep-worker.md"
       ]
     },
     "current": {
@@ -29,14 +30,15 @@
         "detected": false,
         "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.retentionRecovery, rawCapture, and rawReferenceCheckMs diagnostics that remain unknown until measured, idempotent publication-kind and prepared-recovery cursor columns, archive/raw reconciliation tables and cursors, and additive circuit columns; archive wire/file formats and existing fields remain unchanged.",
-      "reassessed_at": "2026-09-24T12:42:00+08:00",
+      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics while reusing the existing raw_payload_files cursor retry/progress columns without new DDL. Earlier binaries remain safe because their bounded filename cursor wraps through the tail; archive wire/file formats and existing response fields remain unchanged.",
+      "reassessed_at": "2026-09-25T00:00:00+08:00",
       "evidence": [
+        "docs/adr/0018-bounded-raw-orphan-sweep-worker.md",
+        "docs/specs/autonomous-retention-recovery/SPEC.md",
         "src/api/slices/system_routes_and_tasks.rs",
         "src/schema.rs",
         "src/maintenance/retention.rs",
         "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
-        "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
         "web/src/lib/api/core-foundation.ts",
         "web/src/pages/system/SystemStatusPage.tsx"
       ]
@@ -58,18 +60,18 @@
   "compatibility_evidence": {
     "public_api": {
       "change": "compatible",
-      "supported_consumer_range": "Clients that ignore the optional retentionRecovery, rawCapture, and retentionWriteHealth.rawReferenceCheckMs response fields.",
+      "supported_consumer_range": "Clients that ignore the optional retentionRecovery, rawCapture, rawOrphanSweep, and retentionWriteHealth.rawReferenceCheckMs response fields.",
       "evidence": [
-        "SystemStatusResponse adds runtimePressureHealth.retentionRecovery, runtimePressureHealth.rawCapture, and the nullable runtimePressureHealth.retentionWriteHealth.rawReferenceCheckMs timing without removing or changing existing fields."
+        "SystemStatusResponse adds runtimePressureHealth.rawOrphanSweep without removing or changing existing fields; missing diagnostics normalize to unknown."
       ]
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Prepared archive journal, bounded legacy and historical-raw reconciliation cursors and raw quarantine ledger, and raw-capture circuit measurements.",
+      "state_description": "Prepared archive journal, bounded legacy and historical-raw reconciliation cursors and raw quarantine ledger, raw-capture circuit measurements, and retry/progress values reused on the existing raw_payload_files cursor.",
       "source_program_compatibility_range": "Supported earlier v2.71.x database schemas.",
       "evidence": [
-        "New tables and raw-capture columns are created with idempotent CREATE TABLE/ALTER TABLE guards.",
-        "Earlier programs ignore the new tables and raw-capture columns; candidate can operate on an earlier schema."
+        "This follow-up adds no table or column; it writes only existing raw_payload_files cursor fields.",
+        "Earlier raw sweep implementations can safely wrap past the cursor value; candidate operates on the existing retention schema."
       ]
     }
   },
@@ -77,7 +79,8 @@
     "member_change_records": [
       "autonomous-retention-recovery-pr1",
       "autonomous-raw-capture-circuit-breaker-pr2",
-      "historical-raw-file-reconciliation-pr3"
+      "historical-raw-file-reconciliation-pr3",
+      "raw-orphan-sweep-throughput"
     ],
     "maximum_verified_impact": "patch",
     "calculation_evidence": [

@@ -30,6 +30,7 @@
 - Missing or partial backlog/prepared/quarantined counters remain unknown in the UI rather than being presented as zero.
 - Status fields, UI copy, and structured recovery logs expose the recovery snapshot fields without raw content, SQL/bindings, account identifiers, or complete paths.
 - Runtime Pressure renders an unmeasured raw-reference confirmation as `-`; measured values are emitted only for transactions that performed the ledger confirmation.
+- Runtime Pressure also exposes optional `rawOrphanSweep` state and per-slice directory, reference-skip, quarantine, and release counts, along with durable retry/progress fields. A restarted process rehydrates scheduling fields from the existing `raw_payload_files` cursor; last-slice counters remain unknown until the worker completes a slice.
 
 ## PR2: Raw Capture Circuit Breaker
 
@@ -43,10 +44,12 @@
 
 ## PR3: Historical Raw-File Reconciliation
 
-- `retention_recovery_cursors` adds the `raw_payload_files` scope. Each pass selects at most 32 direct regular raw files with a fixed-size heap and advances a monotonic cursor with a conditional tail wrap. The scanner never descends into the overflow spool or another subdirectory and never retains the complete directory listing.
+- The `raw_payload_files` cursor scope and retry columns are reused without schema changes. Its cursor rotates only through bounded missing-ledger cleanup; directory traversal is held in one process-local `ReadDir` iterator and is never inferred from a filename.
 - `retention_raw_reconciliation` records a normalized candidate path, metadata identity, byte size, and durable quarantine timestamp. First observation commits the ledger before a candidate can become eligible; a path replacement or metadata identity change resets its quarantine observation. Missing files are cleaned from the ledger in bounded batches so a crash between physical deletion and ledger cleanup is recoverable.
-- Raw release checks the link table and all live raw-owner columns, including `.bin`/`.bin.gz` fallback resolution. It rechecks identity and references immediately before removal under maintenance admission and the existing raw-directory lock. Physical deletion precedes ledger cleanup; any failure retains the file or leaves a stale ledger for a later bounded repair.
-- Dry-run retention does not create quarantine rows or mutate raw files. Confirmed releases continue to trigger the existing bounded physical-inventory reset, without changing the System Status field contract.
+- One independent worker per service process reads no more than 128 directory entries and considers no more than 32 supported direct regular files per slice. It resumes after one second while work remains, closes and reopens the iterator after EOF with a five-minute delay, and restarts from the directory root after process restart.
+- Ownership is checked in a bounded batch only through indexed `proxy_raw_payload_blob_links(raw_path)` lookups after confirming the legacy seed marker. Existing absolute/relative aliases and compressed-path fallback precedence are preserved in memory; the final metadata and indexed-link check is repeated under maintenance admission and the existing directory lock.
+- The worker fails closed while the seed marker is absent. It records reset intent before unlink, adjusts in-memory raw bytes only after successful unlink, and clears the quarantine ledger only after successful deletion or a later bounded check proves the file absent. Per-item failures do not skip the rest of the current candidate batch.
+- Pressure denial occurs before directory open/advance and schedules a five-minute retry. Ordinary failed slices use 5/10/20/40/60-minute persisted backoff; successful progress resumes after one second and EOF schedules a five-minute rescan. Dry-run retention performs one bounded read-only slice and does not create quarantine rows or mutate raw files.
 
 ### System Status
 
@@ -58,7 +61,7 @@
 
 - Recovery requires no operator command, manual deletion, process restart, or `VACUUM`.
 - The archive file format and deterministic path contract are unchanged. SQLite row deletion may make pages reusable but does not guarantee a smaller database file.
-- Unlinked raw residuals are reconciled by the independent bounded raw-file stage. Files that fail supported-name, regular-file, identity, owner-reference, or quarantine gates are not deleted; filesystem-available space remains the safety boundary for those retained residuals.
+- Unlinked raw residuals are reconciled by the independently scheduled bounded worker. Files that fail supported-name, regular-file, identity, owner-reference, seed-marker, or quarantine gates are not deleted; filesystem-available space remains the safety boundary for those retained residuals.
 - This work reduces retention failure amplification; it does not establish a cause for observed upstream throughput changes or the previously observed approximately 50 GiB project footprint.
 
 ## Verification
@@ -77,4 +80,4 @@
 - `./SPEC.md`
 - `./HISTORY.md`
 - `../../adr/0016-autonomous-raw-capture-circuit-breaker.md`
-- `../../adr/0017-historical-raw-file-reconciliation.md`
+- `../../adr/0018-bounded-raw-orphan-sweep-worker.md`

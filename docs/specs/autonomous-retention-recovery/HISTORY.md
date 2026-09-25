@@ -32,6 +32,10 @@
   artifacts without requiring a digest when archive-root ownership and manifest/reference absence
   are proven. Its dedicated scheduler cursor persists pressure defers, bounded retry backoff, and
   progress independently of raw inventory reset work.
+- The raw-orphan-sweep throughput follow-up replaces full-directory selection and per-file owner-table
+  scans with a process-local bounded iterator, indexed batched blob-link checks, a separately
+  scheduled worker, and observable retry/progress state. It reuses existing cursor columns and adds
+  no schema objects.
 
 ## References
 

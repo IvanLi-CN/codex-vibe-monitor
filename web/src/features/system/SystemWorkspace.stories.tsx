@@ -119,6 +119,15 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       expiredBacklogCount: 0,
       lastProgressAt: "2026-06-22T08:00:00Z",
     },
+    rawOrphanSweep: {
+      state: "idle",
+      inspectedEntries: 128,
+      referencedSkipped: 19,
+      quarantined: 4,
+      removed: 2,
+      lastProgressAt: "2026-06-22T08:01:00Z",
+      nextRetryAt: "2026-06-22T08:01:01Z",
+    },
     rawCapture: {
       state: "capturing",
       inventoryState: "ready",
@@ -648,6 +657,38 @@ function retentionRecoveryStatus(
   };
 }
 
+function rawOrphanSweepStatus(
+  state: "idle" | "scanning" | "deferred" | "degraded" | "unknown",
+): SystemStatusResponse {
+  const status = runtimePressureStatus(state === "degraded" ? "degraded" : "healthy");
+  const base = status.runtimePressureHealth!;
+  return {
+    ...status,
+    runtimePressureHealth: {
+      ...base,
+      rawOrphanSweep:
+        state === "unknown"
+          ? undefined
+          : {
+              ...base.rawOrphanSweep!,
+              state,
+              inspectedEntries: state === "scanning" ? 128 : 96,
+              referencedSkipped: 12,
+              quarantined: state === "degraded" ? 3 : 2,
+              removed: state === "degraded" ? 0 : 1,
+              nextRetryAt: state === "deferred" ? "2026-06-22T08:05:00Z" : undefined,
+              deferReason:
+                state === "deferred"
+                  ? "sqlite_pressure"
+                  : state === "degraded"
+                    ? "retry_backoff"
+                    : undefined,
+              failureFingerprint: state === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+            },
+    },
+  };
+}
+
 function hotTopicStatus(
   scenario: "healthy" | "deferred" | "hot-db-read" | "cadence-miss",
 ): SystemStatusResponse {
@@ -874,6 +915,60 @@ export const StatusRetentionRecoveryDegraded: Story = {
     await expect(recovery).toHaveTextContent("最终化");
     await expect(recovery).toHaveTextContent("失败阶段 状态刷新 · 7d38a1c0b4c8e2f1");
     await expect(recovery).toHaveTextContent("连续失败：4");
+  },
+};
+
+export const StatusRawOrphanSweepUnknown: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawOrphanSweepStatus("unknown") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const sweep = canvas.getByTestId("system-status-raw-orphan-sweep");
+    await expect(sweep).toHaveTextContent("未知");
+  },
+};
+
+export const StatusRawOrphanSweepScanning: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawOrphanSweepStatus("scanning") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const sweep = canvas.getByTestId("system-status-raw-orphan-sweep");
+    await expect(sweep).toHaveTextContent("扫描中");
+    await expect(sweep).toHaveTextContent("128");
+    await expect(sweep).toHaveTextContent("跳过的已引用文件");
+  },
+};
+
+export const StatusRawOrphanSweepDeferred: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawOrphanSweepStatus("deferred") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const sweep = canvas.getByTestId("system-status-raw-orphan-sweep");
+    await expect(sweep).toHaveTextContent("已延后");
+    await expect(sweep).toHaveTextContent("SQLite 压力");
+    await expect(sweep).toHaveTextContent("下次重试");
+  },
+};
+
+export const StatusRawOrphanSweepDegraded: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusOverride: rawOrphanSweepStatus("degraded") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText("运行压力详情"));
+    const sweep = canvas.getByTestId("system-status-raw-orphan-sweep");
+    await expect(sweep).toHaveTextContent("异常");
+    await expect(sweep).toHaveTextContent("重试退避");
+    await expect(sweep).toHaveTextContent("7d38a1c0b4c8e2f1");
   },
 };
 
