@@ -168,11 +168,12 @@ export function DashboardInvocationTimeline({
   const renderedData = timelineDataOverride ?? timeline.data;
   const renderedError = timelineDataOverride ? null : timeline.error;
   useEffect(() => {
-    if (closedNaturalDay || !renderedData) return;
+    if (closedNaturalDay || !renderedData || !response) return;
+    const lastPoint = response.points.at(-1);
     recordTodayChartRender(
-      `${renderedData.rangeStart}:${renderedData.rangeEnd}:${renderedData.asOf}:${renderedData.records.length}`,
+      `${renderedData.rangeStart}:${renderedData.rangeEnd}:${renderedData.asOf}:${renderedData.records.length}:${response.rangeStart}:${response.rangeEnd}:${lastPoint?.totalCount ?? ""}`,
     );
-  }, [closedNaturalDay, renderedData]);
+  }, [closedNaturalDay, renderedData, response]);
   const lanes = useMemo(
     () =>
       renderedData
