@@ -33,8 +33,8 @@
 - A recovery pass MAY reuse an artifact only after exact source-identity and digest verification. Invocation identity covers every archive-column value, including its SQLite storage type; both the live source rows and the rows in the artifact MUST match. An unverified artifact MUST NOT authorize source or raw deletion.
 - A legacy or unmatched artifact MUST be handled by a resumable, bounded reconciliation cursor that wraps after exhausting the current tail so files arriving behind the saved cursor are eventually revisited. It is retained as quarantined evidence for 24 hours and may then be removed only when it matches neither a Prepared Archive nor a committed manifest.
 - Legacy reconciliation MUST obtain background write admission before traversing the archive directory or performing archive-file I/O. It MUST stream directory entries through a selection structure whose retained allocation, comparison work per entry, and candidate set are bounded by the scan batch rather than materializing and sorting a complete directory. Directory cursors MUST preserve the lexical stream position between same-prefix files and descendants; a truncated directory MUST pause traversal at its selected boundary, and cursor persistence MUST be monotonic with a conditional tail wrap so overlapping passes cannot skip or regress legacy artifacts.
-- A raw residual MUST be handled by a separate resumable reconciliation cursor and durable quarantine ledger. Each pass MAY inspect at most the raw reconciliation batch of direct regular files under the resolved raw root, using a bounded selection heap; it MUST skip subdirectories, symlinks, unknown file names, and paths outside that root. A candidate MUST retain its stable file identity and quarantine timestamp across interruption, and identity replacement MUST restart its quarantine period.
-- A raw residual MAY be physically removed only after its identity is unchanged, no live raw owner or fallback raw-path reference can still resolve to it, and its durable quarantine period has elapsed. The final metadata and reference checks MUST happen immediately before removal. The protocol MUST delete the file before clearing its ledger row so a crash leaves either the content or a recoverable stale ledger, never an authorization to delete without proof.
+- A raw residual MUST be handled by a separate scheduled worker and durable quarantine ledger. Each slice MUST advance at most 128 direct entries from one in-memory iterator and process at most 32 supported direct regular files under the resolved raw root; it MUST skip subdirectories, symlinks, unknown file names, and paths outside that root. The iterator MUST continue across slices, close at end-of-directory, and restart from the root after process restart; the per-file ledger MUST make repeated observations idempotent.
+- A raw residual MAY be physically removed only after its identity is unchanged, no raw link or fallback raw-path resolution can resolve to it, and its durable quarantine period has elapsed. Ownership MUST be queried through the indexed `proxy_raw_payload_blob_links(raw_path)` ledger after verifying the legacy-link seed completion marker; path fallback precedence MUST be preserved without scanning owner tables. The final metadata and indexed reference checks MUST happen immediately before removal. Inventory reset intent MUST be durable before unlink, and the ledger row MUST be cleared only after successful deletion or later proof that the file is absent.
 
 ### REQ-ARR-003
 
@@ -42,7 +42,7 @@
 - A failure in one stage MUST report that stage and schedule bounded retry/backoff without preventing a separately safe stage from making progress.
 - Prepared-archive reconciliation MUST have its own durable retry deadline, failure count, failure fingerprint, defer reason, and last-progress timestamp. Inventory reset delay or failure MUST NOT cancel or repeat an already committed archive finalization.
 - All database mutations in this lifecycle MUST retain maintenance write admission and MUST yield to P1 terminal and interactive proxy writes.
-- The raw-owner link confirmation MUST use the path index on the link ledger rather than scanning owner tables while maintenance admission is held. Relative database roots MUST be normalized before checking relative/absolute ledger aliases, including both `.bin` and `.bin.gz` variants.
+- Raw-owner confirmation MUST use the path index on the link ledger rather than scanning owner tables while maintenance admission is held. Relative database roots MUST be normalized before checking relative/absolute ledger aliases, including both `.bin` and `.bin.gz` variants. If the one-time legacy-link seed is not marked complete, orphan deletion MUST fail closed.
 
 ### REQ-ARR-004
 
@@ -64,11 +64,19 @@
 - The additive System Status raw-inventory contract MUST expose nullable tracked raw metric bytes plus `rawMetricsHealth.physicalCoverage=partial|unknown`. When raw inventory is not ready or coverage is unknown, raw metric bytes and any derived project-storage total MUST remain unknown or explicitly restricted; a missing raw value MUST NOT render as `0 B` or as a complete physical-disk claim. Runtime Pressure `rawCapture.rawBytes` remains the separate physical-capture measurement and keeps its own nullable contract.
 - These diagnostics MUST NOT expose raw request/response content, SQL text or bindings, account identifiers, or full payload/archive paths.
 - Retention write diagnostics MAY include `rawReferenceCheckMs`; it is nullable and MUST remain unknown when no raw-owner confirmation ran.
+- The optional `runtimePressureHealth.rawOrphanSweep` object MUST expose `unknown`, `idle`, `scanning`, `deferred`, or `degraded`, per-slice inspected/referenced/quarantined/removed counts, last progress, retry time, defer reason, and sanitized failure fingerprint. Missing fields MUST normalize to `unknown` rather than zero.
 
 ### REQ-ARR-007
 
 - Autonomous Retention Recovery MUST NOT invoke maintenance CLI commands, restart the process, run `VACUUM`, or delete database files.
 - It MAY release raw-file and orphan/prepared-artifact storage only when the proof requirements in REQ-ARR-001 and REQ-ARR-002 hold. Raw residual release additionally requires the durable identity, reference, and quarantine gates in REQ-ARR-002. SQLite pages made reusable by row deletion are not a promise of immediate database-file shrinkage.
+
+### REQ-ARR-008
+
+- The raw orphan worker MUST be independent of the hourly retention cadence and MUST NOT overlap another raw sweep in the same process.
+- Before opening or advancing the directory iterator, the worker MUST obtain maintenance admission. Admission refusal MUST perform no directory I/O and persist a retry at least five minutes later.
+- After progress without failure, the worker MUST resume after one second. A failed slice MUST persist a sanitized fingerprint and back off for 5/10/20/40/60 minutes; an item failure MUST NOT prevent later candidates in that slice from being checked. End-of-directory MUST close the iterator and schedule a new pass after five minutes.
+- The existing `raw_payload_files` cursor MUST NOT be used as a directory seek position. It MAY be used as a persistent keyset position for bounded missing-ledger cleanup. No new DDL or startup-wide backfill is required.
 
 ## Verification
 
@@ -108,12 +116,18 @@
 - covers: `REQ-ARR-002`, `REQ-ARR-003`, `REQ-ARR-007`
 - Pass condition: A newly observed residual is durably quarantined before release; crashes resume from the ledger and cursor; wrong-identity and referenced candidates remain; each pass is bounded; only an unchanged, unreferenced candidate whose quarantine period has elapsed is physically removed.
 
+### VER-ARR-007
+
+- Method: Instrumented large-directory slices, restart/reopen fixtures, scheduler clock tests, and concurrent P1/interactive writes on the shared testbox.
+- covers: `REQ-ARR-002`, `REQ-ARR-003`, `REQ-ARR-006`, `REQ-ARR-008`
+- Pass condition: Every slice advances no more than 128 directory entries and processes no more than 32 supported candidates; restart and directory mutations eventually revisit candidates; pressure refusal performs no directory I/O; legacy-link seed absence retains files; matching indexed references retain files; expired unreferenced fixtures are removed; retry cadence and System Status state remain accurate without adding foreground busy/locked events.
+
 ## Related ADRs
 
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 - [ADR 0015: Coordinated runtime SQLite write admission](../../adr/0015-coordinated-runtime-sqlite-write-admission.md)
 - [ADR 0016: Autonomous raw capture circuit breaker](../../adr/0016-autonomous-raw-capture-circuit-breaker.md)
-- [ADR 0017: Historical raw-file reconciliation protocol](../../adr/0017-historical-raw-file-reconciliation.md)
+- [ADR 0018: Bounded Raw Orphan Sweep Worker](../../adr/0018-bounded-raw-orphan-sweep-worker.md)
 
 ## Visual Evidence
 
