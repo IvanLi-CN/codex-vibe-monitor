@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.38",
+  "base_stable_version": "2.71.37",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-25T04:27:18Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.38",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4e9baa65f7c797b841dba53bb0e718bbc9fa0523",
+  "pr_number": 1007,
+  "pr_title": "fix(retention): restore archive recovery liveness",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.38",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.38",
+  "target_sha": "8615dfd2c33a1e046dcda1fb56661a1cad4fa874",
+  "type_label": "type:patch"
+}
