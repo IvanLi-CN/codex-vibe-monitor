@@ -154,6 +154,7 @@ export function useInvocationTimeline({
 
   useEffect(() => {
     if (enabled) return;
+    requestSequence.current += 1;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setIsLoading(false);
@@ -162,6 +163,7 @@ export function useInvocationTimeline({
 
   useEffect(
     () => () => {
+      requestSequence.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
     },

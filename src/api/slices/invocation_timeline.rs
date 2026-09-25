@@ -68,6 +68,12 @@ pub(crate) async fn fetch_timeline(
     if range_start >= range_end {
         return Err(ApiError::bad_request(anyhow!("from must be before to")));
     }
+    if params
+        .upstream_account_id
+        .is_some_and(|account_id| account_id <= 0)
+    {
+        return Err(ApiError::bad_request(anyhow!("invalid upstream account")));
+    }
 
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let filters = build_invocation_filters(&ListQuery {
@@ -254,7 +260,6 @@ async fn hydrate_timeline_accounts(
     }
     let keys = records
         .iter()
-        .filter(|record| record.upstream_account_id.is_none())
         .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
         .collect::<HashSet<_>>();
     if keys.is_empty() {
@@ -302,9 +307,7 @@ async fn hydrate_timeline_accounts(
     for record in records {
         if let Some(row) = fallbacks.get(&(record.invoke_id.clone(), record.occurred_at.clone())) {
             record.upstream_account_id = row.upstream_account_id;
-            if record.upstream_account_name.is_none() {
-                record.upstream_account_name = row.upstream_account_name.clone();
-            }
+            record.upstream_account_name = row.upstream_account_name.clone();
         }
     }
     Ok(())
@@ -312,7 +315,7 @@ async fn hydrate_timeline_accounts(
 
 fn timeline_upstream_account_id_sql(invocation_ref: &str) -> String {
     format!(
-        "COALESCE(CASE WHEN json_valid({invocation_ref}.payload) AND json_type({invocation_ref}.payload, '$.upstreamAccountId') IN ('integer', 'real') AND CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) > 0 THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
+        "COALESCE(CASE WHEN json_valid({invocation_ref}.payload) AND json_type({invocation_ref}.payload, '$.upstreamAccountId') = 'integer' AND CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) > 0 THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
     )
 }
 
