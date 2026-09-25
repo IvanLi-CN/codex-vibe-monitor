@@ -45,15 +45,15 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Source commit 09e36b44d4fc08dcd85d77b2d28a52bc56bdb3c4 passes the refreshed Linux Rust checks and both required SQLite profiles. The raw orphan worker reuses existing cursor state and introduces no DDL; System Status diagnostics remain optional and additive. Every raw filesystem-inspection admission boundary and dry-run count semantics have focused regression coverage.",
-      "verified_at": "2026-09-26T00:10:00+08:00",
+      "reasoning": "Source commit f7bf57fdaeb88b856fc2dc5367ec120f775e2d11 passes the refreshed Linux Rust checks and both required SQLite profiles. The raw orphan worker reuses existing cursor state and introduces no DDL; System Status diagnostics remain optional and additive. Every raw filesystem-inspection admission boundary and dry-run count semantics have focused regression coverage.",
+      "verified_at": "2026-09-26T00:56:25+08:00",
       "evidence": [
-        "stateful-sqlite profile: 1309/1309 passed; archive-file-io profile: 288/288 passed against source matching commit 09e36b44d4fc08dcd85d77b2d28a52bc56bdb3c4",
+        "stateful-sqlite profile: 1309/1309 passed; archive-file-io profile: 288/288 passed against source matching commit f7bf57fdaeb88b856fc2dc5367ec120f775e2d11",
         "Linux cargo fmt check, cargo check --locked --all-targets --all-features, and Clippy with -D warnings passed",
         "Focused local raw-orphan sweep tests: 7 passed, including pressure-slot retention with P1 eligibility and dry-run zero-quarantine reporting",
         "Web units: 1553 passed, 6 skipped; Storybook System Workspace interactions: 103 passed, 55 skipped; typecheck, lint, and production build passed",
-        "The final archive-file-io profile includes bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes: 1 passed with 1,024 filler entries, concurrent 40 P1 and 40 interactive writes, zero write errors, bounded slices, and physical orphan release; evidence at /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final-archive-file-io.log",
-        "Shared-testbox final profile logs: /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final2-stateful-sqlite.log and /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final2-archive-file-io.log",
+        "The final archive-file-io profile includes bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes: 1 passed with 1,024 filler entries, concurrent 40 P1 and 40 interactive writes, zero write errors, bounded slices, and physical orphan release; evidence at /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final3-archive-file-io.log",
+        "Shared-testbox final profile logs: /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final3-stateful-sqlite.log and /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final3-archive-file-io.log",
         "System Status screenshot captured from ui_demo as rendered page-surface evidence, persisted at docs/specs/autonomous-retention-recovery/assets/raw-orphan-sweep-desktop.png, and confirmed by the owner"
       ]
     }
