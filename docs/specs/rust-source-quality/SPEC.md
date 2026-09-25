@@ -2,10 +2,10 @@
 
 ## Context and Scope
 
-This topic establishes an executable Rust source-quality baseline for later
-module-oriented refactor pull requests. The preparation implementation adds
-repository tooling and CI coverage only; it does not move production Rust code
-or test modules and does not change runtime behavior.
+This topic establishes an executable Rust source-quality baseline for
+module-oriented refactor pull requests. The initial preparation implementation
+adds repository tooling and CI coverage; subsequent bounded module extractions
+may move production or test/helper code without changing runtime behavior.
 
 The contract covers `src/**/*.rs` physical line budgets for explicitly selected
 files, the `src/` `include!` boundary, and the incremental inventory of
@@ -60,11 +60,12 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 54 explicit file entries: 31
-production candidates above 2,500 lines and 23 test/helper candidates above
+The policy MUST keep the current inventory as 52 explicit file entries: 30
+production candidates above 2,500 lines and 22 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
-counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a
-specific next module workstream or a reasoned cohesive-module exception.
+counts for checker compatibility. Each current entry MUST record its exact
+current budget, role, and either a specific next module workstream or a
+reasoned cohesive-module exception.
 
 covers: VER-RUST-SOURCE-QUALITY-004
 
@@ -93,18 +94,18 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 54 entries have
+The current inventory retains no cohesive-module exceptions: all 52 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
 
 ## Later Module Rollout
 
-Later refactor PRs may split one production or test/helper candidate at a time.
-Such a PR updates the affected explicit budget and workstream, removes an entry
-only after the path is no longer a selected candidate, and updates suppression
-coverage whenever declarations are moved or changed. This preparation PR does
-not bundle those module moves.
+Refactor PRs may split one production or test/helper candidate at a time. Such
+a PR updates the affected explicit budget and workstream, removes an entry only
+after the path is no longer a selected candidate, and updates suppression
+coverage whenever declarations are moved or changed. Completed extractions are
+recorded in the current implementation and history sections of this topic.
 
 ## Verification
 
@@ -135,7 +136,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 31 production and 23 test/helper entries, with
+Pass condition: the policy has 30 production and 22 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
