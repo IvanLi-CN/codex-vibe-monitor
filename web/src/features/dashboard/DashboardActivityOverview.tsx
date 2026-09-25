@@ -4,6 +4,7 @@ import { Chip } from "../../components/ui/chip";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { useDashboardNetworkTimeseries } from "../../hooks/useDashboardNetworkTimeseries";
+import { useDashboardActivitySnapshot } from "../../hooks/useDashboardUpstreamAccountActivity";
 import { useParallelWorkStats } from "../../hooks/useParallelWorkStats";
 import { useSummary } from "../../hooks/useStats";
 import { useTimeseries } from "../../hooks/useTimeseries";
@@ -320,6 +321,7 @@ function DashboardNaturalDayRangePanel({
   dashboardActivity,
   dashboardActivityLoading = false,
   dashboardActivityError = null,
+  liveRevision,
 }: {
   metric: NaturalDayChartMetric;
   summaryWindow: "today" | "yesterday";
@@ -329,6 +331,7 @@ function DashboardNaturalDayRangePanel({
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  liveRevision?: number;
 }) {
   const { data, isLoading, error } = useTimeseries(
     timeseriesRange,
@@ -375,7 +378,7 @@ function DashboardNaturalDayRangePanel({
         networkLoading={networkLoading}
         networkError={networkError}
         upstreamAccountId={upstreamAccountId}
-        liveRevision={dashboardActivity?.liveRevision}
+        liveRevision={liveRevision ?? dashboardActivity?.liveRevision}
       />
     </div>
   );
@@ -812,12 +815,14 @@ function DashboardTodayRangePanel({
   dashboardActivity,
   dashboardActivityLoading,
   dashboardActivityError,
+  liveRevision,
 }: {
   metric: NaturalDayChartMetric;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  liveRevision?: number;
 }) {
   return (
     <DashboardNaturalDayRangePanel
@@ -829,6 +834,7 @@ function DashboardTodayRangePanel({
       dashboardActivity={dashboardActivity}
       dashboardActivityLoading={dashboardActivityLoading}
       dashboardActivityError={dashboardActivityError}
+      liveRevision={liveRevision}
     />
   );
 }
@@ -839,12 +845,14 @@ function DashboardYesterdayRangePanel({
   dashboardActivity,
   dashboardActivityLoading,
   dashboardActivityError,
+  liveRevision,
 }: {
   metric: NaturalDayChartMetric;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  liveRevision?: number;
 }) {
   return (
     <DashboardNaturalDayRangePanel
@@ -856,6 +864,7 @@ function DashboardYesterdayRangePanel({
       dashboardActivity={dashboardActivity}
       dashboardActivityLoading={dashboardActivityLoading}
       dashboardActivityError={dashboardActivityError}
+      liveRevision={liveRevision}
     />
   );
 }
@@ -1190,6 +1199,14 @@ export function DashboardActivityOverview({
   const [metric24h, setMetric24h] = useState<Dashboard24HourMetric>("totalCount");
   const [metric7d, setMetric7d] = useState<MetricKey>("totalCount");
   const [metricUsage, setMetricUsage] = useState<MetricKey>("totalCount");
+  const accountActivity = useDashboardActivitySnapshot(
+    "today",
+    upstreamAccountId != null,
+    false,
+    false,
+  );
+  const timelineLiveRevision =
+    dashboardActivity?.liveRevision ?? accountActivity.data?.liveRevision;
 
   const activeRange = controlledActiveRange ?? uncontrolledActiveRange;
   const setActiveRange = (range: DashboardActivityRangeKey) => {
@@ -1375,6 +1392,7 @@ export function DashboardActivityOverview({
             dashboardActivity={dashboardActivity}
             dashboardActivityLoading={dashboardActivityLoading}
             dashboardActivityError={dashboardActivityError}
+            liveRevision={timelineLiveRevision}
           />
         ) : null}
         {showSnapshotEmptyState ? null : activeRange === "yesterday" &&
@@ -1388,6 +1406,7 @@ export function DashboardActivityOverview({
             dashboardActivity={dashboardActivity}
             dashboardActivityLoading={dashboardActivityLoading}
             dashboardActivityError={dashboardActivityError}
+            liveRevision={timelineLiveRevision}
           />
         ) : null}
         {showSnapshotEmptyState ? null : activeRange === "1d" &&

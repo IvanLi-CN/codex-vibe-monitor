@@ -81,6 +81,9 @@ pub(crate) async fn fetch_timeline(
         ..ListQuery::default()
     })?;
     let start_bound = crate::db_occurred_at_lower_bound(range_start);
+    let overlap_start =
+        range_start - chrono::Duration::milliseconds(INVOCATION_TIMELINE_MAX_DURATION_MS as i64);
+    let overlap_start_bound = crate::db_occurred_at_lower_bound(overlap_start);
     let end_bound = crate::db_occurred_at_upper_bound(range_end);
     let mut query = build_invocation_select_query();
     let mut persisted_filters = filters.clone();
@@ -96,6 +99,8 @@ pub(crate) async fn fetch_timeline(
     query
         .push(" AND occurred_at < ")
         .push_bind(end_bound.clone())
+        .push(" AND occurred_at >= ")
+        .push_bind(overlap_start_bound)
         .push(" AND (occurred_at >= ")
         .push_bind(start_bound.clone())
         .push(" OR (t_total_ms IS NOT NULL AND t_total_ms >= 0 AND t_total_ms <= ")
@@ -115,6 +120,17 @@ pub(crate) async fn fetch_timeline(
     hydrate_timeline_accounts(&state.pool, &mut records, source_scope).await?;
 
     let mut runtime_records = runtime_overlay_snapshot(state.as_ref());
+    runtime_records.retain(|record| {
+        if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
+            return false;
+        }
+        let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
+            return false;
+        };
+        occurred_at < range_end
+            && (runtime_record_is_in_flight(record)
+                || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
+    });
     hydrate_timeline_accounts(&state.pool, &mut runtime_records, source_scope).await?;
     let terminal_runtime_keys = if runtime_records.is_empty() {
         HashSet::new()

@@ -92,9 +92,13 @@ export function useInvocationTimeline({
     const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
     previousBoundsContextKey.current = boundsContextKey;
     if (contextChanged) {
+      requestSequence.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
       previousBounds.current = bounds;
       setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
       setData(null);
+      setError(null);
       return;
     }
     const priorBounds = previousBounds.current;
