@@ -30,8 +30,8 @@
         "detected": false,
         "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics while reusing the existing raw_payload_files cursor retry/progress columns without new DDL. Earlier binaries remain safe because their bounded filename cursor wraps through the tail; archive wire/file formats and existing response fields remain unchanged. Final-release lock contention is deferred without waiting while maintenance admission is held.",
-      "reassessed_at": "2026-09-25T20:01:06+08:00",
+      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics while reusing the existing raw_payload_files cursor retry/progress columns without new DDL. Earlier binaries remain safe because their bounded filename cursor wraps through the tail; archive wire/file formats and existing response fields remain unchanged. Directory reads retain the background pressure slot only for the bounded filesystem slice while releasing the SQLite write-coordinator permit, and dry-run quarantine counts report completed mutations only.",
+      "reassessed_at": "2026-09-25T21:51:33+08:00",
       "evidence": [
         "docs/adr/0018-bounded-raw-orphan-sweep-worker.md",
         "docs/specs/autonomous-retention-recovery/SPEC.md",
@@ -45,13 +45,15 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The candidate passes the Linux Rust profiles, concurrent foreground-write empirical test, Web checks, Storybook interactions, and owner-confirmed rendered UI evidence. The raw orphan worker reuses existing cursor state and introduces no DDL; the System Status diagnostics remain optional and additive.",
-      "verified_at": "2026-09-25T19:57:24+08:00",
+      "reasoning": "Source commit 418e6c5b25a49a58ab5dad571ca33d1ce7195a97 passes the refreshed Linux Rust checks and both required SQLite profiles. The raw orphan worker reuses existing cursor state and introduces no DDL; System Status diagnostics remain optional and additive. Directory-read admission and dry-run count semantics have focused regression coverage.",
+      "verified_at": "2026-09-25T21:51:33+08:00",
       "evidence": [
-        "stateful-sqlite profile: 1309/1309 passed; archive-file-io profile: 286/286 passed",
+        "stateful-sqlite profile: 1309/1309 passed; archive-file-io profile: 288/288 passed against source matching commit 418e6c5b25a49a58ab5dad571ca33d1ce7195a97",
         "Linux cargo fmt check, cargo check --locked --all-targets --all-features, and Clippy with -D warnings passed",
+        "Focused local raw-orphan sweep tests: 7 passed, including pressure-slot retention with P1 eligibility and dry-run zero-quarantine reporting",
         "Web units: 1553 passed, 6 skipped; Storybook System Workspace interactions: 103 passed, 55 skipped; typecheck, lint, and production build passed",
-        "Shared-testbox bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes: 1 passed on rebased implementation commit 358e67ef; 40 P1 and 40 interactive writes had zero errors while the expired orphan was physically released; evidence at /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-concurrency-empirical-cdb7-358e67ef.log",
+        "The final archive-file-io profile includes bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes: 1 passed with 1,024 filler entries, concurrent 40 P1 and 40 interactive writes, zero write errors, bounded slices, and physical orphan release; evidence at /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final-archive-file-io.log",
+        "Shared-testbox final profile logs: /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final-stateful-sqlite.log and /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final-archive-file-io.log",
         "System Status screenshot captured from ui_demo as rendered page-surface evidence, persisted at docs/specs/autonomous-retention-recovery/assets/raw-orphan-sweep-desktop.png, and confirmed by the owner"
       ]
     }
