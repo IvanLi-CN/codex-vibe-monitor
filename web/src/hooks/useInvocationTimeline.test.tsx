@@ -163,6 +163,36 @@ describe("useInvocationTimeline", () => {
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts and invalidates a request when timeseries bounds disappear", async () => {
+    const pending: Array<{
+      resolve: (value: InvocationTimelineResponse) => void;
+      signal?: AbortSignal;
+    }> = [];
+    timelineMocks.fetch.mockImplementation((_options: { signal?: AbortSignal }) => {
+      return new Promise<InvocationTimelineResponse>((resolve) => {
+        pending.push({ resolve, signal: _options.signal });
+      });
+    });
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(pending).toHaveLength(1);
+
+    act(() => {
+      root?.render(<Probe response={null} />);
+    });
+    expect(pending[0]?.signal?.aborted).toBe(true);
+    pending[0]?.resolve(createTimeline("stale-bounds"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("");
+  });
+
   it("does not refresh a closed day when the live revision changes", async () => {
     timelineMocks.fetch.mockResolvedValue(createTimeline("closed-day"));
     const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
