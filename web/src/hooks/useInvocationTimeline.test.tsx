@@ -119,10 +119,12 @@ describe("useInvocationTimeline", () => {
     });
     await act(async () => {
       await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(firstSignal?.aborted).toBe(true);
-    expect(pending.length).toBeGreaterThan(initialRequestCount);
+    expect(pending.length).toBe(initialRequestCount + 1);
     for (const request of pending.slice(0, initialRequestCount)) {
       request.resolve(createTimeline("stale-invoke"));
     }
