@@ -471,7 +471,7 @@ jobs:
   records-overlay-e2e:
     name: Records Overlay E2E
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -547,13 +547,11 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \
             bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts &
           dashboard_pid=$!
-          E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \
-            bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts &
-          performance_pid=$!
           wait "$records_pid" || records_status=$?
           wait "$demo_pid" || demo_status=$?
           wait "$dashboard_pid" || dashboard_status=$?
-          wait "$performance_pid" || performance_status=$?
+          E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \
+            bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?
           dashboard_status=$(( dashboard_status || performance_status ))
           exit $(( records_status || demo_status || dashboard_status ))
 

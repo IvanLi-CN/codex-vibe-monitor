@@ -13,6 +13,7 @@ import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
 
 let latestChartData: Array<Record<string, unknown>> = [];
+let composedChartRenderCount = 0;
 const storage = new Map<string, string>();
 const localStorageMock = {
   getItem: (key: string) => storage.get(key) ?? null,
@@ -33,9 +34,15 @@ vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => (
     <div data-testid="responsive">{children}</div>
   ),
-  CartesianGrid: () => <div data-testid="grid" />,
-  XAxis: ({ domain }: { domain?: [number, number] }) => (
-    <div data-testid="x-axis" data-domain={domain == null ? "" : domain.join(":")} />
+  CartesianGrid: ({ verticalValues }: { verticalValues?: number[] }) => (
+    <div data-testid="grid" data-vertical-values={verticalValues?.join(",")} />
+  ),
+  XAxis: ({ domain, ticks }: { domain?: [number, number]; ticks?: number[] }) => (
+    <div
+      data-testid="x-axis"
+      data-domain={domain == null ? "" : domain.join(":")}
+      data-axis-ticks={ticks?.join(",")}
+    />
   ),
   YAxis: ({
     yAxisId,
@@ -146,6 +153,7 @@ vi.mock("recharts", () => ({
     data?: Array<Record<string, unknown>>;
     stackOffset?: string;
   }) => {
+    composedChartRenderCount += 1;
     latestChartData = data ?? [];
     return (
       <div
@@ -250,6 +258,7 @@ afterEach(() => {
   host = null;
   root = null;
   latestChartData = [];
+  composedChartRenderCount = 0;
   window.localStorage.clear();
   resetDashboardPerformanceDiagnostics();
 });
@@ -374,6 +383,19 @@ async function flushAnimationFrame() {
 }
 
 describe("DashboardTodayActivityChart", () => {
+  it("does not rerender the count chart when the initial viewport already covers the day", () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(composedChartRenderCount).toBe(1);
+  });
+
   it("builds a continuous minute series and preserves cumulative totals", () => {
     const data = buildTodayMinuteChartData(response, {
       now: new Date(2026, 3, 8, 0, 3, 22),
@@ -1018,6 +1040,23 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-domain="0:1439"');
     expect(html).toContain('data-dashboard-count-bars="true" data-bar-size="1"');
     expect(html.match(/<path /g)).toHaveLength(4);
+  });
+
+  it("shares the bounded X-axis ticks with vertical grid lines in every chart mode", () => {
+    for (const metric of ["totalCount", "totalTokens", "trend"] as const) {
+      const html = renderToStaticMarkup(
+        <DashboardTodayActivityChart
+          response={response}
+          loading={false}
+          error={null}
+          metric={metric}
+        />,
+      );
+      const axisTicks = html.match(/data-axis-ticks="([^"]+)"/)?.[1];
+      const verticalValues = html.match(/data-vertical-values="([^"]+)"/)?.[1];
+      expect(axisTicks?.split(",")).toHaveLength(12);
+      expect(verticalValues).toBe(axisTicks);
+    }
   });
 
   it("aggregates dense count data for compact viewports and frees chart width from the latency axis", () => {

@@ -16,6 +16,7 @@
 - 已修复 Dashboard 自然日 KPI 的账号活动 v2 派生覆盖判定：错误或过期 marker 会由 versioned repair generation 自动失效，重建期间 `today / yesterday / 1d / 7d` 统一走 exact fallback，完整回放后再切回 rollup；HTTP 与 `dashboard.activity.current` 继续复用同一快照口径，公开响应字段不变。
 - 已实现：开放窗口 KPI 的累计 totals 由 write-side terminal delta 与 runtime overlay 共同维护，`today / 1d / 7d` 的 owner-facing 5 秒可见时效不再依赖每轮 SQLite full build；`yesterday / previous7d / usage` 继续保留 exact DB 语义。
 - 已完成 `TodayStatsOverview` 七卡四区布局重构，`较昨日` 统一移动到右上，底部左右辅助位统一改为 inline `label + value`。
+- 已收口 Dashboard 自然日同进度比较的前端重复计算：同一时间序列与时区只计算一次，比较桶共用一个本地时间格式器；自然日图表网格复用有界 X 轴刻度，避免分钟级数据首绘时对大量候选刻度重复测宽；初始视口不变时不重复渲染图表。生产构建性能测试使用独立启用的分钟级本地 demo 夹具覆盖首屏、单次更新与持续更新。
 - 已完成 Dashboard open-range / `previous7d` summary `usage_breakdown` 的读路径收口：`today / 1d / 7d / yesterday / previous7d` 改走内部 hourly `model + reasoning` breakdown rollup + exact boundary tail，Dashboard 总览与 comparison summary 的字段、分组与排序保持不变，但不再依赖整段 raw aggregate 重算。
 - 已补齐 breakdown rollup 的升级期修补：对历史上已经 `historical_rollups_materialized_at` 的 invocation archive batch，只有 `usage/stats` 这类 legacy account rollup 仍可沿用“materialized 即视为 replayed”的 shortcut；新的 `usage_breakdown` target 若缺真实 hourly rows，会在启动期被重新挂回 historical rollup backlog，而不是继续误判成健康已回放。
 - 已补齐 pruned legacy archive 的 breakdown replay 规则：`upstream_account_usage_breakdown_hourly` 不再要求完整 payload，历史裁剪 payload 可用结构化列回放，缺失的 `reasoning_effort` 统一落入空/unknown 分组；`prompt_cache_*` 与 `sticky_key` 仍保持 payload-required blocked 语义。
@@ -61,7 +62,10 @@
 - `web/src/features/shared/AdaptiveMetricValue.test.tsx`
 - `web/src/features/shared/adaptiveMetricValueSpec.ts`
 - `web/src/features/dashboard/DashboardTodayActivityChart.tsx`
+- `web/src/features/dashboard/dashboardKpiComparisons.ts`
 - `web/src/features/dashboard/dashboardTodayActivityChartData.ts`
+- `web/src/demo/handlers.ts`
+- `web/tests/e2e/dashboard-render-performance.spec.ts`
 - `web/src/features/dashboard/DashboardActivityOverview.stories.tsx`
 - `web/src/features/dashboard/DashboardTodayActivityChart.stories.tsx`
 - `web/src/hooks/useTimeseries.ts`

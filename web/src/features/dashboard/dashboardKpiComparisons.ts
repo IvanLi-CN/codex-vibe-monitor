@@ -61,15 +61,23 @@ function rangeEndEpochMs(response: TimeseriesResponse) {
   return parseEpochMs(lastPoint?.bucketEnd);
 }
 
-function localClockProgressMs(value: string, timeZone: string) {
+function localClockFormatter(timeZone: string): Intl.DateTimeFormat | null {
   try {
-    const parts = new Intl.DateTimeFormat("en-US", {
+    return new Intl.DateTimeFormat("en-US", {
       timeZone,
       hourCycle: "h23",
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-    }).formatToParts(new Date(value));
+    });
+  } catch {
+    return null;
+  }
+}
+
+function localClockProgressMs(value: string, formatter: Intl.DateTimeFormat) {
+  try {
+    const parts = formatter.formatToParts(new Date(value));
     const partValue = (type: Intl.DateTimeFormatPartTypes) => {
       const raw = parts.find((part) => part.type === type)?.value;
       if (raw == null) return null;
@@ -112,9 +120,8 @@ export function buildSameProgressUsageSnapshot(
 
   const comparisonCutoff = comparisonStart + (currentEnd - currentStart);
   const currentEndIso = new Date(currentEnd).toISOString();
-  const currentProgress = options.timeZone
-    ? localClockProgressMs(currentEndIso, options.timeZone)
-    : null;
+  const formatter = options.timeZone ? localClockFormatter(options.timeZone) : null;
+  const currentProgress = formatter ? localClockProgressMs(currentEndIso, formatter) : null;
   let reachedLocalProgressCutoff = false;
   const comparisonPoints = [...(comparison.points ?? [])].sort((left, right) => {
     return (parseEpochMs(left.bucketStart) ?? 0) - (parseEpochMs(right.bucketStart) ?? 0);
@@ -129,11 +136,11 @@ export function buildSameProgressUsageSnapshot(
         bucketStart < comparisonStart ||
         (comparisonEnd != null && bucketStart >= comparisonEnd);
       let outsideSameProgress = bucketEnd == null || bucketEnd > comparisonCutoff;
-      if (currentProgress != null && options.timeZone) {
+      if (currentProgress != null && formatter) {
         if (reachedLocalProgressCutoff) {
           outsideSameProgress = true;
         } else {
-          const bucketProgress = localClockProgressMs(point.bucketEnd, options.timeZone);
+          const bucketProgress = localClockProgressMs(point.bucketEnd, formatter);
           outsideSameProgress = bucketProgress == null || bucketProgress > currentProgress;
           reachedLocalProgressCutoff = outsideSameProgress;
         }

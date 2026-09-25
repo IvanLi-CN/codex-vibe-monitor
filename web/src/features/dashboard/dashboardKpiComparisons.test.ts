@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildActiveMinuteAverages,
   buildParallelWorkKpiSnapshot,
@@ -175,6 +175,50 @@ describe("dashboard KPI comparison helpers", () => {
 
     expect(snapshot.totalCost).toBe(3);
     expect(snapshot.totalTokens).toBe(300);
+  });
+
+  it("reuses one timezone formatter across a minute-scale comparison", () => {
+    const yesterdayStart = Date.parse("2026-04-09T00:00:00.000Z");
+    const NativeDateTimeFormat = Intl.DateTimeFormat;
+    function constructFormatter(...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      return new NativeDateTimeFormat(...args);
+    }
+    const formatter = vi.spyOn(Intl, "DateTimeFormat").mockImplementation(constructFormatter);
+
+    try {
+      const snapshot = buildSameProgressUsageSnapshot(
+        {
+          rangeStart: "2026-04-10T00:00:00.000Z",
+          rangeEnd: "2026-04-10T12:00:00.000Z",
+          bucketSeconds: 60,
+          points: [],
+        },
+        {
+          rangeStart: "2026-04-09T00:00:00.000Z",
+          rangeEnd: "2026-04-10T00:00:00.000Z",
+          bucketSeconds: 60,
+          points: Array.from({ length: 24 * 60 }, (_, index) => ({
+            bucketStart: new Date(yesterdayStart + index * 60_000).toISOString(),
+            bucketEnd: new Date(yesterdayStart + (index + 1) * 60_000).toISOString(),
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 100,
+            totalCost: 1,
+          })),
+        },
+        { timeZone: "UTC" },
+      );
+
+      expect(snapshot.totalCost).toBe(720);
+      expect(
+        formatter.mock.calls.filter(
+          ([locale, options]) => locale === "en-US" && options?.hourCycle === "h23",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      formatter.mockRestore();
+    }
   });
 
   it("derives per-conversation values and success ratios defensively", () => {

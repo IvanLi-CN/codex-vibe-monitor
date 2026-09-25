@@ -127,7 +127,9 @@ function clampValue(value: number, min: number, max: number) {
 
 function normalizeViewport(viewport: ChartViewport, pointCount: number): ChartViewport {
   if (pointCount <= 0) {
-    return { startIndex: 0, endIndex: 0 };
+    return viewport.startIndex === 0 && viewport.endIndex === 0
+      ? viewport
+      : { startIndex: 0, endIndex: 0 };
   }
 
   const maxIndex = pointCount - 1;
@@ -142,10 +144,10 @@ function normalizeViewport(viewport: ChartViewport, pointCount: number): ChartVi
     Math.max(0, pointCount - currentSpan),
   );
 
-  return {
-    startIndex,
-    endIndex: Math.min(maxIndex, startIndex + currentSpan - 1),
-  };
+  const endIndex = Math.min(maxIndex, startIndex + currentSpan - 1);
+  return startIndex === viewport.startIndex && endIndex === viewport.endIndex
+    ? viewport
+    : { startIndex, endIndex };
 }
 
 function shiftViewport(
@@ -1129,7 +1131,11 @@ function DashboardTodayActivityChartImpl({
                 barGap="-100%"
                 stackOffset="sign"
               >
-                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="3 3"
+                  verticalValues={xAxisTicks}
+                />
                 <XAxis
                   dataKey="index"
                   type="number"
@@ -1276,7 +1282,11 @@ function DashboardTodayActivityChartImpl({
                 data={visibleTenMinuteTrendData}
                 margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               >
-                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="3 3"
+                  verticalValues={xAxisTicks}
+                />
                 <XAxis
                   dataKey="index"
                   type="number"
@@ -1360,7 +1370,11 @@ function DashboardTodayActivityChartImpl({
                 data={visibleChartData}
                 margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               >
-                <CartesianGrid stroke={chartColors.gridLine} strokeDasharray="3 3" />
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="3 3"
+                  verticalValues={xAxisTicks}
+                />
                 <XAxis
                   dataKey="index"
                   type="number"
