@@ -120,7 +120,7 @@ import {
   buildAdaptivePercentTextSpec,
   buildAdaptiveTextSpec,
 } from "../shared/adaptiveMetricValueSpec";
-import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
+import { ModelIdentity, resolveModelIdentityGeneration } from "../shared/ModelIdentity";
 import { DashboardNetworkRecentPopover } from "./DashboardNetworkRecentPopover";
 import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 import {
@@ -2177,7 +2177,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
     : null;
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
-    !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
+    !viewModel.modelHasMismatch && resolveModelIdentityGeneration(viewModel.modelValue) != null;
 
   const handleOpenInvocation = useCallback(() => {
     onOpenInvocation?.({
@@ -2534,7 +2534,7 @@ const InvocationSlot = memo(function InvocationSlot({
 
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
-    !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
+    !viewModel.modelHasMismatch && resolveModelIdentityGeneration(viewModel.modelValue) != null;
   const modelContextTitle =
     shouldGroupModelContext && viewModel.reasoningEffortValue === FALLBACK_CELL
       ? viewModel.modelValue

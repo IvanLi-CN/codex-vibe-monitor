@@ -71,6 +71,7 @@
 - 2026-07-24: Added Responses Lite image-tool rewrite audit fields to invocation payload and workflow attempt request detail, making skipped client-owned tools visible next to the effective policy.
 - 2026-07-26: Added the separate `codexImagegenRewrite` audit object for Codex Full/Lite namespace handling. It records the protocol match, effective policy, outcome, hosted-tool removal, fixed snapshot fingerprint, and bounded conflict differences without retaining request content or image bytes.
 - 2026-07-27: Dashboard 模型性能浮窗改为 `72rem` 视口自适应布局，桌面模型数据行统一为单行身份展示，GPT-5.6 专用图标方案不再重复显示模型名称，并消除横向滚动；窄屏抽屉同步采用相同模型身份语义。
+- 2026-09-25: GPT-6 identities now fit the existing Dashboard invocation and performance badge model segments; the shared identity renderer retains the complete model ID for accessibility without adding an inner border.
 
 - 2026-07-28: Corrected the opaque `keep_original` request audit reason from `already_current` to `policy_keep_original`, preserving the no-decode replay contract without implying unverified schema equivalence.
 - 2026-07-30: 调用列表、Prompt Cache 会话、账号活动预览与展开详情的请求压缩统一显示最终请求实际使用的 `requestCompressionAlgorithm`；pool 与归档历史读取最终 attempt，响应 `Content-Encoding` 仅作为“HTTP 响应压缩”展示，历史缺失数据不再跨方向回退。

@@ -1,5 +1,13 @@
 # Stats 长期用量与性能统计（#5k89c）
 
+## Context and Scope
+
+This spec owns long-term usage charts, compact model legends, and model summary tables. The GPT-6 extension uses the shared identity mapping without changing statistics data or series colors.
+
+## Requirements
+
+- REQ-GPT6-LONG-TERM-IDENTITY: Long-term charts must show recognized GPT-6 product-selected general-purpose glyphs and identity colors in the 16px legend without a tile or row-height change; model tables must preserve the full accessible ID through the shared performance identity. The glyphs are not official OpenAI model icons.
+
 长期统计接收 TerminalProjectionHub 的 durable cursor mutation，不消费完整 `ApiInvocation` 广播。历史 repair/backfill 由来源恢复、归档重写和 coverage 事件唤醒；无 actionable work 时不运行周期性全窗扫描。
 
 > 当前有效规范以本文为准；实现状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
@@ -63,8 +71,8 @@
 - 全局使用 KPI 与单指标折线图；模型分为时间、性能、用量三组图，账号使用 Token/成本/调用次数单图。全局图的序列名、图例和 tooltip 必须随选择指标明确显示“总 Token”“总成本”或“总调用次数”，不得以“全部调用”泛化其数值含义。模型用量和上游账号图在三个用量指标下均使用绝对值堆叠面积，面积层、图例和 tooltip 按 overview 业务顺序稳定排列。
 - 堆叠图以 `overview.daily` 的完整后端日期窗口为规范日历；每个选中系列在每一天都输出数值，缺失 point 与已有 point 的 `null` 指标均按 `0` 绘制并计入当日总计。孤立前端状态未提供规范日历时，以系列首末日期生成连续自然日；tooltip 显示日期、各选中系列和当日总计；仍限制最多八项选择。
 - 模型时间、性能、用量及上游账号用量四张长期多序列图共享 `seriesKey -> LongTermSeriesVisual` 映射。规范化完整模型名决定模型家族主色；同模型的思考程度通过完整文字、明暗和固定线型共同编码。上游账号按稳定账号序列独立分配主色。当前可见集合包含至多八个不同模型家族或账号时，主色不得重复；排序、数据刷新和指标切换不得改变未变更选择集合的映射。
-- 长期多序列图例不使用 Recharts 默认 payload；每项必须显示线型色标及模型思考程度。可识别模型以图标取代重复的可见模型名，悬浮图例可得完整模型名和思考程度；无图标模型与上游账号继续显示完整名称，长名称换行而不以省略号替代身份。图例的色标、图标与文字垂直居中对齐。tooltip 与表中已选行使用同一映射，tooltip 的模型名同样包含思考程度。
-- 模型与账号表格支持名称搜索、所有指标排序、sticky 选择/名称列、横纵双向虚拟化；模型表表头下固定显示不受搜索和滚动影响的全量“总计”行。模型身份表头为“模型 / 思考程度”，复用 `ModelPerformanceModelIdentity`，保留左侧复选框控制图表系列，模型行约 `40px`；已有图标的模型不重复显示名称，悬浮图标可得完整模型名；无图标模型显示名称。上游账号表身份样式与行高保持不变。
+- 长期多序列图例不使用 Recharts 默认 payload；每项必须显示线型色标及模型思考程度。可识别模型以图标取代重复的可见模型名，悬浮图例可得完整模型名和思考程度；GPT-6 Astra/Sol/Luna 在 16px 图例中使用共享身份图形与身份色，不使用 20px 底片或改变行高。无图标模型与上游账号继续显示完整名称，长名称换行而不以省略号替代身份。图例的色标、图标与文字垂直居中对齐。tooltip 与表中已选行使用同一映射，tooltip 的模型名同样包含思考程度。
+- 模型与账号表格支持名称搜索、所有指标排序、sticky 选择/名称列、横纵双向虚拟化；模型表表头下固定显示不受搜索和滚动影响的全量“总计”行。模型身份表头为“模型 / 思考程度”，复用 `ModelPerformanceModelIdentity`，保留左侧复选框控制图表系列，模型行约 `40px`；已有 GPT-5.6 或 GPT-6 专用图标的模型不重复显示名称，悬浮图标可得完整模型名；无图标模型显示名称。上游账号表身份样式与行高保持不变。
 - 冻结选择/身份列与指标列共用同一块级行栅格；表头、总计行和虚拟数据行的文字必须在同一垂直基线上，横向滚动不得使身份列脱离对应行。
 - 必须覆盖 loading、preparing、ready、empty、error、长名称、大账号集、桌面和移动端 Storybook 状态；整页视觉证据来自 mock-only `ui_demo`。
 
@@ -84,23 +92,27 @@
 - 前端测试覆盖 60 秒刷新、范围选择保留、全局趋势 Token/成本/调用次数的指标化标签、搜索/全列排序/虚拟化、堆叠图跨数据岛的连续日期域、缺失日期与 `null` 的零值语义、tooltip 总计、固定总计行、模型身份状态及 loading/preparing/empty/error/窄屏不重叠，以及八个模型家族/账号的唯一主色、同模型思考程度样式和顺序无关的稳定映射。
 - 通过 Rust、Vitest、Storybook、生产构建和 demo 构建质量门禁，并在本 Spec 的 `## Visual Evidence` 记录桌面/移动视觉证据。
 
+## Verification
+
+- VER-GPT6-LONG-TERM-IDENTITY: covers: REQ-GPT6-LONG-TERM-IDENTITY; long-term section tests and Storybook model identity states verify compact legend rendering and unchanged table layout.
+
+## Related ADRs
+
+None
+
 ## Visual Evidence
 
 - Storybook 覆盖=通过（`SeriesIdentity` 高密度模型/账号状态与 play 覆盖）；视觉证据目标源=`ui_demo`；视觉证据=存在；空白裁剪=无需裁剪（页面边缘背景不满足安全裁剪阈值）；聊天回图=已回传；证据落盘=已落盘。
 - 来源为 mock-only `demo:dev`，覆盖亮色/深色桌面与 `390px` 移动端的八项模型/账号多序列状态。
 - 浅色桌面模型用量：已识别模型在图例和表格中仅显示色标、图标与思考程度；完整模型名通过悬浮提示提供，三者垂直居中。同模型的思考程度以固定线型区分；异模型家族使用不同主色。
-  PR: include
   ![桌面长期统计模型系列可辨识性](./assets/long-term-series-identity-desktop-models.png)
 - 桌面上游账号用量：八个账号的主色唯一，长账号名称换行保留身份。
   ![桌面长期统计上游系列可辨识性](./assets/long-term-series-identity-desktop-upstreams.png)
 - 浅色 `390px` 移动端模型用量：已识别模型在窄屏图例和表格中以色标、图标和思考程度持续可辨，完整模型名通过悬浮提示提供。
-  PR: include
   ![移动端长期统计模型系列可辨识性](./assets/long-term-series-identity-mobile-models.png)
 - 深色桌面模型用量：图、图例与已选表格行处于同一截图范围；图例和表格中的已识别模型均以图标取代重复名称，完整模型名通过悬浮提示提供，色标、图标与等级文字垂直居中。
-  PR: include
   ![深色桌面长期统计模型系列可辨识性](./assets/long-term-series-identity-dark-desktop-models.png)
 - 深色 `390px` 移动端模型图例：已识别模型以色标、图标和思考程度纵向排列，表格延续图标优先身份显示；无图标模型与上游账号仍以长名称换行保留身份。
-  PR: include
   ![深色移动端长期统计模型系列可辨识性](./assets/long-term-series-identity-dark-mobile-models.png)
 
 ## Memory Attribution Boundary

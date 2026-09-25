@@ -23,6 +23,8 @@
 - [x] Retire CRS runtime configuration, polling, aggregation, retention, and API reads while keeping old SQLite tables untouched.
 - [x] Extend records-side pricing observability with advisory `costAudit` totals and workflow-success usage audits that compare persisted cost against the current local catalog without rewriting historical truth.
 - [x] Add shared structured read-only model identity icons for the GPT-5.6 Sol/Terra/Luna family, including dated aliases, accessible IDs, invocation surfaces, usage/performance details, routing health, and long-term model summaries.
+- [x] Extend the shared read-only identity renderer with product-selected general-purpose GPT-6 Astra/Sol/Luna MDI glyphs, calendar-valid dated aliases, theme colors, and standalone/embedded presentations; do not present these fallbacks as official OpenAI icons.
+- [x] Keep GPT-6 chart legends on the product's compact identity pattern: series swatch, identity-colored 16px glyph, and reasoning label without a tile.
 - [x] Group GPT-5.6 invocation-card model identity, reasoning effort, and FAST metadata in a reusable visual cluster while preserving legacy non-target and mismatch layouts.
 - [x] Tighten the grouped Dashboard context cluster to a fixed 20px model segment, one tone-matched reasoning marker, 4px sibling spacing, no internal vertical separators, and omission of missing reasoning values while preserving FAST accessibility.
 - [x] Add direct temporary GPT-6 Sol/Terra/Luna catalog presets using the matching GPT-5.6 rates and preserve custom catalog rows during the catalog version upgrade.

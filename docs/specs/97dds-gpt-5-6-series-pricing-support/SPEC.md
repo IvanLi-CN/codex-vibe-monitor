@@ -2,7 +2,7 @@
 
 Spec ID: 97dds
 
-## Background
+## Context and Scope
 
 The repo-managed pricing catalog, `/v1/models` preset list, and Settings pricing contract currently stop at the GPT-5.5 generation and only model one cached-input price. GPT-5.6 introduces three first-class model ids (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) plus an explicit cache write price that is distinct from both uncached input and cache read pricing.
 
@@ -61,6 +61,7 @@ scan/update/skip counters, cursor, and drained-or-continuing state.
 - Model resolution must match exact ids first and also map calendar-valid `gpt-5.6-sol|terra|luna-YYYY-MM-DD` aliases to their base model pricing rows. Invalid dates and preview variants remain unpriced.
 - Settings pricing UI must split cached pricing into separate cache read and cache write columns and clearly label the contract as estimation metadata rather than runtime token truth.
 - Structured read-only model fields must render `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` as solar, earth, and lunar icons. Exact and date-suffixed IDs share the base icon; tooltips and accessible names retain the complete ID. Editors, filters, selectors, and raw payload viewers keep the original text.
+- REQ-GPT6-MODEL-IDENTITY: Structured read-only model fields recognize only `gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna` plus calendar-valid date suffixes. They use the product-selected general-purpose MDI glyphs Astra `creation`, Sol `weather-sunny`, and Luna `moon-waning-crescent`; these are not OpenAI official model icons. Product identity ink is Astra/Sol/Luna `#6749BA`/`#A95018`/`#04766F` in light theme and `#BBA6F6`/`#FFB16A`/`#64D1C7` in dark theme. Standalone icons use one fixed 20px neutral tile (`#F1F4F7`/`#CDD7E1` in light theme, `#28343F`/`#566879` in dark theme); an existing outlined model badge integrates the glyph into its model segment without adding a border or changing height. Compact chart legends use the series swatch, 16px glyph and identity color, and reasoning effort without a tile. Unknown IDs remain textual.
 - New invocation rows must persist exact cost buckets. Historical rows with a known total cost must contribute that full amount to `unknown` instead of being repriced or invalidating exact realtime buckets; rows without a total cost do not fabricate an unknown amount.
 - `cacheWriteTokens` must be derived as `max(inputTokens - cacheInputTokens, 0)`; `cacheInputTokens` remains the upstream cache-read count.
 - Records-side cost truth remains the persisted `cost`. `/api/invocations` may additionally return a `costAudit` comparison object that recomputes cost from the current pricing catalog, but that local recomputation is advisory only and never rewrites the recorded amount.
@@ -128,10 +129,107 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a record with both persisted `cost` and a locally recomputed total, when their absolute difference is greater than `0.000001 USD`, then the audit flags `mismatch=true`; if the recorded and local `priceVersion` differ, the reason is `price_version_changed`, otherwise the reason is `total_mismatch`.
 - Given a workflow attempt usage audit where `reasoningTokens` were never recorded, when the response audit object is rendered, then reasoning stays `null` / `—`; given a real recorded zero, when the same response audit object is rendered, then reasoning remains `0`.
 - Given a structured read-only field for any GPT-5.6 base or date-suffixed model, when it renders, then it shows the mapped icon with the complete model ID in its tooltip and accessible name; given a non-GPT-5.6 or unknown model, then the existing text fallback remains visible.
+- Given a structured read-only `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna` ID with an optional calendar-valid `-YYYY-MM-DD` suffix, when it renders, then it shows the selected general-purpose MDI glyph and retains the complete ID in its tooltip and accessible name; the glyphs are product fallbacks, not official model artwork. Invalid dates, preview variants, `gpt-6-terra`, and bare `gpt-6` remain textual.
+- Given a GPT-6 identity in standalone, outlined-badge, or model chart-legend presentation, when it renders, then standalone uses one 20px neutral tile, the outlined badge uses a single outer border with the glyph integrated into its model segment and unchanged height, and the chart legend retains the series swatch and uses the 16px identity-colored glyph plus reasoning effort without a tile; the full model ID remains available to assistive technology and tooltip. GPT-5.6 legend styling remains unchanged.
 - Given a structured read-only GPT-5.6 invocation card with model identity, reasoning effort, and FAST metadata, when it renders, then those three values appear in one reusable grouped cluster with a fixed 20px model segment, one reasoning-effort marker, and 4px spacing between model, marker, effort, and FAST; `max` and `ultra` use the error marker tone while other levels retain their existing tones, internal vertical separators are absent, and non-GPT-5.6, routing-mismatch, editor/filter/selector, and raw payload views retain their existing rendering.
 - Given a structured GPT-5.6 invocation with missing, blank, or formatted-em-dash reasoning effort, when its grouped Dashboard context renders, then the reasoning marker and effort text are omitted without displaying a placeholder, while the model identity and FAST accessible semantics remain available.
 
+## Verification
+
+- VER-GPT6-MODEL-IDENTITY: covers: REQ-GPT6-MODEL-IDENTITY; frontend identity tests, performance/long-term integration tests, Storybook states, and light/dark visual evidence verify model matching, accessibility, and each presentation mode.
+
+## Related ADRs
+
+None
+
 ## Visual Evidence
+
+### GPT-6 Model Identity
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface="model-identity-story-surface"]`
+  target_selector: `[data-visual-evidence-target="model-identity-story-target"]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Components/ModelIdentity Generation Comparison Light
+  state: Light theme; GPT-5.6 and GPT-6 standalone identities
+  evidence_note: Shows the three selected generic GPT-6 glyphs beside GPT-5.6 identities, with 20px single-outline tiles and light-theme product colors.
+  image:
+  ![Light desktop GPT-5.6 and GPT-6 model identity comparison](./assets/gpt6-model-identity-light-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface="model-identity-story-surface"]`
+  target_selector: `[data-visual-evidence-target="model-identity-story-target"]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Components/ModelIdentity Generation Comparison Dark
+  state: Dark theme; GPT-5.6 and GPT-6 standalone identities
+  evidence_note: Shows the same model comparison in dark theme, with distinct Astra/Sol/Luna product inks and neutral GPT-6 tiles.
+  image:
+  ![Dark desktop GPT-5.6 and GPT-6 model identity comparison](./assets/gpt6-model-identity-dark-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface="model-identity-story-surface"]`
+  target_selector: `[data-visual-evidence-target="model-identity-story-target"]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Components/ModelIdentity Presentation Modes
+  state: Light theme; standalone, outlined badge, and 16px chart legend
+  evidence_note: Shows the standalone tile, one existing badge outline around its embedded identity, and the compact legend glyph without a tile or added row height.
+  image:
+  ![Light desktop GPT-6 identity presentation modes](./assets/gpt6-model-identity-presentations-light-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface="model-identity-story-surface"]`
+  target_selector: `[data-visual-evidence-target="model-identity-story-target"]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Components/ModelIdentity Presentation Modes Dark
+  state: Dark theme; standalone, outlined badge, and 16px chart legend
+  evidence_note: Shows the same three container modes in dark theme, including the embedded badge's single outer outline and tile-free compact legend.
+  image:
+  ![Dark desktop GPT-6 identity presentation modes](./assets/gpt6-model-identity-presentations-dark-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface="model-identity-story-surface"]`
+  target_selector: `[data-visual-evidence-target="model-identity-story-target"]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Components/ModelIdentity Generation Comparison Mobile 393
+  state: Light theme at a 393x852 CSS-pixel viewport
+  evidence_note: Shows all GPT-5.6 and GPT-6 identity samples in a two-column mobile layout without clipping or horizontal overflow.
+  image:
+  ![393x852 mobile GPT-5.6 and GPT-6 model identity comparison](./assets/gpt6-model-identity-mobile-393.png)
 
 ![Settings pricing cache read/write split](./assets/settings-pricing-cache-read-write-storybook.png)
 
@@ -235,6 +333,8 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 ## References
 
 - OpenAI pricing announcement and API pricing pages published on 2026-07-08.
+- [OpenAI API model selection guide](https://developers.openai.com/api/docs/guides/model-selection), which supplies model-specific artwork for Astra, Sol, and Luna without defining compact chart-legend glyphs.
+- [OpenAI API model catalog](https://developers.openai.com/api/docs/models).
 - `docs/archive/specs/7272y-gpt-5-4-pricing/SPEC.md`
 - `docs/archive/specs/47ran-pool-models-override-gpt55-pricing/SPEC.md`
 - [OpenAI API Pricing](https://platform.openai.com/docs/pricing)
