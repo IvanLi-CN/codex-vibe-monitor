@@ -39,11 +39,13 @@ function resolveInitialWindow(
   response: TimeseriesResponse | null,
   closedNaturalDay: boolean,
 ): InvocationTimelineWindow | null {
+  const startMs = parseEpoch(response?.rangeStart);
+  const endMs = parseEpoch(response?.rangeEnd);
+  if (startMs == null || endMs == null || endMs <= startMs) return null;
   const bounds = {
-    startMs: parseEpoch(response?.rangeStart) ?? Date.now() - 24 * 60 * 60 * 1_000,
-    endMs: parseEpoch(response?.rangeEnd) ?? Date.now(),
+    startMs,
+    endMs,
   };
-  if (bounds.endMs <= bounds.startMs) return null;
   if (!closedNaturalDay) {
     return clampWindow({ startMs: bounds.endMs - DEFAULT_WINDOW_MS, endMs: bounds.endMs }, bounds);
   }

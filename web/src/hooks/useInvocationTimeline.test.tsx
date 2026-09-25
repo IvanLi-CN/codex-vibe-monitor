@@ -67,7 +67,7 @@ function Probe({
   liveRevision,
   liveRefreshAllowed = true,
 }: {
-  response: TimeseriesResponse;
+  response: TimeseriesResponse | null;
   closedNaturalDay?: boolean;
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
@@ -138,6 +138,29 @@ describe("useInvocationTimeline", () => {
       await Promise.resolve();
     });
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("current-invoke");
+  });
+
+  it("waits for valid timeseries bounds before the initial request", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("bounded-window"));
+
+    render(<Probe response={null} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).not.toHaveBeenCalled();
+
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    act(() => {
+      root?.render(<Probe response={response} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("does not refresh a closed day when the live revision changes", async () => {
