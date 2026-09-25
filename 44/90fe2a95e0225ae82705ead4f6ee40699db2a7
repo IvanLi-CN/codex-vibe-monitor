@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.42",
+  "base_stable_version": "2.71.41",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-25T14:04:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.42",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c11db8b745385f50e5cd9bfe88974f01edff2915",
+  "pr_number": 1018,
+  "pr_title": "refactor(proxy): extract forward proxy probe validation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.42",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.42",
+  "target_sha": "4490fe2a95e0225ae82705ead4f6ee40699db2a7",
+  "type_label": "type:patch"
+}
