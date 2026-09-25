@@ -90,8 +90,14 @@ export function useInvocationTimeline({
     if (!bounds) {
       previousBoundsContextKey.current = boundsContextKey;
       previousBounds.current = null;
+      setCommittedBoundsContextKey(boundsContextKey);
+      requestSequence.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
       setViewportWindow(null);
       setData(null);
+      setError(null);
+      setIsLoading(false);
       return;
     }
     const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
@@ -105,6 +111,7 @@ export function useInvocationTimeline({
       setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
       setData(null);
       setError(null);
+      setIsLoading(enabled);
       return;
     }
     const priorBounds = previousBounds.current;
@@ -125,7 +132,7 @@ export function useInvocationTimeline({
       deferredRefreshRef.current = !liveRefreshAllowed;
       return next;
     });
-  }, [bounds, boundsContextKey, closedNaturalDay, liveRefreshAllowed, response]);
+  }, [bounds, boundsContextKey, closedNaturalDay, enabled, liveRefreshAllowed, response]);
 
   useEffect(() => {
     if (!bounds || !viewportWindow) return;
@@ -225,12 +232,14 @@ export function useInvocationTimeline({
     [bounds],
   );
 
+  const contextReady = committedBoundsContextKey === boundsContextKey;
+
   return {
-    data,
+    data: contextReady ? data : null,
     error,
-    isLoading,
-    isRefreshing: isLoading && data != null,
-    window: viewportWindow,
+    isLoading: contextReady ? isLoading : enabled,
+    isRefreshing: contextReady && isLoading && data != null,
+    window: contextReady ? viewportWindow : null,
     bounds,
     setWindow: updateWindow,
     refresh,
