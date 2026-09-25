@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.37",
+  "base_stable_version": "2.71.36",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-25T03:51:43Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.37",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8ea89f3cf764338aeecf2ba628e1c6a25824dcad",
+  "pr_number": 1009,
+  "pr_title": "fix(db): discard cancelled sqlite progress connections",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.37",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.37",
+  "target_sha": "5497dc402d1641a2b37d5e94708ccb7cc06550a3",
+  "type_label": "type:patch"
+}
