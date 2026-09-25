@@ -90,6 +90,8 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
       nextRetryAt: undefined,
       failureStage: undefined,
       failureFingerprint: undefined,
+      deferReason: undefined,
+      consecutiveFailureCount: undefined,
     });
   });
 

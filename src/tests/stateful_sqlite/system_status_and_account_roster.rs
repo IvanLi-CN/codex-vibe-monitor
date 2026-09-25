@@ -613,7 +613,7 @@ async fn runtime_pressure_health_serializes_without_sql() {
     let recovery_fields = payload["retentionRecovery"]
         .as_object()
         .expect("serialize retention recovery as a bounded object");
-    assert_eq!(recovery_fields.len(), 10);
+    assert_eq!(recovery_fields.len(), 12);
     for field in recovery_fields.keys() {
         let normalized = field.to_ascii_lowercase();
         assert!(

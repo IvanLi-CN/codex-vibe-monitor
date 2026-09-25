@@ -2418,6 +2418,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             file_path TEXT NOT NULL,
             source_ids_json TEXT NOT NULL,
             source_identity_sha256 TEXT NOT NULL,
+            publication_kind TEXT,
             state TEXT NOT NULL,
             artifact_sha256 TEXT,
             artifact_bytes INTEGER,
@@ -2438,6 +2439,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let prepared_archive_columns =
         load_sqlite_table_columns(pool, "retention_prepared_archives").await?;
+    if !prepared_archive_columns.contains("publication_kind") {
+        sqlx::query("ALTER TABLE retention_prepared_archives ADD COLUMN publication_kind TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add retention_prepared_archives.publication_kind")?;
+    }
     if !prepared_archive_columns.contains("staged_file_path") {
         sqlx::query("ALTER TABLE retention_prepared_archives ADD COLUMN staged_file_path TEXT")
             .execute(pool)
@@ -2470,6 +2477,11 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         CREATE TABLE IF NOT EXISTS retention_recovery_cursors (
             scope TEXT PRIMARY KEY,
             cursor TEXT NOT NULL DEFAULT '',
+            next_retry_at TEXT,
+            consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
+            last_failure_fingerprint TEXT,
+            defer_reason TEXT,
+            last_progress_at TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2481,12 +2493,24 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
         INSERT OR IGNORE INTO retention_recovery_cursors (scope, cursor)
-        VALUES ('legacy_archive_segments', ''), ('raw_payload_files', '')
+        VALUES ('legacy_archive_segments', ''), ('raw_payload_files', ''), ('prepared_archives', '')
         "#,
     )
     .execute(pool)
     .await
     .context("failed to seed retention recovery cursor")?;
+
+    for (column, definition) in [
+        ("next_retry_at", "TEXT"),
+        ("consecutive_failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_failure_fingerprint", "TEXT"),
+        ("defer_reason", "TEXT"),
+        ("last_progress_at", "TEXT"),
+    ] {
+        ensure_column_with_definition(pool, "retention_recovery_cursors", column, definition)
+            .await
+            .with_context(|| format!("failed to ensure retention_recovery_cursors.{column}"))?;
+    }
 
     sqlx::query(
         r#"

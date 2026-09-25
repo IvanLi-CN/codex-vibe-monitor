@@ -4555,6 +4555,24 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
         .execute(&pool)
         .await
         .expect("remove cursor table to emulate an earlier schema");
+    sqlx::query(
+        r#"
+        CREATE TABLE retention_recovery_cursors (
+            scope TEXT PRIMARY KEY,
+            cursor TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy cursor table shape");
+    sqlx::query(
+        "INSERT INTO retention_recovery_cursors (scope, cursor) VALUES ('legacy_archive_segments', 'legacy-cursor')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy cursor row");
     sqlx::query("DROP TABLE retention_prepared_archives")
         .execute(&pool)
         .await
@@ -4583,7 +4601,27 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
     .fetch_one(&pool)
     .await
     .expect("load initialized legacy recovery cursor");
-    assert!(cursor.is_empty());
+    assert_eq!(cursor, "legacy-cursor");
+    let cursor_columns: HashSet<String> =
+        sqlx::query("PRAGMA table_info('retention_recovery_cursors')")
+            .fetch_all(&pool)
+            .await
+            .expect("inspect recovery cursor columns")
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+    for column in [
+        "next_retry_at",
+        "consecutive_failure_count",
+        "last_failure_fingerprint",
+        "defer_reason",
+        "last_progress_at",
+    ] {
+        assert!(
+            cursor_columns.contains(column),
+            "missing cursor migration column {column}"
+        );
+    }
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
@@ -4647,6 +4685,13 @@ async fn ensure_schema_migrates_staged_archive_path_without_dropping_journal_row
     .await
     .expect("check staged archive path column");
     assert_eq!(staged_column, 1);
+    let publication_kind_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('retention_prepared_archives') WHERE name = 'publication_kind'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check publication kind column");
+    assert_eq!(publication_kind_column, 1);
     let replacement_column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('archive_batches') WHERE name = 'replacement_staged_path'",
     )
@@ -4734,7 +4779,7 @@ async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() 
     .await
     .expect("load actionable journal state");
     assert_eq!(due_state.0, "quarantined");
-    assert_eq!(due_state.1.as_deref(), Some("legacy_reconcile"));
+    assert_eq!(due_state.1.as_deref(), Some("prepared_reconcile"));
     let unexpired_quarantine_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined' AND prepared_key LIKE 'unexpired-quarantine-%'",
     )

@@ -27,6 +27,11 @@
 - PR3 adds a bounded, restart-safe raw residual reconciliation stage. It preserves original raw
   paths during quarantine and releases only candidates with durable identity, owner-reference, and
   quarantine proof.
+- The retention-recovery-liveness follow-up makes prepared publication kind explicit, resumes valid
+  `published` rows through their original final transaction, and retires expired quarantined archive
+  artifacts without requiring a digest when archive-root ownership and manifest/reference absence
+  are proven. Its dedicated scheduler cursor persists pressure defers, bounded retry backoff, and
+  progress independently of raw inventory reset work.
 
 ## References
 

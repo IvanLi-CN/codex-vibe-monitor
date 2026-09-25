@@ -597,33 +597,6 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     .await
     .expect("load published recovery journal state");
     assert_eq!(published_reconciled_state, "published");
-    fs::write(&orphan_path, b"safe-to-sweep-again").expect("recreate orphan raw file");
-    set_file_mtime_seconds_ago(&orphan_path, DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS + 60);
-
-    sqlx::query(
-        "UPDATE retention_prepared_archives SET state = 'preparing', next_retry_at = NULL WHERE dataset = 'codex_invocations'",
-    )
-    .execute(&pool)
-    .await
-    .expect("rewind recovery journal to simulate interrupted preparation");
-
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
-        .await
-        .expect("retention should continue after archive finalization failure");
-    assert_eq!(summary.orphan_raw_files_removed, 0);
-    assert!(
-        orphan_path.exists(),
-        "unlinked raw residual remains untouched"
-    );
-    assert!(raw_path.exists(), "source-owned raw data remains available");
-    let reconciled_state: String = sqlx::query_scalar(
-        "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("load reconciled recovery journal state");
-    assert_eq!(reconciled_state, "published");
-
     let fingerprint: String = sqlx::query_scalar(
         "SELECT last_failure_fingerprint FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
     )
@@ -651,10 +624,10 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     .execute(&pool)
     .await
     .expect("make the retained archive retry due");
-    let recovered = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+    let recovered = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
-        .expect("retry archive publication after removing injected failure");
-    assert_eq!(recovered.0, 1);
+        .expect("retry published archive finalization after removing injected failure");
+    assert_eq!(recovered.orphan_raw_files_removed, 0);
     assert!(
         !raw_path.exists(),
         "raw payload is released only after publication"
@@ -665,6 +638,206 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
             .await
             .expect("count recovery journal after successful retry");
     assert_eq!(remaining_journal_count, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_retires_expired_quarantined_archive_without_digest() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-quarantine-retirement").await;
+    let archive_root = config.archive_dir.join("codex_invocations");
+    fs::create_dir_all(&archive_root).expect("create archive root");
+    let archive_path = archive_root.join("stale-quarantined.sqlite.gz");
+    fs::write(&archive_path, b"unverified archive artifact").expect("write stale artifact");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, artifact_sha256, quarantined_at, updated_at
+        ) VALUES ('stale-quarantine', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'quarantined', NULL, datetime('now', '-2 days'), datetime('now', '-2 days'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed stale quarantined archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should retire stale quarantined archive");
+
+    assert!(
+        !archive_path.exists(),
+        "expired owned quarantine artifact is removed"
+    );
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE prepared_key = 'stale-quarantine'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count retired quarantine journal");
+    assert_eq!(remaining, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-invalid-publication-kind").await;
+    let archive_root = config.archive_dir.join("codex_invocations");
+    fs::create_dir_all(&archive_root).expect("create archive root");
+    let archive_path = archive_root.join("legacy-unknown-kind.sqlite.gz");
+    fs::write(&archive_path, b"unverified legacy artifact").expect("write legacy artifact");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, publication_kind, updated_at
+        ) VALUES ('invalid-publication-kind', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'preparing', 'unsupported_kind', datetime('now'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed invalid publication kind");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should isolate invalid publication kind");
+
+    let (state, next_retry_at, last_failure_stage): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+        "SELECT state, next_retry_at, last_failure_stage FROM retention_prepared_archives WHERE prepared_key = 'invalid-publication-kind'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invalid publication kind journal");
+    assert_eq!(state, "quarantined");
+    assert_eq!(next_retry_at, None);
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
+    let (failure_count, defer_reason): (i64, Option<String>) = sqlx::query_as(
+        "SELECT consecutive_failure_count, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load durable invalid-kind failure cursor");
+    assert_eq!(failure_count, 1);
+    assert_eq!(defer_reason.as_deref(), Some("retry_backoff"));
+    assert!(
+        archive_path.exists(),
+        "quarantine retains the artifact for evidence"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_quarantines_missing_published_archive_instead_of_retrying() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-missing-published-archive").await;
+    let archive_path = config
+        .archive_dir
+        .join("codex_invocations")
+        .join("missing-published.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, artifact_sha256, updated_at
+        ) VALUES ('missing-published-archive', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'published', 'expected-sha', datetime('now'))
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("seed missing published archive");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("retention should quarantine missing published archive");
+
+    let (state, next_retry_at, last_failure_stage): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT state, next_retry_at, last_failure_stage
+             FROM retention_prepared_archives
+             WHERE prepared_key = 'missing-published-archive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load missing published archive journal");
+    assert_eq!(state, "quarantined");
+    assert_eq!(next_retry_at, None);
+    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_pressure_defer_persists_prepared_retry_cursor() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-prepared-pressure-cursor").await;
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, updated_at
+        ) VALUES ('pressure-cursor', 'codex_invocations', '2026-01', ?1, '[]',
+                  'source-identity', 'preparing', datetime('now'))
+        "#,
+    )
+    .bind(
+        config
+            .archive_dir
+            .join("codex_invocations")
+            .join("missing.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .expect("seed prepared pressure cursor");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = NULL, defer_reason = NULL WHERE scope = 'prepared_archives'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make prepared cursor due");
+
+    let pressure_gate = std::sync::Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        std::time::Duration::from_secs(60),
+    ));
+    let _busy_permit = pressure_gate
+        .try_begin_background("retention_prepared_pressure_cursor")
+        .expect("occupy the test background pressure slot");
+    crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
+        .scope(
+            pressure_gate,
+            run_data_retention_maintenance(&pool, &config, Some(false), None),
+        )
+        .await
+        .expect("pressure defer should keep independent retention stages alive");
+
+    let (next_retry_at, defer_reason): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT next_retry_at, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load durable prepared pressure cursor");
+    assert!(
+        next_retry_at.is_some(),
+        "pressure retry deadline must survive refresh"
+    );
+    assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
@@ -898,6 +1071,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .expect("load first-pass legacy cursor");
     assert!(first_pass_cursor.ends_with("part-000000000000001f-000000000000001f-legacy.sqlite.gz"));
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due for the next bounded pass");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("resume bounded legacy reconciliation pass");
@@ -912,6 +1092,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     let late_file = archive_dir.join("aaa-late.sqlite.gz");
     fs::write(&late_file, b"late unverified legacy segment")
         .expect("write lexically earlier segment after the cursor advanced");
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due before wrapping");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("tail scan should wrap the cursor after exhaustion");
@@ -923,6 +1110,13 @@ async fn legacy_retention_reconciliation_processes_at_most_32_files_per_pass() {
     .expect("load wrapped legacy cursor");
     assert!(cursor_after_wrap.is_empty());
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due after wrapping");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("scan again from the beginning after cursor wrap");
@@ -987,6 +1181,13 @@ async fn legacy_retention_reconciliation_does_not_starve_after_a_truncated_refer
             .expect("count unreferenced archive after first pass");
     assert_eq!(first_pass_unreferenced, 0);
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = datetime('now', '-1 second') \
+         WHERE scope = 'legacy_archive_segments'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make legacy recovery cursor due before the resumed pass");
     run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("resume after truncated legacy reconciliation pass");

@@ -9,6 +9,7 @@ const RETENTION_RECOVERY_STAGES = new Set([
   "preparing",
   "publishing",
   "finalizing",
+  "prepared_reconcile",
   "orphan_sweep",
   "legacy_reconcile",
   "status_refresh",
@@ -480,6 +481,14 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
     stage && RETENTION_RECOVERY_STAGES.has(stage)
       ? t(`system.status.runtimePressure.retentionRecovery.stages.${stage}`)
       : t("system.status.runtimePressure.states.unknown");
+  const recoveryDeferReason = ["sqlite_pressure", "retry_backoff"].includes(
+    recovery?.deferReason ?? "",
+  )
+    ? recovery?.deferReason
+    : undefined;
+  const recoveryDeferReasonLabel = recoveryDeferReason
+    ? t(`system.status.runtimePressure.retentionRecovery.deferReasons.${recoveryDeferReason}`)
+    : undefined;
   const recoveryHints = recovery
     ? [
         recovery.nextRetryAt
@@ -491,6 +500,16 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
           ? t("system.status.runtimePressure.retentionRecovery.failureHint", {
               stage: recoveryStageLabel(recovery.failureStage),
               fingerprint: recovery.failureFingerprint,
+            })
+          : undefined,
+        recoveryDeferReasonLabel
+          ? t("system.status.runtimePressure.retentionRecovery.deferHint", {
+              reason: recoveryDeferReasonLabel,
+            })
+          : undefined,
+        recovery.consecutiveFailureCount != null
+          ? t("system.status.runtimePressure.retentionRecovery.failureCountHint", {
+              count: recovery.consecutiveFailureCount.toLocaleString(),
             })
           : undefined,
       ]
@@ -593,6 +612,18 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
             reason: rawCaptureReasonLabel,
             inventory: rawCaptureInventoryLabel,
           })}
+        </span>
+        <span
+          className="sr-only"
+          data-testid="system-status-retention-recovery-live"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {[
+            t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`),
+            recoveryStageLabel(recovery?.stage),
+            recoveryHints || t("system.status.runtimePressure.additiveUnknown"),
+          ].join(" · ")}
         </span>
         {health ? (
           <details className="rounded-lg border border-base-300/70 bg-base-100/50 px-4 py-3">
@@ -775,11 +806,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                   <h4 className="text-sm font-semibold text-base-content">
                     {t("system.status.runtimePressure.retentionRecovery.title")}
                   </h4>
-                  <span
-                    className="text-xs font-medium text-base-content/70"
-                    aria-live="polite"
-                    aria-atomic="true"
-                  >
+                  <span className="text-xs font-medium text-base-content/70">
                     {t(`system.status.runtimePressure.states.${recovery?.state ?? "unknown"}`)}
                   </span>
                 </div>
