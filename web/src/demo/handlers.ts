@@ -2072,13 +2072,13 @@ function systemStatus() {
           runtimeState === "degraded"
             ? "degraded"
             : runtimeState === "deferred"
-              ? "recovering"
+              ? "deferred"
               : "healthy",
         stage:
           runtimeState === "degraded"
             ? "status_refresh"
             : runtimeState === "deferred"
-              ? "publishing"
+              ? "prepared_reconcile"
               : "orphan_sweep",
         preparedCount: runtimeState === "healthy" ? 0 : 18,
         quarantinedCount: runtimeState === "degraded" ? 3 : 1,
@@ -2088,6 +2088,8 @@ function systemStatus() {
         nextRetryAt: runtimeState === "healthy" ? undefined : "2026-09-21T03:05:00Z",
         failureStage: runtimeState === "degraded" ? "status_refresh" : undefined,
         failureFingerprint: runtimeState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+        deferReason: runtimeState === "deferred" ? "sqlite_pressure" : undefined,
+        consecutiveFailureCount: runtimeState === "degraded" ? 3 : 0,
       },
       dashboardProjection: {
         mode: "auto",

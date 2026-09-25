@@ -2331,6 +2331,8 @@ export interface RuntimePressureRetentionRecoveryHealth {
   nextRetryAt?: string;
   failureStage?: string;
   failureFingerprint?: string;
+  deferReason?: string;
+  consecutiveFailureCount?: number;
 }
 
 export interface RuntimePressureRawCaptureHealth {
@@ -4647,6 +4649,8 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       nextRetryAt: optionalString(retentionRecovery?.nextRetryAt),
       failureStage: optionalString(retentionRecovery?.failureStage),
       failureFingerprint: optionalString(retentionRecovery?.failureFingerprint),
+      deferReason: optionalString(retentionRecovery?.deferReason),
+      consecutiveFailureCount: optionalCount(retentionRecovery?.consecutiveFailureCount),
     },
     rawCapture: {
       state: optionalString(rawCapture?.state) ?? "unknown",
