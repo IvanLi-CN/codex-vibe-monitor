@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { useInvocationTimeline } from "../../hooks/useInvocationTimeline";
 import useSseStatus from "../../hooks/useSseStatus";
@@ -150,6 +150,7 @@ export function DashboardInvocationTimeline({
   const liveConnected = closedNaturalDay || sseStatus.phase === "connected";
   const [hoverMs, setHoverMs] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const lastHoverUpdateMs = useRef(0);
   const timeline = useInvocationTimeline({
     response,
     closedNaturalDay,
@@ -320,7 +321,13 @@ export function DashboardInvocationTimeline({
                 1,
                 Math.max(0, (event.clientX - rect.left - 48) / Math.max(1, rect.width - 112)),
               );
-              setHoverMs(plotWindow.startMs + ratio * windowSpan);
+              const hoverStepMs = Math.max(1_000, Math.min(15_000, windowSpan / 240));
+              const nextHoverMs =
+                plotWindow.startMs + Math.round((ratio * windowSpan) / hoverStepMs) * hoverStepMs;
+              const now = performance.now();
+              if (now - lastHoverUpdateMs.current < 50) return;
+              lastHoverUpdateMs.current = now;
+              setHoverMs((current) => (current === nextHoverMs ? current : nextHoverMs));
             }}
             onPointerLeave={() => setHoverMs(null)}
           >

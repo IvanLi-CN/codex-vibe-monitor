@@ -65,7 +65,9 @@ export function useInvocationTimeline({
     const endMs = parseEpoch(response?.rangeEnd);
     return startMs != null && endMs != null && endMs > startMs ? { startMs, endMs } : null;
   }, [response?.rangeEnd, response?.rangeStart]);
-  const boundsKey = bounds ? `${bounds.startMs}:${bounds.endMs}:${closedNaturalDay}` : "empty";
+  const boundsContextKey = bounds
+    ? `${bounds.startMs}:${closedNaturalDay}:${upstreamAccountId ?? "all"}`
+    : "empty";
   const [viewportWindow, setViewportWindow] = useState<InvocationTimelineWindow | null>(() =>
     resolveInitialWindow(response, closedNaturalDay),
   );
@@ -74,14 +76,26 @@ export function useInvocationTimeline({
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const previousBoundsKey = useRef(boundsKey);
+  const previousBoundsContextKey = useRef(boundsContextKey);
 
   useEffect(() => {
-    if (previousBoundsKey.current === boundsKey) return;
-    previousBoundsKey.current = boundsKey;
-    setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
-    setData(null);
-  }, [boundsKey, closedNaturalDay, response]);
+    if (!bounds) {
+      previousBoundsContextKey.current = boundsContextKey;
+      setViewportWindow(null);
+      setData(null);
+      return;
+    }
+    const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
+    previousBoundsContextKey.current = boundsContextKey;
+    if (contextChanged) {
+      setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
+      setData(null);
+      return;
+    }
+    setViewportWindow((current) =>
+      current ? clampWindow(current, bounds) : resolveInitialWindow(response, closedNaturalDay),
+    );
+  }, [bounds, boundsContextKey, closedNaturalDay, response]);
 
   useEffect(() => {
     if (!bounds || !viewportWindow) return;
