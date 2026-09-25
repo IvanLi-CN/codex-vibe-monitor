@@ -1,7 +1,18 @@
 use super::*;
 
-use futures_util::TryStreamExt;
-use sqlx::{FromRow, Row};
+mod archive_identity;
+use archive_identity::invocation_archive_source_identity_matches;
+pub(crate) use archive_identity::{
+    InvocationArchiveIdentityDatabase, invocation_archive_source_identity_sha256,
+};
+#[cfg(test)]
+pub(crate) use archive_identity::{
+    invocation_archive_source_identity_matches_for_test,
+    invocation_archive_source_identity_sha256_candidate_v2_for_test,
+    invocation_archive_source_identity_sha256_legacy_for_test,
+};
+
+use sqlx::FromRow;
 use std::{
     cell::RefCell,
     fs::{File, ReadDir},
@@ -1509,92 +1520,6 @@ struct RetentionPreparedArchiveDescriptor {
     publication_kind: &'static str,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum InvocationArchiveIdentityDatabase {
-    Main,
-    Archive,
-}
-
-impl InvocationArchiveIdentityDatabase {
-    fn table_name(self) -> &'static str {
-        match self {
-            Self::Main => "main.codex_invocations",
-            Self::Archive => "archive_db.codex_invocations",
-        }
-    }
-}
-
-fn hash_identity_component(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update((value.len() as u64).to_be_bytes());
-    hasher.update(value);
-}
-
-pub(crate) async fn invocation_archive_source_identity_sha256(
-    connection: &mut sqlx::SqliteConnection,
-    database: InvocationArchiveIdentityDatabase,
-    ids: &[i64],
-) -> Result<String> {
-    if ids.is_empty() {
-        bail!("retention archive source identity requires at least one row");
-    }
-
-    let columns = CODEX_INVOCATIONS_ARCHIVE_COLUMNS
-        .split(", ")
-        .collect::<Vec<_>>();
-    let table_name = database.table_name();
-    let mut query = sqlx::QueryBuilder::<Sqlite>::new("SELECT ");
-    for (index, column) in columns.iter().enumerate() {
-        if index > 0 {
-            query.push(", ");
-        }
-        query
-            .push("typeof(")
-            .push(table_name)
-            .push(".")
-            .push(*column)
-            .push("), CAST(")
-            .push(table_name)
-            .push(".")
-            .push(*column)
-            .push(" AS BLOB)");
-    }
-    query
-        .push(" FROM ")
-        .push(table_name)
-        .push(" WHERE id IN (SELECT value FROM json_each(")
-        .push_bind(serde_json::to_string(ids).context("encode retention archive identity ids")?)
-        .push(")) ORDER BY id ASC");
-
-    // Length framing and SQLite storage classes keep NULL, text, numeric, and blob values distinct.
-    let mut hasher = Sha256::new();
-    hasher.update(b"codex-vibe-monitor/retention-source-identity/v2\0");
-    hasher.update((ids.len() as u64).to_be_bytes());
-    let mut row_count = 0usize;
-    let mut rows = query.build().fetch(&mut *connection);
-    while let Some(row) = rows.try_next().await? {
-        row_count += 1;
-        for (index, column) in columns.iter().enumerate() {
-            let sqlite_type = row.try_get::<String, _>(index * 2)?;
-            let value = row.try_get::<Option<Vec<u8>>, _>(index * 2 + 1)?;
-            hash_identity_component(&mut hasher, column.as_bytes());
-            hash_identity_component(&mut hasher, sqlite_type.as_bytes());
-            match value {
-                Some(value) => {
-                    hasher.update([1]);
-                    hash_identity_component(&mut hasher, &value);
-                }
-                None => hasher.update([0]),
-            }
-        }
-        hasher.update([0xff]);
-    }
-
-    if row_count != ids.len() {
-        bail!("retention archive source identity verification failed: source row count changed");
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
 fn retention_prepared_archive_descriptor(
     config: &AppConfig,
     dataset: &'static str,
@@ -1888,11 +1813,22 @@ async fn retention_recovery_record_preparing(
     if let Some((existing_key, existing_identity)) = existing
         && existing_identity != descriptor.source_identity_sha256
     {
-        tx.rollback().await?;
-        drop(admission);
-        let error = anyhow!("retention prepared archive identity collision");
-        retention_recovery_persist_failure(pool, &existing_key, "preparing", &error).await?;
-        return Err(retention_recovery_failure_persisted(&existing_key, error));
+        let source_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)
+            .context("decode retention prepared archive source ids")?;
+        let compatible_identity = invocation_archive_source_identity_matches(
+            tx.as_mut(),
+            InvocationArchiveIdentityDatabase::Main,
+            &source_ids,
+            &existing_identity,
+        )
+        .await?;
+        if !compatible_identity {
+            tx.rollback().await?;
+            drop(admission);
+            let error = anyhow!("retention prepared archive identity collision");
+            retention_recovery_persist_failure(pool, &existing_key, "preparing", &error).await?;
+            return Err(retention_recovery_failure_persisted(&existing_key, error));
+        }
     }
     sqlx::query(
         r#"
@@ -2194,9 +2130,6 @@ async fn retention_recovery_verify_publication_tx(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| anyhow!("published retention archive journal entry is missing"))?;
-    if journal_identity != descriptor.source_identity_sha256 {
-        bail!("retention prepared archive source identity verification failed");
-    }
     let journal_publication_kind = sqlx::query_scalar::<_, Option<String>>(
         "SELECT publication_kind FROM retention_prepared_archives WHERE prepared_key = ?1",
     )
@@ -2230,13 +2163,20 @@ async fn retention_recovery_verify_publication_tx(
     }
     let source_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)
         .context("decode retention prepared archive source ids")?;
+    let source_identity_matches_journal = invocation_archive_source_identity_matches(
+        tx,
+        InvocationArchiveIdentityDatabase::Main,
+        &source_ids,
+        &journal_identity,
+    )
+    .await?;
     let source_identity = invocation_archive_source_identity_sha256(
         tx,
         InvocationArchiveIdentityDatabase::Main,
         &source_ids,
     )
     .await?;
-    if source_identity != journal_identity {
+    if !source_identity_matches_journal || source_identity != descriptor.source_identity_sha256 {
         bail!(
             "retention prepared archive source identity verification failed: live rows no longer match journal"
         );
@@ -2282,25 +2222,27 @@ async fn verify_prepared_retention_archive_artifact(
     } else {
         expected_ids.as_slice()
     };
-    let archive_identity = invocation_archive_source_identity_sha256(
+    let archive_identity_matches = invocation_archive_source_identity_matches(
         &mut archive_db,
         InvocationArchiveIdentityDatabase::Main,
         identity_ids,
+        &descriptor.source_identity_sha256,
     )
     .await?;
     archive_db.close().await?;
-    if archive_identity != descriptor.source_identity_sha256 {
+    if !archive_identity_matches {
         bail!("prepared archive source identity verification failed");
     }
     let mut source_connection = pool.acquire().await?;
-    let source_identity = invocation_archive_source_identity_sha256(
+    let source_identity_matches = invocation_archive_source_identity_matches(
         &mut source_connection,
         InvocationArchiveIdentityDatabase::Main,
         &expected_ids,
+        &descriptor.source_identity_sha256,
     )
     .await?;
     drop(source_connection);
-    if source_identity != descriptor.source_identity_sha256 {
+    if !source_identity_matches {
         bail!("prepared archive live source identity verification failed");
     }
     if sha256_hex_file(archive_path)? != expected_sha256 {
@@ -2847,6 +2789,14 @@ async fn retention_recovery_persist_pressure_defer(
     .await?;
     retention_recovery_record_deferred(stage);
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn reconcile_retention_prepared_archives_for_test(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<()> {
+    reconcile_retention_prepared_archives(pool, config).await
 }
 
 async fn reconcile_retention_prepared_archives(

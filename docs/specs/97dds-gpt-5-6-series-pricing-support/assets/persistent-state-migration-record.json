@@ -10,8 +10,8 @@
     "description": "Nullable reported cache-write Token counts on invocation records, future invocation archives, and repo-managed pricing catalog version and seed rows. Existing invocation costs and historical exact cache-write counts are not rewritten.",
     "storage_implementation": "SQLite codex_invocations.reported_cache_write_tokens plus invocation archive datasets and the existing SQLite pricing catalog.",
     "source_compatibility_range": {
-      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including the current candidate base e170a7baf8ee9bcd72d53524a8994cfc52cd957c.",
-      "to_program_version": "Candidate release based on mainline commit e170a7baf8ee9bcd72d53524a8994cfc52cd957c.",
+      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including mainline base 8615dfd2c33a1e046dcda1fb56661a1cad4fa874 and interrupted candidates with v2 retention identities over either archive-column layout.",
+      "to_program_version": "Candidate release based on mainline commit 8615dfd2c33a1e046dcda1fb56661a1cad4fa874.",
       "direct_major_skips_supported": false
     }
   },
@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "ddl-001",
-        "description": "Within a SQLite BEGIN IMMEDIATE transaction, idempotently add nullable reported_cache_write_tokens to codex_invocations before new exact usage values are persisted; independent processes serialize schema inspection and DDL, and archive readers project NULL when reading legacy datasets without the column.",
+        "description": "Within a SQLite BEGIN IMMEDIATE transaction, idempotently add nullable reported_cache_write_tokens to codex_invocations before new exact usage values are persisted; independent processes serialize schema inspection and DDL, archive readers project NULL when reading legacy datasets without the column, and prepared-archive recovery verifies supported v2 identity layouts before transitioning their journals.",
         "order": 1,
         "observable": true,
         "pauseable": true
@@ -62,7 +62,8 @@
     "progress_signals": [
       "SQLite schema inspection confirms the nullable column exists before usage writes.",
       "Repo-managed pricing version and seed rows are observable through the pricing settings API and catalog tests.",
-      "Invocation details distinguish a reported exact cache-write count from NULL legacy or missing-field records."
+      "Invocation details distinguish a reported exact cache-write count from NULL legacy or missing-field records.",
+      "New prepared-archive identities use v3; pre-column v2 identities are accepted only when the reported field remains NULL in both source and archive."
     ],
     "pause_points": [
       "After idempotent schema recognition and before guarded catalog seed upgrade.",
@@ -72,7 +73,7 @@
   "recovery": {
     "deployed_migrations_immutable": true,
     "program_rollback_state_behavior": "Earlier readers may ignore the additive column; older writers cannot preserve the new field when re-archiving and therefore are not guaranteed same-Minor write-forward compatibility. No rollback removes the column or rewrites pricing rows.",
-    "faulty_release_recovery": "A newer program version recognizes the nullable column, safely re-enters the guarded seed upgrade, and reads earlier archives with NULL exact cache-write usage; repair is forward-only.",
+    "faulty_release_recovery": "A newer program version recognizes the nullable column, safely re-enters the guarded seed upgrade, and reads earlier archives with NULL exact cache-write usage. It verifies interrupted v2 prepared-archive identities over both supported column layouts and permits the pre-column layout only when the reported value is NULL in both source and archive; re-preparation promotes a compatible journal to the current v3 identity. Repair is forward-only.",
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
@@ -83,6 +84,7 @@
       "required_test_evidence": [
         "The additive reported_cache_write_tokens field preserves existing public API behavior while exposing the new nullable value within the same Major.",
         "Candidate reads supported earlier-Minor database state and legacy archives without fabricating exact cache-write counts.",
+        "Interrupted v2 prepared-archive journals recover without quarantine for matching pre-column artifacts, while non-NULL reported cache-write values cannot be ignored by the legacy identity path.",
         "Earlier-Minor programs are not required to preserve or read state written with the new column when re-archiving.",
         "Idempotent schema migration and guarded pricing seeding safely re-enter after a stopped startup.",
         "Stateful SQLite and archive-file-io test profiles cover prior schemas, legacy archives, exact-value round trips, and compatibility behavior."

@@ -133,7 +133,7 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 ### Reported cache-write usage storage
 
-The canonical upstream usage field is `usage.input_tokens_details.cache_write_tokens`. The live `codex_invocations` table and newly written invocation archives store its exact value in nullable `reported_cache_write_tokens`; the invocation API exposes it as nullable `reportedCacheWriteTokens`. Existing `cacheWriteTokens` remains the derived total non-cache input amount used by current Usage details and aggregate projections. Existing rows and legacy archives remain `NULL` for the reported field; there is no historical exact-usage backfill.
+The canonical upstream usage field is `usage.input_tokens_details.cache_write_tokens`. The live `codex_invocations` table and newly written invocation archives store its exact value in nullable `reported_cache_write_tokens`; the invocation API exposes it as nullable `reportedCacheWriteTokens`. Existing `cacheWriteTokens` remains the derived total non-cache input amount used by current Usage details and aggregate projections. Existing rows and legacy archives remain `NULL` for the reported field; there is no historical exact-usage backfill. Retention recovery accepts pre-column v2 prepared-archive identities only when the reported value is `NULL` in both live source and archive; new identities use v3, and a non-NULL exact value cannot be hidden by a legacy digest.
 
 ### Cost estimation
 

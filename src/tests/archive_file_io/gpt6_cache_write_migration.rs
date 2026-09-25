@@ -193,3 +193,112 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
 
     cleanup_temp_test_dir(&temp_dir);
 }
+
+#[tokio::test]
+async fn retention_recovery_accepts_prepared_archives_with_legacy_source_identity() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("legacy-prepared-identity").await;
+    let occurred_at = shanghai_local_days_ago(91, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve prepared archive path");
+    fs::create_dir_all(archive_path.parent().expect("archive path parent"))
+        .expect("create prepared archive directory");
+    insert_retention_invocation(
+        &pool,
+        "legacy-prepared-identity-source",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        None,
+        Some(15),
+        Some(0.15),
+    )
+    .await;
+    let row_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE invoke_id = 'legacy-prepared-identity-source'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load prepared source row id");
+
+    let legacy_archive_db_path = temp_dir.join("legacy-prepared-archive.sqlite");
+    fs::File::create(&legacy_archive_db_path).expect("create legacy prepared archive file");
+    let mut connection = pool
+        .acquire()
+        .await
+        .expect("acquire archive fixture connection");
+    sqlx::query("ATTACH DATABASE ?1 AS archive_db")
+        .bind(legacy_archive_db_path.to_string_lossy().as_ref())
+        .execute(connection.as_mut())
+        .await
+        .expect("attach legacy archive database");
+    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL
+        .replace("    reported_cache_write_tokens INTEGER,\n", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(connection.as_mut())
+        .await
+        .expect("create legacy archive schema");
+    let legacy_columns =
+        CODEX_INVOCATIONS_ARCHIVE_COLUMNS.replace("reported_cache_write_tokens, ", "");
+    let copy_legacy_row = format!(
+        "INSERT INTO archive_db.codex_invocations ({legacy_columns}) SELECT {legacy_columns} FROM main.codex_invocations WHERE id = ?1"
+    );
+    sqlx::query(&copy_legacy_row)
+        .bind(row_id)
+        .execute(connection.as_mut())
+        .await
+        .expect("copy source row into the old archive layout");
+    let legacy_identity = invocation_archive_source_identity_sha256_legacy_for_test(
+        connection.as_mut(),
+        InvocationArchiveIdentityDatabase::Main,
+        &[row_id],
+    )
+    .await
+    .expect("calculate pre-column source identity");
+    sqlx::query("DETACH DATABASE archive_db")
+        .execute(connection.as_mut())
+        .await
+        .expect("detach legacy archive database");
+    drop(connection);
+    deflate_sqlite_file_to_gzip(&legacy_archive_db_path, &archive_path)
+        .expect("compress legacy prepared archive");
+
+    let prepared_key = "legacy-prepared-identity-journal";
+    let source_ids_json = serde_json::to_string(&[row_id]).expect("encode prepared source ids");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, attempt_count
+        ) VALUES (?1, 'codex_invocations', ?2, ?3, ?4, ?5, 'preparing', 1)
+        "#,
+    )
+    .bind(prepared_key)
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().as_ref())
+    .bind(&source_ids_json)
+    .bind(&legacy_identity)
+    .execute(&pool)
+    .await
+    .expect("seed legacy preparing archive journal");
+
+    reconcile_retention_prepared_archives_for_test(&pool, &config)
+        .await
+        .expect("reconcile legacy prepared archive");
+
+    let journal = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT state, last_failure_stage FROM retention_prepared_archives WHERE prepared_key = ?1",
+    )
+    .bind(prepared_key)
+    .fetch_one(&pool)
+    .await
+    .expect("load reconciled archive journal");
+    assert_eq!(journal.0, "published");
+    assert_eq!(journal.1, None);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}

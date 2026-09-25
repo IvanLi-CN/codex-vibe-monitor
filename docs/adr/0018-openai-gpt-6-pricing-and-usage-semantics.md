@@ -14,7 +14,7 @@ An absent or Standard actual billing tier uses Standard rates. OpenAI accepts re
 
 Historical non-null invocation costs, user-edited pricing rows, and custom catalogs remain immutable during catalog updates. Model-specific request parameter capability validation remains upstream-owned; this project forwards the request and preserves upstream validation outcomes.
 
-The schema change is additive: a nullable live invocation column is added before new writes use it, and new archives include the column while legacy archive reads project it as `NULL`. Pricing-row DML remains separate from schema DDL. A stopped or partially completed startup is repaired forward through idempotent schema recognition and catalog seeding; deployed columns are never removed by program rollback.
+The schema change is additive: a nullable live invocation column is added before new writes use it, and new archives include the column while legacy archive reads project it as `NULL`. New retention source identities use a versioned digest; recovery accepts earlier v2 prepared-archive digests only when the reported cache-write value is `NULL` in both source and archive. Pricing-row DML remains separate from schema DDL. A stopped or partially completed startup is repaired forward through idempotent schema recognition and catalog seeding; deployed columns are never removed by program rollback.
 
 ## Consequences
 

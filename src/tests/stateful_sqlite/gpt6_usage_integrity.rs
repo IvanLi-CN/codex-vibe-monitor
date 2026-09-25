@@ -106,6 +106,104 @@ async fn concurrent_reported_cache_write_column_migration_is_database_serialized
 }
 
 #[tokio::test]
+async fn prepared_archive_identity_versions_preserve_exact_cache_write_guard() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let record = test_proxy_capture_record(
+        "gpt6-prepared-identity-version-guard",
+        "2026-09-24 12:00:00",
+    );
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin prepared identity fixture write");
+    persist_proxy_capture_runtime_record_tx(tx.as_mut(), record, false)
+        .await
+        .expect("persist prepared identity fixture row");
+    tx.commit().await.expect("commit prepared identity fixture");
+    let row_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE invoke_id = 'gpt6-prepared-identity-version-guard'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load prepared identity row id");
+
+    let mut connection = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire identity connection");
+    let candidate_identity = invocation_archive_source_identity_sha256_candidate_v2_for_test(
+        connection.as_mut(),
+        crate::maintenance::InvocationArchiveIdentityDatabase::Main,
+        &[row_id],
+    )
+    .await
+    .expect("calculate candidate v2 identity");
+    assert!(
+        invocation_archive_source_identity_matches_for_test(
+            connection.as_mut(),
+            crate::maintenance::InvocationArchiveIdentityDatabase::Main,
+            &[row_id],
+            &candidate_identity,
+        )
+        .await
+        .expect("verify candidate v2 identity")
+    );
+    drop(connection);
+
+    sqlx::query("UPDATE codex_invocations SET reported_cache_write_tokens = 13 WHERE id = ?1")
+        .bind(row_id)
+        .execute(&state.pool)
+        .await
+        .expect("set exact cache-write value");
+
+    let mut connection = state
+        .pool
+        .acquire()
+        .await
+        .expect("reacquire identity connection");
+    let candidate_identity = invocation_archive_source_identity_sha256_candidate_v2_for_test(
+        connection.as_mut(),
+        crate::maintenance::InvocationArchiveIdentityDatabase::Main,
+        &[row_id],
+    )
+    .await
+    .expect("calculate candidate v2 identity with exact usage");
+    assert!(
+        invocation_archive_source_identity_matches_for_test(
+            connection.as_mut(),
+            crate::maintenance::InvocationArchiveIdentityDatabase::Main,
+            &[row_id],
+            &candidate_identity,
+        )
+        .await
+        .expect("verify candidate v2 identity with exact usage")
+    );
+
+    let legacy_identity = invocation_archive_source_identity_sha256_legacy_for_test(
+        connection.as_mut(),
+        crate::maintenance::InvocationArchiveIdentityDatabase::Main,
+        &[row_id],
+    )
+    .await
+    .expect("calculate pre-column v2 identity");
+    assert!(
+        !invocation_archive_source_identity_matches_for_test(
+            connection.as_mut(),
+            crate::maintenance::InvocationArchiveIdentityDatabase::Main,
+            &[row_id],
+            &legacy_identity,
+        )
+        .await
+        .expect("verify pre-column v2 identity with non-null exact usage")
+    );
+}
+
+#[tokio::test]
 async fn runtime_update_preserves_reported_cache_write_when_missing_and_accepts_zero() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -469,6 +567,100 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
     .expect("load refreshed proxy rollup");
     assert_eq!(rollup.0, 1_240);
     assert_f64_close(rollup.1, 0.02);
+}
+
+#[tokio::test]
+async fn websocket_terminal_insert_race_rebuilds_existing_hourly_rollup() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "gpt6-websocket-insert-race-rollup";
+    let occurred_at = "2026-09-24 12:00:00";
+    let mut record = test_proxy_capture_record(invoke_id, occurred_at);
+    record.model = Some("gpt-6-sol".to_string());
+    record.usage = ParsedUsage {
+        input_tokens: Some(200),
+        output_tokens: Some(20),
+        cache_input_tokens: Some(10),
+        reported_cache_write_tokens: Some(7),
+        total_tokens: Some(220),
+        ..ParsedUsage::default()
+    };
+    record.cost = Some(0.02);
+    record.payload = Some(
+        mark_websocket_payload_transport(
+            r#"{"endpoint":"/v1/responses","streamTerminalEvent":"response.completed"}"#
+                .to_string(),
+        )
+        .expect("mark websocket payload"),
+    );
+
+    let bucket_start_epoch = crate::maintenance::invocation_bucket_start_epoch(occurred_at)
+        .expect("resolve hourly rollup bucket");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch, source, total_count, success_count, failure_count,
+            terminal_count, terminal_tokens, terminal_cost, terminal_proof_complete,
+            total_tokens, total_cost
+        ) VALUES (?1, 'proxy', 1, 1, 0, 1, 110, 0.01, 1, 110, 0.01)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .execute(&state.pool)
+    .await
+    .expect("seed the pre-race rollup");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER seed_websocket_insert_race
+        BEFORE INSERT ON codex_invocations
+        WHEN NEW.invoke_id = 'gpt6-websocket-insert-race-rollup'
+             AND NEW.input_tokens > 100
+        BEGIN
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+                cache_input_tokens, reasoning_tokens, total_tokens, cost, status,
+                error_message, failure_kind, failure_class, is_actionable, payload,
+                raw_response, price_version
+            ) VALUES (
+                NEW.invoke_id, NEW.occurred_at, NEW.source, NEW.model, 100, 10,
+                5, NULL, 110, 0.01, NEW.status, NEW.error_message, NEW.failure_kind,
+                NEW.failure_class, NEW.is_actionable, NEW.payload, NEW.raw_response,
+                NEW.price_version
+            );
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("install deterministic insert-race trigger");
+
+    let mut tx = state.pool.begin().await.expect("begin terminal write");
+    persist_proxy_capture_runtime_record_tx(tx.as_mut(), record, true)
+        .await
+        .expect("persist terminal invocation after insert race");
+    tx.commit().await.expect("commit terminal write");
+
+    let persisted_usage = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT input_tokens, reported_cache_write_tokens FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind(invoke_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation refreshed after insert race");
+    assert_eq!(persisted_usage, (Some(200), Some(7)));
+
+    let rollup = sqlx::query_as::<_, (i64, i64, f64)>(
+        "SELECT total_count, total_tokens, total_cost FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = 'proxy'",
+    )
+    .bind(bucket_start_epoch)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load rebuilt hourly rollup");
+    assert_eq!(rollup.0, 1);
+    assert_eq!(rollup.1, 220);
+    assert_f64_close(rollup.2, 0.02);
 }
 
 #[tokio::test]
