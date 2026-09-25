@@ -43,6 +43,8 @@
 - [x] Admit cache-only WebSocket `response.created`/`response.in_progress` usage into the turn accumulator without persisting a nonterminal row, and include it in interrupted-turn snapshots after first token.
 - [x] Refresh richer usage from a later WebSocket terminal event in the existing invocation through the durable terminal writer; recompute affected hourly rollups while retaining terminal identity, status, and non-WebSocket duplicate behavior.
 - [x] Rebuild hourly rollups after a WebSocket terminal insert race, and preserve legacy prepared-archive recovery with versioned source identities.
+- [x] Reject WebSocket terminal refreshes that decrease any already-known usage count, even when they add a previously missing usage dimension.
+- [x] Finalize a published legacy prepared archive on retry using its journaled identity version and the verified artifact digest.
 - [x] Resolve valid GPT-6 date aliases while leaving invalid and preview variants unpriced; do not add local model-specific request-parameter capability validation.
 - [x] Restrict GPT-6 model identity icons to exact IDs and calendar-valid dated aliases; retain invalid dated aliases as original text.
 - [x] Add targeted backend/web regression coverage.
@@ -106,3 +108,4 @@ The checks below document the completed GPT-5.6 and temporary GPT-6 delivery onl
 - Visual gate: `Storybook覆盖=通过` for the changed invocation detail and invalid-date identity fallback; Settings page interaction story remains manual due to pre-existing axe findings. `视觉证据目标源=ui_demo+storybook_canvas`; `视觉证据=存在`; `空白裁剪=已裁剪`; `聊天回图=已展示`; `证据落盘=已落盘`; `视觉比较=owner-confirmed` (`current-only` baseline). The evidence is mock-only and contains no live account data.
 - Rebased candidate checks passed: `stateful-sqlite` (1,329 passed, 1,456 skipped), `archive-file-io` (276 passed, 2,509 skipped), Rust format/check/Clippy/source-quality policy, full Web unit suite (1,561 passed, 6 skipped), Web typecheck, and production build.
 - Repair Batch 9 passed: `stateful-sqlite` (1,332 passed, 1,458 skipped), `archive-file-io` (277 passed, 2,513 skipped), Rust format/check/Clippy/source-quality policy, and the targeted cache-write-only WebSocket-to-API/rollup regression.
+- Review repair validation passed: `stateful-sqlite` (1,336 passed, 1,462 skipped), `archive-file-io` (281 passed, 2,517 skipped), Rust fmt/check/Clippy/source-quality; targeted tests verify monotonic WebSocket refreshes and legacy prepared-archive finalization after its retry cursor is due.

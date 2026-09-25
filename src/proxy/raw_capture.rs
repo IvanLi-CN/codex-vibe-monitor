@@ -331,6 +331,48 @@ fn is_official_gpt_6_pricing_model(model: &str) -> bool {
     matches!(base, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
 }
 
+pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode_for_model(
+    model: Option<&str>,
+    explicit_billing_service_tier: Option<&str>,
+    requested_service_tier: Option<&str>,
+    response_service_tier: Option<&str>,
+    upstream_account_kind: Option<&str>,
+) -> (Option<String>, ProxyPricingMode) {
+    let use_response_tier = model.is_some_and(is_official_gpt_6_pricing_model)
+        && explicit_billing_service_tier
+            .and_then(normalize_service_tier)
+            .is_none()
+        && response_service_tier
+            .and_then(normalize_service_tier)
+            .is_some();
+    resolve_proxy_billing_service_tier_and_pricing_mode(
+        explicit_billing_service_tier,
+        if use_response_tier {
+            None
+        } else {
+            requested_service_tier
+        },
+        response_service_tier,
+        upstream_account_kind,
+    )
+}
+
+pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode_for_model_and_account(
+    model: Option<&str>,
+    explicit_billing_service_tier: Option<&str>,
+    requested_service_tier: Option<&str>,
+    response_service_tier: Option<&str>,
+    account: Option<&PoolResolvedAccount>,
+) -> (Option<String>, ProxyPricingMode) {
+    resolve_proxy_billing_service_tier_and_pricing_mode_for_model(
+        model,
+        explicit_billing_service_tier,
+        requested_service_tier,
+        response_service_tier,
+        account.map(|entry| entry.kind.as_str()),
+    )
+}
+
 pub(crate) fn proxy_price_version(catalog_version: &str, pricing_mode: ProxyPricingMode) -> String {
     format!("{catalog_version}{}", pricing_mode.price_version_suffix())
 }
@@ -2025,7 +2067,8 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 allow_live_fallback,
             );
             let (billing_service_tier, pricing_mode) =
-                resolve_proxy_billing_service_tier_and_pricing_mode(
+                resolve_proxy_billing_service_tier_and_pricing_mode_for_model(
+                    Some(model),
                     None,
                     candidate.requested_service_tier.as_deref(),
                     candidate.service_tier.as_deref(),

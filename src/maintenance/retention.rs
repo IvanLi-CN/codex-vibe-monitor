@@ -2163,20 +2163,15 @@ async fn retention_recovery_verify_publication_tx(
     }
     let source_ids = serde_json::from_str::<Vec<i64>>(&descriptor.source_ids_json)
         .context("decode retention prepared archive source ids")?;
-    let source_identity_matches_journal = invocation_archive_source_identity_matches(
-        tx,
-        InvocationArchiveIdentityDatabase::Main,
-        &source_ids,
-        &journal_identity,
-    )
-    .await?;
-    let source_identity = invocation_archive_source_identity_sha256(
-        tx,
-        InvocationArchiveIdentityDatabase::Main,
-        &source_ids,
-    )
-    .await?;
-    if !source_identity_matches_journal || source_identity != descriptor.source_identity_sha256 {
+    let source_identity_matches_journal = journal_identity == descriptor.source_identity_sha256
+        && invocation_archive_source_identity_matches(
+            tx,
+            InvocationArchiveIdentityDatabase::Main,
+            &source_ids,
+            &journal_identity,
+        )
+        .await?;
+    if !source_identity_matches_journal {
         bail!(
             "retention prepared archive source identity verification failed: live rows no longer match journal"
         );

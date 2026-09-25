@@ -299,6 +299,31 @@ async fn retention_recovery_accepts_prepared_archives_with_legacy_source_identit
     assert_eq!(journal.0, "published");
     assert_eq!(journal.1, None);
 
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = NULL WHERE scope = 'prepared_archives'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make the published archive retry due");
+    reconcile_retention_prepared_archives_for_test(&pool, &config)
+        .await
+        .expect("finalize the published legacy archive");
+    let remaining_live_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE id = ?1")
+            .bind(row_id)
+            .fetch_one(&pool)
+            .await
+            .expect("check finalized legacy source row");
+    assert_eq!(remaining_live_rows, 0);
+    let remaining_journal_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE prepared_key = ?1",
+    )
+    .bind(prepared_key)
+    .fetch_one(&pool)
+    .await
+    .expect("check finalized legacy journal");
+    assert_eq!(remaining_journal_rows, 0);
+
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
