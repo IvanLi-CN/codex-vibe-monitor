@@ -37,8 +37,10 @@
 - [x] Advance the repo-managed catalog to `openai-standard-2026-09-23` with the official Astra/Sol/Luna Standard short- and long-context rates.
 - [x] Refresh only unchanged temporary Sol/Luna seed rows, insert Astra idempotently, and preserve compatibility-only Terra, custom catalogs, edited rows, and persisted historical costs.
 - [x] Add the official GPT-6 set to proxy presets, Settings/routing selection, structured model identity, and `/v1/models`; keep Terra out of official discovery.
+- [x] Keep compatibility-only Terra out of hijacked `/v1/models` responses even when upstream model merging is enabled, without changing non-hijacked upstream passthrough.
 - [x] Serialize the nullable reported-cache-write column migration with a SQLite write transaction and verify concurrent independent-pool re-entry.
 - [x] Estimate exact ordinary-input/cache-read/cache-write buckets when the upstream reports cache-write usage, preserve inferred fallback when absent, and account for actual supported/unsupported service tiers and the long-context threshold.
+- [x] Retain the most recently reported actual WebSocket response tier within a turn when a later usage event omits it, so unsupported tiers cannot fall back to Standard pricing.
 - [x] Merge partial streaming cache-read/cache-write detail updates without erasing omitted aggregate usage fields.
 - [x] Admit cache-only WebSocket `response.created`/`response.in_progress` usage into the turn accumulator without persisting a nonterminal row, and include it in interrupted-turn snapshots after first token.
 - [x] Refresh richer usage from a later WebSocket terminal event in the existing invocation through the durable terminal writer; recompute affected hourly rollups while retaining terminal identity, status, and non-WebSocket duplicate behavior.
@@ -108,3 +110,5 @@ The checks below document the completed GPT-5.6 and temporary GPT-6 delivery onl
 - Rebased candidate checks passed: `stateful-sqlite` (1,329 passed, 1,456 skipped), `archive-file-io` (276 passed, 2,509 skipped), Rust format/check/Clippy/source-quality policy, full Web unit suite (1,561 passed, 6 skipped), Web typecheck, and production build.
 - Repair Batch 9 passed: `stateful-sqlite` (1,332 passed, 1,458 skipped), `archive-file-io` (277 passed, 2,513 skipped), Rust format/check/Clippy/source-quality policy, and the targeted cache-write-only WebSocket-to-API/rollup regression.
 - Review repair validation passed: `stateful-sqlite` (1,336 passed, 1,462 skipped), `archive-file-io` (281 passed, 2,517 skipped), Rust fmt/check/Clippy/source-quality; targeted tests verify monotonic WebSocket refreshes and legacy prepared-archive finalization after its retry cursor is due.
+- Final candidate `743807ecebb253a77252e65ac98a578f00fab548` passed: `stateful-sqlite` (1,337 passed), `archive-file-io` (281 passed), Rust fmt/check/Clippy/source-quality, Web unit tests (1,565 passed, 6 skipped), Web typecheck, and production build.
+- Final review fixes are covered by targeted tests for unsupported actual WebSocket tier retention and upstream-merged Terra exclusion; non-hijacked upstream model passthrough remains unchanged.
