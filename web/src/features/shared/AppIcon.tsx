@@ -51,6 +51,7 @@ import loginVariantIcon from "@iconify-icons/mdi/login-variant";
 import magnifyIcon from "@iconify-icons/mdi/magnify";
 import menuIcon from "@iconify-icons/mdi/menu";
 import messageReplyOutlineIcon from "@iconify-icons/mdi/message-reply-outline";
+import minusIcon from "@iconify-icons/mdi/minus";
 import navigationVariantIcon from "@iconify-icons/mdi/navigation-variant";
 import noteTextOutlineIcon from "@iconify-icons/mdi/note-text-outline";
 import pencilOutlineIcon from "@iconify-icons/mdi/pencil-outline";
@@ -126,6 +127,7 @@ const appIconRegistry = {
   "login-variant": loginVariantIcon,
   magnify: magnifyIcon,
   menu: menuIcon,
+  minus: minusIcon,
   "message-reply-outline": messageReplyOutlineIcon,
   "navigation-variant": navigationVariantIcon,
   "note-text-outline": noteTextOutlineIcon,

@@ -1265,6 +1265,31 @@ export interface TimeseriesResponse {
   points: TimeseriesPoint[];
 }
 
+export interface InvocationTimelineRecord {
+  id: number;
+  invokeId: string;
+  occurredAt: string;
+  endAt?: string | null;
+  isInFlight: boolean;
+  status?: string | null;
+  livePhase?: InvocationLivePhase | string | null;
+  firstTokenMs?: number | null;
+  tTotalMs?: number | null;
+  poolAttemptCount?: number | null;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string | null;
+  failureClass?: string | null;
+}
+
+export interface InvocationTimelineResponse {
+  rangeStart: string;
+  rangeEnd: string;
+  asOf: string;
+  total: number;
+  overLimit: boolean;
+  records: InvocationTimelineRecord[];
+}
+
 export interface ParallelWorkPoint {
   bucketStart: string;
   bucketEnd: string;
@@ -2705,6 +2730,42 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
     points: pointsRaw
       .map(normalizeTimeseriesPoint)
       .filter((point): point is TimeseriesPoint => point != null),
+  };
+}
+
+function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const records = Array.isArray(payload.records) ? payload.records : [];
+  return {
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    asOf: typeof payload.asOf === "string" ? payload.asOf : "",
+    total: normalizeFiniteNumber(payload.total) ?? records.length,
+    overLimit: payload.overLimit === true,
+    records: records
+      .map((rawRecord): InvocationTimelineRecord | null => {
+        const record = (rawRecord ?? {}) as Record<string, unknown>;
+        const invokeId = typeof record.invokeId === "string" ? record.invokeId : "";
+        const occurredAt = typeof record.occurredAt === "string" ? record.occurredAt : "";
+        if (!invokeId || !occurredAt) return null;
+        return {
+          id: normalizeFiniteNumber(record.id) ?? 0,
+          invokeId,
+          occurredAt,
+          endAt: typeof record.endAt === "string" ? record.endAt : null,
+          isInFlight: record.isInFlight === true,
+          status: typeof record.status === "string" ? record.status : null,
+          livePhase: typeof record.livePhase === "string" ? record.livePhase : null,
+          firstTokenMs: normalizeFiniteNumber(record.firstTokenMs) ?? null,
+          tTotalMs: normalizeFiniteNumber(record.tTotalMs) ?? null,
+          poolAttemptCount: normalizeFiniteNumber(record.poolAttemptCount) ?? null,
+          upstreamAccountId: normalizeFiniteNumber(record.upstreamAccountId) ?? null,
+          upstreamAccountName:
+            typeof record.upstreamAccountName === "string" ? record.upstreamAccountName : null,
+          failureClass: typeof record.failureClass === "string" ? record.failureClass : null,
+        };
+      })
+      .filter((record): record is InvocationTimelineRecord => record != null),
   };
 }
 
@@ -5322,6 +5383,22 @@ export async function fetchTimeseries(
     signal: params?.signal,
   });
   return normalizeTimeseriesResponse(response);
+}
+
+export async function fetchInvocationTimeline(options: {
+  from: string;
+  to: string;
+  upstreamAccountId?: number;
+  signal?: AbortSignal;
+}) {
+  const search = new URLSearchParams({ from: options.from, to: options.to });
+  if (options.upstreamAccountId != null) {
+    search.set("upstreamAccountId", String(options.upstreamAccountId));
+  }
+  const response = await fetchJson<unknown>(`/api/stats/invocation-timeline?${search.toString()}`, {
+    signal: options.signal,
+  });
+  return normalizeInvocationTimelineResponse(response);
 }
 
 export async function fetchParallelWorkStats(params?: {

@@ -93,6 +93,7 @@
 | -     | API Key 优先级迁移准入控制                                                | active    | `priority-handoff-admission/SPEC.md`                       | `priority-handoff-admission/IMPLEMENTATION.md`                       | topic anchor: API Key / routing / sticky priority handoff    |
 | -     | Autonomous Retention Recovery and Raw Capture Circuit Breaker             | active    | `autonomous-retention-recovery/SPEC.md`                    | `autonomous-retention-recovery/IMPLEMENTATION.md`                    | topic anchor: retention / raw storage / recovery             |
 | -     | Rust 源码质量准备合同                                                     | active    | `rust-source-quality/SPEC.md`                              | `rust-source-quality/IMPLEMENTATION.md`                              | topic anchor: Rust budgets / suppression / CI                |
+| -     | Dashboard 对外调用时间线                                                  | active    | `dashboard-invocation-timeline/SPEC.md`                    | `dashboard-invocation-timeline/IMPLEMENTATION.md`                    | topic anchor: dashboard / invocation timeline / TTFT         |
 
 ## Archived Sources
 

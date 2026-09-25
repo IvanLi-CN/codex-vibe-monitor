@@ -13,6 +13,7 @@ import { metricAccent } from "../../lib/chartTheme";
 import { recordTodayChartDataCommit } from "../../lib/dashboardPerformanceDiagnostics";
 import { useTheme } from "../../theme";
 import { StatsCards } from "../stats/StatsCards";
+import { DashboardInvocationTimeline } from "./DashboardInvocationTimeline";
 import type { DashboardNetworkActivityChartProps } from "./DashboardNetworkActivityChart";
 import type { DashboardTodayActivityChartProps } from "./DashboardTodayActivityChart";
 import {
@@ -373,6 +374,8 @@ function DashboardNaturalDayRangePanel({
         networkResponse={networkData}
         networkLoading={networkLoading}
         networkError={networkError}
+        upstreamAccountId={upstreamAccountId}
+        liveRevision={dashboardActivity?.liveRevision}
       />
     </div>
   );
@@ -746,6 +749,8 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   networkResponse,
   networkLoading,
   networkError,
+  upstreamAccountId,
+  liveRevision,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
   loading: boolean;
@@ -755,13 +760,38 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   networkResponse: ReturnType<typeof useDashboardNetworkTimeseries>["data"];
   networkLoading: boolean;
   networkError: string | null;
+  upstreamAccountId?: number;
+  liveRevision?: number;
 }) {
+  const legacyMetric = metric === "network" ? "totalCount" : metric;
+  const legacyChart = (
+    <DashboardTodayActivityChartBoundary
+      response={response}
+      loading={loading}
+      error={error}
+      metric={legacyMetric}
+      closedNaturalDay={closedNaturalDay}
+    />
+  );
   if (metric === "network") {
     return (
       <DashboardNetworkActivityChartBoundary
         response={networkResponse}
         loading={networkLoading && networkResponse == null}
         error={networkError}
+      />
+    );
+  }
+  if (metric === "totalCount") {
+    return (
+      <DashboardInvocationTimeline
+        response={response}
+        loading={loading}
+        error={error}
+        closedNaturalDay={closedNaturalDay}
+        upstreamAccountId={upstreamAccountId}
+        liveRevision={liveRevision}
+        fallback={legacyChart}
       />
     );
   }
