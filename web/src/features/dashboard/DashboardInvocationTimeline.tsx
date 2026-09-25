@@ -33,6 +33,14 @@ export function getInvocationTimelineLaneCount(lanes: LaneRecord[]) {
   return Math.max(1, ...lanes.map((item) => item.lane + 1));
 }
 
+export function shouldFallbackForInvalidTimelineBounds(
+  response: TimeseriesResponse | null,
+  bounds: { startMs: number; endMs: number } | null,
+  timelineDataOverride: InvocationTimelineResponse | null | undefined,
+) {
+  return response != null && bounds == null && timelineDataOverride == null;
+}
+
 function parseEpoch(value: string | null | undefined) {
   if (!value) return null;
   const parsed = Date.parse(value);
@@ -206,6 +214,9 @@ export function DashboardInvocationTimeline({
 
   if (error || (!response && !loading && !timelineDataOverride)) return <>{fallback}</>;
   if (!closedNaturalDay && !liveRefreshAllowed && !timelineDataOverride) return <>{fallback}</>;
+  if (shouldFallbackForInvalidTimelineBounds(response, timeline.bounds, timelineDataOverride)) {
+    return <>{fallback}</>;
+  }
   if (!plotWindow || (timeline.isLoading && !renderedData && !timelineDataOverride)) {
     return (
       <div
