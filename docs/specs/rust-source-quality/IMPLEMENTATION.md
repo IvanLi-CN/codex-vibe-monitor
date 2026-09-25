@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 52 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 51 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -117,12 +117,26 @@ Validation for this extraction is the focused sync/status and stateful SQLite
 cooldown coverage, rustfmt, the Rust source-quality checker and fixture
 harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
 
+The request-prefix extraction moves the complete contiguous region beginning
+with `best_effort_extract_json_string_for_patterns` and ending with
+`prepare_target_request_body_with_hosted_intent` from
+`src/proxy/stream_gate.rs` into
+`src/proxy/stream_gate/request_prefix.rs`. On the verified main merge base
+`52b82d70a76f63682ee27d502b070d7bdd0903c6`, the exact boundary is physical
+lines 34 through 441 inclusive (408 moved lines). It contains the bounded JSON
+prefix extractors, encrypted-content detection, request-prefix tests, and
+request-body preparation. The parent is now 2,338 physical lines and the
+410-line child remains below the 2,500-line production target, so the parent is
+removed from the policy inventory. The parent explicitly re-exports the child
+symbols, while existing test names, resource buckets, suppression paths, and
+runtime behavior remain unchanged.
+
 ## Inventory Contract
 
-The policy has 30 `production` entries above the 2,500-line destination target
+The policy has 29 `production` entries above the 2,500-line destination target
 and 22 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 52 paths; a long path absent from the inventory is
+The checker only reads those 51 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no

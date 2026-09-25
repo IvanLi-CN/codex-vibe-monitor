@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 52 large-file entries explicit.
+  its 51 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -117,3 +117,22 @@ moved. The current inventory is 30 production and 22 test/helper candidates
 Validation for this extraction is the focused sync/status and stateful SQLite
 cooldown coverage, rustfmt, the Rust source-quality checker and fixture
 harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
+The request-prefix extraction moves the complete contiguous production region
+beginning with `best_effort_extract_json_string_for_patterns` and ending with
+`prepare_target_request_body_with_hosted_intent` from
+`src/proxy/stream_gate.rs` into
+`src/proxy/stream_gate/request_prefix.rs`. On the verified main merge base
+`52b82d70a76f63682ee27d502b070d7bdd0903c6`, the exact boundary is physical
+lines 34 through 441 inclusive (408 moved lines). Prefix extraction,
+encrypted-content detection, request-prefix tests, and request-body preparation
+remain behaviorally unchanged. The parent is now 2,338 physical lines and the
+410-line child remains below the 2,500-line production target; the parent is
+removed from the quality policy inventory. Existing test names, resource
+buckets, suppression paths, and crate-visible call paths remain unchanged. The
+current inventory is 29 production and 22 test/helper candidates (51 entries
+total), while the immutable preparation baseline remains 32 and 23.
+
+Validation for this extraction is the focused request-prefix and request-body
+tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.

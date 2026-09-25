@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 52,
+    "inventory_entries": 51,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -125,12 +125,6 @@
       "role": "production",
       "line_budget": 3634,
       "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
-    },
-    {
-      "path": "src/proxy/stream_gate.rs",
-      "role": "production",
-      "line_budget": 2744,
-      "next_module_workstream": "Split proxy stream admission, prefix handling, SSE gating, and usage accounting."
     },
     {
       "path": "src/proxy/usage_persistence.rs",
