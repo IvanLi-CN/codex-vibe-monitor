@@ -16,6 +16,7 @@ interface UseInvocationTimelineOptions {
   upstreamAccountId?: number;
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
+  enabled?: boolean;
 }
 
 function parseEpoch(value: string | null | undefined) {
@@ -59,6 +60,7 @@ export function useInvocationTimeline({
   upstreamAccountId,
   liveRevision,
   liveRefreshAllowed = true,
+  enabled = true,
 }: UseInvocationTimelineOptions) {
   const bounds = useMemo<InvocationTimelineWindow | null>(() => {
     const startMs = parseEpoch(response?.rangeStart);
@@ -72,15 +74,17 @@ export function useInvocationTimeline({
     resolveInitialWindow(response, closedNaturalDay),
   );
   const [data, setData] = useState<InvocationTimelineResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const previousBoundsContextKey = useRef(boundsContextKey);
+  const previousBounds = useRef<InvocationTimelineWindow | null>(bounds);
 
   useEffect(() => {
     if (!bounds) {
       previousBoundsContextKey.current = boundsContextKey;
+      previousBounds.current = null;
       setViewportWindow(null);
       setData(null);
       return;
@@ -88,13 +92,25 @@ export function useInvocationTimeline({
     const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
     previousBoundsContextKey.current = boundsContextKey;
     if (contextChanged) {
+      previousBounds.current = bounds;
       setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
       setData(null);
       return;
     }
-    setViewportWindow((current) =>
-      current ? clampWindow(current, bounds) : resolveInitialWindow(response, closedNaturalDay),
-    );
+    const priorBounds = previousBounds.current;
+    previousBounds.current = bounds;
+    setViewportWindow((current) => {
+      if (!current) return resolveInitialWindow(response, closedNaturalDay);
+      const liveDelta = priorBounds ? bounds.endMs - priorBounds.endMs : 0;
+      const followsLiveEnd =
+        liveDelta > 0 && priorBounds != null && Math.abs(current.endMs - priorBounds.endMs) <= 1;
+      return clampWindow(
+        followsLiveEnd
+          ? { startMs: current.startMs + liveDelta, endMs: current.endMs + liveDelta }
+          : current,
+        bounds,
+      );
+    });
   }, [bounds, boundsContextKey, closedNaturalDay, response]);
 
   useEffect(() => {
@@ -107,7 +123,7 @@ export function useInvocationTimeline({
   }, [bounds, viewportWindow]);
 
   const refresh = useCallback(async () => {
-    if (!viewportWindow) return;
+    if (!enabled || !viewportWindow) return;
     abortControllerRef.current?.abort();
     const controller = new AbortController();
     const sequence = requestSequence.current + 1;
@@ -134,7 +150,15 @@ export function useInvocationTimeline({
         setIsLoading(false);
       }
     }
-  }, [upstreamAccountId, viewportWindow]);
+  }, [enabled, upstreamAccountId, viewportWindow]);
+
+  useEffect(() => {
+    if (enabled) return;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsLoading(false);
+    setError(null);
+  }, [enabled]);
 
   useEffect(
     () => () => {
@@ -147,15 +171,16 @@ export function useInvocationTimeline({
   // liveRevision is an explicit SSE-driven refresh trigger for the stable callback.
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveRevision intentionally retriggers the fetch.
   useEffect(() => {
+    if (!enabled) return;
     if (!closedNaturalDay && !liveRefreshAllowed) return;
     void refresh();
-  }, [closedNaturalDay, liveRefreshAllowed, refresh, liveRevision]);
+  }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh, liveRevision]);
 
   useEffect(() => {
-    if (closedNaturalDay || !liveRefreshAllowed) return;
+    if (!enabled || closedNaturalDay || !liveRefreshAllowed) return;
     const timer = globalThis.setInterval(() => void refresh(), LIVE_REFRESH_MS);
     return () => globalThis.clearInterval(timer);
-  }, [closedNaturalDay, liveRefreshAllowed, refresh]);
+  }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh]);
 
   const updateWindow = useCallback(
     (next: InvocationTimelineWindow) => {
