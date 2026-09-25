@@ -1224,19 +1224,19 @@ fn merge_models_payload_with_upstream_excludes_gpt_6_terra() {
             "object": "list",
             "data": [
                 {"id": "upstream-model-a"},
-                {"id": "gpt-6-terra"}
+                {"id": "gpt-6-terra"},
+                {"id": "gpt-6-terra-2026-09-23"},
+                {"id": "gpt-6-terra-preview"}
             ]
         }),
         &["gpt-6-astra".to_string()],
     )
     .expect("merge upstream models");
-
     let ids = extract_model_ids(&merged);
     assert!(ids.contains(&"gpt-6-astra".to_string()));
     assert!(ids.contains(&"upstream-model-a".to_string()));
-    assert!(!ids.contains(&"gpt-6-terra".to_string()));
+    assert!(!ids.iter().any(|id| id.starts_with("gpt-6-terra")));
 }
-
 #[tokio::test]
 async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;

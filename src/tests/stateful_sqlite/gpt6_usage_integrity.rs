@@ -884,3 +884,91 @@ async fn stale_poorer_websocket_refresh_cannot_overwrite_a_richer_commit() {
     assert_eq!(persisted.1, Some(10));
     assert_eq!(persisted.2, Some(0.02));
 }
+
+#[tokio::test]
+async fn websocket_terminal_refresh_retains_new_unsupported_tier_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let invoke_id = "gpt6-websocket-refresh-unsupported-tier";
+    let occurred_at = "2026-09-24 14:00:00";
+    let mut initial = test_proxy_capture_record(invoke_id, occurred_at);
+    initial.model = Some("gpt-6-sol".to_string());
+    initial.usage = ParsedUsage {
+        input_tokens: Some(1_200),
+        output_tokens: Some(40),
+        total_tokens: Some(1_240),
+        ..ParsedUsage::default()
+    };
+    initial.payload = Some(
+        mark_websocket_payload_transport(
+            r#"{"endpoint":"/v1/responses","serviceTier":"standard","billingServiceTier":"standard","streamTerminalEvent":"response.completed"}"#.to_string(),
+        )
+        .expect("mark initial websocket payload"),
+    );
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin initial terminal write");
+    persist_proxy_capture_runtime_record_tx(tx.as_mut(), initial, false)
+        .await
+        .expect("persist initial websocket terminal");
+    tx.commit().await.expect("commit initial terminal");
+    let mut snapshot_tx = state.pool.begin().await.expect("begin identity read");
+    let existing =
+        load_persisted_invocation_identity_tx(snapshot_tx.as_mut(), invoke_id, occurred_at)
+            .await
+            .expect("load existing invocation")
+            .expect("existing invocation");
+    snapshot_tx.commit().await.expect("finish identity read");
+    let mut incoming = test_proxy_capture_record(invoke_id, occurred_at);
+    incoming.model = Some("gpt-6-sol".to_string());
+    incoming.usage = ParsedUsage {
+        input_tokens: Some(1_200),
+        output_tokens: Some(40),
+        cache_input_tokens: Some(325),
+        reported_cache_write_tokens: Some(50),
+        total_tokens: Some(1_240),
+        ..ParsedUsage::default()
+    };
+    incoming.cost = None;
+    incoming.cost_breakdown = None;
+    incoming.cost_estimated = false;
+    incoming.price_version = None;
+    incoming.payload = Some(
+        mark_websocket_payload_transport(
+            r#"{"endpoint":"/v1/responses","serviceTier":"batch","billingServiceTier":"batch","streamTerminalEvent":"response.done"}"#.to_string(),
+        )
+        .expect("mark richer websocket payload"),
+    );
+    preserve_websocket_terminal_rollup_metadata(&mut incoming, &existing);
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin richer terminal refresh");
+    assert!(
+        refresh_websocket_terminal_usage_tx(tx.as_mut(), existing.id, &existing, &incoming)
+            .await
+            .expect("apply richer terminal refresh")
+    );
+    tx.commit().await.expect("commit richer terminal refresh");
+
+    let persisted = sqlx::query_as::<_, (Option<f64>, String)>(
+        "SELECT cost, payload FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load refreshed websocket terminal");
+    assert!(
+        persisted.0.is_none(),
+        "unsupported tier must have unknown cost"
+    );
+    let payload: Value = serde_json::from_str(&persisted.1).expect("decode refreshed payload");
+    assert_eq!(payload["serviceTier"].as_str(), Some("batch"));
+    assert_eq!(payload["billingServiceTier"].as_str(), Some("batch"));
+}

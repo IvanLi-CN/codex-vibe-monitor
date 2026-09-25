@@ -4166,12 +4166,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
 
     if let Some(existing) = existing_identity.as_ref() {
         if refresh_websocket_terminal_usage {
+            preserve_websocket_terminal_rollup_metadata(&mut record, existing);
             if !refresh_websocket_terminal_usage_tx(&mut *tx, existing.id, existing, &record)
                 .await?
             {
                 return Ok(None);
             }
-            preserve_websocket_terminal_rollup_metadata(&mut record, existing);
             core_write_path = "refresh_websocket_terminal_usage";
         } else {
             let updated = update_existing_proxy_invocation_record_tx(
@@ -4324,12 +4324,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
                 return Ok(None);
             }
             if refresh_terminal_usage {
+                preserve_websocket_terminal_rollup_metadata(&mut record, &existing);
                 if !refresh_websocket_terminal_usage_tx(&mut *tx, existing.id, &existing, &record)
                     .await?
                 {
                     return Ok(None);
                 }
-                preserve_websocket_terminal_rollup_metadata(&mut record, &existing);
                 refresh_websocket_terminal_usage = true;
                 core_write_path = "refresh_websocket_terminal_usage_race";
             } else {

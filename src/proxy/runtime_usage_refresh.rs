@@ -118,7 +118,29 @@ pub(crate) fn preserve_websocket_terminal_rollup_metadata(
         .unwrap_or_else(|| record.status.clone());
     record.failure_kind = existing.failure_kind.clone();
     record.error_message = existing.error_message.clone();
-    record.payload = existing.payload.clone();
+    record.payload = merge_websocket_terminal_payload_metadata(
+        existing.payload.as_deref(),
+        record.payload.as_deref(),
+    )
+    .or_else(|| existing.payload.clone());
+}
+
+fn merge_websocket_terminal_payload_metadata(
+    existing_payload: Option<&str>,
+    incoming_payload: Option<&str>,
+) -> Option<String> {
+    let mut existing = serde_json::from_str::<Value>(existing_payload?).ok()?;
+    let incoming = serde_json::from_str::<Value>(incoming_payload?).ok()?;
+    let existing_object = existing.as_object_mut()?;
+    let incoming_object = incoming.as_object()?;
+
+    for key in ["serviceTier", "billingServiceTier"] {
+        if let Some(value) = incoming_object.get(key).filter(|value| !value.is_null()) {
+            existing_object.insert(key.to_string(), value.clone());
+        }
+    }
+
+    serde_json::to_string(&existing).ok()
 }
 
 pub(crate) fn websocket_terminal_payload(payload: Option<&str>) -> bool {
@@ -208,7 +230,19 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
     .execute(&mut *tx)
     .await?;
 
-    Ok(result.rows_affected() > 0)
+    if result.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    if let Some(payload) = incoming.payload.as_deref() {
+        sqlx::query("UPDATE codex_invocations SET payload = ?1 WHERE id = ?2")
+            .bind(payload)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    Ok(true)
 }
 
 pub(crate) async fn enqueue_websocket_terminal_usage_refresh(
