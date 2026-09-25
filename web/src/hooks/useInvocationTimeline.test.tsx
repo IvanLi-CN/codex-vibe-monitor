@@ -65,15 +65,18 @@ function Probe({
   response,
   closedNaturalDay = false,
   liveRevision,
+  liveRefreshAllowed = true,
 }: {
   response: TimeseriesResponse;
   closedNaturalDay?: boolean;
   liveRevision?: number;
+  liveRefreshAllowed?: boolean;
 }) {
   const { data } = useInvocationTimeline({
     response,
     closedNaturalDay,
     liveRevision,
+    liveRefreshAllowed,
   });
   return <output data-testid="invoke-id">{data?.records[0]?.invokeId ?? ""}</output>;
 }
@@ -155,7 +158,7 @@ describe("useInvocationTimeline", () => {
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("does not refetch when a live response keeps the same time bounds", async () => {
+  it("refreshes when a live revision changes within the same time bounds", async () => {
     timelineMocks.fetch.mockResolvedValue(createTimeline("stable-window"));
     const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
     const nextResponse = { ...firstResponse, points: [] };
@@ -195,6 +198,34 @@ describe("useInvocationTimeline", () => {
       await Promise.resolve();
     });
 
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes immediately after a reconnect when bounds advanced while disconnected", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("reconnected-window"));
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const nextResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+
+    render(<Probe response={firstResponse} liveRevision={1} liveRefreshAllowed />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={nextResponse} liveRevision={2} liveRefreshAllowed={false} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={nextResponse} liveRevision={2} liveRefreshAllowed />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
   });
 });

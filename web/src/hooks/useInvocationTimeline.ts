@@ -79,6 +79,7 @@ export function useInvocationTimeline({
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const suppressRefreshRef = useRef(false);
+  const deferredRefreshRef = useRef(false);
   const previousBoundsContextKey = useRef(boundsContextKey);
   const previousBounds = useRef<InvocationTimelineWindow | null>(bounds);
 
@@ -117,9 +118,10 @@ export function useInvocationTimeline({
       );
       if (next.startMs === current.startMs && next.endMs === current.endMs) return current;
       suppressRefreshRef.current = true;
+      deferredRefreshRef.current = !liveRefreshAllowed;
       return next;
     });
-  }, [bounds, boundsContextKey, closedNaturalDay, response]);
+  }, [bounds, boundsContextKey, closedNaturalDay, liveRefreshAllowed, response]);
 
   useEffect(() => {
     if (!bounds || !viewportWindow) return;
@@ -183,11 +185,16 @@ export function useInvocationTimeline({
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveRefreshRevision intentionally retriggers the fetch.
   useEffect(() => {
     if (!enabled) return;
-    if (!closedNaturalDay && !liveRefreshAllowed) return;
     if (suppressRefreshRef.current) {
+      if (!closedNaturalDay && !liveRefreshAllowed) return;
       suppressRefreshRef.current = false;
+      if (deferredRefreshRef.current) {
+        deferredRefreshRef.current = false;
+        void refresh();
+      }
       return;
     }
+    if (!closedNaturalDay && !liveRefreshAllowed) return;
     void refresh();
   }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh, liveRefreshRevision]);
 
