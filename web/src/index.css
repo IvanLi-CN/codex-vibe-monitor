@@ -5,6 +5,28 @@
 @tailwind utilities;
 
 @layer components {
+  .model-identity-gpt6[data-model-presentation="standalone"] {
+    border: 1px solid var(--model-identity-gpt6-border);
+    border-radius: 0.3125rem;
+    background-color: var(--model-identity-gpt6-tile);
+  }
+
+  .model-identity-gpt6[data-model-presentation="embedded"] {
+    background-color: var(--model-identity-gpt6-tile);
+  }
+
+  .model-identity-gpt6[data-model-variant="astra"] {
+    color: var(--model-identity-gpt6-astra-ink);
+  }
+
+  .model-identity-gpt6[data-model-variant="sol"] {
+    color: var(--model-identity-gpt6-sol-ink);
+  }
+
+  .model-identity-gpt6[data-model-variant="luna"] {
+    color: var(--model-identity-gpt6-luna-ink);
+  }
+
   .model-routing-frappe-gantt {
     --g-header-background: oklch(var(--color-base-100));
     --g-row-color: oklch(var(--color-base-100));
@@ -131,6 +153,11 @@ body,
 :root,
 [data-theme="vibe-light"] {
   color-scheme: light;
+  --model-identity-gpt6-tile: #f1f4f7;
+  --model-identity-gpt6-border: #cdd7e1;
+  --model-identity-gpt6-astra-ink: #6749ba;
+  --model-identity-gpt6-sol-ink: #a95018;
+  --model-identity-gpt6-luna-ink: #04766f;
   --color-base-100: 98.7% 0.006 255;
   --color-base-200: 95.2% 0.01 255;
   --color-base-300: 90.1% 0.015 257;
@@ -343,6 +370,11 @@ body,
 
 [data-theme="vibe-dark"] {
   color-scheme: dark;
+  --model-identity-gpt6-tile: #28343f;
+  --model-identity-gpt6-border: #566879;
+  --model-identity-gpt6-astra-ink: #bba6f6;
+  --model-identity-gpt6-sol-ink: #ffb16a;
+  --model-identity-gpt6-luna-ink: #64d1c7;
   --color-base-100: 24.5% 0.019 258;
   --color-base-200: 18.4% 0.016 258;
   --color-base-300: 32.1% 0.019 258;

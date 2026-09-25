@@ -2457,6 +2457,26 @@ const gpt56ModelContextResponse = createResponse([
   ]),
 ]);
 
+const gpt6ModelContextResponse = createResponse([
+  createConversation("story-gpt6-model-context", [
+    createPreview({
+      id: 9_600,
+      invokeId: "story-gpt6-model-context-invoke",
+      occurredAt: "2026-04-04T10:04:00Z",
+      status: "completed",
+      model: "gpt-6-astra",
+      requestModel: "gpt-6-astra",
+      responseModel: "gpt-6-astra",
+      reasoningEffort: "high",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      transport: "websocket",
+      totalTokens: 12_520,
+      cost: 0.014,
+    }),
+  ]),
+]);
+
 const upstreamAccountSortBaseResponse = createUpstreamAccountActivityStoryResponse(2);
 const upstreamAccountSortOrderingResponse: UpstreamAccountActivityResponse = {
   ...upstreamAccountSortBaseResponse,
@@ -3675,6 +3695,54 @@ export const GPT56ModelContextCluster: Story = {
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
       ),
     ).toHaveTextContent("max");
+    await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+  },
+};
+
+export const GPT6ModelContextCluster: Story = {
+  tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "desktop1660", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "GPT-6 invocation metadata integrates its identity tile into the existing model segment while preserving reasoning and FAST state.",
+      },
+    },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(gpt6ModelContextResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const cluster = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-6 model context cluster");
+    }
+
+    await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
+    await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-6-astra"));
+    const identity = cluster.querySelector('[data-model-presentation="embedded"]');
+    if (!(identity instanceof HTMLElement)) throw new Error("missing embedded GPT-6 identity");
+    await expect(identity).toHaveAttribute("aria-label", "gpt-6-astra");
+    await expect(identity).toHaveAttribute("data-model-icon", "creation");
+    await expect(identity).toHaveClass("h-5", "w-5");
+    await expect(identity).not.toHaveClass("border");
+    await expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).toHaveClass("bg-warning/85");
+    await expect(
+      cluster.querySelector(
+        '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
+      ),
+    ).toHaveTextContent("high");
     await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
   },
 };

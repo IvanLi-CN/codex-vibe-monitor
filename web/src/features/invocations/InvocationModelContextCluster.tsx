@@ -137,6 +137,7 @@ export function InvocationModelContextCluster({
     className: "max-w-full",
     textClassName: "font-mono",
     iconClassName: "h-3.5 w-3.5",
+    presentation: grouped ? "embedded" : "standalone",
     testId: testId ? `${testId}-model` : undefined,
   });
 

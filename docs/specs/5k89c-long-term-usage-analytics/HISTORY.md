@@ -39,3 +39,4 @@
 - 修复队列在加入跨午夜前置日期后，必须以最终替换范围读取请求尝试 archive；任何覆盖该范围的 completed attempt archive 缺失都代表不可验证来源，不能以空映射继续替换 upstream 维度，并且即使开始时长期状态为 `ready` 也必须切换为 `error`。
 
 - 长期统计内存归因改为先观测后修复：interval index 与 flush 临时对象先用容量/计数估算，只有生产窗口确认其为主要占用者后才进入分块或 LRU 等无损优化；观测本身不改变 projection 语义。
+- 2026-09-25: Long-term chart legends now use the shared product-selected GPT-6 Astra/Sol/Luna glyphs and identity colors while preserving the existing legend row height and series colors; these generic MDI symbols are not official OpenAI icons.

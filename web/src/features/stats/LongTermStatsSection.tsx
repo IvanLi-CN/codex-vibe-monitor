@@ -27,7 +27,7 @@ import type {
 import { chartBaseTokens } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 import { ModelPerformanceModelIdentity } from "../dashboard/ModelPerformanceModelIdentity";
-import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
+import { ModelIdentity, resolveModelIdentityGeneration } from "../shared/ModelIdentity";
 import { formatReasoningEffort } from "../shared/reasoningEffort";
 import { type LongTermSeriesVisual, resolveLongTermSeriesVisuals } from "./longTermSeriesVisuals";
 
@@ -482,7 +482,8 @@ function LongTermChartLegend({
       {series.map((item) => {
         const visual = visuals.get(item.seriesKey);
         if (!visual) return null;
-        const showIcon = modelSeries && resolveModelIdentityIcon(item.displayName) !== null;
+        const generation = modelSeries ? resolveModelIdentityGeneration(item.displayName) : null;
+        const showIcon = generation !== null;
         const visibleLabel = showIcon ? formatReasoningEffort(item.reasoningEffort) : visual.label;
         return (
           <span
@@ -495,7 +496,14 @@ function LongTermChartLegend({
             <span className="sr-only">{visual.label}</span>
             <span className="contents" aria-hidden="true">
               <SeriesSwatch visual={visual} seriesKey={item.seriesKey} />
-              {showIcon ? <ModelIdentity model={item.displayName} className="h-4 w-4" /> : null}
+              {showIcon ? (
+                <ModelIdentity
+                  model={item.displayName}
+                  presentation={generation === 6 ? "compact" : undefined}
+                  className="h-4 w-4"
+                  iconClassName="h-4 w-4"
+                />
+              ) : null}
               <span
                 className="min-w-0 break-words"
                 data-long-term-legend-label={showIcon ? "effort" : "full"}

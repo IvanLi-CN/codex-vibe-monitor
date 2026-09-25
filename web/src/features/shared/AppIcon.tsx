@@ -29,6 +29,7 @@ import contentCopyIcon from "@iconify-icons/mdi/content-copy";
 import contentSaveOutlineIcon from "@iconify-icons/mdi/content-save-outline";
 import contentSavePlusOutlineIcon from "@iconify-icons/mdi/content-save-plus-outline";
 import counterIcon from "@iconify-icons/mdi/counter";
+import creationIcon from "@iconify-icons/mdi/creation";
 import crownIcon from "@iconify-icons/mdi/crown";
 import crownOutlineIcon from "@iconify-icons/mdi/crown-outline";
 import currencyUsdIcon from "@iconify-icons/mdi/currency-usd";
@@ -51,6 +52,7 @@ import loginVariantIcon from "@iconify-icons/mdi/login-variant";
 import magnifyIcon from "@iconify-icons/mdi/magnify";
 import menuIcon from "@iconify-icons/mdi/menu";
 import messageReplyOutlineIcon from "@iconify-icons/mdi/message-reply-outline";
+import moonWaningCrescentIcon from "@iconify-icons/mdi/moon-waning-crescent";
 import navigationVariantIcon from "@iconify-icons/mdi/navigation-variant";
 import noteTextOutlineIcon from "@iconify-icons/mdi/note-text-outline";
 import pencilOutlineIcon from "@iconify-icons/mdi/pencil-outline";
@@ -72,6 +74,7 @@ import timerRefreshOutlineIcon from "@iconify-icons/mdi/timer-refresh-outline";
 import trashCanOutlineIcon from "@iconify-icons/mdi/trash-can-outline";
 import undoVariantIcon from "@iconify-icons/mdi/undo-variant";
 import weatherNightIcon from "@iconify-icons/mdi/weather-night";
+import weatherSunnyIcon from "@iconify-icons/mdi/weather-sunny";
 import whiteBalanceSunnyIcon from "@iconify-icons/mdi/white-balance-sunny";
 import type { ComponentProps } from "react";
 
@@ -103,6 +106,7 @@ const appIconRegistry = {
   "content-save-plus-outline": contentSavePlusOutlineIcon,
   "compare-horizontal": compareHorizontalIcon,
   counter: counterIcon,
+  creation: creationIcon,
   crown: crownIcon,
   "crown-outline": crownOutlineIcon,
   "cash-clock": cashClockIcon,
@@ -127,6 +131,7 @@ const appIconRegistry = {
   magnify: magnifyIcon,
   menu: menuIcon,
   "message-reply-outline": messageReplyOutlineIcon,
+  "moon-waning-crescent": moonWaningCrescentIcon,
   "navigation-variant": navigationVariantIcon,
   "note-text-outline": noteTextOutlineIcon,
   "pencil-outline": pencilOutlineIcon,
@@ -148,6 +153,7 @@ const appIconRegistry = {
   "trash-can-outline": trashCanOutlineIcon,
   "undo-variant": undoVariantIcon,
   "weather-night": weatherNightIcon,
+  "weather-sunny": weatherSunnyIcon,
   "white-balance-sunny": whiteBalanceSunnyIcon,
 } satisfies Record<string, IconifyIcon>;
 

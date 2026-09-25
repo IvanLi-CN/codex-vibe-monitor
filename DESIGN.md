@@ -203,6 +203,18 @@ Codex Vibe Monitor 的界面应像一张可信的观测实验台：稳定、清�
 - **State:** selected/active 必须同时改变边框、背景和文字权重；不要只靠颜色微差。
 - **Size lock:** `micro / compact / default / header / mailbox / square` 复刻既有高度、padding、字号与 line-height；desktop/mobile 复用相同 preset，不增加触屏尺寸。
 
+### Model Identity
+
+模型身份是只读字段中的型号线索，不表达请求状态、推理强度或路由结果。完整模型 ID 始终保留在 tooltip 和无障碍名称中；编辑器、筛选器、选择器与原始 payload 继续显示原文。未知型号回退为完整文本，不按名称相似度猜测图标。
+
+GPT-5.6 保持现有只读 UI 中的 Sol 太阳、Terra 地球、Luna 月亮图标与颜色。GPT-6 只对 Astra、Sol、Luna 及其有效日期后缀使用经产品选择的通用 MDI 图形，不将它们称作 OpenAI 官方图标，也不将其他名称推断为这三个型号。当前映射为 Astra `creation`、Sol `weather-sunny`、Luna `moon-waning-crescent`；它们结合颜色和细微形状差异与 GPT-5.6 区分。GPT-6 身份色是产品定义，不代表 OpenAI 官方色值。
+
+- GPT-6 Astra/Sol/Luna 的 light 墨色分别为 `#6749BA`、`#A95018`、`#04766F`；dark 分别为 `#BBA6F6`、`#FFB16A`、`#64D1C7`。GPT-5.6 的图形和颜色保持不变。
+- 独立出现时，GPT-6 使用固定 20px 的细边框图标位，light 底色为 `#F1F4F7`、边框为 `#CDD7E1`，dark 底色为 `#28343F`、边框为 `#566879`。型号墨色对图标底片的对比度至少为 4.5:1。
+- 位于已有边框的推理徽标内时，只保留外层一道边框；图标融入模型段，不增加第二道边框或改变徽标高度。
+- 16px 图表图例沿用既有结构：系列色线 + GPT-6 通用图形和身份色 + 推理强度，不加底片。完整模型 ID 仍通过可访问名称和 tooltip 保留。
+- Storybook 同屏呈现 GPT-5.6 与 GPT-6 三款模型，并覆盖 light/dark、独立图标、已有边框的徽标、16px 图例、路由型号不一致和未知型号回退，以确认布局与完整 ID 的可访问性。
+
 ### Cards / Containers
 
 - **Corner Style:** 常规 card 使用 `rounded-xl` 或 `--radius-box` (`1rem`)。
