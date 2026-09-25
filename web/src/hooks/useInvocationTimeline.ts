@@ -78,6 +78,7 @@ export function useInvocationTimeline({
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const suppressRefreshRef = useRef(false);
   const previousBoundsContextKey = useRef(boundsContextKey);
   const previousBounds = useRef<InvocationTimelineWindow | null>(bounds);
 
@@ -114,7 +115,9 @@ export function useInvocationTimeline({
           : current,
         bounds,
       );
-      return next.startMs === current.startMs && next.endMs === current.endMs ? current : next;
+      if (next.startMs === current.startMs && next.endMs === current.endMs) return current;
+      suppressRefreshRef.current = true;
+      return next;
     });
   }, [bounds, boundsContextKey, closedNaturalDay, response]);
 
@@ -181,6 +184,10 @@ export function useInvocationTimeline({
   useEffect(() => {
     if (!enabled) return;
     if (!closedNaturalDay && !liveRefreshAllowed) return;
+    if (suppressRefreshRef.current) {
+      suppressRefreshRef.current = false;
+      return;
+    }
     void refresh();
   }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh, liveRefreshRevision]);
 
