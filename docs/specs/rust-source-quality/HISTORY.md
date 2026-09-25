@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 50 large-file entries explicit.
+  its 49 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -156,3 +156,21 @@ immutable preparation baseline remains 32 and 23.
 Validation for this extraction is the focused `manual_latency_*` and bootstrap
 probe tests, rustfmt, the Rust source-quality checker and fixture harness,
 all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
+The runtime overlay capture-phase extraction moves the complete contiguous test
+and fixture group from physical lines 315 through 1,793 of
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs` into
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors/runtime_overlay_capture_phases.rs`.
+On the verified main merge base `4490fe2a95e0225ae82705ead4f6ee40699db2a7`,
+the exact boundary contains 1,479 moved lines. Runtime overlay capture,
+cleanup, terminalization, account-switch, and capture persistence behavior,
+test leaf names, assertions, helper access, and the `stateful_sqlite` resource
+bucket remain unchanged. The parent is now 2,817 physical lines and the child
+is 1,480 physical lines, both below the 3,000-line test/helper target, so the
+parent is removed from the quality policy inventory. The current inventory is
+28 production and 21 test/helper candidates (49 entries total), while the
+immutable preparation baseline remains 32 and 23.
+
+Validation for this extraction is the focused runtime overlay/capture-phase
+tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.

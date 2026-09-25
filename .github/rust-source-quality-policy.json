@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 50,
+    "inventory_entries": 49,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -227,12 +227,6 @@
       "role": "test_helper",
       "line_budget": 3137,
       "next_module_workstream": "Split routing timeout/overload fixtures by timeout paths, overload streams, and account rules."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs",
-      "role": "test_helper",
-      "line_budget": 4295,
-      "next_module_workstream": "Split runtime overlay/group-rule fixtures by account rules, capture phases, and fixture upstreams."
     },
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
