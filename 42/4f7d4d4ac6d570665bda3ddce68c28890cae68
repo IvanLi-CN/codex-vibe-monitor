@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.36",
+  "base_stable_version": "2.71.35",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-25T02:41:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.36",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c66d47f40a55ab17b301956fad9cc7f1130b576a",
+  "pr_number": 1013,
+  "pr_title": "perf(web): reduce Dashboard KPI render work",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.36",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.36",
+  "target_sha": "424f7d4d4ac6d570665bda3ddce68c28890cae68",
+  "type_label": "type:patch"
+}
