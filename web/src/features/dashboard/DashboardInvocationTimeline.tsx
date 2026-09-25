@@ -28,6 +28,10 @@ export interface LaneRecord {
   lane: number;
 }
 
+export function getInvocationTimelineLaneCount(lanes: LaneRecord[]) {
+  return Math.max(1, ...lanes.map((item) => item.lane + 1));
+}
+
 function parseEpoch(value: string | null | undefined) {
   if (!value) return null;
   const parsed = Date.parse(value);
@@ -160,12 +164,6 @@ export function DashboardInvocationTimeline({
     enabled: !timelineDataOverride,
   });
 
-  useEffect(() => {
-    if (closedNaturalDay || !liveConnected) return;
-    const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => globalThis.clearInterval(timer);
-  }, [closedNaturalDay, liveConnected]);
-
   const renderedData = timelineDataOverride ?? timeline.data;
   const renderedError = timelineDataOverride ? null : timeline.error;
   const lanes = useMemo(
@@ -180,7 +178,15 @@ export function DashboardInvocationTimeline({
         : [],
     [liveConnected, nowMs, renderedData],
   );
-  const laneCount = Math.max(1, (lanes.at(-1)?.lane ?? 0) + 1);
+  const laneCount = getInvocationTimelineLaneCount(lanes);
+  const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
+
+  useEffect(() => {
+    if (closedNaturalDay || !liveConnected || !hasInFlightLanes) return;
+    const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [closedNaturalDay, hasInFlightLanes, liveConnected]);
+
   const plotWindow = timeline.window;
   const ttft = useMemo(
     () =>
