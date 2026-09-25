@@ -1874,6 +1874,61 @@ async fn raw_orphan_sweep_pressure_rejection_performs_no_directory_io() {
 }
 
 #[tokio::test]
+async fn raw_orphan_sweep_holds_pressure_slot_but_releases_write_admission_during_directory_io() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-pressure-slot").await;
+    fs::write(
+        config.proxy_raw_dir.join("pressure-slot-candidate.bin"),
+        b"candidate",
+    )
+    .expect("write raw candidate");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let pressure_gate = std::sync::Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        std::time::Duration::from_secs(60),
+    ));
+    let pressure_probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let p1_probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut traversal = RetentionRawDirectoryTraversal::default();
+    let result = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            coordinator,
+            crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                pressure_gate,
+                crate::maintenance::RETENTION_TEST_RAW_DIRECTORY_PRESSURE_PROBES.scope(
+                    pressure_probes.clone(),
+                    crate::maintenance::RETENTION_TEST_RAW_DIRECTORY_P1_PROBES.scope(
+                        p1_probes.clone(),
+                        sweep_orphan_proxy_raw_files_slice(
+                            &pool,
+                            &config,
+                            None,
+                            false,
+                            &mut traversal,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        .await
+        .expect("scan bounded raw directory");
+
+    assert!(result.inspected_entries > 0);
+    assert!(
+        pressure_probes.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "another background task must not take the pressure slot during directory I/O"
+    );
+    assert!(
+        p1_probes.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "the coordinator write permit must be released before directory I/O"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn raw_orphan_sweep_schedule_persists_pressure_backoff_and_progress() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-sweep-schedule").await;
@@ -2263,6 +2318,32 @@ async fn retention_dry_run_does_not_mutate_database_or_files() {
         .count();
     assert_eq!(archive_files, 0);
 
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn raw_orphan_sweep_dry_run_does_not_report_quarantine_work() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-dry-run-quarantine").await;
+    let orphan = config.proxy_raw_dir.join("dry-run-quarantine.bin");
+    fs::write(&orphan, b"dry-run-orphan").expect("write dry-run orphan");
+    let mut traversal = RetentionRawDirectoryTraversal::default();
+
+    let pass = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, true, &mut traversal)
+        .await
+        .expect("run raw sweep dry-run");
+
+    assert_eq!(pass.quarantined, 0);
+    assert!(orphan.exists());
+    let ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(orphan.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("count raw quarantine ledger rows");
+    assert_eq!(ledger_rows, 0);
+
+    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 

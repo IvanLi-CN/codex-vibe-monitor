@@ -117,6 +117,10 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_RAW_DIRECTORY_ENTRIES:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_DIRECTORY_PRESSURE_PROBES:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_DIRECTORY_P1_PROBES:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_RAW_UNLINK_FAILURE:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
 }
@@ -186,6 +190,31 @@ fn retention_test_raw_directory_open_event() {
 fn retention_test_raw_directory_entry_event() {
     let _ = RETENTION_TEST_RAW_DIRECTORY_ENTRIES.try_with(|counter| {
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let _ = RETENTION_TEST_RAW_DIRECTORY_PRESSURE_PROBES.try_with(|counter| {
+        let pressure_gate = RETENTION_TEST_DB_PRESSURE_GATE
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        if pressure_gate.is_some_and(|gate| {
+            gate.try_begin_background("raw_sweep_directory_probe")
+                .is_err()
+        }) {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let _ = RETENTION_TEST_RAW_DIRECTORY_P1_PROBES.try_with(|counter| {
+        let coordinator = RETENTION_TEST_WRITE_COORDINATOR
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        if coordinator.is_some_and(|coordinator| {
+            coordinator
+                .try_acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal,
+                )
+                .is_some()
+        }) {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     });
 }
 
@@ -984,6 +1013,16 @@ impl RetentionWriteAdmission {
 
     pub(super) fn p1_waiter_count(&self) -> usize {
         self.p1_waiter_count
+    }
+
+    fn release_write_permit_keep_pressure_slot(self) -> crate::db_pressure::DbBackgroundPermit {
+        let Self {
+            write_permit,
+            _pressure_permit,
+            ..
+        } = self;
+        drop(write_permit);
+        _pressure_permit
     }
 }
 
@@ -4422,10 +4461,6 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
     let mut result = RawOrphanSweepPassResult::default();
     let raw_root = normalize_path_for_compare(&config.resolved_proxy_raw_dir());
     let effective_fallback_root = raw_path_fallback_root.or(config.database_path.parent());
-    let Some(admission) = acquire_retention_write_admission("raw_reconciliation_scan").await else {
-        return Err(retention_write_deferred("raw_reconciliation_scan"));
-    };
-    drop(admission);
 
     if !dry_run {
         match cleanup_missing_retention_raw_reconciliation_rows(
@@ -4449,7 +4484,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         traversal.root = Some(raw_root.clone());
         traversal.directory = None;
     }
+    let Some(scan_admission) = acquire_retention_write_admission("raw_reconciliation_scan").await
+    else {
+        return Err(retention_write_deferred("raw_reconciliation_scan"));
+    };
+    let _scan_pressure_permit = scan_admission.release_write_permit_keep_pressure_slot();
     let scan = read_retention_raw_directory_slice(&raw_root, traversal.directory.take())?;
+    drop(_scan_pressure_permit);
     result.inspected_entries += scan.inspected_entries;
     result.failures += scan.failures;
     result.reached_end = scan.reached_end;
@@ -4538,7 +4579,9 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 }
                 continue;
             }
-            result.quarantined += 1;
+            if !dry_run {
+                result.quarantined += 1;
+            }
             continue;
         }
         let Some(existing) = existing else {
