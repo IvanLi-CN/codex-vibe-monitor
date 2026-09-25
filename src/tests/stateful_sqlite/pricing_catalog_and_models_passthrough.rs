@@ -1207,7 +1207,6 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     assert!(ids.contains(&"gpt-5.2-codex".to_string()));
     assert!(ids.contains(&"gpt-5.1-codex-mini".to_string()));
     assert!(!ids.contains(&"gpt-5.3-codex".to_string()));
-    assert!(!ids.contains(&"gpt-6-terra".to_string()));
     assert_eq!(
         ids.iter()
             .filter(|id| id.as_str() == "gpt-5.2-codex")
@@ -1216,6 +1215,26 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     );
 
     upstream_handle.abort();
+}
+
+#[test]
+fn merge_models_payload_with_upstream_excludes_gpt_6_terra() {
+    let merged = crate::proxy::merge_models_payload_with_upstream(
+        &json!({
+            "object": "list",
+            "data": [
+                {"id": "upstream-model-a"},
+                {"id": "gpt-6-terra"}
+            ]
+        }),
+        &["gpt-6-astra".to_string()],
+    )
+    .expect("merge upstream models");
+
+    let ids = extract_model_ids(&merged);
+    assert!(ids.contains(&"gpt-6-astra".to_string()));
+    assert!(ids.contains(&"upstream-model-a".to_string()));
+    assert!(!ids.contains(&"gpt-6-terra".to_string()));
 }
 
 #[tokio::test]
