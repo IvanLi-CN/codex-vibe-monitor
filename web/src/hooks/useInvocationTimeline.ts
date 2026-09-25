@@ -80,6 +80,7 @@ export function useInvocationTimeline({
   const abortControllerRef = useRef<AbortController | null>(null);
   const suppressRefreshRef = useRef(false);
   const deferredRefreshRef = useRef(false);
+  const [committedBoundsContextKey, setCommittedBoundsContextKey] = useState(boundsContextKey);
   const previousBoundsContextKey = useRef(boundsContextKey);
   const previousBounds = useRef<InvocationTimelineWindow | null>(bounds);
 
@@ -94,8 +95,7 @@ export function useInvocationTimeline({
     const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
     previousBoundsContextKey.current = boundsContextKey;
     if (contextChanged) {
-      suppressRefreshRef.current = true;
-      deferredRefreshRef.current = true;
+      setCommittedBoundsContextKey(boundsContextKey);
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
@@ -187,6 +187,7 @@ export function useInvocationTimeline({
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveRefreshRevision intentionally retriggers the fetch.
   useEffect(() => {
     if (!enabled) return;
+    if (committedBoundsContextKey !== boundsContextKey) return;
     if (suppressRefreshRef.current) {
       if (!closedNaturalDay && !liveRefreshAllowed) return;
       suppressRefreshRef.current = false;
@@ -198,7 +199,15 @@ export function useInvocationTimeline({
     }
     if (!closedNaturalDay && !liveRefreshAllowed) return;
     void refresh();
-  }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh, liveRefreshRevision]);
+  }, [
+    boundsContextKey,
+    closedNaturalDay,
+    committedBoundsContextKey,
+    enabled,
+    liveRefreshAllowed,
+    refresh,
+    liveRefreshRevision,
+  ]);
 
   useEffect(() => {
     if (!enabled || closedNaturalDay || !liveRefreshAllowed) return;
