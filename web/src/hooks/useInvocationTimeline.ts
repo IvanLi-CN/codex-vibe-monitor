@@ -94,6 +94,8 @@ export function useInvocationTimeline({
     const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
     previousBoundsContextKey.current = boundsContextKey;
     if (contextChanged) {
+      suppressRefreshRef.current = true;
+      deferredRefreshRef.current = true;
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
