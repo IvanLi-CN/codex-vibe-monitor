@@ -20,6 +20,7 @@
 - maintenance 任务名不构成绕过仲裁的理由：archive expiry、manifest 重建、raw owner reference 替换、backfill wake 与系统 raw 指标重置都必须有候选上限和独立短事务。多批指标重置期间要暴露 preparing，避免页面把不完整盘点当成健康基线。
 - 前台关键路径不应该和 rollup/backfill/retention/maintenance 使用同等重试预算。
 - 连接池等待超时本身就是 pressure signal，应触发后台 cooldown，而不是继续并发重试。
+- SQLite progress handler 是连接级状态。安装回调后，必须由局部守卫持有池连接并标记其不可复用；只有同步移除回调成功后才能解除标记。任务取消、查询超时或清理失败时，让该连接 `close_on_drop`，避免带着过期回调回池；正常清理路径仍复用原连接。不要依赖连接池健康检查替代回调清理。
 - `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。
 - 即使存在 active SSE 订阅者，terminal follow-up 也不应强制 `flush_now` 式 SQLite barrier；terminal overlay 是 UI 的立即收敛来源，summary/quota 可以在 write controller 后续 flush 后最终一致。
 - 对请求收尾里的同一实体写入，要优先消除“重复唯一键探测 + 紧跟二次更新”“先重算 rollup 再补 timing 再重算一次”这类单请求内自我放大；SQLite 压力常常不是来自单条大 SQL，而是来自几条语义重复的写语句连发。

@@ -4,6 +4,18 @@ use sqlx::FromRow;
 use std::future::Future;
 use tracing::warn;
 
+#[path = "hourly_rollups_progress.rs"]
+mod archive_hourly_rollup_progress;
+use archive_hourly_rollup_progress::ActiveAccountActivityV2ProgressConnection;
+#[cfg(test)]
+pub(crate) use archive_hourly_rollup_progress::ActiveAccountActivityV2ProgressHandlerTestPause;
+use archive_hourly_rollup_progress::active_account_activity_v2_month_key;
+pub(crate) use archive_hourly_rollup_progress::{
+    ActiveAccountActivityV2ProgressHandlerOptions,
+    build_active_account_activity_v2_archive_epoch_coverage_query,
+    build_active_account_activity_v2_legacy_coverage_query,
+};
+
 #[path = "hourly_rollup_support.rs"]
 mod archive_hourly_rollup_support;
 pub(crate) use archive_hourly_rollup_support::*;
@@ -3183,66 +3195,6 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
 const ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT: usize = 2;
 const ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET: Duration = Duration::from_secs(2);
 
-pub(crate) fn build_active_account_activity_v2_archive_epoch_coverage_query(
-    prefix: &'static str,
-    oldest_bucket: i64,
-    current_bucket: i64,
-) -> QueryBuilder<'static, Sqlite> {
-    let mut query = QueryBuilder::<Sqlite>::new(prefix);
-    query.push(
-        "SELECT coverage_start_epoch, coverage_end_epoch \
-         FROM archive_batches INDEXED BY idx_archive_batches_invocation_coverage_epoch \
-         WHERE dataset = 'codex_invocations' \
-           AND status = 'completed' \
-           AND coverage_start_epoch IS NOT NULL \
-           AND coverage_end_epoch IS NOT NULL \
-           AND coverage_start_epoch < ",
-    );
-    query.push_bind(current_bucket);
-    query.push(" AND coverage_end_epoch >= ");
-    query.push_bind(oldest_bucket);
-    query
-}
-
-pub(crate) fn build_active_account_activity_v2_legacy_coverage_query(
-    prefix: &'static str,
-    active_month_keys: &[String],
-) -> QueryBuilder<'static, Sqlite> {
-    let mut query = QueryBuilder::<Sqlite>::new(prefix);
-    query.push(
-        "SELECT month_key \
-         FROM archive_batches INDEXED BY idx_archive_batches_invocation_legacy_coverage_month \
-         WHERE dataset = 'codex_invocations' \
-           AND status = 'completed' \
-           AND (coverage_start_at IS NULL OR coverage_end_at IS NULL)",
-    );
-    if active_month_keys.is_empty() {
-        query.push(" AND 0");
-        return query;
-    }
-    query.push(" AND month_key IN (");
-    {
-        let mut separated = query.separated(", ");
-        for month_key in active_month_keys {
-            separated.push_bind(month_key.clone());
-        }
-    }
-    query.push(")");
-    query
-}
-
-fn active_account_activity_v2_month_key(bucket_start_epoch: i64) -> Result<String> {
-    Utc.timestamp_opt(bucket_start_epoch, 0)
-        .single()
-        .map(|bucket_start| {
-            bucket_start
-                .with_timezone(&Shanghai)
-                .format("%Y-%m")
-                .to_string()
-        })
-        .ok_or_else(|| anyhow!("invalid account activity v2 priority bucket start"))
-}
-
 async fn select_active_account_activity_v2_priority_buckets(
     pool: &Pool<Sqlite>,
     current_bucket: i64,
@@ -3253,9 +3205,7 @@ async fn select_active_account_activity_v2_priority_buckets(
         current_bucket,
         started_at,
         started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
-        None,
-        1_000,
-        false,
+        ActiveAccountActivityV2ProgressHandlerOptions::new(None, 1_000, false),
     )
     .await
 }
@@ -3265,9 +3215,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     current_bucket: i64,
     started_at: Instant,
     selection_deadline: Instant,
-    progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    progress_handler_ops: i32,
-    progress_abort_on_probe: bool,
+    progress_options: ActiveAccountActivityV2ProgressHandlerOptions,
 ) -> Result<Option<Vec<i64>>> {
     let selection_deadline = std::cmp::min(
         selection_deadline,
@@ -3276,16 +3224,23 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         return Ok(None);
     };
-    let mut connection = match timeout(remaining_budget, pool.acquire()).await {
+    let connection = match timeout(remaining_budget, pool.acquire()).await {
         Ok(connection) => connection?,
         Err(_) => return Ok(None),
     };
+    let mut connection = ActiveAccountActivityV2ProgressConnection {
+        connection,
+        progress_handler_installed: false,
+    };
+    let progress_probe = progress_options.progress_probe;
+    let progress_handler_ops = progress_options.progress_handler_ops;
+    let progress_abort_on_probe = progress_options.progress_abort_on_probe;
     let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         connection.close_on_drop();
         return Ok(None);
     };
     let lock_timed_out = {
-        let handle_result = timeout(remaining_budget, connection.lock_handle()).await;
+        let handle_result = timeout(remaining_budget, connection.connection.lock_handle()).await;
         match handle_result {
             Ok(Ok(mut handle)) => {
                 handle.set_progress_handler(progress_handler_ops, move || {
@@ -3303,6 +3258,14 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             Err(_) => true,
         }
     };
+    if !lock_timed_out {
+        connection.progress_handler_installed = true;
+    }
+    #[cfg(test)]
+    if let Some(pause) = progress_options.test_pause_after_handler_install {
+        let _ = pause.installed.send(());
+        let _ = pause.resume.await;
+    }
     if lock_timed_out {
         connection.close_on_drop();
         return Ok(None);
@@ -3316,7 +3279,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         let oldest_live_occurred_at = sqlx::query_scalar::<_, Option<String>>(
             "SELECT MIN(occurred_at) FROM codex_invocations",
         )
-        .fetch_one(&mut *connection)
+        .fetch_one(&mut *connection.connection)
         .await?;
         let Some(oldest_live_occurred_at) = oldest_live_occurred_at else {
             return Ok(Vec::new());
@@ -3347,7 +3310,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
         .bind(oldest_bucket)
         .bind(current_bucket)
-        .fetch_all(&mut *connection)
+        .fetch_all(&mut *connection.connection)
         .await?;
         let mut covered_buckets = HashSet::new();
         for bucket_start_epoch in covered_bucket_rows {
@@ -3364,7 +3327,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             current_bucket,
         )
         .build_query_as::<(i64, i64)>()
-        .fetch_all(&mut *connection)
+        .fetch_all(&mut *connection.connection)
         .await?;
 
         let mut active_month_keys = Vec::new();
@@ -3384,7 +3347,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         let archive_legacy_month_rows =
             build_active_account_activity_v2_legacy_coverage_query("", &active_month_keys)
                 .build_query_scalar::<String>()
-                .fetch_all(&mut *connection)
+                .fetch_all(&mut *connection.connection)
                 .await?;
         let mut archive_legacy_month_keys = HashSet::new();
         for month_key in archive_legacy_month_rows {
@@ -3471,7 +3434,8 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 return Ok(None);
             };
             let cleanup_succeeded = {
-                let cleanup_result = timeout(remaining_budget, connection.lock_handle()).await;
+                let cleanup_result =
+                    timeout(remaining_budget, connection.connection.lock_handle()).await;
                 match cleanup_result {
                     Ok(Ok(mut handle)) => {
                         handle.remove_progress_handler();
@@ -3481,6 +3445,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 }
             };
             if cleanup_succeeded {
+                connection.progress_handler_installed = false;
                 Err(error)
             } else {
                 connection.close_on_drop();
@@ -3503,7 +3468,8 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 return Ok(None);
             };
             let cleanup_succeeded = {
-                let cleanup_result = timeout(remaining_budget, connection.lock_handle()).await;
+                let cleanup_result =
+                    timeout(remaining_budget, connection.connection.lock_handle()).await;
                 match cleanup_result {
                     Ok(Ok(mut handle)) => {
                         handle.remove_progress_handler();
@@ -3513,6 +3479,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                 }
             };
             if cleanup_succeeded {
+                connection.progress_handler_installed = false;
                 Ok(Some(selection))
             } else {
                 connection.close_on_drop();
