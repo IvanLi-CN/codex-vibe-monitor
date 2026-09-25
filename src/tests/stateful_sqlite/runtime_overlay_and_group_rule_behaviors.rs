@@ -2139,6 +2139,12 @@ async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
                     "created": 1712345678
                 },
                 {
+                    "id": "gpt-6-terra",
+                    "object": "model",
+                    "owned_by": "upstream",
+                    "created": 1712345680
+                },
+                {
                     "id": "gpt-5.2-codex",
                     "object": "model",
                     "owned_by": "upstream",

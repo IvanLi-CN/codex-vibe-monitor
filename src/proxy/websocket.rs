@@ -2139,6 +2139,7 @@ pub(crate) struct WsUsageTracker {
     turn_occurred_at: Option<String>,
     turn_index: u64,
     response_id: Option<String>,
+    service_tier: Option<String>,
     runtime_snapshot_published: bool,
     runtime_snapshot_invoke_id: Option<String>,
     first_token_ms: Option<f64>,
@@ -2166,6 +2167,7 @@ impl WsUsageTracker {
             turn_occurred_at: None,
             turn_index: 0,
             response_id: None,
+            service_tier: None,
             runtime_snapshot_published: false,
             runtime_snapshot_invoke_id: None,
             first_token_ms: None,
@@ -2180,6 +2182,7 @@ impl WsUsageTracker {
         self.turn_occurred_at = Some(shanghai_now_string());
         self.turn_index = self.ordinal.saturating_add(1);
         self.response_id = None;
+        self.service_tier = None;
         self.runtime_snapshot_published = false;
         self.runtime_snapshot_invoke_id = None;
         self.first_token_ms = None;
@@ -2259,6 +2262,11 @@ impl WsUsageTracker {
             }
             return;
         };
+        if let Some(service_tier) = event.service_tier.as_ref() {
+            self.service_tier = Some(service_tier.clone());
+        } else {
+            event.service_tier = self.service_tier.clone();
+        }
         let (usage, usage_changed) = self.usage.update_with_change(event.usage);
         event.usage = usage;
         if !websocket_event_is_terminal(event.event_type.as_str()) {

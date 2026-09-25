@@ -2922,6 +2922,7 @@ pub(crate) fn merge_models_payload_with_upstream(
 
     for item in upstream_items {
         if let Some(id) = item.get("id").and_then(|v| v.as_str())
+            && id != "gpt-6-terra"
             && seen_ids.insert(id.to_string())
         {
             merged.push(item.clone());

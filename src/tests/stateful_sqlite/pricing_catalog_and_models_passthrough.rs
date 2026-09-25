@@ -1207,6 +1207,7 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     assert!(ids.contains(&"gpt-5.2-codex".to_string()));
     assert!(ids.contains(&"gpt-5.1-codex-mini".to_string()));
     assert!(!ids.contains(&"gpt-5.3-codex".to_string()));
+    assert!(!ids.contains(&"gpt-6-terra".to_string()));
     assert_eq!(
         ids.iter()
             .filter(|id| id.as_str() == "gpt-5.2-codex")
