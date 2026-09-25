@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 51 large-file entries explicit.
+  its 50 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -136,3 +136,23 @@ total), while the immutable preparation baseline remains 32 and 23.
 Validation for this extraction is the focused request-prefix and request-body
 tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
 Cargo checking, all-target Clippy, and `git diff --check`.
+
+The forward-proxy probe and validation extraction moves the complete contiguous
+region beginning with `parse_forward_proxy_nodes_latency_test_keys` and ending
+with `complete spawn_forward_proxy_bootstrap_probe_round` from
+`src/forward_proxy/slices/storage_and_hourly_stats.rs` into
+`src/forward_proxy/slices/storage_and_hourly_stats/probe_and_validation.rs`.
+On the verified main merge base `cdb7fbfa85e460e5fa666aa66834c9fc52745b8e`,
+the exact boundary is physical lines 2,401 through 3,842 inclusive (1,442
+moved lines). The parent is now 2,404 physical lines and the child is 1,444
+physical lines, both below the 2,500-line production target, so the parent is
+removed from the quality policy inventory. Manual latency probes, candidate and
+subscription validation, endpoint probing, and bootstrap probe scheduling
+remain behaviorally unchanged; the parent retains crate-visible call paths
+through an explicit child-module path and re-export. The current inventory is
+28 production and 22 test/helper candidates (50 entries total), while the
+immutable preparation baseline remains 32 and 23.
+
+Validation for this extraction is the focused `manual_latency_*` and bootstrap
+probe tests, rustfmt, the Rust source-quality checker and fixture harness,
+all-target Cargo checking, all-target Clippy, and `git diff --check`.

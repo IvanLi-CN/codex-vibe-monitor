@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 51 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 50 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -131,12 +131,27 @@ removed from the policy inventory. The parent explicitly re-exports the child
 symbols, while existing test names, resource buckets, suppression paths, and
 runtime behavior remain unchanged.
 
+The forward-proxy probe and validation extraction moves the complete
+contiguous region beginning with `parse_forward_proxy_nodes_latency_test_keys`
+and ending with `complete spawn_forward_proxy_bootstrap_probe_round` from
+`src/forward_proxy/slices/storage_and_hourly_stats.rs` into
+`src/forward_proxy/slices/storage_and_hourly_stats/probe_and_validation.rs`.
+On the verified main merge base `cdb7fbfa85e460e5fa666aa66834c9fc52745b8e`,
+the exact boundary is physical lines 2,401 through 3,842 inclusive (1,442
+moved lines). It contains manual latency probes, candidate and subscription
+validation, endpoint probing, and bootstrap probe scheduling. The parent is
+now 2,404 physical lines and the 1,444-line child remains below the 2,500-line
+production target, so the parent is removed from the policy inventory. The
+parent uses an explicit path declaration and crate-visible re-export, while
+routes, signatures, serde behavior, tests, resource buckets, and runtime
+behavior remain unchanged.
+
 ## Inventory Contract
 
-The policy has 29 `production` entries above the 2,500-line destination target
+The policy has 28 `production` entries above the 2,500-line destination target
 and 22 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 51 paths; a long path absent from the inventory is
+The checker only reads those 50 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
@@ -172,6 +187,7 @@ No global Clippy pedantic configuration or new dependency is introduced.
   focused workflow-detail coverage, including
   `cargo test workflow_usage_audit_only_attaches_to_last_success_like_attempt -- --nocapture`,
   followed by `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+- Focused `manual_latency_*` and forward-proxy bootstrap probe tests
 - `cargo check --locked --all-targets --all-features`
 - `git diff --check`
 
