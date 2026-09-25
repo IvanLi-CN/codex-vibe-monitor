@@ -244,6 +244,14 @@ async fn hydrate_timeline_accounts(
     records: &mut [ApiInvocation],
     source_scope: InvocationSourceScope,
 ) -> Result<(), ApiError> {
+    for record in records.iter_mut() {
+        if record
+            .upstream_account_id
+            .is_some_and(|account_id| account_id <= 0)
+        {
+            record.upstream_account_id = None;
+        }
+    }
     let keys = records
         .iter()
         .filter(|record| record.upstream_account_id.is_none())
@@ -304,7 +312,7 @@ async fn hydrate_timeline_accounts(
 
 fn timeline_upstream_account_id_sql(invocation_ref: &str) -> String {
     format!(
-        "COALESCE(CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
+        "COALESCE(CASE WHEN json_valid({invocation_ref}.payload) AND json_type({invocation_ref}.payload, '$.upstreamAccountId') IN ('integer', 'real') AND CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) > 0 THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
     )
 }
 

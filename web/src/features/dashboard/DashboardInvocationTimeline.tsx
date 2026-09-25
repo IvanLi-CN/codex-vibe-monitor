@@ -157,6 +157,7 @@ export function DashboardInvocationTimeline({
     upstreamAccountId,
     liveRevision,
     liveRefreshAllowed,
+    enabled: !timelineDataOverride,
   });
 
   useEffect(() => {
