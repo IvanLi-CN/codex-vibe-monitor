@@ -61,6 +61,81 @@ async fn websocket_terminal_usage_retains_unsupported_actual_tier_from_intermedi
 }
 
 #[tokio::test]
+async fn interrupted_websocket_turn_retains_unsupported_actual_tier() {
+    let state = crate::tests::test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pool-ws-interrupted-unsupported-tier".to_string(),
+        occurred_at: shanghai_now_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: Some("api.openai.com".to_string()),
+        request_model: Some("gpt-6-sol".to_string()),
+    };
+    let mut tracker = WsUsageTracker::new(
+        api_key_account(Url::parse("https://api.openai.com/").expect("valid base")),
+        trace,
+        None,
+        None,
+        None,
+    );
+    tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
+    tracker
+        .observe_upstream_text(
+            &state,
+            r#"{"type":"response.output_text.delta","response_id":"resp_interrupted_unsupported_tier","delta":"hello"}"#,
+        )
+        .await;
+    tracker
+        .observe_upstream_text(
+            &state,
+            r#"{"type":"response.in_progress","response":{"id":"resp_interrupted_unsupported_tier","model":"gpt-6-sol","status":"in_progress","service_tier":"batch","usage":{"input_tokens":1000,"output_tokens":100,"total_tokens":1100}}}"#,
+        )
+        .await;
+
+    let invoke_id = tracker
+        .runtime_snapshot_invoke_id
+        .clone()
+        .expect("first-token runtime identity");
+    let occurred_at = tracker.turn_occurred_at.clone().expect("turn timestamp");
+    tracker
+        .persist_interrupted_turn(state.as_ref(), "test websocket interruption")
+        .await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+
+    let persisted = sqlx::query_as::<_, (String, Option<f64>, String)>(
+        r#"
+        SELECT status, cost, payload
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load interrupted websocket tier");
+    assert_eq!(persisted.0, "failed");
+    assert!(
+        persisted.1.is_none(),
+        "unsupported tier must have unknown cost"
+    );
+    let payload: Value = serde_json::from_str(&persisted.2).expect("decode invocation payload");
+    assert_eq!(payload["serviceTier"].as_str(), Some("batch"));
+    assert_eq!(payload["billingServiceTier"].as_str(), Some("batch"));
+}
+
+#[tokio::test]
 async fn interrupted_websocket_turn_persists_partial_cache_usage_from_upstream_events() {
     let state = crate::tests::test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

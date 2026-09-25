@@ -2374,7 +2374,7 @@ impl WsUsageTracker {
             response_id: None,
             response_status: Some("incomplete".to_string()),
             model: self.trace.request_model.clone(),
-            service_tier: None,
+            service_tier: self.service_tier.clone(),
             usage: self.usage.snapshot(),
             contains_encrypted_content: self.request_contains_encrypted_content,
         };
