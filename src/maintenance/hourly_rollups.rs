@@ -1,5 +1,4 @@
 use super::*;
-
 const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
 const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const LEGACY_PRUNED_PAYLOAD_MODE_STRUCTURED_ROLLUP_UNKNOWN_REASONING: &str =
@@ -3534,10 +3533,7 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             "/api/stats/dashboard-activity/recent",
             get(fetch_dashboard_activity_recent),
         )
-        .route(
-            "/api/stats/invocation-timeline",
-            get(fetch_invocation_timeline),
-        )
+        .route("/api/stats/invocation-timeline", get(fetch_timeline))
         .route(
             "/api/stats/dashboard-network-timeseries",
             get(fetch_dashboard_network_timeseries),
