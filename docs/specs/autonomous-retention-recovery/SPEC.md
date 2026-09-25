@@ -75,6 +75,7 @@
 
 - The raw orphan worker MUST be independent of the hourly retention cadence and MUST NOT overlap another raw sweep in the same process.
 - Before opening or advancing the directory iterator, the worker MUST obtain maintenance admission. Admission refusal MUST perform no directory I/O and persist a retry at least five minutes later.
+- While maintenance admission is held for a candidate release, the raw-directory lock MUST be acquired nonblocking. Lock contention MUST defer that candidate and release admission without waiting on the lock, so later candidates and foreground writes are not held behind cross-process file activity.
 - After progress without failure, the worker MUST resume after one second. A failed slice MUST persist a sanitized fingerprint and back off for 5/10/20/40/60 minutes; an item failure MUST NOT prevent later candidates in that slice from being checked. End-of-directory MUST close the iterator and schedule a new pass after five minutes.
 - The existing `raw_payload_files` cursor MUST NOT be used as a directory seek position. It MAY be used as a persistent keyset position for bounded missing-ledger cleanup. No new DDL or startup-wide backfill is required.
 
@@ -120,7 +121,7 @@
 
 - Method: Instrumented large-directory slices, restart/reopen fixtures, scheduler clock tests, and concurrent P1/interactive writes on the shared testbox.
 - covers: `REQ-ARR-002`, `REQ-ARR-003`, `REQ-ARR-006`, `REQ-ARR-008`
-- Pass condition: Every slice advances no more than 128 directory entries and processes no more than 32 supported candidates; restart and directory mutations eventually revisit candidates; pressure refusal performs no directory I/O; legacy-link seed absence retains files; matching indexed references retain files; expired unreferenced fixtures are removed; retry cadence and System Status state remain accurate without adding foreground busy/locked events.
+- Pass condition: Every slice advances no more than 128 directory entries and processes no more than 32 supported candidates; restart and directory mutations eventually revisit candidates; pressure refusal performs no directory I/O; legacy-link seed absence retains files; matching indexed references retain files; expired unreferenced fixtures are removed; lock contention releases maintenance admission without waiting; an item failure does not prevent later candidates in the slice; retry cadence and System Status state remain accurate without adding foreground busy/locked events.
 
 ## Related ADRs
 

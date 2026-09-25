@@ -30,8 +30,8 @@
         "detected": false,
         "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics while reusing the existing raw_payload_files cursor retry/progress columns without new DDL. Earlier binaries remain safe because their bounded filename cursor wraps through the tail; archive wire/file formats and existing response fields remain unchanged.",
-      "reassessed_at": "2026-09-25T00:00:00+08:00",
+      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics while reusing the existing raw_payload_files cursor retry/progress columns without new DDL. Earlier binaries remain safe because their bounded filename cursor wraps through the tail; archive wire/file formats and existing response fields remain unchanged. Final-release lock contention is deferred without waiting while maintenance admission is held.",
+      "reassessed_at": "2026-09-25T20:01:06+08:00",
       "evidence": [
         "docs/adr/0018-bounded-raw-orphan-sweep-worker.md",
         "docs/specs/autonomous-retention-recovery/SPEC.md",
@@ -46,12 +46,12 @@
     "verified": {
       "impact": "patch",
       "reasoning": "The candidate passes the Linux Rust profiles, concurrent foreground-write empirical test, Web checks, Storybook interactions, and owner-confirmed rendered UI evidence. The raw orphan worker reuses existing cursor state and introduces no DDL; the System Status diagnostics remain optional and additive.",
-      "verified_at": "2026-09-25T17:56:08+08:00",
+      "verified_at": "2026-09-25T19:57:24+08:00",
       "evidence": [
-        "stateful-sqlite profile: 1309/1309 passed; archive-file-io profile: 284/284 passed",
+        "stateful-sqlite profile: 1309/1309 passed; archive-file-io profile: 286/286 passed",
         "Linux cargo fmt check, cargo check --locked --all-targets --all-features, and Clippy with -D warnings passed",
         "Web units: 1553 passed, 6 skipped; Storybook System Workspace interactions: 103 passed, 55 skipped; typecheck, lint, and production build passed",
-        "Shared-testbox bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes: 1 passed; 40 P1 and 40 interactive writes had zero errors while the expired orphan was physically released; evidence at /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-concurrency-empirical-final.log",
+        "Shared-testbox bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes: 1 passed on rebased implementation commit 358e67ef; 40 P1 and 40 interactive writes had zero errors while the expired orphan was physically released; evidence at /srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-concurrency-empirical-cdb7-358e67ef.log",
         "System Status screenshot captured from ui_demo as rendered page-surface evidence, persisted at docs/specs/autonomous-retention-recovery/assets/raw-orphan-sweep-desktop.png, and confirmed by the owner"
       ]
     }

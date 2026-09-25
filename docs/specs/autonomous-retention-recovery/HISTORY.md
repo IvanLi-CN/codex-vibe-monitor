@@ -35,7 +35,8 @@
 - The raw-orphan-sweep throughput follow-up replaces full-directory selection and per-file owner-table
   scans with a process-local bounded iterator, indexed batched blob-link checks, a separately
   scheduled worker, and observable retry/progress state. It reuses existing cursor columns and adds
-  no schema objects.
+  no schema objects. The directory lock is nonblocking while maintenance admission is held, and an
+  item-level lock or unlink failure does not prevent later candidates in the same slice from running.
 
 ## References
 
