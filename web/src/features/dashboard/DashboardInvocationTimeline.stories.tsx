@@ -140,6 +140,9 @@ export const DenseFallback: Story = {
     timelineData: { ...records, total: 2_001, overLimit: true, records: [] },
     fallback,
   },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("Aggregate chart fallback")).toBeVisible();
+  },
 };
 
 export const EmptyWindow: Story = {
@@ -148,5 +151,20 @@ export const EmptyWindow: Story = {
     loading: false,
     timelineData: { ...records, total: 0, records: [] },
     fallback,
+  },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText(/No invocations|当前时间窗口没有/)).toBeVisible();
+  },
+};
+
+export const MobileTraffic: Story = {
+  ...LiveTraffic,
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("dashboard-invocation-timeline")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /invoke-success-001/ })).toBeVisible();
   },
 };

@@ -145,6 +145,8 @@ export function DashboardInvocationTimeline({
 }: DashboardInvocationTimelineProps) {
   const { t } = useTranslation();
   const sseStatus = useSseStatus();
+  const liveRefreshAllowed =
+    closedNaturalDay || !["reconnecting", "disabled"].includes(sseStatus.phase);
   const liveConnected = closedNaturalDay || sseStatus.phase === "connected";
   const [hoverMs, setHoverMs] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -153,7 +155,7 @@ export function DashboardInvocationTimeline({
     closedNaturalDay,
     upstreamAccountId,
     liveRevision,
-    liveConnected,
+    liveRefreshAllowed,
   });
 
   useEffect(() => {
@@ -187,6 +189,7 @@ export function DashboardInvocationTimeline({
   );
 
   if (error || (!response && !loading && !timelineDataOverride)) return <>{fallback}</>;
+  if (!closedNaturalDay && !liveRefreshAllowed && !timelineDataOverride) return <>{fallback}</>;
   if (!plotWindow || (timeline.isLoading && !renderedData && !timelineDataOverride)) {
     return (
       <div

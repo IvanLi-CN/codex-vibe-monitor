@@ -15,7 +15,7 @@ interface UseInvocationTimelineOptions {
   closedNaturalDay: boolean;
   upstreamAccountId?: number;
   liveRevision?: number;
-  liveConnected?: boolean;
+  liveRefreshAllowed?: boolean;
 }
 
 function parseEpoch(value: string | null | undefined) {
@@ -58,7 +58,7 @@ export function useInvocationTimeline({
   closedNaturalDay,
   upstreamAccountId,
   liveRevision,
-  liveConnected = true,
+  liveRefreshAllowed = true,
 }: UseInvocationTimelineOptions) {
   const bounds = useMemo<InvocationTimelineWindow | null>(() => {
     const startMs = parseEpoch(response?.rangeStart);
@@ -133,15 +133,15 @@ export function useInvocationTimeline({
   // liveRevision is an explicit SSE-driven refresh trigger for the stable callback.
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveRevision intentionally retriggers the fetch.
   useEffect(() => {
-    if (!closedNaturalDay && !liveConnected) return;
+    if (!closedNaturalDay && !liveRefreshAllowed) return;
     void refresh();
-  }, [closedNaturalDay, liveConnected, refresh, liveRevision]);
+  }, [closedNaturalDay, liveRefreshAllowed, refresh, liveRevision]);
 
   useEffect(() => {
-    if (closedNaturalDay || !liveConnected) return;
+    if (closedNaturalDay || !liveRefreshAllowed) return;
     const timer = globalThis.setInterval(() => void refresh(), LIVE_REFRESH_MS);
     return () => globalThis.clearInterval(timer);
-  }, [closedNaturalDay, liveConnected, refresh]);
+  }, [closedNaturalDay, liveRefreshAllowed, refresh]);
 
   const updateWindow = useCallback(
     (next: InvocationTimelineWindow) => {
