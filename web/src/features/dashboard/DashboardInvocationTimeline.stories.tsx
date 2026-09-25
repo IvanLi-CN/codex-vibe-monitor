@@ -88,7 +88,7 @@ const records: InvocationTimelineResponse = {
 const meta = {
   title: "Dashboard/DashboardInvocationTimeline",
   component: DashboardInvocationTimeline,
-  tags: ["autodocs"],
+  tags: ["autodocs", "test"],
   parameters: {
     layout: "fullscreen",
     viewport: { defaultViewport: "desktop1440x1024" },
