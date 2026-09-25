@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { useInvocationTimeline } from "../../hooks/useInvocationTimeline";
+import useSseStatus from "../../hooks/useSseStatus";
 import { useTranslation } from "../../i18n";
 import type {
   InvocationTimelineRecord,
@@ -77,6 +78,7 @@ export function assignInvocationTimelineLanes(
   records: InvocationTimelineRecord[],
   asOf: string,
   nowMs = Date.now(),
+  advanceInFlight = true,
 ): LaneRecord[] {
   const referenceNowMs = parseEpoch(asOf) ?? nowMs;
   const laneEnds: number[] = [];
@@ -89,11 +91,14 @@ export function assignInvocationTimelineLanes(
     .map(({ record, startMs }) => {
       const terminalEnd = parseEpoch(record.endAt);
       const endMs = record.isInFlight
-        ? Math.max(referenceNowMs, nowMs, startMs + 1)
+        ? Math.max(referenceNowMs, advanceInFlight ? nowMs : referenceNowMs, startMs + 1)
         : Math.max(terminalEnd ?? startMs + 1, startMs + 1);
+      const laneEndMs = record.isInFlight
+        ? endMs
+        : Math.max(terminalEnd ?? referenceNowMs, startMs + 1);
       let lane = laneEnds.findIndex((laneEnd) => laneEnd <= startMs);
       if (lane < 0) lane = laneEnds.length;
-      laneEnds[lane] = endMs;
+      laneEnds[lane] = laneEndMs;
       return { record, startMs, endMs, lane };
     });
 }
@@ -139,6 +144,8 @@ export function DashboardInvocationTimeline({
   fallback,
 }: DashboardInvocationTimelineProps) {
   const { t } = useTranslation();
+  const sseStatus = useSseStatus();
+  const liveConnected = closedNaturalDay || sseStatus.phase === "connected";
   const [hoverMs, setHoverMs] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const timeline = useInvocationTimeline({
@@ -146,22 +153,28 @@ export function DashboardInvocationTimeline({
     closedNaturalDay,
     upstreamAccountId,
     liveRevision,
+    liveConnected,
   });
 
   useEffect(() => {
-    if (closedNaturalDay) return;
+    if (closedNaturalDay || !liveConnected) return;
     const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1_000);
     return () => globalThis.clearInterval(timer);
-  }, [closedNaturalDay]);
+  }, [closedNaturalDay, liveConnected]);
 
   const renderedData = timelineDataOverride ?? timeline.data;
   const renderedError = timelineDataOverride ? null : timeline.error;
   const lanes = useMemo(
     () =>
       renderedData
-        ? assignInvocationTimelineLanes(renderedData.records, renderedData.asOf, nowMs)
+        ? assignInvocationTimelineLanes(
+            renderedData.records,
+            renderedData.asOf,
+            nowMs,
+            liveConnected,
+          )
         : [],
-    [nowMs, renderedData],
+    [liveConnected, nowMs, renderedData],
   );
   const laneCount = Math.max(1, (lanes.at(-1)?.lane ?? 0) + 1);
   const plotWindow = timeline.window;
@@ -179,7 +192,7 @@ export function DashboardInvocationTimeline({
       <div
         className="min-h-64 animate-pulse rounded-lg bg-base-200/45"
         role="status"
-        aria-label="Loading"
+        aria-label={t("chart.loading")}
       />
     );
   }
@@ -331,10 +344,22 @@ export function DashboardInvocationTimeline({
                   item.record.firstTokenMs != null
                     ? Math.max(left, Math.min(100, xFor(item.startMs + item.record.firstTokenMs)))
                     : null;
+                const statusLabel =
+                  {
+                    success: t("dashboard.activityOverview.timelineStatusSuccess"),
+                    requesting: t("dashboard.activityOverview.timelineStatusRequesting"),
+                    responding: t("dashboard.activityOverview.timelineStatusResponding"),
+                    queued: t("dashboard.activityOverview.timelineStatusQueued"),
+                    failed: t("dashboard.activityOverview.timelineStatusFailed"),
+                    unknown: t("dashboard.activityOverview.timelineStatusUnknown"),
+                    interrupted: t("dashboard.activityOverview.timelineStatusUnknown"),
+                  }[status] ?? t("dashboard.activityOverview.timelineStatusUnknown");
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={`${item.record.invokeId}:${item.record.occurredAt}`}
-                    className={`absolute flex items-center overflow-visible rounded border px-1 text-[10px] font-medium shadow-sm ${statusClass(status)}`}
+                    className={`absolute flex appearance-none items-center overflow-visible rounded border px-1 text-left text-[10px] font-medium shadow-sm ${statusClass(status)}`}
+                    aria-label={`${item.record.invokeId} · ${statusLabel} · ${formatDuration(item.record)}`}
                     style={{
                       left: `${left}%`,
                       top: `${item.lane * 30 + 5}px`,
@@ -343,6 +368,14 @@ export function DashboardInvocationTimeline({
                       height: "18px",
                     }}
                     title={`${item.record.invokeId} · ${formatDuration(item.record)}`}
+                    onFocus={() => setHoverMs((item.startMs + item.endMs) / 2)}
+                    onBlur={() => setHoverMs(null)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setHoverMs((item.startMs + item.endMs) / 2);
+                      }
+                    }}
                   >
                     <span className="truncate">{item.record.invokeId.slice(0, 8)}</span>
                     {marker != null ? (
@@ -351,7 +384,7 @@ export function DashboardInvocationTimeline({
                         style={{ left: `${((marker - left) / Math.max(width, 0.25)) * 100}%` }}
                       />
                     ) : null}
-                  </div>
+                  </button>
                 );
               })}
               {hoverMs != null ? (
@@ -376,7 +409,7 @@ export function DashboardInvocationTimeline({
               viewBox="0 0 100 100"
               preserveAspectRatio="none"
               role="img"
-              aria-label="TTFT trend"
+              aria-label={t("dashboard.activityOverview.timelineTtftAxis")}
             >
               <path
                 d={ttft.path}
@@ -405,7 +438,7 @@ export function DashboardInvocationTimeline({
                 type="button"
                 className={`min-w-0 flex-1 rounded-t-sm ${active ? "bg-info" : "bg-base-content/25 hover:bg-base-content/45"}`}
                 style={{ height: `${height}%` }}
-                aria-label={`${point.totalCount} calls at ${point.bucketStart}`}
+                aria-label={`${t("dashboard.activityOverview.timelineCalls", { count: point.totalCount })} · ${new Date(point.bucketStart).toLocaleTimeString()}`}
                 onClick={() => {
                   const start = parseEpoch(point.bucketStart);
                   const end = parseEpoch(point.bucketEnd);

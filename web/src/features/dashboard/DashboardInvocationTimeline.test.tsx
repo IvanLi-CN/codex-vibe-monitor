@@ -43,4 +43,29 @@ describe("assignInvocationTimelineLanes", () => {
 
     expect(lanes[0].endMs).toBe(Date.parse("2026-03-26T12:00:05.000Z"));
   });
+
+  it("freezes live extension while disconnected", () => {
+    const lanes = assignInvocationTimelineLanes(
+      [record("invoke-5", "2026-03-26T12:00:00.000Z", null, true)],
+      "2026-03-26T12:00:01.000Z",
+      Date.parse("2026-03-26T12:00:05.000Z"),
+      false,
+    );
+
+    expect(lanes[0].endMs).toBe(Date.parse("2026-03-26T12:00:01.000Z"));
+  });
+
+  it("keeps unknown terminal duration from freeing the lane", () => {
+    const lanes = assignInvocationTimelineLanes(
+      [
+        record("invoke-6", "2026-03-26T12:00:00.000Z", null),
+        record("invoke-7", "2026-03-26T12:00:01.000Z", 1_000),
+      ],
+      "2026-03-26T12:00:05.000Z",
+      Date.parse("2026-03-26T12:00:05.000Z"),
+    );
+
+    expect(lanes.map((item) => item.lane)).toEqual([0, 1]);
+    expect(lanes[0].endMs).toBeGreaterThan(lanes[0].startMs);
+  });
 });

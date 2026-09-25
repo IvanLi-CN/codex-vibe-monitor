@@ -15,6 +15,7 @@ interface UseInvocationTimelineOptions {
   closedNaturalDay: boolean;
   upstreamAccountId?: number;
   liveRevision?: number;
+  liveConnected?: boolean;
 }
 
 function parseEpoch(value: string | null | undefined) {
@@ -57,6 +58,7 @@ export function useInvocationTimeline({
   closedNaturalDay,
   upstreamAccountId,
   liveRevision,
+  liveConnected = true,
 }: UseInvocationTimelineOptions) {
   const bounds = useMemo<InvocationTimelineWindow | null>(() => {
     const startMs = parseEpoch(response?.rangeStart);
@@ -71,6 +73,7 @@ export function useInvocationTimeline({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const previousBoundsKey = useRef(boundsKey);
 
   useEffect(() => {
@@ -91,37 +94,54 @@ export function useInvocationTimeline({
 
   const refresh = useCallback(async () => {
     if (!viewportWindow) return;
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
     const sequence = requestSequence.current + 1;
     requestSequence.current = sequence;
+    abortControllerRef.current = controller;
     setIsLoading(true);
     try {
       const next = await fetchInvocationTimeline({
         from: new Date(viewportWindow.startMs).toISOString(),
         to: new Date(viewportWindow.endMs).toISOString(),
         upstreamAccountId,
+        signal: controller.signal,
       });
       if (sequence !== requestSequence.current) return;
       setData(next);
       setError(null);
     } catch (nextError) {
+      if (controller.signal.aborted) return;
       if (sequence !== requestSequence.current) return;
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     } finally {
-      if (sequence === requestSequence.current) setIsLoading(false);
+      if (sequence === requestSequence.current && abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setIsLoading(false);
+      }
     }
   }, [upstreamAccountId, viewportWindow]);
+
+  useEffect(
+    () => () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    },
+    [],
+  );
 
   // liveRevision is an explicit SSE-driven refresh trigger for the stable callback.
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveRevision intentionally retriggers the fetch.
   useEffect(() => {
+    if (!closedNaturalDay && !liveConnected) return;
     void refresh();
-  }, [refresh, liveRevision]);
+  }, [closedNaturalDay, liveConnected, refresh, liveRevision]);
 
   useEffect(() => {
-    if (closedNaturalDay) return;
+    if (closedNaturalDay || !liveConnected) return;
     const timer = globalThis.setInterval(() => void refresh(), LIVE_REFRESH_MS);
     return () => globalThis.clearInterval(timer);
-  }, [closedNaturalDay, refresh]);
+  }, [closedNaturalDay, liveConnected, refresh]);
 
   const updateWindow = useCallback(
     (next: InvocationTimelineWindow) => {
