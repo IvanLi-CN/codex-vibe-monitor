@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 53,
+    "inventory_entries": 52,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -287,12 +287,6 @@
       "role": "production",
       "line_budget": 4411,
       "next_module_workstream": "Split upstream account import normalization, tag sync, and import job orchestration."
-    },
-    {
-      "path": "src/upstream_accounts/sync_routing_status.rs",
-      "role": "production",
-      "line_budget": 2689,
-      "next_module_workstream": "Split upstream routing status synchronization, health projection, and persistence."
     },
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",

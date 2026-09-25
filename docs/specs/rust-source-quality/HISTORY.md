@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 53 large-file entries explicit.
+  its 52 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -75,8 +75,9 @@ The OAuth bridge test module is now a fifth named child module. The complete
 test block moves from `src/oauth_bridge.rs` to
 `src/oauth_bridge/tests.rs`; the parent retains the same test module path
 and private-item access. The parent is 2,040 physical lines and the child is
-720 physical lines, both below their targets. The current inventory therefore
-has 31 production and 22 test/helper candidates (53 entries total), while
+720 physical lines, both below their targets. At that point in the extraction
+sequence, the inventory therefore had 31 production and 22 test/helper
+candidates (53 entries total), while
 the immutable preparation baseline remains 32 and 23. No production OAuth
 bridge logic, test names, assertions, or public behavior changed.
 
@@ -98,3 +99,21 @@ Validation for this extraction is the focused service-tier backfill tests, the
 stateful SQLite backend profile, rustfmt, the Rust source-quality checker and
 fixture harness, all-target Cargo checking, all-target Clippy, and
 `git diff --check`.
+
+The upstream routing status persistence extraction moves the complete
+contiguous production region beginning with `set_account_status` and ending
+with the complete `record_classified_account_sync_failure_with_proxy_snapshot`
+definition from `src/upstream_accounts/sync_routing_status.rs` into
+`src/upstream_accounts/sync_routing_status/status_persistence.rs`. On the
+verified main merge base `3d06762198c3abff18806fce8ff65a05030a2d32`, the exact
+boundary is physical lines 2,038 through 2,576 inclusive (539 moved lines).
+The parent is now 2,154 physical lines and the child is 541 physical lines,
+both below the 2,500-line production target. The parent keeps the existing
+`account_action_event_tests` module, and no test names or resource buckets
+moved. The current inventory is 30 production and 22 test/helper candidates
+(52 entries total), while the immutable preparation baseline remains 32 and
+23.
+
+Validation for this extraction is the focused sync/status and stateful SQLite
+cooldown coverage, rustfmt, the Rust source-quality checker and fixture
+harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
