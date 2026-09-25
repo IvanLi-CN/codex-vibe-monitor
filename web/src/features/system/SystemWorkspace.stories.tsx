@@ -672,10 +672,10 @@ function rawOrphanSweepStatus(
           : {
               ...base.rawOrphanSweep!,
               state,
-              inspectedEntries: state === "scanning" ? 128 : 96,
-              referencedSkipped: 12,
-              quarantined: state === "degraded" ? 3 : 2,
-              removed: state === "degraded" ? 0 : 1,
+              inspectedEntries: state === "scanning" ? 0 : 96,
+              referencedSkipped: state === "scanning" ? 0 : 12,
+              quarantined: state === "scanning" ? 0 : state === "degraded" ? 3 : 2,
+              removed: state === "scanning" || state === "degraded" ? 0 : 1,
               nextRetryAt: state === "deferred" ? "2026-06-22T08:05:00Z" : undefined,
               deferReason:
                 state === "deferred"
@@ -939,8 +939,7 @@ export const StatusRawOrphanSweepScanning: Story = {
     await userEvent.click(await canvas.findByText("运行压力详情"));
     const sweep = canvas.getByTestId("system-status-raw-orphan-sweep");
     await expect(sweep).toHaveTextContent("扫描中");
-    await expect(sweep).toHaveTextContent("128");
-    await expect(sweep).toHaveTextContent("跳过的已引用文件");
+    await expect(within(sweep).getAllByText("0", { exact: true })).toHaveLength(4);
   },
 };
 

@@ -192,7 +192,7 @@ fn retention_test_raw_directory_entry_event() {
 #[cfg(test)]
 fn retention_test_raw_unlink_should_fail() -> bool {
     RETENTION_TEST_RAW_UNLINK_FAILURE
-        .try_with(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+        .try_with(|flag| flag.swap(false, std::sync::atomic::Ordering::Relaxed))
         .unwrap_or(false)
 }
 
@@ -4553,13 +4553,16 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         else {
             return Err(retention_write_deferred("raw_reconciliation_release"));
         };
-        let _directory_lock = match retention_archive_file_lock(&path) {
-            Ok(lock) => lock,
-            Err(_) => {
-                result.failures += 1;
-                continue;
-            }
-        };
+        let _directory_lock =
+            match retention_try_archive_locks_scope(async { retention_archive_file_lock(&path) })
+                .await
+            {
+                Ok(lock) => lock,
+                Err(_) => {
+                    result.failures += 1;
+                    continue;
+                }
+            };
         let final_metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
@@ -4862,6 +4865,19 @@ pub(crate) fn raw_orphan_sweep_failure_retry_secs(failure_count: u32) -> i64 {
     RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS[index]
 }
 
+pub(crate) fn raw_orphan_sweep_next_retry_secs(
+    pass: &RawOrphanSweepPassResult,
+    consecutive_failure_count: u32,
+) -> i64 {
+    if pass.failures > 0 {
+        raw_orphan_sweep_failure_retry_secs(consecutive_failure_count)
+    } else if pass.reconciliation_has_more || !pass.reached_end {
+        RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS
+    } else {
+        RETENTION_RAW_RECONCILIATION_EMPTY_RETRY_SECS
+    }
+}
+
 async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationToken) {
     if !state.config.retention_enabled {
         return;
@@ -4984,38 +5000,19 @@ async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationT
                 Ok(pass) => {
                     let progressed =
                         pass.inspected_entries > 0 || pass.reconciliation_rows_checked > 0;
-                    let (status, next_retry_secs, defer_reason, fingerprint) = if pass.failures > 0
-                    {
+                    let next_retry_secs =
+                        raw_orphan_sweep_next_retry_secs(&pass, schedule.consecutive_failure_count);
+                    let (status, defer_reason, fingerprint) = if pass.failures > 0 {
                         let fingerprint = retention_error_fingerprint(&anyhow!(
                             "raw orphan sweep item operation failed"
                         ));
                         (
                             "degraded",
-                            raw_orphan_sweep_failure_retry_secs(schedule.consecutive_failure_count),
                             Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
                             Some(fingerprint),
                         )
-                    } else if pass.reconciliation_has_more {
-                        (
-                            "idle",
-                            RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS,
-                            None,
-                            None,
-                        )
-                    } else if pass.reached_end {
-                        (
-                            "idle",
-                            RETENTION_RAW_RECONCILIATION_EMPTY_RETRY_SECS,
-                            None,
-                            None,
-                        )
                     } else {
-                        (
-                            "idle",
-                            RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS,
-                            None,
-                            None,
-                        )
+                        ("idle", None, None)
                     };
                     let transition = if let Some(fingerprint) = fingerprint.clone() {
                         RawOrphanSweepScheduleTransition::Failure {

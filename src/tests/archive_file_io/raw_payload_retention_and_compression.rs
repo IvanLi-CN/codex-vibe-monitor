@@ -1531,6 +1531,137 @@ async fn raw_reset_intent_survives_unlink_failure_before_file_release() {
 }
 
 #[tokio::test]
+async fn raw_orphan_sweep_continues_after_one_unlink_failure() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-sweep-item-failure").await;
+    let raw_paths = [
+        config.proxy_raw_dir.join("item-failure-a.bin"),
+        config.proxy_raw_dir.join("item-failure-b.bin"),
+    ];
+    for path in &raw_paths {
+        fs::write(path, b"orphan").expect("write orphan candidate");
+    }
+
+    let mut initial_traversal = RetentionRawDirectoryTraversal::default();
+    let initial =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut initial_traversal)
+            .await
+            .expect("quarantine both orphan candidates");
+    assert_eq!(initial.quarantined, 2);
+    sqlx::query(
+        "UPDATE retention_raw_reconciliation SET quarantined_at = ?1 WHERE raw_path IN (?2, ?3)",
+    )
+    .bind(format_utc_iso(
+        Utc::now() - ChronoDuration::seconds(24 * 60 * 60 + 1),
+    ))
+    .bind(raw_paths[0].to_string_lossy().as_ref())
+    .bind(raw_paths[1].to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("expire both orphan quarantines");
+
+    let fail_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut release_traversal = RetentionRawDirectoryTraversal::default();
+    let pass = crate::maintenance::RETENTION_TEST_RAW_UNLINK_FAILURE
+        .scope(
+            fail_once,
+            sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut release_traversal),
+        )
+        .await
+        .expect("continue after a per-item unlink failure");
+
+    assert_eq!(pass.failures, 1);
+    assert_eq!(pass.removed, 1);
+    assert_eq!(raw_paths.iter().filter(|path| path.exists()).count(), 1);
+    let remaining_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation")
+            .fetch_one(&pool)
+            .await
+            .expect("count retained failure ledger");
+    assert_eq!(remaining_rows, 1);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_orphan_sweep_defers_a_busy_directory_lock_without_holding_write_admission() {
+    use crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass;
+
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-sweep-lock-defer").await;
+    let raw_path = config.proxy_raw_dir.join("directory-lock-orphan.bin");
+    fs::write(&raw_path, b"orphan").expect("write orphan candidate");
+    let mut initial_traversal = RetentionRawDirectoryTraversal::default();
+    let initial =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut initial_traversal)
+            .await
+            .expect("quarantine orphan candidate");
+    assert_eq!(initial.quarantined, 1);
+    sqlx::query("UPDATE retention_raw_reconciliation SET quarantined_at = ?1 WHERE raw_path = ?2")
+        .bind(format_utc_iso(
+            Utc::now() - ChronoDuration::seconds(24 * 60 * 60 + 1),
+        ))
+        .bind(raw_path.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .expect("expire orphan quarantine");
+
+    let held_lock = crate::maintenance::retention_archive_file_lock(&raw_path)
+        .expect("hold raw directory lock");
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let release_thread = std::thread::spawn(move || {
+        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(2));
+        drop(held_lock);
+    });
+    let mut sweep = {
+        let coordinator = coordinator.clone();
+        let pool = pool.clone();
+        let config = config.clone();
+        tokio::spawn(async move {
+            let mut traversal = RetentionRawDirectoryTraversal::default();
+            crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
+                .scope(
+                    coordinator,
+                    crate::maintenance::retention_try_archive_locks_scope(
+                        sweep_orphan_proxy_raw_files_slice(
+                            &pool,
+                            &config,
+                            None,
+                            false,
+                            &mut traversal,
+                        ),
+                    ),
+                )
+                .await
+        })
+    };
+    let completed = tokio::time::timeout(std::time::Duration::from_millis(250), &mut sweep).await;
+    let completed_before_lock_release = completed.is_ok();
+    let _ = release_tx.send(());
+    release_thread.join().expect("release held directory lock");
+    let pass = match completed {
+        Ok(result) => result.expect("join completed bounded sweep task"),
+        Err(_) => sweep.await.expect("join deferred bounded sweep task"),
+    }
+    .expect("defer the busy directory lock");
+
+    assert!(
+        completed_before_lock_release,
+        "a busy cross-process lock must defer without blocking"
+    );
+    assert_eq!(pass.failures, 1);
+    assert_eq!(pass.removed, 0);
+    assert!(raw_path.exists());
+    let _p1_permit = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_raw_reconciliation_resets_wrong_identity_without_release() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-reconcile-identity").await;
@@ -1820,6 +1951,44 @@ async fn raw_orphan_sweep_schedule_persists_pressure_backoff_and_progress() {
         assert_eq!(recovered.defer_reason, None);
         assert!(recovered.last_progress_at.is_some());
         assert!(recovered.next_retry_at.is_some());
+
+        let progressing_pass = RawOrphanSweepPassResult {
+            inspected_entries: 128,
+            reached_end: false,
+            ..Default::default()
+        };
+        let progress_delay = raw_orphan_sweep_next_retry_secs(&progressing_pass, 0);
+        assert_eq!(progress_delay, 1);
+        persist_raw_orphan_sweep_schedule(
+            &pool,
+            progress_delay,
+            RawOrphanSweepScheduleTransition::Success { progressed: true },
+        )
+        .await
+        .expect("persist bounded progress cadence");
+        let progress_deadline = load_raw_orphan_sweep_schedule(&pool)
+            .await
+            .expect("load bounded progress deadline");
+        assert!(progress_deadline.retry_after_secs <= 1);
+
+        let empty_pass = RawOrphanSweepPassResult {
+            reached_end: true,
+            ..Default::default()
+        };
+        let empty_delay = raw_orphan_sweep_next_retry_secs(&empty_pass, 0);
+        assert_eq!(empty_delay, 300);
+        persist_raw_orphan_sweep_schedule(
+            &pool,
+            empty_delay,
+            RawOrphanSweepScheduleTransition::Success { progressed: false },
+        )
+        .await
+        .expect("persist EOF cadence");
+        let empty_deadline = load_raw_orphan_sweep_schedule(&pool)
+            .await
+            .expect("load EOF deadline");
+        assert!(empty_deadline.retry_after_secs <= 300);
+        assert!(empty_deadline.retry_after_secs >= 299);
     };
     crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
         .scope(
