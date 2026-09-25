@@ -1837,7 +1837,7 @@ fn estimate_proxy_cost_uses_dated_gpt_6_default_pricing_presets() {
             &catalog,
             Some(dated_model),
             &usage,
-            Some("default"),
+            None,
             ProxyPricingMode::ResponseTier,
         );
         assert!(estimated, "{dated_model} should be estimated");
