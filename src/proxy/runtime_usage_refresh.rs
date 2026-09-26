@@ -202,23 +202,15 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
           AND LOWER(TRIM(COALESCE(status, ''))) = LOWER(?19)
           AND failure_kind IS ?20
           AND error_message IS ?21
+          AND input_tokens IS ?22
+          AND output_tokens IS ?23
+          AND cache_input_tokens IS ?24
+          AND reported_cache_write_tokens IS ?25
+          AND reasoning_tokens IS ?26
+          AND total_tokens IS ?27
           AND json_valid(payload)
           AND LOWER(TRIM(COALESCE(json_extract(payload, '$.transport'), ''))) = 'websocket'
           AND json_extract(payload, '$.streamTerminalEvent') IS NOT NULL
-          AND (input_tokens IS NULL OR (?3 IS NOT NULL AND input_tokens = ?3))
-          AND (output_tokens IS NULL OR (?4 IS NOT NULL AND output_tokens = ?4))
-          AND (cache_input_tokens IS NULL OR (?5 IS NOT NULL AND cache_input_tokens = ?5))
-          AND (reported_cache_write_tokens IS NULL OR (?6 IS NOT NULL AND reported_cache_write_tokens = ?6))
-          AND (reasoning_tokens IS NULL OR (?7 IS NOT NULL AND reasoning_tokens = ?7))
-          AND (total_tokens IS NULL OR (?8 IS NOT NULL AND total_tokens = ?8))
-          AND (
-                (input_tokens IS NULL AND ?3 IS NOT NULL)
-                OR (output_tokens IS NULL AND ?4 IS NOT NULL)
-                OR (cache_input_tokens IS NULL AND ?5 IS NOT NULL)
-                OR (reported_cache_write_tokens IS NULL AND ?6 IS NOT NULL)
-                OR (reasoning_tokens IS NULL AND ?7 IS NOT NULL)
-                OR (total_tokens IS NULL AND ?8 IS NOT NULL)
-          )
         "#,
     )
     .bind(id)
@@ -242,6 +234,12 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
     .bind(existing.status.as_deref())
     .bind(existing.failure_kind.as_deref())
     .bind(existing.error_message.as_deref())
+    .bind(existing.input_tokens)
+    .bind(existing.output_tokens)
+    .bind(existing.cache_input_tokens)
+    .bind(existing.reported_cache_write_tokens)
+    .bind(existing.reasoning_tokens)
+    .bind(existing.total_tokens)
     .execute(&mut *tx)
     .await?;
 
