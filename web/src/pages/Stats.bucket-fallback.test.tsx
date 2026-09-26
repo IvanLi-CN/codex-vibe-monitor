@@ -104,10 +104,6 @@ vi.mock("../features/stats/SuccessFailureChart", () => ({
   SuccessFailureChart: () => <div data-testid="success-failure-chart" />,
 }));
 
-vi.mock("../features/stats/ErrorReasonPieChart", () => ({
-  ErrorReasonPieChart: () => <div data-testid="error-reason-pie-chart" />,
-}));
-
 vi.mock("../components/ui/alert", () => ({
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
 }));

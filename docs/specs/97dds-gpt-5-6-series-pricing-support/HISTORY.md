@@ -1,4 +1,4 @@
-# GPT-5.6 系列定价、缓存写入计费与模型入口支持 - History
+# OpenAI GPT-5.6 与 GPT-6 定价、缓存计费和模型入口支持 - History
 
 ## Key Decisions
 
@@ -20,3 +20,5 @@
 - 2026-07-31: Made the Terra/Luna revision conditional on a repo-managed prior catalog, `official` source, and an exact match of every previous unit-price field. Historical invocation costs remain immutable; price drift remains observable only through the existing advisory `costAudit` path.
 - 2026-09-20: Added temporary direct GPT-6 Sol/Terra/Luna presets equal to the matching GPT-5.6 rates. Online cost repair now fills only null-cost terminal proxy rows through the bounded cursor, leaves settled records and archives unchanged, and reports catalog, attempt, cursor, and completion details through System Tasks.
 - 2026-09-20: Dated model aliases now require calendar-valid dates; syntactically shaped invalid dates and preview variants remain unpriced.
+- 2026-09-23: Accepted formal GPT-6 support for Astra/Sol/Luna using OpenAI-authoritative Standard and long-context prices; retained Terra as compatibility-only, exact upstream cache-write usage when present with the legacy inferred fallback when absent, and unknown cost for explicit unsupported billing tiers. Historical non-null costs remain immutable.
+- 2026-09-25: WebSocket usage updates retain persisted exact cache-write values across omitted fields and only refresh terminal invocation totals from strictly richer snapshots, preventing stale partial events from erasing usage or rollups. Published pre-column v2 archives remain finalizable on due recovery retries through their journaled identity version and verified artifact digest.

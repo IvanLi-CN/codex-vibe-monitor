@@ -335,6 +335,7 @@ export interface ApiInvocation {
   outputTokens?: number;
   cacheInputTokens?: number;
   cacheWriteTokens?: number;
+  reportedCacheWriteTokens?: number | null;
   reasoningTokens?: number;
   reasoningEffort?: string;
   totalTokens?: number;
@@ -2360,6 +2361,18 @@ export interface RuntimePressureRetentionRecoveryHealth {
   consecutiveFailureCount?: number;
 }
 
+export interface RuntimePressureRawOrphanSweepHealth {
+  state: string;
+  inspectedEntries?: number;
+  referencedSkipped?: number;
+  quarantined?: number;
+  removed?: number;
+  lastProgressAt?: string;
+  nextRetryAt?: string;
+  deferReason?: string;
+  failureFingerprint?: string;
+}
+
 export interface RuntimePressureRawCaptureHealth {
   state: string;
   reason?: string;
@@ -2495,6 +2508,7 @@ export interface RuntimePressureHealth {
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
   retentionWriteHealth?: RuntimePressureRetentionWriteHealth;
   retentionRecovery?: RuntimePressureRetentionRecoveryHealth;
+  rawOrphanSweep?: RuntimePressureRawOrphanSweepHealth;
   rawCapture?: RuntimePressureRawCaptureHealth;
   dashboardProjection: RuntimePressureDashboardProjectionHealth;
   delivery: RuntimePressureDeliveryHealth;
@@ -4578,6 +4592,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const dashboardHotTopics = payload.dashboardHotTopics as Record<string, unknown> | undefined;
   const retentionWriteHealth = payload.retentionWriteHealth as Record<string, unknown> | undefined;
   const retentionRecovery = payload.retentionRecovery as Record<string, unknown> | undefined;
+  const rawOrphanSweep = payload.rawOrphanSweep as Record<string, unknown> | undefined;
   const rawCapture = payload.rawCapture as Record<string, unknown> | undefined;
   const number = (value: unknown) => normalizeFiniteNumber(value) ?? 0;
   const optionalString = (value: unknown) => (typeof value === "string" ? value : undefined);
@@ -4712,6 +4727,21 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       failureFingerprint: optionalString(retentionRecovery?.failureFingerprint),
       deferReason: optionalString(retentionRecovery?.deferReason),
       consecutiveFailureCount: optionalCount(retentionRecovery?.consecutiveFailureCount),
+    },
+    rawOrphanSweep: {
+      state: optionalString(rawOrphanSweep?.state) ?? "unknown",
+      inspectedEntries: optionalCount(rawOrphanSweep?.inspectedEntries),
+      referencedSkipped: optionalCount(rawOrphanSweep?.referencedSkipped),
+      quarantined: optionalCount(rawOrphanSweep?.quarantined),
+      removed: optionalCount(rawOrphanSweep?.removed),
+      lastProgressAt: optionalString(rawOrphanSweep?.lastProgressAt),
+      nextRetryAt: optionalString(rawOrphanSweep?.nextRetryAt),
+      deferReason: optionalString(rawOrphanSweep?.deferReason),
+      failureFingerprint:
+        typeof rawOrphanSweep?.failureFingerprint === "string" &&
+        /^[0-9a-f]{16}$/.test(rawOrphanSweep.failureFingerprint)
+          ? rawOrphanSweep.failureFingerprint
+          : undefined,
     },
     rawCapture: {
       state: optionalString(rawCapture?.state) ?? "unknown",

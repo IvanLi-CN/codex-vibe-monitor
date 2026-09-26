@@ -374,6 +374,7 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
             'gpt-5.6-sol',
             'gpt-5.6-terra',
             'gpt-5.6-luna',
+            'gpt-6-astra',
             'gpt-6-sol',
             'gpt-6-terra',
             'gpt-6-luna'
@@ -394,13 +395,14 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_defau
     assert!(catalog.models.contains_key("gpt-5.6-sol"));
     assert!(catalog.models.contains_key("gpt-5.6-terra"));
     assert!(catalog.models.contains_key("gpt-5.6-luna"));
+    assert!(catalog.models.contains_key("gpt-6-astra"));
     assert!(catalog.models.contains_key("gpt-6-sol"));
     assert!(catalog.models.contains_key("gpt-6-terra"));
     assert!(catalog.models.contains_key("gpt-6-luna"));
 }
 
 #[tokio::test]
-async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_rates() {
+async fn new_sqlite_default_pricing_catalog_uses_official_gpt_6_rates_and_retains_terra() {
     let pool = test_current_schema_pool().await;
     let catalog = load_pricing_catalog(&pool)
         .await
@@ -428,10 +430,11 @@ async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_r
     assert_eq!(luna.cache_write_per_1m, Some(0.25));
     assert_eq!(luna.output_per_1m, 1.20);
 
-    for (model, input, cache, write, output) in [
-        ("gpt-6-sol", 5.0, 0.5, 6.25, 30.0),
-        ("gpt-6-terra", 2.0, 0.20, 2.5, 12.0),
-        ("gpt-6-luna", 0.20, 0.02, 0.25, 1.20),
+    for (model, input, cache, write, output, source) in [
+        ("gpt-6-astra", 10.0, 1.0, 12.5, 50.0, "official"),
+        ("gpt-6-sol", 2.0, 0.2, 2.5, 10.0, "official"),
+        ("gpt-6-terra", 2.0, 0.20, 2.5, 12.0, "temporary"),
+        ("gpt-6-luna", 0.1, 0.01, 0.125, 0.5, "official"),
     ] {
         let pricing = catalog
             .models
@@ -442,8 +445,156 @@ async fn new_sqlite_default_pricing_catalog_uses_latest_gpt_5_6_terra_and_luna_r
         assert_eq!(pricing.cache_read_per_1m, Some(cache));
         assert_eq!(pricing.cache_write_per_1m, Some(write));
         assert_eq!(pricing.output_per_1m, output);
-        assert_eq!(pricing.source, "temporary");
+        assert_eq!(pricing.source, source);
     }
+}
+
+#[tokio::test]
+async fn seed_default_pricing_catalog_migrates_only_unchanged_temporary_gpt_6_seeds() {
+    let pool = test_current_schema_pool().await;
+
+    sqlx::query("UPDATE pricing_settings_meta SET catalog_version = ?1 WHERE id = ?2")
+        .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
+        .bind(PRICING_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("set prior repo-managed catalog version");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 5.0,
+            output_per_1m = 30.0,
+            cache_input_per_1m = 0.5,
+            cache_read_per_1m = 0.5,
+            cache_write_per_1m = 6.25,
+            source = 'temporary'
+        WHERE model = 'gpt-6-sol'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("restore prior Sol seed");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 0.2,
+            output_per_1m = 1.2,
+            cache_input_per_1m = 0.02,
+            cache_read_per_1m = 0.02,
+            cache_write_per_1m = 0.25,
+            source = 'temporary'
+        WHERE model = 'gpt-6-luna'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("restore prior Luna seed");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 7.0,
+            output_per_1m = 42.0,
+            cache_input_per_1m = 0.7,
+            cache_read_per_1m = 0.7,
+            cache_write_per_1m = 8.75
+        WHERE model = 'gpt-6-terra'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("customize retained Terra row");
+    sqlx::query(
+        "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, cost, raw_response) VALUES (881001, 'gpt6-price-migration-history', '2026-09-01 00:00:00', 'proxy', 0.123, '{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert historical non-null cost");
+
+    for _ in 0..2 {
+        seed_default_pricing_catalog(&pool)
+            .await
+            .expect("migrate repo-managed catalog");
+    }
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load migrated catalog");
+
+    for (model, input, cache, write, output) in [
+        ("gpt-6-astra", 10.0, 1.0, 12.5, 50.0),
+        ("gpt-6-sol", 2.0, 0.2, 2.5, 10.0),
+        ("gpt-6-luna", 0.1, 0.01, 0.125, 0.5),
+    ] {
+        let pricing = catalog
+            .models
+            .get(model)
+            .expect("official GPT-6 row exists");
+        assert_eq!(pricing.input_per_1m, input);
+        assert_eq!(pricing.cache_read_per_1m, Some(cache));
+        assert_eq!(pricing.cache_write_per_1m, Some(write));
+        assert_eq!(pricing.output_per_1m, output);
+        assert_eq!(pricing.source, "official");
+    }
+    let terra = catalog.models.get("gpt-6-terra").expect("Terra row exists");
+    assert_eq!(terra.input_per_1m, 7.0);
+    assert_eq!(terra.output_per_1m, 42.0);
+    assert_eq!(terra.source, "temporary");
+    let historical_cost =
+        sqlx::query_scalar::<_, f64>("SELECT cost FROM codex_invocations WHERE id = 881001")
+            .fetch_one(&pool)
+            .await
+            .expect("load preserved historical cost");
+    assert_eq!(historical_cost, 0.123);
+}
+
+#[tokio::test]
+async fn seed_default_pricing_catalog_preserves_edited_or_custom_gpt_6_seed_rows() {
+    let pool = test_current_schema_pool().await;
+    sqlx::query("UPDATE pricing_settings_meta SET catalog_version = ?1 WHERE id = ?2")
+        .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
+        .bind(PRICING_SETTINGS_SINGLETON_ID)
+        .execute(&pool)
+        .await
+        .expect("set prior repo-managed catalog version");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 5.0,
+            output_per_1m = 30.0,
+            cache_input_per_1m = 0.5,
+            cache_read_per_1m = 0.5,
+            cache_write_per_1m = 6.25,
+            source = 'custom'
+        WHERE model = 'gpt-6-sol'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("mark Sol pricing custom");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = 0.21,
+            output_per_1m = 1.2,
+            cache_input_per_1m = 0.02,
+            cache_read_per_1m = 0.02,
+            cache_write_per_1m = 0.25,
+            source = 'temporary'
+        WHERE model = 'gpt-6-luna'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("edit Luna seed pricing");
+
+    let catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("load catalog without replacing customized GPT-6 rows");
+    let sol = catalog.models.get("gpt-6-sol").expect("Sol row exists");
+    assert_eq!(sol.input_per_1m, 5.0);
+    assert_eq!(sol.source, "custom");
+    let luna = catalog.models.get("gpt-6-luna").expect("Luna row exists");
+    assert_eq!(luna.input_per_1m, 0.21);
+    assert_eq!(luna.source, "temporary");
 }
 
 #[tokio::test]
@@ -935,6 +1086,45 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_models_exposes_official_gpt_6_presets_without_terra() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let headers = seed_pool_models_route(&state).await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.hijack_enabled = true;
+        settings.merge_upstream_enabled = false;
+    }
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        headers,
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read hijacked models payload");
+    let payload: Value = serde_json::from_slice(&body).expect("decode hijacked payload");
+    let ids = extract_model_ids(&payload);
+    for model in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+        assert!(
+            ids.iter().any(|id| id == model),
+            "{model} should be exposed"
+        );
+    }
+    assert!(!ids.iter().any(|id| id == "gpt-6-terra"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -1027,6 +1217,26 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     upstream_handle.abort();
 }
 
+#[test]
+fn merge_models_payload_with_upstream_excludes_gpt_6_terra() {
+    let merged = crate::proxy::merge_models_payload_with_upstream(
+        &json!({
+            "object": "list",
+            "data": [
+                {"id": "upstream-model-a"},
+                {"id": "gpt-6-terra"},
+                {"id": "gpt-6-terra-2026-09-23"},
+                {"id": "gpt-6-terra-preview"}
+            ]
+        }),
+        &["gpt-6-astra".to_string()],
+    )
+    .expect("merge upstream models");
+    let ids = extract_model_ids(&merged);
+    assert!(ids.contains(&"gpt-6-astra".to_string()));
+    assert!(ids.contains(&"upstream-model-a".to_string()));
+    assert!(!ids.iter().any(|id| id.starts_with("gpt-6-terra")));
+}
 #[tokio::test]
 async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;

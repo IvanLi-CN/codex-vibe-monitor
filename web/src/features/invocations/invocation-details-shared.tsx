@@ -34,7 +34,7 @@ import {
 import { buildTopicDescriptor, subscribeToTopic } from "../../lib/sse";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
-import { ModelIdentity } from "../shared/ModelIdentity";
+import { ModelIdentity, type ModelIdentityPresentationMode } from "../shared/ModelIdentity";
 import { formatReasoningEffort } from "../shared/reasoningEffort";
 import { getReasoningEffortTone } from "./invocation-table-reasoning";
 import { PoolAttemptRecordCard } from "./PoolAttemptRecordCard";
@@ -351,6 +351,7 @@ export function renderInvocationModelChip(
     className?: string;
     textClassName?: string;
     iconClassName?: string;
+    presentation?: ModelIdentityPresentationMode;
     title?: string;
     testId?: string;
   },
@@ -362,6 +363,7 @@ export function renderInvocationModelChip(
     className,
     textClassName,
     iconClassName,
+    presentation,
     title,
     testId,
   } = options;
@@ -370,7 +372,11 @@ export function renderInvocationModelChip(
 
   return (
     <div
-      className={cn("flex min-w-0 items-center gap-1", className)}
+      className={cn(
+        "flex min-w-0 items-center gap-1",
+        presentation === "embedded" ? "gap-0" : undefined,
+        className,
+      )}
       title={resolvedTitle}
       data-testid={testId}
       data-model-routed={hasMismatch ? "true" : "false"}
@@ -381,6 +387,7 @@ export function renderInvocationModelChip(
           className="min-w-0 max-w-full"
           textClassName={cn("truncate", textClassName)}
           iconClassName={iconClassName}
+          presentation={presentation}
           title={requestModel}
           testId={testId ? `${testId}-request-identity` : undefined}
         />
@@ -407,6 +414,7 @@ export function renderInvocationModelChip(
         className="min-w-0 max-w-full"
         textClassName={cn("truncate", textClassName)}
         iconClassName={iconClassName}
+        presentation={presentation}
         title={resolvedTitle}
         testId={testId ? `${testId}-identity` : undefined}
       />

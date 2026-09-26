@@ -1401,6 +1401,9 @@ async fn ensure_schema_orders_default_proxy_models_newest_first() {
     assert_eq!(
         settings.enabled_preset_models,
         vec![
+            "gpt-6-astra".to_string(),
+            "gpt-6-sol".to_string(),
+            "gpt-6-luna".to_string(),
             "gpt-5.6-sol".to_string(),
             "gpt-5.6-terra".to_string(),
             "gpt-5.6-luna".to_string(),
@@ -1474,6 +1477,69 @@ async fn ensure_schema_appends_latest_proxy_models_when_enabled_list_matches_pre
         settings
             .enabled_preset_models
             .contains(&"gpt-5.6-luna".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-6-astra".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-6-sol".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-6-luna".to_string())
+    );
+}
+
+#[tokio::test]
+async fn ensure_schema_migrates_pre_gpt6_default_proxy_models() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let pre_gpt6_enabled = PRE_GPT6_PROXY_PRESET_MODEL_IDS
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect::<Vec<_>>();
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET enabled_preset_models_json = ?1,
+            preset_models_migrated = 0
+        WHERE id = ?2
+        "#,
+    )
+    .bind(serde_json::to_string(&pre_gpt6_enabled).expect("serialize prior enabled list"))
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("restore pre-GPT-6 default preset");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate pre-GPT-6 default preset");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load migrated proxy model settings");
+    assert_eq!(
+        settings.enabled_preset_models,
+        normalize_enabled_preset_models(
+            PROXY_PRESET_MODEL_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect()
+        )
+    );
+    assert!(
+        !settings
+            .enabled_preset_models
+            .contains(&"gpt-6-terra".to_string())
     );
 }
 
@@ -1586,7 +1652,7 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
         r#"
         UPDATE proxy_model_settings
         SET enabled_preset_models_json = ?1,
-            preset_models_migrated = 2
+            preset_models_migrated = 3
         WHERE id = ?2
         "#,
     )
@@ -1665,7 +1731,7 @@ async fn ensure_schema_reruns_proxy_preset_migration_for_previous_migration_vers
     .fetch_one(&pool)
     .await
     .expect("read migration version");
-    assert_eq!(migrated, 2);
+    assert_eq!(migrated, 3);
 }
 
 #[tokio::test]
@@ -1711,7 +1777,7 @@ async fn ensure_schema_marks_proxy_preset_models_migrated_when_enabled_list_empt
     .fetch_one(&pool)
     .await
     .expect("read migration flag");
-    assert_eq!(migrated, 2);
+    assert_eq!(migrated, 3);
 }
 
 #[tokio::test]

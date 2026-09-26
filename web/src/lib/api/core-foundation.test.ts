@@ -95,6 +95,80 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     });
   });
 
+  it("normalizes a missing raw orphan sweep diagnostic to unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ runtimePressureHealth: {} }), { status: 200 }),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+
+    expect(status.runtimePressureHealth?.rawOrphanSweep).toEqual({
+      state: "unknown",
+      inspectedEntries: undefined,
+      referencedSkipped: undefined,
+      quarantined: undefined,
+      removed: undefined,
+      lastProgressAt: undefined,
+      nextRetryAt: undefined,
+      deferReason: undefined,
+      failureFingerprint: undefined,
+    });
+  });
+
+  it("keeps raw orphan sweep counters unknown when only a partial diagnostic arrives", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                rawOrphanSweep: {
+                  state: "deferred",
+                  inspectedEntries: 128,
+                  deferReason: "sqlite_pressure",
+                  failureFingerprint: "7d38a1c0b4c8e2f1",
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const sweep = (await fetchSystemStatus()).runtimePressureHealth?.rawOrphanSweep;
+
+    expect(sweep?.state).toBe("deferred");
+    expect(sweep?.inspectedEntries).toBe(128);
+    expect(sweep?.referencedSkipped).toBeUndefined();
+    expect(sweep?.removed).toBeUndefined();
+    expect(sweep?.failureFingerprint).toBe("7d38a1c0b4c8e2f1");
+  });
+
+  it("rejects untrusted raw orphan sweep fingerprints", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                rawOrphanSweep: { state: "degraded", failureFingerprint: "/private/raw/path" },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const sweep = (await fetchSystemStatus()).runtimePressureHealth?.rawOrphanSweep;
+
+    expect(sweep?.failureFingerprint).toBeUndefined();
+  });
+
   it("keeps omitted recovery counters unknown when a partial diagnostic arrives", async () => {
     vi.stubGlobal(
       "fetch",

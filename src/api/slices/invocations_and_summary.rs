@@ -31855,6 +31855,7 @@ mod invocation_cost_audit_tests {
             input_tokens: Some(1_000),
             output_tokens: Some(200),
             cache_input_tokens: Some(400),
+            reported_cache_write_tokens: None,
             reasoning_tokens,
             reasoning_effort: Some("medium".to_string()),
             total_tokens: Some(1_200),
@@ -32058,6 +32059,20 @@ mod invocation_cost_audit_tests {
             usage_with_zero_reasoning["tokens"]["reasoning"].as_i64(),
             Some(0)
         );
+    }
+
+    #[test]
+    fn build_invocation_usage_summary_keeps_legacy_cache_write_separate_from_reported_usage() {
+        let mut record = sample_invocation(None);
+        record.reported_cache_write_tokens = Some(250);
+        let catalog = sample_pricing_catalog();
+        let audit =
+            build_invocation_cost_audit(&record, &catalog, true).expect("cost audit should exist");
+
+        let usage = build_invocation_usage_summary(&record, &audit);
+        assert_eq!(usage["cacheWriteTokens"].as_i64(), Some(600));
+        assert_eq!(usage["tokens"]["cacheWrite"].as_i64(), Some(600));
+        assert_eq!(usage["reportedCacheWriteTokens"].as_i64(), Some(250));
     }
 
     #[test]

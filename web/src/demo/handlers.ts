@@ -1992,6 +1992,8 @@ function systemStatus() {
   const pressureState = demoModel.snapshot.scene.replace("runtime-pressure-", "");
   const runtimeState = pressureState === demoModel.snapshot.scene ? "healthy" : pressureState;
   const accountingError = runtimeState === "accounting-error";
+  const rawOrphanSweepState =
+    runtimeState === "deferred" || runtimeState === "degraded" ? runtimeState : "idle";
   return {
     liveInvocationsCount: 128_076,
     successCount: 124_882,
@@ -2090,6 +2092,22 @@ function systemStatus() {
         failureFingerprint: runtimeState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
         deferReason: runtimeState === "deferred" ? "sqlite_pressure" : undefined,
         consecutiveFailureCount: runtimeState === "degraded" ? 3 : 0,
+      },
+      rawOrphanSweep: {
+        state: rawOrphanSweepState,
+        inspectedEntries: rawOrphanSweepState === "deferred" ? undefined : 96,
+        referencedSkipped: 12,
+        quarantined: rawOrphanSweepState === "degraded" ? 3 : 2,
+        removed: rawOrphanSweepState === "degraded" ? 0 : 1,
+        lastProgressAt: "2026-09-21T03:00:00Z",
+        nextRetryAt: rawOrphanSweepState === "idle" ? undefined : "2026-09-21T03:05:00Z",
+        deferReason:
+          rawOrphanSweepState === "deferred"
+            ? "sqlite_pressure"
+            : rawOrphanSweepState === "degraded"
+              ? "retry_backoff"
+              : undefined,
+        failureFingerprint: rawOrphanSweepState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
       },
       dashboardProjection: {
         mode: "auto",
@@ -3148,18 +3166,92 @@ export async function handleDemoRequest(request: Request) {
   if (pathname === "/api/stats/invocation-timeline") return json(demoInvocationTimeline(url));
   if (pathname === "/api/stats/parallel-work")
     return json(parallelWork(), { headers: { ETag: "demo-parallel-work" } });
-  if (pathname === "/api/stats/errors")
+  if (pathname === "/api/stats/errors") {
+    const scope = url.searchParams.get("scope");
+    const itemsByScope = {
+      service: [
+        {
+          reason: "Upstream request timed out before the response headers were received",
+          count: 8,
+        },
+        {
+          reason: "The selected model is temporarily unavailable in every configured upstream pool",
+          count: 5,
+        },
+        {
+          reason: "Upstream closed the connection before the assistant message was complete",
+          count: 3,
+        },
+        {
+          reason: "No healthy account remained after upstream cooldown and retry checks",
+          count: 2,
+        },
+        { reason: "The upstream response ended while the server was reading its body", count: 2 },
+        {
+          reason: "The provider rejected the request because its rate limit was reached",
+          count: 1,
+        },
+        { reason: "A configured route could not resolve to an available upstream model", count: 1 },
+        {
+          reason: "The upstream returned an unexpected response during stream finalization",
+          count: 2,
+        },
+      ],
+      client: [
+        { reason: "The request body did not include a model supported by this endpoint", count: 3 },
+        { reason: "The supplied authentication token could not be validated", count: 2 },
+        { reason: "The request exceeded the maximum supported context length", count: 1 },
+        { reason: "The request format is invalid for the selected response mode", count: 1 },
+      ],
+      abort: [
+        {
+          reason: "The client closed the connection while the response stream was active",
+          count: 3,
+        },
+        {
+          reason: "The client cancelled the request before an upstream response arrived",
+          count: 1,
+        },
+      ],
+      all: [
+        {
+          reason: "Upstream request timed out before the response headers were received",
+          count: 8,
+        },
+        {
+          reason: "The selected model is temporarily unavailable in every configured upstream pool",
+          count: 5,
+        },
+        {
+          reason: "Upstream closed the connection before the assistant message was complete",
+          count: 3,
+        },
+        {
+          reason: "The client closed the connection while the response stream was active",
+          count: 3,
+        },
+        {
+          reason: "No healthy account remained after upstream cooldown and retry checks",
+          count: 2,
+        },
+        { reason: "The upstream response ended while the server was reading its body", count: 2 },
+        { reason: "The request body did not include a model supported by this endpoint", count: 3 },
+        {
+          reason: "The client cancelled the request before an upstream response arrived",
+          count: 1,
+        },
+      ],
+    } as const;
+
     return json({
       rangeStart: "2026-07-10T00:00:00Z",
       rangeEnd: demoNow(),
       items:
         demoModel.snapshot.scene === "empty"
           ? []
-          : [
-              { reason: "upstream_timeout", count: 24 },
-              { reason: "rate_limited", count: 11 },
-            ],
+          : (itemsByScope[scope as keyof typeof itemsByScope] ?? itemsByScope.service),
     });
+  }
   if (pathname === "/api/stats/failures/summary")
     return json({
       rangeStart: "2026-07-10T00:00:00Z",

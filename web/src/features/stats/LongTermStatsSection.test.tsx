@@ -206,6 +206,12 @@ describe("LongTermStatsSection charts", () => {
           reasoningEffort: "high",
           ...metrics(10, 1, 1),
         },
+        {
+          seriesKey: "b",
+          displayName: "gpt-6-astra",
+          reasoningEffort: "medium",
+          ...metrics(8, 0.8, 1),
+        },
       ],
       upstreams: [
         {
@@ -224,6 +230,10 @@ describe("LongTermStatsSection charts", () => {
         ]),
         reasoningEffort: "high",
       },
+      {
+        ...series("b", "gpt-6-astra", [{ date: "2026-07-10", ...metrics(8, 0.8, 1) }]),
+        reasoningEffort: "medium",
+      },
     ];
     const upstreamSeries = [
       series("account:1", "Primary", [{ date: "2026-07-30", ...metrics(20, 2, 2) }]),
@@ -238,7 +248,7 @@ describe("LongTermStatsSection charts", () => {
     );
 
     expect((html.match(/data-testid="long-term-area-chart"/g) ?? []).length).toBe(2);
-    expect((html.match(/data-testid="long-term-area"/g) ?? []).length).toBe(2);
+    expect((html.match(/data-testid="long-term-area"/g) ?? []).length).toBe(3);
     expect(html).toContain('data-stack-id="long-term-usage"');
     expect((html.match(/data-testid="long-term-line-chart"/g) ?? []).length).toBe(3);
     expect(html).toContain('data-testid="long-term-model-total-row"');
@@ -248,6 +258,10 @@ describe("LongTermStatsSection charts", () => {
     expect(html).toContain('data-long-term-legend-display="icon-and-effort"');
     expect(html).toContain('title="gpt-5.6-sol · high"');
     expect(html).toContain('data-model-icon="white-balance-sunny"');
+    expect(html).toContain('data-long-term-legend-label="effort">medium</span>');
+    expect(html).toContain('data-model-identity="gpt-6-astra"');
+    expect(html).toContain('data-model-presentation="compact"');
+    expect(html).toContain('title="gpt-6-astra · medium"');
     expect(html).toContain('data-long-term-legend-label="effort">high</span>');
     expect(html).not.toContain('data-long-term-legend-label="effort">gpt-5.6-sol');
     expect(areaChartData).toHaveLength(2);

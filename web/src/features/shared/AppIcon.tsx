@@ -29,6 +29,7 @@ import contentCopyIcon from "@iconify-icons/mdi/content-copy";
 import contentSaveOutlineIcon from "@iconify-icons/mdi/content-save-outline";
 import contentSavePlusOutlineIcon from "@iconify-icons/mdi/content-save-plus-outline";
 import counterIcon from "@iconify-icons/mdi/counter";
+import creationIcon from "@iconify-icons/mdi/creation";
 import crownIcon from "@iconify-icons/mdi/crown";
 import crownOutlineIcon from "@iconify-icons/mdi/crown-outline";
 import currencyUsdIcon from "@iconify-icons/mdi/currency-usd";
@@ -52,6 +53,7 @@ import magnifyIcon from "@iconify-icons/mdi/magnify";
 import menuIcon from "@iconify-icons/mdi/menu";
 import messageReplyOutlineIcon from "@iconify-icons/mdi/message-reply-outline";
 import minusIcon from "@iconify-icons/mdi/minus";
+import moonWaningCrescentIcon from "@iconify-icons/mdi/moon-waning-crescent";
 import navigationVariantIcon from "@iconify-icons/mdi/navigation-variant";
 import noteTextOutlineIcon from "@iconify-icons/mdi/note-text-outline";
 import pencilOutlineIcon from "@iconify-icons/mdi/pencil-outline";
@@ -65,6 +67,7 @@ import serverNetworkOutlineIcon from "@iconify-icons/mdi/server-network-outline"
 import shieldKeyOutlineIcon from "@iconify-icons/mdi/shield-key-outline";
 import sortVariantIcon from "@iconify-icons/mdi/sort-variant";
 import speedometerIcon from "@iconify-icons/mdi/speedometer";
+import starFourPointsIcon from "@iconify-icons/mdi/star-four-points";
 import syncIcon from "@iconify-icons/mdi/sync";
 import tagOutlineIcon from "@iconify-icons/mdi/tag-outline";
 import tagPlusOutlineIcon from "@iconify-icons/mdi/tag-plus-outline";
@@ -73,6 +76,7 @@ import timerRefreshOutlineIcon from "@iconify-icons/mdi/timer-refresh-outline";
 import trashCanOutlineIcon from "@iconify-icons/mdi/trash-can-outline";
 import undoVariantIcon from "@iconify-icons/mdi/undo-variant";
 import weatherNightIcon from "@iconify-icons/mdi/weather-night";
+import weatherSunnyIcon from "@iconify-icons/mdi/weather-sunny";
 import whiteBalanceSunnyIcon from "@iconify-icons/mdi/white-balance-sunny";
 import type { ComponentProps } from "react";
 
@@ -104,6 +108,7 @@ const appIconRegistry = {
   "content-save-plus-outline": contentSavePlusOutlineIcon,
   "compare-horizontal": compareHorizontalIcon,
   counter: counterIcon,
+  creation: creationIcon,
   crown: crownIcon,
   "crown-outline": crownOutlineIcon,
   "cash-clock": cashClockIcon,
@@ -129,6 +134,7 @@ const appIconRegistry = {
   menu: menuIcon,
   minus: minusIcon,
   "message-reply-outline": messageReplyOutlineIcon,
+  "moon-waning-crescent": moonWaningCrescentIcon,
   "navigation-variant": navigationVariantIcon,
   "note-text-outline": noteTextOutlineIcon,
   "pencil-outline": pencilOutlineIcon,
@@ -141,6 +147,7 @@ const appIconRegistry = {
   "server-network-outline": serverNetworkOutlineIcon,
   "shield-key-outline": shieldKeyOutlineIcon,
   speedometer: speedometerIcon,
+  "star-four-points": starFourPointsIcon,
   "sort-variant": sortVariantIcon,
   sync: syncIcon,
   "tag-outline": tagOutlineIcon,
@@ -150,6 +157,7 @@ const appIconRegistry = {
   "trash-can-outline": trashCanOutlineIcon,
   "undo-variant": undoVariantIcon,
   "weather-night": weatherNightIcon,
+  "weather-sunny": weatherSunnyIcon,
   "white-balance-sunny": whiteBalanceSunnyIcon,
 } satisfies Record<string, IconifyIcon>;
 

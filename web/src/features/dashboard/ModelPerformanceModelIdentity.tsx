@@ -5,7 +5,7 @@ import {
   REASONING_EFFORT_FALLBACK,
   type ReasoningEffortTone,
 } from "../invocations/invocation-table-reasoning";
-import { ModelIdentity, resolveModelIdentityIcon } from "../shared/ModelIdentity";
+import { ModelIdentity, resolveModelIdentityGeneration } from "../shared/ModelIdentity";
 
 const EFFORT_TEXT_CLASSNAMES: Record<ReasoningEffortTone, string> = {
   none: "text-base-content/68",
@@ -46,7 +46,9 @@ export function ModelPerformanceModelIdentity({
 }) {
   const effort = formatReasoningEffort(effortValue);
   const tone = effort === REASONING_EFFORT_FALLBACK ? "none" : getReasoningEffortTone(effort);
-  const hasModelIcon = resolveModelIdentityIcon(model) !== null;
+  const generation = resolveModelIdentityGeneration(model);
+  const hasModelIcon = generation !== null;
+  const isGpt6Identity = generation === 6;
   const accessibleLabel = `${model} · ${effort}`;
 
   return (
@@ -74,7 +76,12 @@ export function ModelPerformanceModelIdentity({
           {hasModelIcon ? (
             <>
               <span className="flex w-6 shrink-0 items-center justify-center text-base-content/72">
-                <ModelIdentity model={model} iconClassName="h-3.5 w-3.5" />
+                <ModelIdentity
+                  model={model}
+                  presentation="embedded"
+                  className={isGpt6Identity ? "h-6 w-6" : undefined}
+                  iconClassName="h-3.5 w-3.5"
+                />
               </span>
               <span className="w-px shrink-0 bg-base-300/75" />
             </>

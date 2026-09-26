@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 51 large-file entries explicit.
+  its 49 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -136,3 +136,63 @@ total), while the immutable preparation baseline remains 32 and 23.
 Validation for this extraction is the focused request-prefix and request-body
 tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
 Cargo checking, all-target Clippy, and `git diff --check`.
+
+The forward-proxy probe and validation extraction moves the complete contiguous
+region beginning with `parse_forward_proxy_nodes_latency_test_keys` and ending
+with `complete spawn_forward_proxy_bootstrap_probe_round` from
+`src/forward_proxy/slices/storage_and_hourly_stats.rs` into
+`src/forward_proxy/slices/storage_and_hourly_stats/probe_and_validation.rs`.
+On the verified main merge base `cdb7fbfa85e460e5fa666aa66834c9fc52745b8e`,
+the exact boundary is physical lines 2,401 through 3,842 inclusive (1,442
+moved lines). The parent is now 2,404 physical lines and the child is 1,444
+physical lines, both below the 2,500-line production target, so the parent is
+removed from the quality policy inventory. Manual latency probes, candidate and
+subscription validation, endpoint probing, and bootstrap probe scheduling
+remain behaviorally unchanged; the parent retains crate-visible call paths
+through an explicit child-module path and re-export. The current inventory is
+28 production and 22 test/helper candidates (50 entries total), while the
+immutable preparation baseline remains 32 and 23.
+
+Validation for this extraction is the focused `manual_latency_*` and bootstrap
+probe tests, rustfmt, the Rust source-quality checker and fixture harness,
+all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
+The runtime overlay capture-phase extraction moves the complete contiguous test
+and fixture group from physical lines 315 through 1,793 of
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs` into
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors/runtime_overlay_capture_phases.rs`.
+On the verified main merge base `4490fe2a95e0225ae82705ead4f6ee40699db2a7`,
+the exact boundary contains 1,479 moved lines. Runtime overlay capture,
+cleanup, terminalization, account-switch, and capture persistence behavior,
+test leaf names, assertions, helper access, and the `stateful_sqlite` resource
+bucket remain unchanged. The parent is now 2,817 physical lines and the child
+is 1,480 physical lines, both below the 3,000-line test/helper target, so the
+parent is removed from the quality policy inventory. The current inventory is
+28 production and 21 test/helper candidates (49 entries total), while the
+immutable preparation baseline remains 32 and 23.
+
+Validation for this extraction is the focused runtime overlay/capture-phase
+tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.
+
+The error-distribution and SSE extraction moves the complete inline test module
+from `src/api/slices/error_distribution_and_sse.rs` into
+`src/api/slices/error_distribution_and_sse/tests.rs`, and moves the complete
+dashboard realtime projection region from `BroadcastStateCache` through
+`complete_dashboard_projection_publish_window` into
+`src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs`.
+On the verified main merge base `b2db1923d5022c0a4c742650b91f5961392f211c`,
+the source regions contain 1,314 and 1,063 physical lines. The resulting
+parent is 2,416 physical lines, the production child is 1,065 lines, and the
+test child is 1,287 lines, all within their targets. The test module path,
+test names, assertions, route and serde contracts, and runtime behavior remain
+unchanged; the required dashboard helper visibility is crate-scoped and the
+existing parent re-export preserves callers. The parent is removed from the
+quality policy inventory. The current inventory is 27 production and 21
+test/helper candidates (48 entries total), while the immutable preparation
+baseline remains 32 and 23.
+
+Validation for this extraction is the focused
+`cargo test error_distribution_and_sse::tests -- --nocapture` selector,
+rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
+checking, all-target Clippy, and `git diff --check`.

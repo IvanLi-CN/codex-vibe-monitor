@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 51,
+    "inventory_entries": 48,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -13,15 +13,9 @@
   },
   "files": [
     {
-      "path": "src/api/slices/error_distribution_and_sse.rs",
-      "role": "production",
-      "line_budget": 4787,
-      "next_module_workstream": "Split SSE error classification, query assembly, and response projection into bounded modules."
-    },
-    {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
-      "line_budget": 40532,
+      "line_budget": 40547,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
@@ -39,13 +33,13 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24000,
+      "line_budget": 24001,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
       "path": "src/api/slices/system_routes_and_tasks.rs",
       "role": "production",
-      "line_budget": 2990,
+      "line_budget": 2993,
       "next_module_workstream": "Split system routes, task lifecycle, runtime pressure, and filesystem operations."
     },
     {
@@ -53,12 +47,6 @@
       "role": "production",
       "line_budget": 3083,
       "next_module_workstream": "Split application state construction, routing caches, dashboard state, and invocation store."
-    },
-    {
-      "path": "src/forward_proxy/slices/storage_and_hourly_stats.rs",
-      "role": "production",
-      "line_budget": 3842,
-      "next_module_workstream": "Split forward-proxy storage, hourly rollup, and persistence support."
     },
     {
       "path": "src/long_term_stats.rs",
@@ -81,13 +69,13 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4428,
+      "line_budget": 4433,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 8771,
+      "line_budget": 9597,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -111,7 +99,7 @@
     {
       "path": "src/proxy/payload_utils.rs",
       "role": "production",
-      "line_budget": 2935,
+      "line_budget": 2936,
       "next_module_workstream": "Split proxy payload normalization, classification, backfill, and CORS helpers."
     },
     {
@@ -135,13 +123,13 @@
     {
       "path": "src/proxy/websocket.rs",
       "role": "production",
-      "line_budget": 4856,
+      "line_budget": 4877,
       "next_module_workstream": "Split WebSocket connection, preparation, tunnel, usage, and protocol event handling."
     },
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6419,
+      "line_budget": 6447,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -165,7 +153,7 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 8506,
+      "line_budget": 9211,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
@@ -177,7 +165,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 7757,
+      "line_budget": 7805,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -195,7 +183,7 @@
     {
       "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
       "role": "test_helper",
-      "line_budget": 3185,
+      "line_budget": 3395,
       "next_module_workstream": "Split pricing catalog/model passthrough fixtures by catalog, fallback, and accounting cases."
     },
     {
@@ -207,13 +195,13 @@
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
       "role": "test_helper",
-      "line_budget": 4170,
+      "line_budget": 4236,
       "next_module_workstream": "Split proxy broadcast/runtime harness fixtures by forward-proxy history, settings, and timeseries."
     },
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
       "role": "test_helper",
-      "line_budget": 3617,
+      "line_budget": 3884,
       "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {
@@ -235,12 +223,6 @@
       "next_module_workstream": "Split routing timeout/overload fixtures by timeout paths, overload streams, and account rules."
     },
     {
-      "path": "src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs",
-      "role": "test_helper",
-      "line_budget": 4295,
-      "next_module_workstream": "Split runtime overlay/group-rule fixtures by account rules, capture phases, and fixture upstreams."
-    },
-    {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
       "line_budget": 6171,
@@ -249,7 +231,7 @@
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
       "role": "test_helper",
-      "line_budget": 4945,
+      "line_budget": 4956,
       "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
     },
     {

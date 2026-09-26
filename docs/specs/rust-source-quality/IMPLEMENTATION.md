@@ -8,8 +8,9 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 51 explicit file budgets, and
-  117 standalone suppression declarations.
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 48 current explicit file
+  budgets, and 117 standalone suppression declarations. The immutable
+  preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -131,12 +132,66 @@ removed from the policy inventory. The parent explicitly re-exports the child
 symbols, while existing test names, resource buckets, suppression paths, and
 runtime behavior remain unchanged.
 
+The forward-proxy probe and validation extraction moves the complete
+contiguous region beginning with `parse_forward_proxy_nodes_latency_test_keys`
+and ending with `complete spawn_forward_proxy_bootstrap_probe_round` from
+`src/forward_proxy/slices/storage_and_hourly_stats.rs` into
+`src/forward_proxy/slices/storage_and_hourly_stats/probe_and_validation.rs`.
+On the verified main merge base `cdb7fbfa85e460e5fa666aa66834c9fc52745b8e`,
+the exact boundary is physical lines 2,401 through 3,842 inclusive (1,442
+moved lines). It contains manual latency probes, candidate and subscription
+validation, endpoint probing, and bootstrap probe scheduling. The parent is
+now 2,404 physical lines and the 1,444-line child remains below the 2,500-line
+production target, so the parent is removed from the policy inventory. The
+parent uses an explicit path declaration and crate-visible re-export, while
+routes, signatures, serde behavior, tests, resource buckets, and runtime
+behavior remain unchanged.
+
+The runtime overlay capture-phase extraction moves the complete contiguous test
+and fixture group from physical lines 315 through 1,793 of
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs` into
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors/runtime_overlay_capture_phases.rs`.
+On the verified main merge base `4490fe2a95e0225ae82705ead4f6ee40699db2a7`,
+the exact boundary contains 1,479 moved lines, including runtime overlay
+capture, cleanup, terminalization, account-switch, and capture persistence
+coverage plus its fixture upstreams. The parent is now 2,817 physical lines
+and the 1,480-line child is below the 3,000-line test/helper target, so the
+parent is removed from the policy inventory. The existing top-level helpers
+remain in the parent and are available to the child through `use super::*`;
+test names, assertions, resource bucket, helper access, and runtime behavior
+remain unchanged.
+
+Validation for this extraction is the focused runtime overlay/capture-phase
+tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.
+
+The error-distribution and SSE extraction moves two complete cohesive regions
+from `src/api/slices/error_distribution_and_sse.rs`: the inline `#[cfg(test)] mod tests` block into `src/api/slices/error_distribution_and_sse/tests.rs`, and
+the dashboard realtime projection state/model/build/scheduler region from
+`BroadcastStateCache` through `complete_dashboard_projection_publish_window`
+into `src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs`.
+On the verified main merge base `b2db1923d5022c0a4c742650b91f5961392f211c`,
+the approved source regions were 1,314 and 1,063 physical lines. After
+rustfmt and the narrow crate-visible helper re-exports, the parent is 2,416
+physical lines, the production child is 1,065 lines, and the test child is
+1,287 lines. The out-of-line test module keeps its path, names, assertions,
+and test behavior; the parent retains the existing crate-visible API through
+the dashboard child re-export. Routes, serde contracts, visibility outside
+the required helper adjustment, and runtime behavior remain unchanged. The
+parent is removed from the policy inventory and no future source-quality PR
+may split this parent again.
+
+Validation for this extraction is the focused
+`cargo test error_distribution_and_sse::tests -- --nocapture` selector,
+rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.
+
 ## Inventory Contract
 
-The policy has 29 `production` entries above the 2,500-line destination target
-and 22 `test_helper` entries above the 3,000-line destination target. Each
+The policy has 27 `production` entries above the 2,500-line destination target
+and 21 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 51 paths; a long path absent from the inventory is
+The checker only reads those 48 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
@@ -172,6 +227,7 @@ No global Clippy pedantic configuration or new dependency is introduced.
   focused workflow-detail coverage, including
   `cargo test workflow_usage_audit_only_attaches_to_last_success_like_attempt -- --nocapture`,
   followed by `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+- Focused `manual_latency_*` and forward-proxy bootstrap probe tests
 - `cargo check --locked --all-targets --all-features`
 - `git diff --check`
 

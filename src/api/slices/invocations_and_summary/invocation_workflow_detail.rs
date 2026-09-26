@@ -547,6 +547,7 @@ fn invocation_has_usage_evidence(record: &ApiInvocation) -> bool {
         record.cache_input_tokens,
         record.reasoning_tokens,
         record.total_tokens,
+        record.reported_cache_write_tokens,
         resolve_invocation_cache_write_tokens(record),
     ]
     .into_iter()
@@ -564,6 +565,7 @@ fn invocation_usage_for_cost_audit(record: &ApiInvocation) -> ParsedUsage {
         input_tokens: record.input_tokens,
         output_tokens: record.output_tokens,
         cache_input_tokens: record.cache_input_tokens,
+        reported_cache_write_tokens: record.reported_cache_write_tokens,
         reasoning_tokens: record.reasoning_tokens,
         total_tokens: record.total_tokens,
     }
@@ -765,6 +767,7 @@ pub(crate) fn build_invocation_usage_summary(
     json!({
         "inputTokens": record.input_tokens,
         "cacheWriteTokens": resolve_invocation_cache_write_tokens(record),
+        "reportedCacheWriteTokens": record.reported_cache_write_tokens,
         "cacheInputTokens": record.cache_input_tokens,
         "outputTokens": record.output_tokens,
         "reasoningTokens": record.reasoning_tokens,
@@ -2433,4 +2436,29 @@ pub(crate) async fn fetch_invocation_request_body(
         &row,
         state.config.database_path.parent(),
     )))
+}
+
+#[cfg(test)]
+mod usage_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn invocation_has_usage_evidence_accepts_reported_cache_write_only() {
+        let mut record = super::super::invocation_cost_audit_tests::sample_invocation(None);
+        record.input_tokens = None;
+        record.output_tokens = None;
+        record.cache_input_tokens = None;
+        record.reasoning_tokens = None;
+        record.total_tokens = None;
+        record.cache_write_tokens = None;
+        record.cost = None;
+        record.cost_input = None;
+        record.cost_cache_write = None;
+        record.cost_cache_read = None;
+        record.cost_output = None;
+        record.cost_reasoning = None;
+        record.reported_cache_write_tokens = Some(250);
+
+        assert!(invocation_has_usage_evidence(&record));
+    }
 }

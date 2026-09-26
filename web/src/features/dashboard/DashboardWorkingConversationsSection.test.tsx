@@ -2907,6 +2907,36 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(cluster.querySelectorAll('[class~="w-px"]')).toHaveLength(0);
   });
 
+  it("uses the embedded tile for GPT-6 in the grouped model segment", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-gpt6-context", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-gpt6-context",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-6-astra",
+            requestModel: "gpt-6-astra",
+            responseModel: "gpt-6-astra",
+            reasoningEffort: "high",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const modelPart = host?.querySelector('[data-model-context-part="model"]');
+    const identity = modelPart?.querySelector('[data-model-presentation="embedded"]');
+
+    expect(modelPart?.className).toContain("w-5");
+    expect(identity).not.toBeNull();
+    expect(identity?.getAttribute("data-model-icon")).toBe("creation");
+    expect(identity?.getAttribute("aria-label")).toBe("gpt-6-astra");
+    expect(identity?.parentElement?.className).toContain("gap-0");
+  });
+
   it("uses the error marker tone for max reasoning effort", () => {
     renderSection(
       createResponse([

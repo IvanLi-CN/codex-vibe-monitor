@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::*;
+use crate::proxy::{websocket_terminal_payload, websocket_usage_is_strictly_richer};
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
     TerminalJournalStats,
@@ -780,17 +781,31 @@ impl PendingBatch {
                     }
                     std::collections::btree_map::Entry::Occupied(mut entry) => {
                         let old_bytes = entry.get().estimated_memory_bytes();
+                        let existing = entry.get();
+                        let websocket_refresh =
+                            websocket_terminal_payload(existing.record.payload.as_deref())
+                                && websocket_terminal_payload(terminal.record.payload.as_deref());
+                        let incoming_is_richer = websocket_refresh
+                            && websocket_usage_is_strictly_richer(
+                                &existing.record.usage,
+                                &terminal.record.usage,
+                            );
+                        let terminal = if websocket_refresh && !incoming_is_richer {
+                            existing.clone()
+                        } else {
+                            terminal
+                        };
                         let preserved_sequence = terminal
                             .dashboard_terminal_sequence
-                            .or(entry.get().dashboard_terminal_sequence);
+                            .or(existing.dashboard_terminal_sequence);
                         let mut terminal = terminal;
                         terminal.dashboard_terminal_sequence = preserved_sequence;
                         terminal
                             .terminal_projection_event_ids
-                            .extend(entry.get().terminal_projection_event_ids.iter().copied());
+                            .extend(existing.terminal_projection_event_ids.iter().copied());
                         terminal.terminal_projection_event_ids.sort_unstable();
                         terminal.terminal_projection_event_ids.dedup();
-                        for task in entry.get().startup_backfill_tasks.iter().copied() {
+                        for task in existing.startup_backfill_tasks.iter().copied() {
                             if !terminal.startup_backfill_tasks.contains(&task) {
                                 terminal.startup_backfill_tasks.push(task);
                             }
@@ -4180,6 +4195,9 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
 mod tests {
     use super::*;
 
+    #[path = "sqlite_batch_writer_tests/websocket_usage_coalescing.rs"]
+    mod websocket_usage_coalescing;
+
     #[test]
     fn p1_retry_backoff_is_bounded_and_new_work_does_not_reset_deadline() {
         let mut retry = P1RetryState::default();
@@ -4706,56 +4724,6 @@ mod tests {
             terminal_projection_event_ids: Vec::new(),
             startup_backfill_tasks: Vec::new(),
         }
-    }
-
-    #[test]
-    fn terminal_batch_coalescing_preserves_the_persistence_ack_sequence() {
-        let mut batch = PendingBatch::default();
-        let accounting = PendingQueueAccounting::default();
-        let mut first = terminal_write_for_coalescing("coalesced-terminal", Some(7));
-        first.terminal_projection_event_ids.extend(0..64);
-        first
-            .startup_backfill_tasks
-            .push(StartupBackfillTask::ProxyUsage);
-        let first = SqliteBatchWrite::TerminalInvocation(first);
-        accounting.enqueue(first.estimated_memory_bytes());
-        batch.push_accounted(first, &accounting);
-        let mut second = terminal_write_for_coalescing("coalesced-terminal", None);
-        second.terminal_projection_event_ids.extend(64..128);
-        second
-            .startup_backfill_tasks
-            .push(StartupBackfillTask::ReasoningEffort);
-        let second = SqliteBatchWrite::TerminalInvocation(second);
-        accounting.enqueue(second.estimated_memory_bytes());
-        batch.push_accounted(second, &accounting);
-
-        let terminal = batch
-            .terminal_invocations
-            .values()
-            .next()
-            .expect("coalesced terminal");
-        assert_eq!(terminal.dashboard_terminal_sequence, Some(7));
-        assert_eq!(
-            terminal.terminal_projection_event_ids,
-            (0..128).collect::<Vec<_>>()
-        );
-        assert_eq!(
-            terminal.startup_backfill_tasks,
-            vec![
-                StartupBackfillTask::ReasoningEffort,
-                StartupBackfillTask::ProxyUsage,
-            ]
-        );
-        assert_eq!(batch.coalesced_rows, 1);
-        assert_eq!(
-            batch.estimated_memory_bytes(),
-            terminal.estimated_memory_bytes()
-        );
-        assert_eq!(
-            accounting.snapshot().pending_bytes,
-            batch.estimated_memory_bytes()
-        );
-        assert_eq!(accounting.snapshot().pending_depth, batch.logical_rows());
     }
 
     #[tokio::test]
