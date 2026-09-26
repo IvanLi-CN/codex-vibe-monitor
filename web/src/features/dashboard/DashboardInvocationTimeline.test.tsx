@@ -4,6 +4,7 @@ import {
   assignInvocationTimelineLanes,
   getInvocationTimelineLaneCount,
   resolveInvocationTimelineLayout,
+  shouldAdvanceInvocationTimelineBars,
   shouldFallbackForInvalidTimelineBounds,
 } from "./DashboardInvocationTimeline";
 
@@ -122,6 +123,15 @@ describe("shouldFallbackForInvalidTimelineBounds", () => {
     expect(
       shouldFallbackForInvalidTimelineBounds(response, null, {} as InvocationTimelineResponse),
     ).toBe(false);
+  });
+});
+
+describe("shouldAdvanceInvocationTimelineBars", () => {
+  it("advances only connected live timelines without mock overrides", () => {
+    expect(shouldAdvanceInvocationTimelineBars(false, true, false)).toBe(true);
+    expect(shouldAdvanceInvocationTimelineBars(true, true, false)).toBe(false);
+    expect(shouldAdvanceInvocationTimelineBars(false, false, false)).toBe(false);
+    expect(shouldAdvanceInvocationTimelineBars(false, true, true)).toBe(false);
   });
 });
 

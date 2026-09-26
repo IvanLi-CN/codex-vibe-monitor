@@ -45,6 +45,14 @@ export function shouldFallbackForInvalidTimelineBounds(
   return response != null && bounds == null && timelineDataOverride == null;
 }
 
+export function shouldAdvanceInvocationTimelineBars(
+  closedNaturalDay: boolean,
+  liveConnected: boolean,
+  hasTimelineDataOverride: boolean,
+) {
+  return !closedNaturalDay && liveConnected && !hasTimelineDataOverride;
+}
+
 function parseEpoch(value: string | null | undefined) {
   if (!value) return null;
   const parsed = Date.parse(value);
@@ -269,7 +277,11 @@ export function DashboardInvocationTimeline({
       `${renderedData.rangeStart}:${renderedData.rangeEnd}:${renderedData.asOf}:${renderedData.records.length}:${response.rangeStart}:${response.rangeEnd}:${lastPoint?.totalCount ?? ""}`,
     );
   }, [closedNaturalDay, renderedData, response]);
-  const advanceLiveBars = liveConnected && timelineDataOverride == null;
+  const advanceLiveBars = shouldAdvanceInvocationTimelineBars(
+    closedNaturalDay,
+    liveConnected,
+    timelineDataOverride != null,
+  );
   const lanes = useMemo(
     () =>
       renderedData
