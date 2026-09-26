@@ -142,6 +142,215 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).toContain("Copy OAuth URL");
   });
 
+  it("does not open the passive bubble after the pointer leaves during its delay", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(100);
+      button.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(220);
+    });
+
+    expect(document.body.textContent).not.toContain("Copy OAuth URL");
+  });
+
+  it("keeps the passive bubble when the pointer leaves while the trigger remains focused", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.focus();
+      vi.advanceTimersByTime(100);
+      button.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(220);
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(document.body.textContent).toContain("Copy OAuth URL");
+  });
+
+  it("keeps an open focused bubble when the pointer leaves the trigger", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.focus();
+      vi.advanceTimersByTime(320);
+    });
+    const content = document.body.querySelector('[role="dialog"]');
+    expect(content).not.toBeNull();
+
+    act(() => {
+      button.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+  });
+
+  it("keeps an open focused bubble when the pointer leaves a focused content control", () => {
+    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+
+    const trigger = getButton(/copy oauth url/i);
+    act(() => {
+      trigger.focus();
+      vi.advanceTimersByTime(320);
+    });
+    const content = document.body.querySelector('[role="dialog"]');
+    expect(content).not.toBeNull();
+    const regenerateButton = getButton(/regenerate oauth url/i);
+    act(() => {
+      regenerateButton.focus();
+    });
+
+    act(() => {
+      content?.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      content?.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(document.activeElement).toBe(regenerateButton);
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+  });
+
+  it("dismisses a focus-open passive bubble on Escape and outside press", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const trigger = getButton(/copy oauth url/i);
+    act(() => {
+      trigger.focus();
+      vi.advanceTimersByTime(320);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }),
+      );
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+    act(() => {
+      trigger.blur();
+      trigger.focus();
+      vi.advanceTimersByTime(320);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    const outsideButton = document.createElement("button");
+    outsideButton.type = "button";
+    document.body.appendChild(outsideButton);
+    act(() => {
+      outsideButton.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", button: 0 }),
+      );
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    outsideButton.remove();
+  });
+
+  it("keeps the passive bubble open during a slow pointer crossing into its content", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(320);
+    });
+    const content = document.body.querySelector('[role="dialog"]');
+    expect(content).not.toBeNull();
+
+    act(() => {
+      button.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      button.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(300);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+
+    act(() => {
+      content?.dispatchEvent(
+        new PointerEvent("pointerover", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      content?.dispatchEvent(
+        new PointerEvent("pointerenter", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      content?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(500);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+  });
+
   it("cancels a pending passive bubble when the primary action fires", () => {
     const onPrimaryAction = vi.fn();
     render(

@@ -33,6 +33,7 @@ import { Popover, PopoverTrigger } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { useDashboardRecentNetworkWindow } from "../../hooks/useDashboardRecentNetworkWindow";
+import { usePointerTransitionGuard } from "../../hooks/usePointerTransitionGuard";
 import { useTranslation } from "../../i18n";
 import type { DashboardRecentNetworkWindowResponse } from "../../lib/api";
 import { chartBaseTokens, withOpacity } from "../../lib/chartTheme";
@@ -64,8 +65,6 @@ type DashboardRecentTooltipRow = {
   value: string;
   iconName: "arrow-up-bold" | "arrow-down-bold";
 };
-
-const HOVER_CLOSE_DELAY_MS = 120;
 
 function formatRecentBucketLabel(date: Date, localeTag: string) {
   return new Intl.DateTimeFormat(localeTag, {
@@ -493,38 +492,26 @@ export function DashboardNetworkRecentPopover({
 }) {
   const { t } = useTranslation();
   const isCompactViewport = useCompactViewport();
-  const closeTimerRef = useRef<number | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const [hoverOpen, setHoverOpen] = useState(false);
   const [lockedOpen, setLockedOpen] = useState(false);
   const [compactOpen, setCompactOpen] = useState(false);
   const panelOpen = isCompactViewport ? compactOpen : hoverOpen || lockedOpen;
   const { data, isLoading, isStale, error } = useDashboardRecentNetworkWindow(panelOpen);
-
-  const clearCloseTimer = useCallback(() => {
-    if (closeTimerRef.current != null) {
-      window.clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-  }, []);
+  const pointerTransition = usePointerTransitionGuard({
+    triggerRef,
+    contentRef,
+    onClose: () => setHoverOpen(false),
+    pinned: lockedOpen,
+    enabled: !isCompactViewport,
+  });
 
   const closeDesktop = useCallback(() => {
-    clearCloseTimer();
+    pointerTransition.cancel();
     setHoverOpen(false);
     setLockedOpen(false);
-  }, [clearCloseTimer]);
-
-  const scheduleDesktopClose = useCallback(() => {
-    clearCloseTimer();
-    closeTimerRef.current = window.setTimeout(() => {
-      setHoverOpen(false);
-      if (!lockedOpen) {
-        setLockedOpen(false);
-      }
-      closeTimerRef.current = null;
-    }, HOVER_CLOSE_DELAY_MS);
-  }, [clearCloseTimer, lockedOpen]);
-
-  useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+  }, [pointerTransition]);
 
   useEffect(() => {
     if (isCompactViewport) {
@@ -535,25 +522,34 @@ export function DashboardNetworkRecentPopover({
   }, [closeDesktop, isCompactViewport]);
 
   const handleDesktopTriggerMouseEnter = useCallback(() => {
-    clearCloseTimer();
+    pointerTransition.cancel();
     setHoverOpen(true);
-  }, [clearCloseTimer]);
+  }, [pointerTransition]);
 
-  const handleDesktopTriggerMouseLeave = useCallback(() => {
+  const handleDesktopTriggerPointerLeave = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
+      if (!lockedOpen) pointerTransition.start("trigger", event);
+    },
+    [lockedOpen, pointerTransition],
+  );
+
+  const toggleDesktopLock = useCallback(() => {
+    pointerTransition.cancel();
     if (lockedOpen) {
+      setLockedOpen(false);
+      setHoverOpen(false);
       return;
     }
-    scheduleDesktopClose();
-  }, [lockedOpen, scheduleDesktopClose]);
+    setHoverOpen(true);
+    setLockedOpen(true);
+  }, [lockedOpen, pointerTransition]);
 
   const handleDesktopTriggerClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      clearCloseTimer();
-      setHoverOpen(true);
-      setLockedOpen((current) => !current);
+      toggleDesktopLock();
     },
-    [clearCloseTimer],
+    [toggleDesktopLock],
   );
 
   const handleDesktopTriggerKeyDown = useCallback(
@@ -562,11 +558,9 @@ export function DashboardNetworkRecentPopover({
         return;
       }
       event.preventDefault();
-      clearCloseTimer();
-      setHoverOpen(true);
-      setLockedOpen((current) => !current);
+      toggleDesktopLock();
     },
-    [clearCloseTimer],
+    [toggleDesktopLock],
   );
 
   const handleCompactTriggerClick = useCallback(() => {
@@ -575,21 +569,22 @@ export function DashboardNetworkRecentPopover({
 
   const handleContentPointerEnter = useCallback(
     (_event: PointerEvent<HTMLElement>) => {
-      clearCloseTimer();
+      pointerTransition.cancel();
       setHoverOpen(true);
     },
-    [clearCloseTimer],
+    [pointerTransition],
   );
 
-  const handleContentPointerLeave = useCallback(() => {
-    if (lockedOpen) {
-      return;
-    }
-    scheduleDesktopClose();
-  }, [lockedOpen, scheduleDesktopClose]);
+  const handleContentPointerLeave = useCallback(
+    (event: PointerEvent<HTMLElement>) => {
+      if (!lockedOpen) pointerTransition.start("content", event);
+    },
+    [lockedOpen, pointerTransition],
+  );
 
   const triggerButton = (
     <button
+      ref={triggerRef}
       type="button"
       className={cn(
         "inline-flex min-w-0 rounded-full bg-transparent text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
@@ -600,7 +595,8 @@ export function DashboardNetworkRecentPopover({
       aria-expanded={panelOpen}
       data-testid="dashboard-network-recent-trigger"
       onMouseEnter={!isCompactViewport ? handleDesktopTriggerMouseEnter : undefined}
-      onMouseLeave={!isCompactViewport ? handleDesktopTriggerMouseLeave : undefined}
+      onPointerEnter={!isCompactViewport ? handleDesktopTriggerMouseEnter : undefined}
+      onPointerLeave={!isCompactViewport ? handleDesktopTriggerPointerLeave : undefined}
       onClick={isCompactViewport ? handleCompactTriggerClick : handleDesktopTriggerClick}
       onKeyDown={!isCompactViewport ? handleDesktopTriggerKeyDown : undefined}
     >
@@ -653,6 +649,7 @@ export function DashboardNetworkRecentPopover({
     >
       <PopoverTrigger asChild>{triggerButton}</PopoverTrigger>
       <BubblePopoverContent
+        ref={contentRef}
         align="end"
         side="bottom"
         sideOffset={10}

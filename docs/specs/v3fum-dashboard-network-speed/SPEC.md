@@ -69,6 +69,7 @@
 - 进程启动不足 5 分钟时，recent 面板前导缺失区间必须通过 `isAvailable=false` 表示空档，数值字段固定归零仅供渲染；前端不得把这些点伪装成真实 `0 B/s` 历史。
 - recent 面板只允许展示全局上传/下载两条秒级曲线；顶部胶囊自身继续独立读取 `networkRealtimeRate`，不与 recent 面板共享回退或格式化语义。
 - recent 面板的唯一触发器必须是 `NetworkSpeedInline`；桌面端需要支持 `hover 打开 + click 固定 + 再次点击/外点/Esc 关闭`，窄屏端 `<=768px` 必须改为 dialog/sheet。
+- 桌面端 recent 面板必须允许指针从网速胶囊移入面板；过渡通道内保持打开，指针进入面板后继续保持，离开胶囊、面板及通道后关闭；静止在通道内 500ms 后关闭。点击固定时不受悬停关闭影响。
 
 ### SHOULD
 
@@ -88,6 +89,7 @@
 - `24 小时` 选择 `网速` 时，用同款面积图替代现有 heatmap；切回其它指标时恢复 heatmap。
 - 工作台上游账号 tab 始终在右上 badge 区显示总上传/总下载实时速率；账号卡只保留活动账号数量、TPM、消费速率、进行中等摘要信息。
 - owner 悬浮工作区顶部网速胶囊时，桌面端弹出最近 5 分钟逐秒诊断面板；点击同一胶囊后面板保持固定打开，直到再次点击、点击外部或按 `Esc` 关闭。面板右上角同步显示最近一帧可用样本的上行/下行摘要，图表区在 topic 超过阈值未收到新 payload 时显示 stale 遮罩。
+- Given 桌面端 recent 面板由 hover 打开，When 指针从网速胶囊缓慢移入面板，Then 面板在过渡期间保持打开并允许阅读；When 指针偏离过渡通道或在通道内静止 500ms，Then 面板关闭；点击固定后悬停离开不关闭面板。
 - 窄屏端点击同一胶囊时，改用 dialog/sheet 承载同一份 recent 面板内容；关闭 overlay 后立即停止 recent topic 订阅。
 - recent 面板打开期间每秒由服务端按 topic 共享 cadence 推送同一 topic 的新 snapshot，以便即使当前 1 秒没有新流量，窗口右边界也会继续按 1 秒 cadence 前进。
 
@@ -168,28 +170,24 @@
   story_id_or_title: `dashboard-dashboardnetworkrecentpopover--desktop-fixed-open`
   scenario: `desktop locked recent diagnostic popover`
   evidence_note: `验证工作区网速胶囊在桌面端以固定展开态展示最近 5 分钟逐秒上传/下载曲线，并在面板右上角显示上行/下行两行摘要。`
-  PR: include
   ![Dashboard recent desktop popover](./assets/dashboard-network-recent-desktop-fixed-open.png)
 - SHA `current-worktree`
 - source_type: `storybook_iframe`
   story_id_or_title: `dashboard-dashboardnetworkrecentpopover--desktop-stale-overlay`
   scenario: `desktop recent diagnostic stale pushed-data overlay`
   evidence_note: `验证 recent topic 长时间未收到 pushed payload 时，仅图表区域保留旧图并显示 Loading/Spinner stale 遮罩，不再出现局部刷新中文案。`
-  PR: include
   ![Dashboard recent stale pushed-data overlay](./assets/dashboard-network-recent-stale-overlay.png)
 - SHA `current-worktree`
 - source_type: `storybook_iframe`
   story_id_or_title: `dashboard-dashboardnetworkrecentpopover--desktop-fixed-open-light`
   scenario: `desktop locked recent diagnostic popover in light theme`
   evidence_note: `验证亮色主题下同一套网速胶囊与副窗头部语汇保持一致，未回到另一套配色/卡片体系。`
-  PR: include
   ![Dashboard recent desktop popover light](./assets/dashboard-network-recent-desktop-fixed-open-light.png)
 - SHA `current-worktree`
 - source_type: `storybook_iframe`
   story_id_or_title: `dashboard-dashboardnetworkrecentpopover--compact-sheet-partial-history`
   scenario: `compact recent diagnostic sheet with partial-history gap`
   evidence_note: `验证窄屏 dialog/sheet 呈现、右上角两行摘要、前导空档不伪装成 0 B/s，且不显示 warming 提示文案。`
-  PR: include
   ![Dashboard recent compact sheet](./assets/dashboard-network-recent-compact-sheet.png)
 - SHA `current-worktree`
 - source_type: `storybook_canvas`

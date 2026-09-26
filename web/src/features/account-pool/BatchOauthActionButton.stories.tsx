@@ -5,8 +5,11 @@ import { BatchOauthActionButton } from "./BatchOauthActionButton";
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-10 py-12">
-      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
+    <div data-visual-evidence-surface className="min-h-screen bg-base-200 px-10 py-12">
+      <div
+        data-visual-evidence-target
+        className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm"
+      >
         <div className="flex items-center gap-3">
           <span className="field-label shrink-0">OAuth flow</span>
           {children}
@@ -51,6 +54,7 @@ const baseArgs = {
 } satisfies Partial<ComponentProps<typeof BatchOauthActionButton>>;
 
 export const Generate: Story = {
+  tags: ["test"],
   args: {
     ...baseArgs,
     mode: "generate",
@@ -67,7 +71,21 @@ export const Generate: Story = {
 
     await userEvent.hover(button);
     await new Promise((resolve) => window.setTimeout(resolve, 330));
-    await expect(within(document.body).getByText(/generate oauth url/i)).toBeInTheDocument();
+    const popover = within(document.body).getByRole("dialog");
+    await userEvent.unhover(button);
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    await expect(within(document.body).getByRole("dialog")).toBe(popover);
+    await userEvent.hover(popover);
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    await expect(popover).toHaveTextContent(/generate oauth url/i);
+  },
+};
+
+export const GenerateNarrow: Story = {
+  ...Generate,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
   },
 };
 
