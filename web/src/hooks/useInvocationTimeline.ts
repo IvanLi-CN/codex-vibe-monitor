@@ -125,6 +125,7 @@ async function fetchInvocationTimelineSnapshot(options: {
   return {
     ...firstPage,
     asOf,
+    snapshotAtMs: Date.now(),
     total: firstPage.total,
     hasMore: false,
     nextCursor: null,

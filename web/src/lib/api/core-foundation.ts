@@ -1288,6 +1288,7 @@ export interface InvocationTimelineResponse {
   rangeStart: string;
   rangeEnd: string;
   asOf: string;
+  snapshotAtMs?: number;
   total: number;
   hasMore: boolean;
   nextCursor?: string | null;

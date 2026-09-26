@@ -15,6 +15,8 @@ const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 256;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
+const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
+const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
@@ -35,6 +37,8 @@ struct TimelineSnapshot {
     upstream_account_id: Option<i64>,
     include_live: bool,
     source_scope: InvocationSourceScope,
+    row_count: usize,
+    byte_count: usize,
     expires_at: Instant,
 }
 
@@ -168,6 +172,8 @@ fn create_timeline_snapshot_for_scope(
             upstream_account_id,
             include_live,
             source_scope,
+            row_count: 0,
+            byte_count: 0,
             expires_at: now + INVOCATION_TIMELINE_SNAPSHOT_TTL,
         },
     );
@@ -289,22 +295,73 @@ struct TimelineSnapshotDbRow {
     payload: String,
 }
 
+fn timeline_snapshot_payload_size(record: &InvocationTimelineRecord) -> Result<usize, ApiError> {
+    serde_json::to_vec(record)
+        .map(|payload| payload.len())
+        .map_err(|error| ApiError::from(anyhow!("encode timeline snapshot row: {error}")))
+}
+
+fn timeline_snapshot_cache_usage(excluding_token: &str) -> (usize, usize) {
+    let now = Instant::now();
+    let snapshots = INVOCATION_TIMELINE_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots
+        .iter()
+        .filter(|(token, snapshot)| token.as_str() != excluding_token && snapshot.expires_at > now)
+        .fold((0, 0), |(rows, bytes), (_, snapshot)| {
+            (
+                rows.saturating_add(snapshot.row_count),
+                bytes.saturating_add(snapshot.byte_count),
+            )
+        })
+}
+
+fn set_timeline_snapshot_usage(
+    token: &str,
+    row_count: usize,
+    byte_count: usize,
+) -> Result<(), ApiError> {
+    let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let snapshot = snapshots
+        .get_mut(token)
+        .ok_or_else(|| ApiError::unavailable(anyhow!("invocation timeline snapshot expired")))?;
+    snapshot.row_count = row_count;
+    snapshot.byte_count = byte_count;
+    Ok(())
+}
+
 fn reserve_timeline_snapshot_budget(
     row_count: &mut usize,
     byte_count: &mut usize,
+    cache_row_base: usize,
+    cache_byte_base: usize,
     record: &InvocationTimelineRecord,
+    replaced_payload_size: Option<usize>,
 ) -> Result<(), ApiError> {
-    let payload_size = serde_json::to_vec(record)
-        .map_err(|error| ApiError::from(anyhow!("encode timeline snapshot row: {error}")))?
-        .len();
-    let next_row_count = row_count.checked_add(1).ok_or_else(|| {
-        ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
-    })?;
-    let next_byte_count = byte_count.checked_add(payload_size).ok_or_else(|| {
+    let payload_size = timeline_snapshot_payload_size(record)?;
+    let next_row_count = match replaced_payload_size {
+        Some(_) => *row_count,
+        None => row_count.checked_add(1).ok_or_else(|| {
+            ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
+        })?,
+    };
+    let current_bytes = if let Some(size) = replaced_payload_size {
+        byte_count.checked_sub(size).ok_or_else(|| {
+            ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
+        })?
+    } else {
+        *byte_count
+    };
+    let next_byte_count = current_bytes.checked_add(payload_size).ok_or_else(|| {
         ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
     })?;
     if next_row_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS
         || next_byte_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES
+        || cache_row_base.saturating_add(next_row_count) > INVOCATION_TIMELINE_MAX_CACHE_ROWS
+        || cache_byte_base.saturating_add(next_byte_count) > INVOCATION_TIMELINE_MAX_CACHE_BYTES
     {
         return Err(ApiError::unavailable(anyhow!(
             "invocation timeline snapshot capacity exhausted"
@@ -457,7 +514,10 @@ async fn materialize_timeline_snapshot(
     .await?;
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
-    let mut transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let (cache_row_base, cache_byte_base) = timeline_snapshot_cache_usage(snapshot_token);
+    let mut source_transaction = state.pool.begin().await?;
+    let mut materialized_records = Vec::new();
+    let mut materialized_sources = Vec::new();
     let mut materialized_row_count = 0;
     let mut materialized_byte_count = 0;
     let mut cursor = None;
@@ -483,7 +543,7 @@ async fn materialize_timeline_snapshot(
             .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
         let mut page = query
             .build_query_as::<ApiInvocation>()
-            .fetch_all(&mut *transaction)
+            .fetch_all(&mut *source_transaction)
             .await?;
         let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
         page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
@@ -499,7 +559,7 @@ async fn materialize_timeline_snapshot(
             hydrate_api_invocation_blocked_binding(record);
         }
         hydrate_timeline_accounts_on_connection(
-            &mut transaction,
+            &mut source_transaction,
             &mut page,
             source_scope,
             snapshot_id,
@@ -514,15 +574,13 @@ async fn materialize_timeline_snapshot(
             reserve_timeline_snapshot_budget(
                 &mut materialized_row_count,
                 &mut materialized_byte_count,
+                cache_row_base,
+                cache_byte_base,
                 &timeline_record,
+                None,
             )?;
-            insert_timeline_snapshot_record_on_connection(
-                &mut transaction,
-                snapshot_token,
-                &timeline_record,
-                false,
-            )
-            .await?;
+            materialized_records.push(timeline_record);
+            materialized_sources.push(false);
         }
         if !has_more {
             break;
@@ -550,7 +608,7 @@ async fn materialize_timeline_snapshot(
             && runtime_record_matches_filters(record, &runtime_filters, source_scope)
     });
     hydrate_timeline_accounts_on_connection(
-        &mut transaction,
+        &mut source_transaction,
         &mut runtime_records,
         source_scope,
         snapshot_id,
@@ -558,36 +616,84 @@ async fn materialize_timeline_snapshot(
     )
     .await?;
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
+    let mut record_indexes = materialized_records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            (
+                (record.invoke_id.clone(), record.occurred_at.clone()),
+                index,
+            )
+        })
+        .collect::<HashMap<_, _>>();
     for record in runtime_records {
         let timeline_record = timeline_record_from_api(&record, true);
-        let existing = sqlx::query_scalar::<_, Option<i64>>(&format!(
-            "SELECT is_in_flight FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1 AND invoke_id = ?2 AND occurred_at = ?3"
-        ))
-        .bind(snapshot_token)
-        .bind(&timeline_record.invoke_id)
-        .bind(&timeline_record.occurred_at)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let creates_row = existing.is_none();
-        if existing.as_ref().is_some_and(|value| value == &Some(0)) {
-            continue;
-        }
-        if creates_row {
+        let key = (
+            timeline_record.invoke_id.clone(),
+            timeline_record.occurred_at.clone(),
+        );
+        if let Some(index) = record_indexes.get(&key).copied() {
+            let current = &materialized_records[index];
+            if !materialized_sources[index] && !current.is_in_flight {
+                continue;
+            }
+            if materialized_sources[index] && timeline_record.id <= current.id {
+                continue;
+            }
+            let previous_payload_size = timeline_snapshot_payload_size(current)?;
             reserve_timeline_snapshot_budget(
                 &mut materialized_row_count,
                 &mut materialized_byte_count,
+                cache_row_base,
+                cache_byte_base,
                 &timeline_record,
+                Some(previous_payload_size),
             )?;
+            materialized_records[index] = timeline_record;
+            materialized_sources[index] = true;
+        } else {
+            reserve_timeline_snapshot_budget(
+                &mut materialized_row_count,
+                &mut materialized_byte_count,
+                cache_row_base,
+                cache_byte_base,
+                &timeline_record,
+                None,
+            )?;
+            let index = materialized_records.len();
+            record_indexes.insert(key, index);
+            materialized_records.push(timeline_record);
+            materialized_sources.push(true);
         }
+    }
+    source_transaction.commit().await?;
+
+    let mut published_records = materialized_records
+        .into_iter()
+        .zip(materialized_sources)
+        .collect::<Vec<_>>();
+    published_records.sort_by(|(left, _), (right, _)| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.invoke_id.cmp(&right.invoke_id))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    for (record, is_runtime) in published_records {
         insert_timeline_snapshot_record_on_connection(
-            &mut transaction,
+            &mut publish_transaction,
             snapshot_token,
-            &timeline_record,
-            true,
+            &record,
+            is_runtime,
         )
         .await?;
     }
-    transaction.commit().await?;
+    publish_transaction.commit().await?;
+    set_timeline_snapshot_usage(
+        snapshot_token,
+        materialized_row_count,
+        materialized_byte_count,
+    )?;
     Ok(())
 }
 
@@ -1023,6 +1129,24 @@ mod tests {
             range_start,
             range_end
         ));
+    }
+
+    #[test]
+    fn snapshot_budget_rejects_cache_wide_capacity() {
+        let record =
+            crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+        let timeline_record = timeline_record_from_api(&record, false);
+        let mut row_count = 0;
+        let mut byte_count = 0;
+        let result = reserve_timeline_snapshot_budget(
+            &mut row_count,
+            &mut byte_count,
+            INVOCATION_TIMELINE_MAX_CACHE_ROWS,
+            0,
+            &timeline_record,
+            None,
+        );
+        assert!(matches!(result, Err(ApiError::Unavailable(_))));
     }
 
     #[test]

@@ -61,6 +61,19 @@ describe("assignInvocationTimelineLanes", () => {
     expect(lanes[0].endMs).toBe(Date.parse("2026-03-26T12:00:01.000Z"));
   });
 
+  it("freezes an opaque snapshot at its successful render time", () => {
+    const snapshotAtMs = Date.parse("2026-03-26T12:00:01.000Z");
+    const lanes = assignInvocationTimelineLanes(
+      [record("invoke-opaque", "2026-03-26T12:00:00.000Z", null, true)],
+      "opaque-snapshot-token",
+      Date.parse("2026-03-26T12:00:05.000Z"),
+      false,
+      snapshotAtMs,
+    );
+
+    expect(lanes[0].endMs).toBe(snapshotAtMs);
+  });
+
   it("shows unknown terminal duration without treating it as still running", () => {
     const unknown = {
       ...record("invoke-6", "2026-03-26T12:00:00.000Z", null),

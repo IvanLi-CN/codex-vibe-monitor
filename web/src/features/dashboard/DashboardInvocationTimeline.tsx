@@ -209,8 +209,9 @@ export function assignInvocationTimelineLanes(
   asOf: string,
   nowMs = Date.now(),
   advanceInFlight = true,
+  snapshotAtMs?: number,
 ): LaneRecord[] {
-  const referenceNowMs = parseEpoch(asOf) ?? nowMs;
+  const referenceNowMs = snapshotAtMs ?? parseEpoch(asOf) ?? nowMs;
   const laneEnds: number[] = [];
   return records
     .map((record) => ({ record, startMs: parseEpoch(record.occurredAt) }))
@@ -319,6 +320,7 @@ export function DashboardInvocationTimeline({
             renderedData.asOf,
             nowMs,
             advanceLiveBars,
+            renderedData.snapshotAtMs,
           )
         : [],
     [advanceLiveBars, nowMs, renderedData],
