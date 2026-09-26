@@ -1,12 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { ComponentProps, ReactNode } from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { act, type ComponentProps, type ReactNode } from "react";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { OauthMailboxChip } from "./OauthMailboxChip";
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-10 py-12">
-      <div className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm">
+    <div data-visual-evidence-surface className="min-h-screen bg-base-200 px-10 py-12">
+      <div
+        data-visual-evidence-target
+        className="max-w-xl rounded-2xl border border-base-300/80 bg-base-100 p-6 shadow-sm"
+      >
         <div className="flex items-center gap-3">
           <span className="field-label shrink-0">Display Name</span>
           {children}
@@ -19,6 +22,7 @@ function StorySurface({ children }: { children: ReactNode }) {
 const meta = {
   title: "Account Pool/Pages/Upstream Account Create/Mailbox Chip",
   component: OauthMailboxChip,
+  tags: ["autodocs"],
   decorators: [
     (Story) => (
       <StorySurface>
@@ -35,6 +39,12 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+async function waitForTransfer(milliseconds: number) {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  });
+}
+
 const baseArgs = {
   className: "max-w-[24rem]",
   emptyLabel: "No mailbox yet",
@@ -47,6 +57,7 @@ const baseArgs = {
 } satisfies Partial<ComponentProps<typeof OauthMailboxChip>>;
 
 export const Hover: Story = {
+  tags: ["test"],
   args: {
     ...baseArgs,
     emailAddress: "hover-preview@mail-tw.707079.xyz",
@@ -56,9 +67,25 @@ export const Hover: Story = {
     const copyMailboxButton = canvas.getByRole("button", { name: /copy mailbox/i });
 
     await userEvent.hover(copyMailboxButton);
-    const tooltip = within(document.body);
-    await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument();
-    await expect(tooltip.getByText(/hover-preview@mail-tw\.707079\.xyz/i)).toBeInTheDocument();
+    const popup = await waitFor(() => {
+      const visiblePopup = document.body.querySelector<HTMLElement>(
+        '[data-side][data-state]:not([data-state="closed"])',
+      );
+      if (!visiblePopup) throw new Error("Tooltip content has not opened");
+      return visiblePopup;
+    });
+    expect(popup).toHaveAttribute("data-side");
+    await userEvent.unhover(copyMailboxButton);
+    await waitForTransfer(300);
+    const visibleContent = popup.querySelector<HTMLElement>("div.flex");
+    if (!visibleContent) throw new Error("Tooltip visible content has not rendered");
+    await expect(within(visibleContent).getByText(/click to copy/i)).toBeInTheDocument();
+    await userEvent.hover(popup);
+    await waitForTransfer(300);
+    await expect(within(visibleContent).getByText(/click to copy/i)).toBeInTheDocument();
+    await expect(
+      within(visibleContent).getByText(/hover-preview@mail-tw\.707079\.xyz/i),
+    ).toBeInTheDocument();
   },
 };
 
@@ -74,7 +101,7 @@ export const LongPress: Story = {
     copyMailboxButton.dispatchEvent(
       new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", button: 0 }),
     );
-    await new Promise((resolve) => window.setTimeout(resolve, 420));
+    await waitForTransfer(420);
 
     const tooltip = within(document.body);
     await expect(tooltip.getByText(/click to copy/i)).toBeInTheDocument();
@@ -103,6 +130,7 @@ export const ManualCopy: Story = {
 };
 
 export const EditablePopover: Story = {
+  tags: ["test"],
   args: {
     ...baseArgs,
     emailAddress: "editable-preview@mail-tw.707079.xyz",
@@ -128,8 +156,33 @@ export const EditablePopover: Story = {
     await userEvent.hover(copyMailboxButton);
 
     const popover = within(document.body);
-    await expect(popover.getByText(/click to copy/i)).toBeInTheDocument();
-    await expect(popover.getByRole("button", { name: /edit mailbox/i })).toBeInTheDocument();
+    const editButton = await popover.findByRole("button", { name: /edit mailbox/i });
+    const panel = editButton.closest("[data-side]");
+    expect(panel).not.toBeNull();
+    await userEvent.unhover(copyMailboxButton);
+    await waitForTransfer(300);
+    await expect(within(panel as HTMLElement).getByRole("button", { name: /edit mailbox/i })).toBe(
+      editButton,
+    );
+    await userEvent.hover(panel as HTMLElement);
+    await waitForTransfer(300);
+    await expect(within(panel as HTMLElement).getByText(/click to copy/i)).toBeInTheDocument();
+  },
+};
+
+export const HoverNarrow: Story = {
+  ...Hover,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+};
+
+export const EditablePopoverNarrow: Story = {
+  ...EditablePopover,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
   },
 };
 

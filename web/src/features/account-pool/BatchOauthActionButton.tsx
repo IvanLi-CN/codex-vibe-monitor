@@ -9,6 +9,7 @@ import { BubblePopoverContent } from "../../components/ui/bubble-popover";
 import { Button } from "../../components/ui/button";
 import { Popover, PopoverAnchor } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
+import { usePointerTransitionGuard } from "../../hooks/usePointerTransitionGuard";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 
@@ -74,6 +75,22 @@ export function BatchOauthActionButton({
   const [hoverOpen, setHoverOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
   const resolvedOpen = hoverOpen || pinnedOpen || Boolean(manualCopyValue);
+  const hasPopoverFocus = () => {
+    const activeElement = document.activeElement;
+    return Boolean(
+      activeElement &&
+        (triggerRef.current?.contains(activeElement) ||
+          popoverContentRef.current?.contains(activeElement)),
+    );
+  };
+  const pointerTransition = usePointerTransitionGuard({
+    triggerRef,
+    contentRef: popoverContentRef,
+    onClose: () => {
+      if (!hasPopoverFocus()) setHoverOpen(false);
+    },
+    pinned: pinnedOpen || Boolean(manualCopyValue),
+  });
 
   useEffect(() => {
     return () => {
@@ -164,6 +181,7 @@ export function BatchOauthActionButton({
   const closePopover = () => {
     clearPassiveOpenTimer();
     clearHoverCloseTimer();
+    pointerTransition.cancel();
     setHoverOpen(false);
     setPinnedOpen(false);
     if (manualCopyValue) {
@@ -174,6 +192,7 @@ export function BatchOauthActionButton({
   const openHoverPopover = () => {
     clearPassiveOpenTimer();
     clearHoverCloseTimer();
+    pointerTransition.cancel();
     setHoverOpen(true);
   };
 
@@ -183,8 +202,16 @@ export function BatchOauthActionButton({
     clearPassiveOpenTimer();
     passiveOpenTimerRef.current = window.setTimeout(() => {
       passiveOpenTimerRef.current = null;
+      pointerTransition.cancel();
       setHoverOpen(true);
     }, PASSIVE_POPOVER_OPEN_DELAY_MS);
+  };
+
+  const handleTriggerPointerLeave = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    handlePointerRelease();
+    const hasFocus = hasPopoverFocus();
+    if (!hasFocus) clearPassiveOpenTimer();
+    if (!pinnedOpen && !manualCopyValue && !hasFocus) pointerTransition.start("trigger", event);
   };
 
   const scheduleHoverPopoverClose = () => {
@@ -281,11 +308,8 @@ export function BatchOauthActionButton({
           title={disabled ? primaryAriaLabel : undefined}
           disabled={disabled}
           onMouseEnter={schedulePassivePopoverOpen}
-          onMouseLeave={() => {
-            if (!pinnedOpen && !manualCopyValue) {
-              scheduleHoverPopoverClose();
-            }
-          }}
+          onPointerEnter={schedulePassivePopoverOpen}
+          onPointerLeave={handleTriggerPointerLeave}
           onFocus={schedulePassivePopoverOpen}
           onBlur={(event) => {
             if (popoverContentRef.current?.contains(event.relatedTarget as Node | null)) {
@@ -299,7 +323,6 @@ export function BatchOauthActionButton({
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerRelease}
           onPointerCancel={handlePointerRelease}
-          onPointerLeave={handlePointerRelease}
           onContextMenu={(event) => {
             event.preventDefault();
             clearLongPressTimer();
@@ -341,9 +364,10 @@ export function BatchOauthActionButton({
           }
         }}
         onMouseEnter={openHoverPopover}
-        onMouseLeave={() => {
-          if (!pinnedOpen && !manualCopyValue) {
-            scheduleHoverPopoverClose();
+        onPointerEnter={openHoverPopover}
+        onPointerLeave={(event) => {
+          if (!pinnedOpen && !manualCopyValue && !hasPopoverFocus()) {
+            pointerTransition.start("content", event);
           }
         }}
         onFocusCapture={openHoverPopover}

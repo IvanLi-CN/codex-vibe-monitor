@@ -208,21 +208,99 @@ describe("InfoTooltip", () => {
     expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
 
     act(() => {
-      button?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      tooltip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      button?.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, relatedTarget: tooltip }),
+      );
+      button?.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, relatedTarget: tooltip }),
+      );
+      tooltip?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
       vi.advanceTimersByTime(150);
     });
 
     expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
 
     act(() => {
-      tooltip?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      vi.advanceTimersByTime(150);
+      tooltip?.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+      tooltip?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+      vi.advanceTimersByTime(500);
     });
 
     expect(tooltip?.getAttribute("aria-hidden")).toBe("true");
 
     vi.useRealTimers();
+  });
+
+  it("keeps the tooltip open during a slow pointer crossing into the bubble", () => {
+    vi.useFakeTimers();
+
+    render(
+      <InfoTooltip
+        label="Explain notice"
+        content="Current results stay on the latest searched snapshot."
+      />,
+    );
+
+    const button = host?.querySelector("button");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    act(() => button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+
+    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      button?.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+      button?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      tooltip?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+      tooltip?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it("keeps the tooltip open when keyboard focus enters during a pending pointer close", () => {
+    vi.useFakeTimers();
+
+    render(
+      <InfoTooltip
+        label="Explain notice"
+        content="Current results stay on the latest searched snapshot."
+      />,
+    );
+
+    const button = host?.querySelector("button");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    act(() => button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+
+    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      button?.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+      button?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+    });
+
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      button?.focus();
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
   });
 
   it("keeps the tooltip open when a hovered trigger is clicked to pin it", () => {
