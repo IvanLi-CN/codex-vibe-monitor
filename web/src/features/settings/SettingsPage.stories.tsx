@@ -21,6 +21,46 @@ const STORYBOOK_SETTINGS_STORAGE_PREFIX = "storybook.settings-page.mock";
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   {
+    model: "gpt-6-astra",
+    inputPer1m: 10.0,
+    outputPer1m: 50.0,
+    cacheInputPer1m: 1.0,
+    cacheReadPer1m: 1.0,
+    cacheWritePer1m: 12.5,
+    reasoningPer1m: null,
+    source: "official",
+  },
+  {
+    model: "gpt-6-sol",
+    inputPer1m: 2.0,
+    outputPer1m: 10.0,
+    cacheInputPer1m: 0.2,
+    cacheReadPer1m: 0.2,
+    cacheWritePer1m: 2.5,
+    reasoningPer1m: null,
+    source: "official",
+  },
+  {
+    model: "gpt-6-luna",
+    inputPer1m: 0.1,
+    outputPer1m: 0.5,
+    cacheInputPer1m: 0.01,
+    cacheReadPer1m: 0.01,
+    cacheWritePer1m: 0.125,
+    reasoningPer1m: null,
+    source: "official",
+  },
+  {
+    model: "gpt-6-terra",
+    inputPer1m: 2.0,
+    outputPer1m: 12.0,
+    cacheInputPer1m: 0.2,
+    cacheReadPer1m: 0.2,
+    cacheWritePer1m: 2.5,
+    reasoningPer1m: null,
+    source: "temporary",
+  },
+  {
     model: "gpt-5.6-sol",
     inputPer1m: 5.0,
     outputPer1m: 30.0,
@@ -74,6 +114,9 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   encryptedSessionOwnerRoutingEnabled: false,
   defaultHijackEnabled: false,
   models: [
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -89,6 +132,9 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   ],
   imageModels: ["gpt-image-2"],
   enabledModels: [
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -284,7 +330,7 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
   forwardProxy.nodes = buildNodesFromSettings(forwardProxy);
 
   const pricing: PricingSettings = {
-    catalogVersion: overrides?.pricing?.catalogVersion ?? "openai-standard-2026-07-31",
+    catalogVersion: overrides?.pricing?.catalogVersion ?? "openai-standard-2026-09-23",
     entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
   };
 
@@ -903,26 +949,57 @@ export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("heading", { name: "设置" })).toBeVisible();
-    await expect(canvas.getByText("代理配置")).toBeVisible();
+    await expect(await canvas.findByText("代理配置")).toBeVisible();
     await expect(canvas.getByText("上游请求默认值")).toBeVisible();
     await expect(canvas.getByText("加密对话路由")).toBeVisible();
     await expect(canvas.getByText("正向代理路由")).toBeVisible();
     await expect(canvas.getByText("价格配置")).toBeVisible();
-    await expect(canvas.getByText("openai-standard-2026-07-31")).toBeVisible();
-    const terraRow = canvas.getByText("gpt-5.6-terra").closest("tr");
+    await expect(canvas.getByLabelText("价格版本")).toHaveValue("openai-standard-2026-09-23");
+    const findPricingRow = (model: string): Element | null => {
+      const modelInput = canvas
+        .getAllByDisplayValue(model)
+        .find((element) => element.closest("tr"));
+      return modelInput?.closest("tr") ?? null;
+    };
+    const astraRow = findPricingRow("gpt-6-astra");
+    expect(astraRow).not.toBeNull();
+    const astra = within(astraRow as HTMLElement);
+    await expect(astra.getByDisplayValue("10")).toBeVisible();
+    await expect(astra.getByDisplayValue("1")).toBeVisible();
+    await expect(astra.getByDisplayValue("12.5")).toBeVisible();
+    await expect(astra.getByDisplayValue("50")).toBeVisible();
+    const solRow = findPricingRow("gpt-6-sol");
+    expect(solRow).not.toBeNull();
+    const sol = within(solRow as HTMLElement);
+    await expect(sol.getByDisplayValue("2")).toBeVisible();
+    await expect(sol.getByDisplayValue("0.2")).toBeVisible();
+    await expect(sol.getByDisplayValue("2.5")).toBeVisible();
+    await expect(sol.getByDisplayValue("10")).toBeVisible();
+    const lunaRow = findPricingRow("gpt-6-luna");
+    expect(lunaRow).not.toBeNull();
+    const luna = within(lunaRow as HTMLElement);
+    await expect(luna.getByDisplayValue("0.1")).toBeVisible();
+    await expect(luna.getByDisplayValue("0.01")).toBeVisible();
+    await expect(luna.getByDisplayValue("0.125")).toBeVisible();
+    await expect(luna.getByDisplayValue("0.5")).toBeVisible();
+    for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
+      await expect(canvas.getByRole("switch", { name: model })).toBeVisible();
+    }
+    expect(canvas.queryByRole("switch", { name: "gpt-6-terra" })).toBeNull();
+    const terraRow = findPricingRow("gpt-5.6-terra");
     expect(terraRow).not.toBeNull();
     const terra = within(terraRow as HTMLElement);
     await expect(terra.getByDisplayValue("2")).toBeVisible();
     await expect(terra.getByDisplayValue("0.2")).toBeVisible();
     await expect(terra.getByDisplayValue("2.5")).toBeVisible();
     await expect(terra.getByDisplayValue("12")).toBeVisible();
-    const lunaRow = canvas.getByText("gpt-5.6-luna").closest("tr");
-    expect(lunaRow).not.toBeNull();
-    const luna = within(lunaRow as HTMLElement);
-    await expect(luna.getByDisplayValue("0.2")).toBeVisible();
-    await expect(luna.getByDisplayValue("0.02")).toBeVisible();
-    await expect(luna.getByDisplayValue("0.25")).toBeVisible();
-    await expect(luna.getByDisplayValue("1.2")).toBeVisible();
+    const gpt56LunaRow = findPricingRow("gpt-5.6-luna");
+    expect(gpt56LunaRow).not.toBeNull();
+    const gpt56Luna = within(gpt56LunaRow as HTMLElement);
+    await expect(gpt56Luna.getByDisplayValue("0.2")).toBeVisible();
+    await expect(gpt56Luna.getByDisplayValue("0.02")).toBeVisible();
+    await expect(gpt56Luna.getByDisplayValue("0.25")).toBeVisible();
+    await expect(gpt56Luna.getByDisplayValue("1.2")).toBeVisible();
     await expect(canvas.getByText("gpt-5.5")).toBeVisible();
     await expect(canvas.getByText("External API Keys")).toBeVisible();
   },

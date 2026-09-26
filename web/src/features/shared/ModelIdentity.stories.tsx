@@ -222,6 +222,29 @@ export const SolTerraLuna: Story = {
   },
 };
 
+export const GPT6AstraSolLuna: Story = {
+  tags: ["test"],
+  render: () => (
+    <>
+      <ModelIdentity model="gpt-6-astra" testId="model-astra" />
+      <ModelIdentity model="gpt-6-sol" testId="model-gpt6-sol" />
+      <ModelIdentity model="gpt-6-luna" testId="model-gpt6-luna" />
+    </>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("model-astra")).toHaveAttribute("data-model-icon", "creation");
+    await expect(canvas.getByTestId("model-gpt6-sol")).toHaveAttribute(
+      "data-model-icon",
+      "weather-sunny",
+    );
+    await expect(canvas.getByTestId("model-gpt6-luna")).toHaveAttribute(
+      "data-model-icon",
+      "moon-waning-crescent",
+    );
+  },
+};
+
 export const DatedVariantAndFallback: Story = {
   render: () => (
     <>

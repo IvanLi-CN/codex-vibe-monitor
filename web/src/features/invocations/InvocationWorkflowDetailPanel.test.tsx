@@ -339,6 +339,7 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
             },
             usage: {
               cacheWriteTokens: 112,
+              reportedCacheWriteTokens: 78,
               cacheInputTokens: 36,
               outputTokens: 92,
               totalTokens: 240,
@@ -740,6 +741,7 @@ describe("InvocationWorkflowDetailPanel", () => {
     ).toBe(true);
     expect(host?.textContent ?? "").toContain("attempt-1");
     expect(host?.textContent ?? "").toContain("输入写 112");
+    expect(host?.textContent ?? "").toContain("上游缓存写 78");
     expect(host?.textContent ?? "").toContain("输入读 36");
     expect(host?.textContent ?? "").toContain("-42% (1,000 B -> 580 B)");
     expect(host?.textContent ?? "").not.toContain("Attempt 1");

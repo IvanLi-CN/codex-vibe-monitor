@@ -66,6 +66,7 @@ import serverNetworkOutlineIcon from "@iconify-icons/mdi/server-network-outline"
 import shieldKeyOutlineIcon from "@iconify-icons/mdi/shield-key-outline";
 import sortVariantIcon from "@iconify-icons/mdi/sort-variant";
 import speedometerIcon from "@iconify-icons/mdi/speedometer";
+import starFourPointsIcon from "@iconify-icons/mdi/star-four-points";
 import syncIcon from "@iconify-icons/mdi/sync";
 import tagOutlineIcon from "@iconify-icons/mdi/tag-outline";
 import tagPlusOutlineIcon from "@iconify-icons/mdi/tag-plus-outline";
@@ -144,6 +145,7 @@ const appIconRegistry = {
   "server-network-outline": serverNetworkOutlineIcon,
   "shield-key-outline": shieldKeyOutlineIcon,
   speedometer: speedometerIcon,
+  "star-four-points": starFourPointsIcon,
   "sort-variant": sortVariantIcon,
   sync: syncIcon,
   "tag-outline": tagOutlineIcon,

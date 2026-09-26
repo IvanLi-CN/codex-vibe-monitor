@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Add nullable exact upstream cache-write usage to live invocation rows and newly written archives, read older archives as unknown exact usage, and upgrade only unchanged temporary GPT-6 pricing seed rows.",
+    "release_unit_description": "Formal GPT-6 Astra, Sol, and Luna pricing, usage accounting, API, and durable-state support.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Nullable reported cache-write Token counts on invocation records, future invocation archives, and repo-managed pricing catalog version and seed rows. Existing invocation costs and historical exact cache-write counts are not rewritten.",
+    "storage_implementation": "SQLite codex_invocations.reported_cache_write_tokens plus invocation archive datasets and the existing SQLite pricing catalog.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported 0.2.x database schemas before reported_cache_write_tokens and archives without the reported cache-write column, including prior mainline bases 8615dfd2c33a1e046dcda1fb56661a1cad4fa874 and cdb7fbfa85e460e5fa666aa66834c9fc52745b8e, current mainline base 92dc13a688f5567ee1dc53a7c07cf3f5b697f586, and interrupted candidates with v2 retention identities over either archive-column layout.",
+      "to_program_version": "Candidate release based on mainline commit 92dc13a688f5567ee1dc53a7c07cf3f5b697f586.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Within a SQLite BEGIN IMMEDIATE transaction, idempotently add nullable reported_cache_write_tokens to codex_invocations before new exact usage values are persisted; independent processes serialize schema inspection and DDL, archive readers project NULL when reading legacy datasets without the column, and prepared-archive recovery verifies supported v2 identity layouts before transitioning their journals.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "After schema recognition, upgrade only unchanged source=temporary GPT-6 Sol/Luna seed rows and add the Astra official seed under the new repo-managed price version; preserve edited rows, custom catalogs, Terra compatibility pricing, and all non-null historical costs.",
+        "order": 2,
+        "depends_on": [
+          "ddl-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No historical exact cache-write count or non-null invocation cost backfill is performed. New usage writes use the nullable column; missing upstream exact usage remains NULL and uses the existing estimated allocation only for legacy semantics.",
+        "order": 3,
+        "depends_on": [
+          "ddl-001",
+          "dml-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-001",
+      "dml-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "SQLite schema inspection confirms the nullable column exists before usage writes.",
+      "Repo-managed pricing version and seed rows are observable through the pricing settings API and catalog tests.",
+      "Invocation details distinguish a reported exact cache-write count from NULL legacy or missing-field records.",
+      "New prepared-archive identities use v3; pre-column v2 identities are accepted only when the reported field remains NULL in both source and archive."
+    ],
+    "pause_points": [
+      "After idempotent schema recognition and before guarded catalog seed upgrade.",
+      "No historical usage backfill runs; startup can stop after either completed additive step and safely re-enter."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Earlier readers may ignore the additive column; older writers cannot preserve the new field when re-archiving and therefore are not guaranteed same-Minor write-forward compatibility. No rollback removes the column or rewrites pricing rows.",
+    "faulty_release_recovery": "A newer program version recognizes the nullable column, safely re-enters the guarded seed upgrade, and reads earlier archives with NULL exact cache-write usage. It verifies interrupted v2 prepared-archive identities over both supported column layouts and permits the pre-column layout only when the reported value is NULL in both source and archive; re-preparation promotes a compatible journal to the current v3 identity. Repair is forward-only.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": []
+    },
+    "minor": {
+      "required_test_evidence": [
+        "The additive reported_cache_write_tokens field preserves existing public API behavior while exposing the new nullable value within the same Major.",
+        "Candidate reads supported earlier-Minor database state and legacy archives without fabricating exact cache-write counts.",
+        "Interrupted v2 prepared-archive journals recover without quarantine for matching pre-column artifacts, while non-NULL reported cache-write values cannot be ignored by the legacy identity path.",
+        "Earlier-Minor programs are not required to preserve or read state written with the new column when re-archiving.",
+        "Idempotent schema migration and guarded pricing seeding safely re-enter after a stopped startup.",
+        "Stateful SQLite and archive-file-io test profiles cover prior schemas, legacy archives, exact-value round trips, and compatibility behavior."
+      ]
+    },
+    "major": {
+      "required_test_evidence": []
+    }
+  }
+}

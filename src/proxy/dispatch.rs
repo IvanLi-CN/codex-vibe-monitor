@@ -1,9 +1,7 @@
 use super::*;
 
 pub(crate) fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
-    response_info.usage.total_tokens.is_some()
-        || response_info.usage.input_tokens.is_some()
-        || response_info.usage.output_tokens.is_some()
+    has_any_usage_tokens(&response_info.usage)
 }
 
 pub(crate) fn proxy_stream_failure_origin_from_usage_reason(
@@ -3181,7 +3179,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
         }
         let (billing_service_tier, pricing_mode) =
-            resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+            resolve_proxy_billing_service_tier_and_pricing_mode_for_model_and_account(
+                response_info.model.as_deref(),
                 None,
                 request_info_for_task.requested_service_tier.as_deref(),
                 response_info.service_tier.as_deref(),
