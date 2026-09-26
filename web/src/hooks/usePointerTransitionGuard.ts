@@ -89,11 +89,16 @@ export function usePointerTransitionGuard({
   const activeRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
   const transitionAreaRef = useRef<Point[]>([]);
+  const triggerRefRef = useRef(triggerRef);
+  const contentRefRef = useRef(contentRef);
   const pointerMoveHandlerRef = useRef<(event: PointerEvent) => void>(() => undefined);
+  const activePointerMoveHandlerRef = useRef<((event: PointerEvent) => void) | null>(null);
 
   onCloseRef.current = onClose;
   pinnedRef.current = pinned;
   enabledRef.current = enabled;
+  triggerRefRef.current = triggerRef;
+  contentRefRef.current = contentRef;
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current === null) return;
@@ -105,7 +110,11 @@ export function usePointerTransitionGuard({
     activeRef.current = false;
     transitionAreaRef.current = [];
     clearCloseTimer();
-    document.removeEventListener("pointermove", pointerMoveHandlerRef.current, true);
+    const activeHandler = activePointerMoveHandlerRef.current;
+    if (activeHandler) {
+      document.removeEventListener("pointermove", activeHandler, true);
+      activePointerMoveHandlerRef.current = null;
+    }
   }, [clearCloseTimer]);
 
   const close = useCallback(() => {
@@ -124,7 +133,8 @@ export function usePointerTransitionGuard({
       const target = event.target;
       if (
         target instanceof Node &&
-        (triggerRef.current?.contains(target) || contentRef.current?.contains(target))
+        (triggerRefRef.current.current?.contains(target) ||
+          contentRefRef.current.current?.contains(target))
       ) {
         cancel();
         return;
@@ -135,7 +145,7 @@ export function usePointerTransitionGuard({
       }
       scheduleStationaryClose();
     },
-    [cancel, close, contentRef, scheduleStationaryClose, triggerRef],
+    [cancel, close, scheduleStationaryClose],
   );
   pointerMoveHandlerRef.current = handlePointerMove;
 
@@ -143,7 +153,8 @@ export function usePointerTransitionGuard({
     (from: TransitionFrom, event: ReactPointerEvent<HTMLElement>) => {
       if (!enabledRef.current || pinnedRef.current || event.pointerType === "touch") return;
       cancel();
-      const targetElement = from === "trigger" ? contentRef.current : triggerRef.current;
+      const targetElement =
+        from === "trigger" ? contentRefRef.current.current : triggerRefRef.current.current;
       const rect = targetElement?.getBoundingClientRect();
       if (!rect) {
         close();
@@ -151,10 +162,12 @@ export function usePointerTransitionGuard({
       }
       transitionAreaRef.current = buildTransitionArea({ x: event.clientX, y: event.clientY }, rect);
       activeRef.current = true;
-      document.addEventListener("pointermove", pointerMoveHandlerRef.current, true);
+      const activeHandler = pointerMoveHandlerRef.current;
+      activePointerMoveHandlerRef.current = activeHandler;
+      document.addEventListener("pointermove", activeHandler, true);
       scheduleStationaryClose();
     },
-    [cancel, close, contentRef, scheduleStationaryClose, triggerRef],
+    [cancel, close, scheduleStationaryClose],
   );
 
   useEffect(() => {

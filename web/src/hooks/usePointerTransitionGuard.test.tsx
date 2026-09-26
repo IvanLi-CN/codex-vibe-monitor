@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, useRef } from "react";
+import { act, createRef, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { usePointerTransitionGuard } from "./usePointerTransitionGuard";
@@ -25,9 +25,20 @@ afterEach(() => {
   onClose.mockReset();
 });
 
-function Harness() {
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
+function Harness({ revision = 0 }: { revision?: number }) {
+  const refsRef = useRef<{
+    revision: number;
+    triggerRef: ReturnType<typeof createRef<HTMLButtonElement>>;
+    contentRef: ReturnType<typeof createRef<HTMLDivElement>>;
+  } | null>(null);
+  if (!refsRef.current || refsRef.current.revision !== revision) {
+    refsRef.current = {
+      revision,
+      triggerRef: createRef<HTMLButtonElement>(),
+      contentRef: createRef<HTMLDivElement>(),
+    };
+  }
+  const { triggerRef, contentRef } = refsRef.current;
   const transition = usePointerTransitionGuard({
     triggerRef,
     contentRef,
@@ -54,19 +65,24 @@ function render() {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() => root?.render(<Harness />));
 
-  const trigger = host.querySelector("button") as HTMLButtonElement;
-  const content = host.querySelector("div") as HTMLDivElement;
-  Object.defineProperty(trigger, "getBoundingClientRect", {
-    configurable: true,
-    value: () => ({ left: 100, right: 120, top: 100, bottom: 120 }),
-  });
-  Object.defineProperty(content, "getBoundingClientRect", {
-    configurable: true,
-    value: () => ({ left: 150, right: 250, top: 20, bottom: 60 }),
-  });
-  return { trigger, content };
+  const renderRevision = (revision: number) => {
+    act(() => root?.render(<Harness revision={revision} />));
+
+    const trigger = host?.querySelector("button") as HTMLButtonElement;
+    const content = host?.querySelector("div") as HTMLDivElement;
+    Object.defineProperty(trigger, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 100, right: 120, top: 100, bottom: 120 }),
+    });
+    Object.defineProperty(content, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 150, right: 250, top: 20, bottom: 60 }),
+    });
+    return { trigger, content };
+  };
+
+  return { ...renderRevision(0), rerender: renderRevision };
 }
 
 function leaveTrigger(trigger: HTMLButtonElement) {
@@ -128,5 +144,34 @@ describe("usePointerTransitionGuard", () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes the exact pointermove listener when ref objects change during a transition", () => {
+    vi.useFakeTimers();
+    const addListener = vi.spyOn(document, "addEventListener");
+    const removeListener = vi.spyOn(document, "removeEventListener");
+    const { trigger, rerender } = render();
+
+    act(() => leaveTrigger(trigger));
+
+    const registration = addListener.mock.calls.find(([type]) => type === "pointermove");
+    expect(registration).toBeDefined();
+
+    const { content } = rerender(1);
+    act(() => {
+      content.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 160,
+          clientY: 40,
+        }),
+      );
+      vi.advanceTimersByTime(600);
+    });
+
+    const removal = removeListener.mock.calls.filter(([type]) => type === "pointermove").at(-1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(removal?.[1]).toBe(registration?.[1]);
   });
 });

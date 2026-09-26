@@ -65,6 +65,7 @@
   - topic payload 超过 5 秒未同步时，仅图表区域显示 Loading/Spinner stale 遮罩；旧图保留，不再显示局部“刷新中”。
   - `DashboardNetworkRecentPanel` 的秒级图表 tick 计算改成普通派生值，避免组件从 loading 切到有数据时因条件分支后的额外 hook 触发 React hook order 崩溃。
   - 桌面端触发胶囊与面板之间复用 `usePointerTransitionGuard`，以加宽 8px 的通道承接慢速指针移动；偏离通道即关闭，通道内静止 500ms 后关闭，点击固定时保持原状态。
+  - pointer guard 在活动转场中使用稳定的 document listener，读取最新触发区与面板 ref，并在转场结束时移除已注册的同一监听函数。
 
 ## 测试与 Storybook
 
