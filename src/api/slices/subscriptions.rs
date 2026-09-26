@@ -14918,7 +14918,6 @@ mod tests {
         );
         assert_eq!(journal.overflowed_through_sequence, Some(3));
     }
-
     #[test]
     fn summary_delta_source_cursor_gap_does_not_advance_terminal_cursor() {
         let mut journal = SummaryDeltaJournal::default();
@@ -14933,7 +14932,6 @@ mod tests {
         assert_eq!(proof.cursor, SummaryDeltaCursor(99));
         assert_eq!(proof.terminal_sequence, None);
     }
-
     #[tokio::test]
     async fn summary_projection_ack_after_absorbing_swap_is_idempotent() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14966,7 +14964,6 @@ mod tests {
         assert_eq!(journal.replayed_entries.len(), 1);
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_projection_replayed_identity_after_restart_is_idempotent() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15000,7 +14997,6 @@ mod tests {
         assert!(journal.replayed_entries.is_empty());
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_projection_replayed_identity_then_ack_is_not_duplicated() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15029,7 +15025,6 @@ mod tests {
         assert_eq!(journal.entries.len(), 1);
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_projection_conflicting_row_identity_remains_fail_closed() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15059,7 +15054,6 @@ mod tests {
             Some(9_100_003)
         );
     }
-
     #[tokio::test]
     async fn summary_delta_journal_rollback_removes_speculative_entry() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15077,7 +15071,6 @@ mod tests {
             .terminal_delta
             .expect("accept speculative terminal delta");
         speculative.terminal_sequence = 1;
-
         let mut journal = SummaryDeltaJournal::default();
         assert!(journal.register_pending(speculative.clone()));
         assert!(journal.entries.is_empty());
@@ -15086,7 +15079,6 @@ mod tests {
         assert!(journal.entries.is_empty());
         assert_eq!(journal.cursor, SummaryDeltaCursor(1));
         assert!(journal.gap_proofs.is_empty());
-
         let mut committed = speculative;
         committed.invoke_id = "summary-delta-after-rollback".to_string();
         committed.terminal_sequence = 2;
@@ -15100,7 +15092,6 @@ mod tests {
         );
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_delta_journal_capacity_overflow_retains_local_proof() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15118,7 +15109,6 @@ mod tests {
             .await
             .terminal_delta
             .expect("accept terminal delta template");
-
         let mut journal = SummaryDeltaJournal::default();
         for sequence in 1..=SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 {
             let mut delta = template.clone();
@@ -15145,7 +15135,6 @@ mod tests {
         assert_eq!(proof.upstream_account_id, Some(42));
         assert!(!proof.occurred_at.is_empty());
     }
-
     #[tokio::test]
     async fn summary_delta_journal_proof_budget_retains_broad_fail_closed_guard() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15180,7 +15169,6 @@ mod tests {
         assert!(proof.occurred_at.is_empty());
         assert_eq!(proof.upstream_account_id, None);
     }
-
     #[tokio::test]
     async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15359,6 +15347,24 @@ mod tests {
         )
         .await
         .expect("dashboard terminal window rebase timed out");
+        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let guard = state.subscription_hub.state.lock().await;
+        let parallel_cached =
+            &guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")];
+        assert!(
+            !guard.topics.values().any(|cached| cached.dirty)
+                && parallel_cached
+                    .dashboard_materializer
+                    .as_ref()
+                    .is_some_and(|materializer| !materializer.requires_terminal_window_rebase()),
+            "terminal rebase must clear dirty bases and refresh the parallel materializer",
+        );
+        drop(guard);
         state.dashboard_network_speed_cache.record_request_bytes(
             "dashboard-runtime-topology-network",
             &occurred_at,
@@ -15470,12 +15476,6 @@ mod tests {
             .subscription_hub
             .handle_runtime_mutation_batch(state.clone(), parallel_work_mutations)
             .await;
-        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
-            range: "1d".to_string(),
-            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
-            bucket: Some("1m".to_string()),
-            upstream_account_id: None,
-        };
         let exact_parallel = load_parallel_work_stats_response(
             &state,
             ParallelWorkStatsQuery {
