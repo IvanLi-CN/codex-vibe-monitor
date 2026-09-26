@@ -15352,6 +15352,13 @@ mod tests {
                 deltas: terminal_capture.deltas,
             })
             .await;
+        // A terminal slice at a moving-window boundary marks typed bases dirty. Production runs
+        // this bounded rebase from the dashboard runtime reconciler before later live mutations
+        // are applied, so keep this fixture on the same path as the runtime.
+        state
+            .subscription_hub
+            .reconcile_dashboard_terminal_window_bases(state.clone())
+            .await;
         state.dashboard_network_speed_cache.record_request_bytes(
             "dashboard-runtime-topology-network",
             &occurred_at,
@@ -16034,6 +16041,23 @@ mod tests {
             }
         );
         assert_eq!(state.response.current.avg_count, Some(2.6));
+    }
+
+    #[test]
+    fn parallel_work_projection_rebases_at_utc_minute_boundary() {
+        let base_start = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .expect("construct fixed minute boundary");
+
+        assert!(!rolling_dashboard_window_requires_rebase(
+            Some(base_start),
+            Some(base_start + ChronoDuration::seconds(59)),
+        ));
+        assert!(rolling_dashboard_window_requires_rebase(
+            Some(base_start),
+            Some(base_start + ChronoDuration::minutes(1)),
+        ));
     }
 
     #[test]
