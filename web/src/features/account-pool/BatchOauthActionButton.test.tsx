@@ -275,6 +275,46 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.querySelector('[role="dialog"]')).toBe(content);
   });
 
+  it("dismisses a focus-open passive bubble on Escape and outside press", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const trigger = getButton(/copy oauth url/i);
+    act(() => {
+      trigger.focus();
+      vi.advanceTimersByTime(320);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }),
+      );
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+    act(() => {
+      trigger.blur();
+      trigger.focus();
+      vi.advanceTimersByTime(320);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    const outsideButton = document.createElement("button");
+    outsideButton.type = "button";
+    document.body.appendChild(outsideButton);
+    act(() => {
+      outsideButton.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", button: 0 }),
+      );
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    outsideButton.remove();
+  });
+
   it("keeps the passive bubble open during a slow pointer crossing into its content", () => {
     render(<BatchOauthActionButton mode="generate" {...baseProps} />);
 
