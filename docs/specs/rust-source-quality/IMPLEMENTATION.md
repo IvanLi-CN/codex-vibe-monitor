@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 54 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 51 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -88,12 +88,55 @@ physical lines and the test helper is 720 physical lines; both are below their
 respective targets, so `src/oauth_bridge.rs` is removed from the policy
 inventory.
 
+The service-tier backfill extraction moves the complete contiguous test group
+from the verified baseline parent lines 34 through 193 inclusive into
+`src/tests/stateful_sqlite/proxy_backfill_and_cost_repairs/service_tier_backfill.rs`.
+The group contains the three service-tier backfill tests and keeps their names,
+bodies, assertions, fixtures, thresholds, and `stateful_sqlite` resource bucket
+unchanged. The parent is now 2,948 physical lines and the child is 162 physical
+lines, so both are below the 3,000-line test/helper target. The parent is
+removed from the policy inventory; no production runtime behavior changes.
+
+The upstream routing status persistence extraction moves the complete
+contiguous production region beginning with `set_account_status` and ending
+with the complete `record_classified_account_sync_failure_with_proxy_snapshot`
+definition from `src/upstream_accounts/sync_routing_status.rs` into
+`src/upstream_accounts/sync_routing_status/status_persistence.rs`. On the
+verified main merge base `3d06762198c3abff18806fce8ff65a05030a2d32`, the exact
+boundary is physical lines 2,038 through 2,576 inclusive (539 moved lines).
+It contains status writes, sync success, suppressed/recovery-blocked and
+hard-unavailable status events, failure persistence, and classified failure
+recording. The parent explicitly re-exports the crate-visible persistence
+adapters used by `sync.rs`, sibling sync slices, and existing tests. The parent
+is now 2,154 physical lines and the 541-line child remains below the 2,500-line
+production target, so the parent is removed from the policy inventory. The
+existing `account_action_event_tests` module remains in the parent; no test
+names or resource buckets moved.
+
+Validation for this extraction is the focused sync/status and stateful SQLite
+cooldown coverage, rustfmt, the Rust source-quality checker and fixture
+harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
+The request-prefix extraction moves the complete contiguous region beginning
+with `best_effort_extract_json_string_for_patterns` and ending with
+`prepare_target_request_body_with_hosted_intent` from
+`src/proxy/stream_gate.rs` into
+`src/proxy/stream_gate/request_prefix.rs`. On the verified main merge base
+`52b82d70a76f63682ee27d502b070d7bdd0903c6`, the exact boundary is physical
+lines 34 through 441 inclusive (408 moved lines). It contains the bounded JSON
+prefix extractors, encrypted-content detection, request-prefix tests, and
+request-body preparation. The parent is now 2,338 physical lines and the
+410-line child remains below the 2,500-line production target, so the parent is
+removed from the policy inventory. The parent explicitly re-exports the child
+symbols, while existing test names, resource buckets, suppression paths, and
+runtime behavior remain unchanged.
+
 ## Inventory Contract
 
-The policy has 31 `production` entries above the 2,500-line destination target
-and 23 `test_helper` entries above the 3,000-line destination target. Each
+The policy has 29 `production` entries above the 2,500-line destination target
+and 22 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 54 paths; a long path absent from the inventory is
+The checker only reads those 51 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
@@ -124,7 +167,8 @@ No global Clippy pedantic configuration or new dependency is introduced.
 - `bash .github/scripts/run-rust-source-quality.sh`
 - `bun run verify:rust`
 - `bash .github/scripts/test-quality-gates-contract.sh`
-- Focused existing summary-projection/stateful SQLite coverage and
+- Focused service-tier backfill, summary-projection, and stateful SQLite coverage,
+  including `cargo test backfill_invocation_service_tiers -- --nocapture`, and
   focused workflow-detail coverage, including
   `cargo test workflow_usage_audit_only_attaches_to_last_success_like_attempt -- --nocapture`,
   followed by `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
@@ -133,6 +177,6 @@ No global Clippy pedantic configuration or new dependency is introduced.
 
 ## Out of Scope
 
-No Rust production/test module moves, public protocol changes, persistence
+No additional production runtime changes, public protocol changes, persistence
 changes, release behavior, Web changes, Docker execution, or runtime acceptance
 evidence belong to this implementation state.

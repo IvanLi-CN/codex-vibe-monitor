@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 56 large-file entries explicit.
+  its 51 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -75,8 +75,9 @@ The OAuth bridge test module is now a fifth named child module. The complete
 test block moves from `src/oauth_bridge.rs` to
 `src/oauth_bridge/tests.rs`; the parent retains the same test module path
 and private-item access. The parent is 2,040 physical lines and the child is
-720 physical lines, both below their targets. The current inventory therefore
-has 31 production and 23 test/helper candidates (54 entries total), while
+720 physical lines, both below their targets. At that point in the extraction
+sequence, the inventory therefore had 31 production and 22 test/helper
+candidates (53 entries total), while
 the immutable preparation baseline remains 32 and 23. No production OAuth
 bridge logic, test names, assertions, or public behavior changed.
 
@@ -84,3 +85,54 @@ Validation for this extraction is the focused Dashboard Activity cache tests,
 both lightweight and stateful SQLite backend profiles, rustfmt, all-target
 Cargo checking, all-target Clippy, the Rust source-quality runner, and
 `git diff --check`.
+
+The service-tier backfill test group is now a named child module under the
+existing `proxy_backfill_and_cost_repairs` parent. Its verified baseline
+boundary is physical lines 34 through 193 inclusive (160 moved lines), ending
+immediately before the next proxy usage-token test. The three tests, fixtures,
+assertions, thresholds, names, and `stateful_sqlite` resource bucket remain
+unchanged. The parent is 2,948 physical lines and the child is 162 physical
+lines, both below the 3,000-line test/helper target, so the parent is removed
+from the quality policy inventory. No production runtime behavior changes.
+
+Validation for this extraction is the focused service-tier backfill tests, the
+stateful SQLite backend profile, rustfmt, the Rust source-quality checker and
+fixture harness, all-target Cargo checking, all-target Clippy, and
+`git diff --check`.
+
+The upstream routing status persistence extraction moves the complete
+contiguous production region beginning with `set_account_status` and ending
+with the complete `record_classified_account_sync_failure_with_proxy_snapshot`
+definition from `src/upstream_accounts/sync_routing_status.rs` into
+`src/upstream_accounts/sync_routing_status/status_persistence.rs`. On the
+verified main merge base `3d06762198c3abff18806fce8ff65a05030a2d32`, the exact
+boundary is physical lines 2,038 through 2,576 inclusive (539 moved lines).
+The parent is now 2,154 physical lines and the child is 541 physical lines,
+both below the 2,500-line production target. The parent keeps the existing
+`account_action_event_tests` module, and no test names or resource buckets
+moved. The current inventory is 30 production and 22 test/helper candidates
+(52 entries total), while the immutable preparation baseline remains 32 and
+23.
+
+Validation for this extraction is the focused sync/status and stateful SQLite
+cooldown coverage, rustfmt, the Rust source-quality checker and fixture
+harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
+The request-prefix extraction moves the complete contiguous production region
+beginning with `best_effort_extract_json_string_for_patterns` and ending with
+`prepare_target_request_body_with_hosted_intent` from
+`src/proxy/stream_gate.rs` into
+`src/proxy/stream_gate/request_prefix.rs`. On the verified main merge base
+`52b82d70a76f63682ee27d502b070d7bdd0903c6`, the exact boundary is physical
+lines 34 through 441 inclusive (408 moved lines). Prefix extraction,
+encrypted-content detection, request-prefix tests, and request-body preparation
+remain behaviorally unchanged. The parent is now 2,338 physical lines and the
+410-line child remains below the 2,500-line production target; the parent is
+removed from the quality policy inventory. Existing test names, resource
+buckets, suppression paths, and crate-visible call paths remain unchanged. The
+current inventory is 29 production and 22 test/helper candidates (51 entries
+total), while the immutable preparation baseline remains 32 and 23.
+
+Validation for this extraction is the focused request-prefix and request-body
+tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.
