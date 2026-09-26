@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 48,
+    "inventory_entries": 47,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -239,12 +239,6 @@
       "role": "production",
       "line_budget": 3516,
       "next_module_workstream": "Split upstream account runtime types, account state, and capability projections."
-    },
-    {
-      "path": "src/upstream_accounts/crud_group_notes.rs",
-      "role": "production",
-      "line_budget": 2717,
-      "next_module_workstream": "Split upstream group note CRUD, validation, and endpoint projection."
     },
     {
       "path": "src/upstream_accounts/oauth_sessions_callbacks.rs",
