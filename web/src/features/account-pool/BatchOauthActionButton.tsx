@@ -199,7 +199,7 @@ export function BatchOauthActionButton({
 
   const handleTriggerPointerLeave = (event: ReactPointerEvent<HTMLButtonElement>) => {
     handlePointerRelease();
-    clearPassiveOpenTimer();
+    if (document.activeElement !== triggerRef.current) clearPassiveOpenTimer();
     if (!pinnedOpen && !manualCopyValue) pointerTransition.start("trigger", event);
   };
 

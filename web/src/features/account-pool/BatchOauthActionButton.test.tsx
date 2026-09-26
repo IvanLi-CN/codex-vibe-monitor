@@ -171,6 +171,36 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).not.toContain("Copy OAuth URL");
   });
 
+  it("keeps the passive bubble when the pointer leaves while the trigger remains focused", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.focus();
+      vi.advanceTimersByTime(100);
+      button.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(220);
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(document.body.textContent).toContain("Copy OAuth URL");
+  });
+
   it("keeps the passive bubble open during a slow pointer crossing into its content", () => {
     render(<BatchOauthActionButton mode="generate" {...baseProps} />);
 
