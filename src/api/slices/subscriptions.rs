@@ -13983,7 +13983,6 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register working conversation owner");
-
         let health = crate::load_runtime_pressure_health(state.as_ref()).await;
         assert_eq!(health.prompt_cache_projection.live_path_db_read_count, 1);
         assert_eq!(health.prompt_cache_projection.recovery_state, "hot_db_read");
@@ -14014,7 +14013,6 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register working conversation owner");
-
         let health = crate::load_runtime_pressure_health(state.as_ref()).await;
         assert_eq!(health.prompt_cache_projection.live_path_db_read_count, 0);
         assert_eq!(
@@ -14030,7 +14028,6 @@ mod tests {
         assert_eq!(health.state, "deferred");
         drop(lease);
     }
-
     #[tokio::test]
     async fn repeated_runtime_gaps_dedupe_bounded_recovery_jobs() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14055,12 +14052,10 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register history owner");
-
         hub.mark_runtime_mutation_gap_and_recover(state.clone(), 2, "cursor_gap")
             .await;
         hub.mark_runtime_mutation_gap_and_recover(state.clone(), 3, "receiver_lagged")
             .await;
-
         let mut guard = hub.state.lock().await;
         assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
         assert_eq!(
@@ -14081,7 +14076,6 @@ mod tests {
         drop(guard);
         drop(lease);
     }
-
     #[tokio::test]
     async fn inactive_owner_skips_cold_prompt_cache_hydration() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14094,9 +14088,7 @@ mod tests {
             detail_level: PromptCacheConversationDetailLevel::Full,
             recent_invocation_limit: Some(16),
         };
-
         state.pool.close().await;
-
         assert!(
             hub.refresh_topic_if_active(state, topic, true)
                 .await
@@ -14104,7 +14096,6 @@ mod tests {
                 .is_none()
         );
     }
-
     #[tokio::test]
     async fn active_owner_without_cached_topic_commits_guarded_refresh() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14120,20 +14111,17 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register history owner");
-
         let cached = hub
             .refresh_topic_if_active(state, topic, true)
             .await
             .expect("active owner can cold build")
             .expect("guarded refresh commits when no generation changed");
-
         assert_eq!(
             cached.topic.cache_key().expect("cached topic key"),
             topic_key
         );
         drop(lease);
     }
-
     #[tokio::test]
     async fn unrelated_topic_disconnect_does_not_block_active_refresh() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14174,7 +14162,6 @@ mod tests {
             false,
         )
         .await;
-
         assert!(
             hub.refresh_topic_if_active(state, active_topic, true)
                 .await
@@ -14184,7 +14171,6 @@ mod tests {
         drop(released_lease);
         drop(active_lease);
     }
-
     #[tokio::test]
     async fn dirty_last_good_reconnect_skips_synchronous_cold_hydration() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14210,12 +14196,10 @@ mod tests {
             .await
             .expect("register history owner");
         state.pool.close().await;
-
         let prepared = hub
             .prepare_connection(state, vec![topic.descriptor()], Vec::new())
             .await
             .expect("reconnect must serve last-good without a database read");
-
         assert_eq!(prepared.initial.len(), 1);
         let guard = hub.state.lock().await;
         assert!(
@@ -14229,7 +14213,6 @@ mod tests {
         drop(guard);
         drop(lease);
     }
-
     #[tokio::test]
     async fn runtime_recovery_retry_cooldown_defers_dirty_topic_requeue() {
         let hub = Arc::new(SubscriptionHub::new());
@@ -14247,12 +14230,10 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register history owner");
-
         assert_eq!(
             hub.defer_runtime_topic_recovery_retry(&topic).await,
             RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF
         );
-
         let mut guard = hub.state.lock().await;
         assert!(
             guard
@@ -15305,6 +15286,31 @@ mod tests {
                 },
             )
             .await;
+        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let parallel_base = {
+            let guard = state.subscription_hub.state.lock().await;
+            let key = parallel_topic.cache_key().expect("parallel-work topic key");
+            match guard.topics[&key].dashboard_materializer.as_ref() {
+                Some(DashboardTopicMaterializer::ParallelWork { base }) => base.clone(),
+                _ => panic!("expected parallel-work materializer"),
+            }
+        };
+        {
+            let mut parallel_base = parallel_base
+                .lock()
+                .expect("parallel-work materializer state lock");
+            parallel_base.response.current.range_start =
+                format_utc_iso(Utc::now() - ChronoDuration::minutes(2));
+            assert!(
+                parallel_base.requires_rolling_rebase(),
+                "parallel materializer fixture must cross the rolling rebase boundary",
+            );
+        }
         let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
         terminal.id = 748_003;
         terminal.invoke_id = "dashboard-runtime-topology-terminal".to_string();
@@ -15347,12 +15353,6 @@ mod tests {
         )
         .await
         .expect("dashboard terminal window rebase timed out");
-        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
-            range: "1d".to_string(),
-            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
-            bucket: Some("1m".to_string()),
-            upstream_account_id: None,
-        };
         let guard = state.subscription_hub.state.lock().await;
         let parallel_cached =
             &guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")];
