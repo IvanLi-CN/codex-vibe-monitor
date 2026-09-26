@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import type { ReactNode } from "react";
-import { act, forwardRef, useEffect } from "react";
+import { act, forwardRef, useEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardRecentNetworkWindowResponse } from "../../lib/api";
@@ -56,6 +56,7 @@ vi.mock("../../components/ui/popover", () => ({
     children: ReactNode;
     onOpenChange?: (open: boolean) => void;
   }) => {
+    const rootRef = useRef<HTMLDivElement | null>(null);
     overlayState.popoverOpen = open;
     useEffect(() => {
       if (!open) {
@@ -66,12 +67,23 @@ vi.mock("../../components/ui/popover", () => ({
           onOpenChange?.(false);
         }
       };
+      const handlePointerDown = (event: PointerEvent) => {
+        if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
+          onOpenChange?.(false);
+        }
+      };
       document.addEventListener("keydown", handleKeyDown);
+      document.addEventListener("pointerdown", handlePointerDown);
       return () => {
         document.removeEventListener("keydown", handleKeyDown);
+        document.removeEventListener("pointerdown", handlePointerDown);
       };
     }, [onOpenChange, open]);
-    return <div data-open={open}>{children}</div>;
+    return (
+      <div ref={rootRef} data-open={open}>
+        {children}
+      </div>
+    );
   },
   PopoverTrigger: ({ children }: { children: ReactNode; asChild?: boolean }) => children,
 }));
@@ -324,6 +336,49 @@ describe("DashboardNetworkRecentPopover", () => {
     expect(document.body.querySelector('[data-testid="dashboard-network-recent-popover"]')).toBe(
       panel,
     );
+  });
+
+  it("clears the locked state after an outside press closes the popover", async () => {
+    render(
+      <DashboardNetworkRecentPopover
+        triggerAriaLabel="打开最近网速诊断面板"
+        trigger={<span>Trigger</span>}
+      />,
+    );
+
+    const trigger = host?.querySelector('[data-testid="dashboard-network-recent-trigger"]');
+    expect(trigger).toBeInstanceOf(HTMLButtonElement);
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const outsideButton = document.createElement("button");
+    document.body.appendChild(outsideButton);
+    await act(async () => {
+      outsideButton.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(
+      document.body.querySelector('[data-testid="dashboard-network-recent-popover"]'),
+    ).toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(
+      document.body.querySelector('[data-testid="dashboard-network-recent-popover"]'),
+    ).toBeNull();
+    outsideButton.remove();
   });
 
   it("opens the compact dialog on small viewports", async () => {

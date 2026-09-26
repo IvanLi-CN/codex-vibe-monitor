@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { act, useRef, useState } from "react";
+import { act, useEffect, useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
-import { BubblePopoverContent } from "../../components/ui/bubble-popover";
 import {
   Dialog,
   DialogCloseIcon,
@@ -9,11 +8,15 @@ import {
   DialogDescription,
   DialogTitle,
 } from "../../components/ui/dialog";
-import { Popover, PopoverTrigger } from "../../components/ui/popover";
-import { usePointerTransitionGuard } from "../../hooks/usePointerTransitionGuard";
 import { I18nProvider, useTranslation } from "../../i18n";
 import type { DashboardRecentNetworkWindowResponse } from "../../lib/api";
-import { DashboardNetworkRecentPanel } from "./DashboardNetworkRecentPopover";
+import { buildTopicDescriptor, type SubscriptionTopicEnvelope } from "../../lib/sse";
+import { StorybookPageEnvironment } from "../../storybook/storybookPageHelpers";
+import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
+import {
+  DashboardNetworkRecentPanel,
+  DashboardNetworkRecentPopover,
+} from "./DashboardNetworkRecentPopover";
 import { DashboardNetworkSpeedCapsule } from "./DashboardNetworkSpeedCapsule";
 
 const WINDOW_SECONDS = 300;
@@ -300,60 +303,17 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 function RecentPopoverTransferPreview() {
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  const [open, setOpen] = useState(true);
-  const [locked, setLocked] = useState(false);
-  const pointerTransition = usePointerTransitionGuard({
-    triggerRef,
-    contentRef,
-    onClose: () => setOpen(false),
-    pinned: locked,
-  });
-
   return (
-    <div data-visual-evidence-surface className="min-h-screen bg-base-200 p-8 text-base-content">
-      <div
-        data-visual-evidence-target
-        className="flex min-h-32 items-start justify-end rounded-xl border border-base-300/65 bg-base-100/60 p-5"
-      >
-        <Popover
-          open={open}
-          onOpenChange={(nextOpen) => {
-            if (!nextOpen) {
-              pointerTransition.cancel();
-              setOpen(false);
-              setLocked(false);
-            }
-          }}
+    <StorybookPageEnvironment>
+      <RecentPopoverSseFixture />
+      <div data-visual-evidence-surface className="min-h-screen bg-base-200 p-8 text-base-content">
+        <div
+          data-visual-evidence-target
+          className="flex min-h-32 items-start justify-end rounded-xl border border-base-300/65 bg-base-100/60 p-5"
         >
-          <PopoverTrigger asChild>
-            <button
-              ref={triggerRef}
-              type="button"
-              aria-label="Open recent network diagnostics"
-              aria-haspopup="dialog"
-              aria-expanded={open}
-              data-testid="dashboard-network-recent-trigger"
-              onMouseEnter={() => {
-                pointerTransition.cancel();
-                setOpen(true);
-              }}
-              onPointerEnter={() => {
-                pointerTransition.cancel();
-                setOpen(true);
-              }}
-              onPointerLeave={(event) => {
-                if (!locked) pointerTransition.start("trigger", event);
-              }}
-              onClick={(event) => {
-                event.preventDefault();
-                pointerTransition.cancel();
-                setOpen(true);
-                setLocked((current) => !current);
-              }}
-              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
+          <DashboardNetworkRecentPopover
+            triggerAriaLabel="Open recent network diagnostics"
+            trigger={
               <DashboardNetworkSpeedCapsule
                 uploadBytesPerSecond={3_072}
                 downloadBytesPerSecond={12_288}
@@ -362,34 +322,36 @@ function RecentPopoverTransferPreview() {
                 downloadLabel="Download"
                 testId="dashboard-upstream-account-total-network-speed"
               />
-            </button>
-          </PopoverTrigger>
-          <BubblePopoverContent
-            ref={contentRef}
-            align="end"
-            side="bottom"
-            sideOffset={10}
-            className="w-[min(52rem,calc(100vw-1rem))] max-w-[min(52rem,calc(100vw-1rem))] border-none bg-transparent p-0 shadow-none"
-            onPointerEnter={() => {
-              pointerTransition.cancel();
-              setOpen(true);
-            }}
-            onPointerLeave={(event) => {
-              if (!locked) pointerTransition.start("content", event);
-            }}
-            data-testid="dashboard-network-recent-popover"
-          >
-            <DashboardNetworkRecentPanel
-              response={populatedResponse}
-              loading={false}
-              stale={false}
-              error={null}
-            />
-          </BubblePopoverContent>
-        </Popover>
+            }
+          />
+        </div>
       </div>
-    </div>
+    </StorybookPageEnvironment>
   );
+}
+
+function RecentPopoverSseFixture() {
+  useEffect(() => {
+    const topic = buildTopicDescriptor("dashboard.network-recent.current");
+    const snapshot: SubscriptionTopicEnvelope<DashboardRecentNetworkWindowResponse> = {
+      type: "snapshot",
+      topic,
+      topicKey: "storybook:dashboard-network-recent-current",
+      schemaEpoch: "dashboard.network-recent.current/v1",
+      cursor: 1,
+      payload: populatedResponse,
+    };
+    const timer = window.setInterval(() => {
+      if (!document.querySelector('[data-testid="dashboard-network-recent-popover"]')) return;
+      const controller = getStorybookPageSseController();
+      if (!controller) return;
+      controller.emit(snapshot);
+      window.clearInterval(timer);
+    }, 16);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return null;
 }
 
 function CompactRecentDialogPreview() {
@@ -464,6 +426,7 @@ export const DesktopPopoverTransfer: Story = {
   },
   play: async ({ canvasElement }) => {
     const trigger = within(canvasElement).getByTestId("dashboard-network-recent-trigger");
+    await userEvent.hover(trigger);
     const panel = await within(document.body).findByTestId("dashboard-network-recent-popover");
     const triggerRect = trigger.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
