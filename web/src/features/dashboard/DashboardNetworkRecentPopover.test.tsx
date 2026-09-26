@@ -281,7 +281,31 @@ describe("DashboardNetworkRecentPopover", () => {
     ).not.toBeNull();
 
     await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(
+      document.body.querySelector('[data-testid="dashboard-network-recent-popover"]'),
+    ).toBeNull();
+
+    await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(
+      document.body.querySelector('[data-testid="dashboard-network-recent-popover"]'),
+    ).toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(
+      document.body.querySelector('[data-testid="dashboard-network-recent-popover"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       await Promise.resolve();
     });
     expect(

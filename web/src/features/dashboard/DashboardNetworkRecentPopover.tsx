@@ -533,14 +533,23 @@ export function DashboardNetworkRecentPopover({
     [lockedOpen, pointerTransition],
   );
 
+  const toggleDesktopLock = useCallback(() => {
+    pointerTransition.cancel();
+    if (lockedOpen) {
+      setLockedOpen(false);
+      setHoverOpen(false);
+      return;
+    }
+    setHoverOpen(true);
+    setLockedOpen(true);
+  }, [lockedOpen, pointerTransition]);
+
   const handleDesktopTriggerClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      pointerTransition.cancel();
-      setHoverOpen(true);
-      setLockedOpen((current) => !current);
+      toggleDesktopLock();
     },
-    [pointerTransition],
+    [toggleDesktopLock],
   );
 
   const handleDesktopTriggerKeyDown = useCallback(
@@ -549,11 +558,9 @@ export function DashboardNetworkRecentPopover({
         return;
       }
       event.preventDefault();
-      pointerTransition.cancel();
-      setHoverOpen(true);
-      setLockedOpen((current) => !current);
+      toggleDesktopLock();
     },
-    [pointerTransition],
+    [toggleDesktopLock],
   );
 
   const handleCompactTriggerClick = useCallback(() => {
