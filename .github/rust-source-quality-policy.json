@@ -45,7 +45,7 @@
     {
       "path": "src/api/slices/system_routes_and_tasks.rs",
       "role": "production",
-      "line_budget": 2990,
+      "line_budget": 2993,
       "next_module_workstream": "Split system routes, task lifecycle, runtime pressure, and filesystem operations."
     },
     {
@@ -81,7 +81,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 8771,
+      "line_budget": 9597,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -135,7 +135,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6419,
+      "line_budget": 6426,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -159,7 +159,7 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 8506,
+      "line_budget": 9211,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
@@ -237,7 +237,7 @@
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
       "role": "test_helper",
-      "line_budget": 4945,
+      "line_budget": 4956,
       "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
     },
     {

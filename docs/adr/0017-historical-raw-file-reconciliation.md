@@ -1,6 +1,6 @@
 # ADR 0017: Historical Raw-File Reconciliation Protocol
 
-- Status: Accepted
+- Status: Superseded by ADR 0018
 - Date: 2026-09-23
 
 ## Context
