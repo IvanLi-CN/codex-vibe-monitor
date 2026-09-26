@@ -12,7 +12,6 @@ const INVOCATION_TIMELINE_PAGE_SIZE: i64 = 500;
 const INVOCATION_TIMELINE_MAX_PAGE_SIZE: i64 = 2_000;
 const INVOCATION_TIMELINE_MAX_DURATION_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1_000.0;
 const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
-const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TimelineCursor {
@@ -135,14 +134,6 @@ fn create_timeline_snapshot(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     snapshots.retain(|_, snapshot| snapshot.expires_at > now);
-    if snapshots.len() >= INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT
-        && let Some(oldest) = snapshots
-            .iter()
-            .min_by_key(|(_, snapshot)| snapshot.expires_at)
-            .map(|(key, _)| key.clone())
-    {
-        snapshots.remove(&oldest);
-    }
     snapshots.insert(
         token.clone(),
         TimelineSnapshot {
@@ -839,6 +830,38 @@ mod tests {
             range_start,
             range_end
         ));
+    }
+
+    #[test]
+    fn snapshot_cursor_survives_a_burst_of_new_first_page_requests() {
+        let first_token = create_timeline_snapshot(
+            1,
+            "snapshot-retention-start".to_string(),
+            "snapshot-retention-end".to_string(),
+            None,
+            false,
+            Vec::new(),
+        );
+        for index in 0..32 {
+            create_timeline_snapshot(
+                index + 2,
+                format!("snapshot-retention-start-{index}"),
+                format!("snapshot-retention-end-{index}"),
+                None,
+                false,
+                Vec::new(),
+            );
+        }
+
+        let snapshot = load_timeline_snapshot(
+            &first_token,
+            "snapshot-retention-start",
+            "snapshot-retention-end",
+            None,
+            false,
+        )
+        .expect("oldest unexpired snapshot remains available");
+        assert_eq!(snapshot.snapshot_id, 1);
     }
 
     #[tokio::test]
