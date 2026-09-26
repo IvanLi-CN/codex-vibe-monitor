@@ -307,12 +307,12 @@ export function DashboardInvocationTimeline({
     const scrollElement = laneScrollRef.current;
     const callsAxisScrollElement = callsAxisScrollRef.current;
     if (!scrollElement || !callsAxisScrollElement) return;
-    const maxScrollTop = Math.max(0, scrollElement.scrollHeight - laneLayout.laneAreaHeightPx);
+    const maxScrollTop = Math.max(0, laneLayout.lanePlotHeight - laneLayout.laneAreaHeightPx);
     if (maxScrollTop > 0 && scrollElement.scrollTop === 0) {
       scrollElement.scrollTop = maxScrollTop;
       callsAxisScrollElement.scrollTop = maxScrollTop;
     }
-  }, [laneLayout.laneAreaHeightPx]);
+  }, [laneLayout.laneAreaHeightPx, laneLayout.lanePlotHeight]);
 
   const plotWindow = timeline.window;
   const ttft = useMemo(
