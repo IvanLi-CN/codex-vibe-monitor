@@ -752,7 +752,7 @@ async fn hydrate_timeline_accounts(
             .push(resolved_id.as_str())
             .push(" AS upstream_account_id, ")
             .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
-            .push(" AS upstream_account_name FROM codex_invocations WHERE ");
+            .push(" AS upstream_account_name FROM codex_invocations WHERE (");
         for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
             if index > 0 {
                 query.push(" OR ");
@@ -764,6 +764,7 @@ async fn hydrate_timeline_accounts(
                 .push_bind(occurred_at.as_str())
                 .push(")");
         }
+        query.push(")");
         if source_scope == InvocationSourceScope::ProxyOnly {
             query
                 .push(" AND codex_invocations.source = ")
@@ -932,6 +933,67 @@ mod tests {
         )
         .expect("oldest unexpired snapshot remains available");
         assert_eq!(snapshot.snapshot_id, 1);
+    }
+
+    #[tokio::test]
+    async fn account_hydration_scopes_snapshot_predicates_to_every_key() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let snapshot_id =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+                .fetch_one(&state.pool)
+                .await
+                .expect("read invocation snapshot watermark")
+                .unwrap_or(0);
+        let attempt_snapshot_id = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(id) FROM pool_upstream_request_attempts",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("read attempt snapshot watermark")
+        .unwrap_or(0);
+        let keys = [
+            ("hydration-key-a", at(11_000)),
+            ("hydration-key-b", at(11_001)),
+            ("hydration-key-c", at(11_002)),
+        ];
+        let mut records = Vec::new();
+        for (invoke_id, occurred_at) in keys {
+            let mut record =
+                crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+            record.id = 99_200 + records.len() as i64;
+            record.invoke_id = invoke_id.to_string();
+            record.occurred_at = db_occurred_at_lower_bound(occurred_at);
+            record.source = SOURCE_PROXY.to_string();
+            record.upstream_account_id = Some(42);
+            records.push(record);
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{\"upstreamAccountId\":99}', '', 'full')",
+            )
+            .bind(invoke_id)
+            .bind(db_occurred_at_lower_bound(occurred_at))
+            .execute(&state.pool)
+            .await
+            .expect("insert post-snapshot hydration row");
+        }
+
+        hydrate_timeline_accounts(
+            &state.pool,
+            &mut records,
+            InvocationSourceScope::ProxyOnly,
+            snapshot_id,
+            attempt_snapshot_id,
+        )
+        .await
+        .expect("hydrate snapshot records");
+        assert!(
+            records
+                .iter()
+                .all(|record| record.upstream_account_id == Some(42))
+        );
+        state.pool.close().await;
     }
 
     #[tokio::test]
