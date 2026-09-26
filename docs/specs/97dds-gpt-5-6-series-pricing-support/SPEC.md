@@ -203,10 +203,11 @@ The canonical upstream usage field is `usage.input_tokens_details.cache_write_to
 
 ## Verification
 
-- `VER-PRICING` covers: `REQ-PRICE-CATALOG`, `REQ-GPT6-PRICES`, `REQ-GPT6-BILLING`, `REQ-TERRA-COMPAT`, and `REQ-MODEL-ALIASES`. Fixed pricing fixtures and Rust tests verify short/long context boundaries, Standard and Fast tier handling, unsupported-tier unknown costs, seed idempotence, edit preservation, and dated aliases.
+- `VER-PRICING` covers: `REQ-PRICE-CATALOG`, `REQ-GPT6-PRICES`, `REQ-GPT6-BILLING`, `REQ-TERRA-COMPAT`, and `REQ-MODEL-ALIASES`. Fixed pricing fixtures and Rust tests verify short/long context boundaries, Standard and Fast tier handling, unsupported-tier unknown costs, malformed negative output counts, seed idempotence, edit preservation, and dated aliases.
 - `VER-PRICING-API` covers: `REQ-PRICING-API`. Pricing API contract and SQLite tests verify legacy aliases, explicit cache prices, and preservation of user-defined values.
 - `VER-MODEL-UI` covers: `REQ-SETTINGS-PRICING` and `REQ-MODEL-IDENTITY`. Web selector/identity tests and owner-approved mock captures verify official model visibility, compatibility-only Terra behavior, calendar-valid dated identities, invalid-alias text fallback, accessible identity, and exact price display.
 - `VER-USAGE-API` covers: `REQ-COST-BUCKETS`, `REQ-CACHE-WRITE-FALLBACK`, `REQ-REPORTED-CACHE-WRITE`, `REQ-COST-AUDIT`, `REQ-COST-TOLERANCE`, `REQ-HISTORIC-BUCKETS`, and `REQ-WORKFLOW-AUDIT`. Usage fixtures, invocation API tests, SQLite tests, and legacy archive tests verify exact nullable usage, estimates, audit immutability, historical compatibility, and cost reconciliation.
+- WebSocket terminal refresh tests also verify that stale non-null usage dimensions cannot overwrite richer committed values while new dimensions are filled.
 - `VER-USAGE-UI` covers: `REQ-USAGE-AGGREGATES` and `REQ-USAGE-DETAILS`. Web unit tests and deterministic mock UI evidence verify reconciled breakdowns, unchanged aggregate semantics, and exact reported cache-write presentation.
 
 ## Visual Evidence
