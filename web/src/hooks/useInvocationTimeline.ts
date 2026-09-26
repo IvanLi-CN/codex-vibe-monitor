@@ -152,6 +152,8 @@ export function useInvocationTimeline({
   const abortControllerRef = useRef<AbortController | null>(null);
   const inFlightRefreshRef = useRef<Promise<void> | null>(null);
   const pendingRefreshRef = useRef(false);
+  const pendingRefreshTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const refreshRef = useRef<(() => Promise<void>) | null>(null);
   const hasDataRef = useRef(false);
   const suppressRefreshRef = useRef(false);
   const deferredRefreshRef = useRef(false);
@@ -169,6 +171,10 @@ export function useInvocationTimeline({
       abortControllerRef.current = null;
       inFlightRefreshRef.current = null;
       pendingRefreshRef.current = false;
+      if (pendingRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(pendingRefreshTimerRef.current);
+        pendingRefreshTimerRef.current = null;
+      }
       setViewportWindow(null);
       setData(null);
       hasDataRef.current = false;
@@ -185,6 +191,10 @@ export function useInvocationTimeline({
       abortControllerRef.current = null;
       inFlightRefreshRef.current = null;
       pendingRefreshRef.current = false;
+      if (pendingRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(pendingRefreshTimerRef.current);
+        pendingRefreshTimerRef.current = null;
+      }
       previousBounds.current = bounds;
       setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
       setData(null);
@@ -256,7 +266,15 @@ export function useInvocationTimeline({
           setIsLoading(false);
           if (pendingRefreshRef.current) {
             pendingRefreshRef.current = false;
-            globalThis.setTimeout(() => void refresh(), 0);
+            const followUpSequence = sequence;
+            let followUpTimer: ReturnType<typeof globalThis.setTimeout>;
+            followUpTimer = globalThis.setTimeout(() => {
+              if (pendingRefreshTimerRef.current !== followUpTimer) return;
+              pendingRefreshTimerRef.current = null;
+              if (followUpSequence !== requestSequence.current) return;
+              void refreshRef.current?.();
+            }, 0);
+            pendingRefreshTimerRef.current = followUpTimer;
           }
         }
       }
@@ -265,6 +283,8 @@ export function useInvocationTimeline({
     return request;
   }, [closedNaturalDay, enabled, upstreamAccountId, viewportWindow]);
 
+  refreshRef.current = refresh;
+
   useEffect(() => {
     if (enabled) return;
     requestSequence.current += 1;
@@ -272,6 +292,10 @@ export function useInvocationTimeline({
     abortControllerRef.current = null;
     inFlightRefreshRef.current = null;
     pendingRefreshRef.current = false;
+    if (pendingRefreshTimerRef.current != null) {
+      globalThis.clearTimeout(pendingRefreshTimerRef.current);
+      pendingRefreshTimerRef.current = null;
+    }
     setIsLoading(false);
     setError(null);
   }, [enabled]);
@@ -283,6 +307,10 @@ export function useInvocationTimeline({
       abortControllerRef.current = null;
       inFlightRefreshRef.current = null;
       pendingRefreshRef.current = false;
+      if (pendingRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(pendingRefreshTimerRef.current);
+        pendingRefreshTimerRef.current = null;
+      }
     },
     [],
   );

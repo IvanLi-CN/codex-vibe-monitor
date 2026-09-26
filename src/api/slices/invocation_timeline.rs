@@ -66,6 +66,61 @@ fn timeline_record_is_after_cursor(record: &ApiInvocation, cursor: &TimelineCurs
         || (record.occurred_at == *occurred_at && record.invoke_id > *invoke_id)
 }
 
+fn append_timeline_db_predicates(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    persisted_filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: Option<i64>,
+    start_bound: &str,
+    overlap_start_bound: &str,
+    end_bound: &str,
+    include_live: bool,
+    cursor: Option<&TimelineCursor>,
+) {
+    apply_invocation_records_filters(
+        query,
+        persisted_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(timeline_upstream_account_id_sql("codex_invocations"))
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    query
+        .push(" AND (occurred_at < ")
+        .push_bind(end_bound.to_string())
+        .push(" AND occurred_at >= ")
+        .push_bind(overlap_start_bound.to_string())
+        .push(" AND (occurred_at >= ")
+        .push_bind(start_bound.to_string())
+        .push(" OR (t_total_ms IS NOT NULL AND t_total_ms >= 0 AND t_total_ms <= ")
+        .push_bind(INVOCATION_TIMELINE_MAX_DURATION_MS)
+        .push(" AND julianday(occurred_at) + t_total_ms / 86400000.0 >= julianday(")
+        .push_bind(start_bound.to_string())
+        .push("))");
+    if include_live {
+        query.push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    }
+    query.push("))");
+    if let Some(cursor) = cursor
+        && let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id)
+    {
+        query
+            .push(" AND (occurred_at > ")
+            .push_bind(occurred_at.clone())
+            .push(" OR (occurred_at = ")
+            .push_bind(occurred_at.clone())
+            .push(" AND invoke_id > ")
+            .push_bind(invoke_id.clone())
+            .push("))");
+    }
+}
+
 fn create_timeline_snapshot(
     snapshot_id: i64,
     range_start: String,
@@ -271,51 +326,27 @@ pub(crate) async fn fetch_timeline(
         range_start - chrono::Duration::milliseconds(INVOCATION_TIMELINE_MAX_DURATION_MS as i64);
     let overlap_start_bound = crate::db_occurred_at_lower_bound(overlap_start);
     let end_bound = crate::db_occurred_at_upper_bound(range_end);
-    let mut query = build_invocation_select_query();
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
-    apply_invocation_records_filters(
+    let mut query = build_invocation_select_query();
+    append_timeline_db_predicates(
         &mut query,
         &persisted_filters,
         source_scope,
-        Some(SnapshotConstraint::UpTo(snapshot_id)),
+        snapshot_id,
+        params.upstream_account_id,
+        &start_bound,
+        &overlap_start_bound,
+        &end_bound,
+        include_live,
+        cursor.as_ref(),
     );
-    if let Some(upstream_account_id) = params.upstream_account_id {
-        query
-            .push(" AND ")
-            .push(timeline_upstream_account_id_sql("codex_invocations"))
-            .push(" = ")
-            .push_bind(upstream_account_id);
-    }
     query
-        .push(" AND (occurred_at < ")
-        .push_bind(end_bound.clone())
-        .push(" AND occurred_at >= ")
-        .push_bind(overlap_start_bound.clone())
-        .push(" AND (occurred_at >= ")
-        .push_bind(start_bound.clone())
-        .push(" OR (t_total_ms IS NOT NULL AND t_total_ms >= 0 AND t_total_ms <= ")
-        .push_bind(INVOCATION_TIMELINE_MAX_DURATION_MS)
-        .push(" AND julianday(occurred_at) + t_total_ms / 86400000.0 >= julianday(")
-        .push_bind(start_bound.clone())
+        .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+        .push_bind(snapshot_id)
         .push(")")
-        .push(")");
-    if include_live {
-        query.push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
-    }
-    query.push("))");
-    if let Some(cursor) = cursor.as_ref()
-        && let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id)
-    {
-        query
-            .push(" AND (occurred_at > ")
-            .push_bind(occurred_at.clone())
-            .push(" OR (occurred_at = ")
-            .push_bind(occurred_at.clone())
-            .push(" AND invoke_id > ")
-            .push_bind(invoke_id.clone())
-            .push("))");
-    }
+        .push(" ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+        .push_bind(page_size + 1);
     let mut all_runtime_records = snapshot.runtime_records.clone();
     all_runtime_records.retain(|record| {
         if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
@@ -352,9 +383,6 @@ pub(crate) async fn fetch_timeline(
         })
         .cloned()
         .collect::<Vec<_>>();
-    query
-        .push(" ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
-        .push_bind(page_size + 1);
     let mut records = query
         .build_query_as::<ApiInvocation>()
         .fetch_all(&state.pool)
