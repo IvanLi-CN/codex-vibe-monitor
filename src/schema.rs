@@ -1850,6 +1850,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         existing = load_sqlite_table_columns(pool, "codex_invocations").await?;
     }
 
+    ensure_reported_cache_write_tokens_column(pool).await?;
+
     for (column, ty) in [
         ("source", "TEXT NOT NULL DEFAULT 'xy'"),
         ("model", "TEXT"),
@@ -5884,6 +5886,25 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     ensure_long_term_projection_account_trigger(pool).await?;
     ensure_summary_coverage_revision_schema(pool).await?;
 
+    Ok(())
+}
+
+pub(crate) async fn ensure_reported_cache_write_tokens_column(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin reported cache-write schema migration")?;
+    let columns =
+        load_sqlite_table_columns_from_connection(tx.as_mut(), None, "codex_invocations").await?;
+    if !columns.contains("reported_cache_write_tokens") {
+        sqlx::query("ALTER TABLE codex_invocations ADD COLUMN reported_cache_write_tokens INTEGER")
+            .execute(tx.as_mut())
+            .await
+            .context("failed to add column reported_cache_write_tokens")?;
+    }
+    tx.commit()
+        .await
+        .context("failed to commit reported cache-write schema migration")?;
     Ok(())
 }
 

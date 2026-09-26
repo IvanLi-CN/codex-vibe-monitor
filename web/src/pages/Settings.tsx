@@ -2340,7 +2340,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             <Input
                               type="number"
                               step="any"
-                              className="h-9 px-3"
+                              className="h-9 px-1"
                               value={entry.inputPer1m}
                               onChange={(event) =>
                                 handlePricingFieldChange(index, "inputPer1m", event.target.value)
@@ -2352,7 +2352,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             <Input
                               type="number"
                               step="any"
-                              className="h-9 px-3"
+                              className="h-9 px-1"
                               value={entry.outputPer1m}
                               onChange={(event) =>
                                 handlePricingFieldChange(index, "outputPer1m", event.target.value)
@@ -2364,7 +2364,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             <Input
                               type="number"
                               step="any"
-                              className="h-9 px-3"
+                              className="h-9 px-1"
                               value={entry.cacheReadPer1m}
                               onChange={(event) =>
                                 handlePricingFieldChange(
@@ -2380,7 +2380,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             <Input
                               type="number"
                               step="any"
-                              className="h-9 px-3"
+                              className="h-9 px-1"
                               value={entry.cacheWritePer1m}
                               onChange={(event) =>
                                 handlePricingFieldChange(
@@ -2396,7 +2396,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             <Input
                               type="number"
                               step="any"
-                              className="h-9 px-3"
+                              className="h-9 px-1"
                               value={entry.reasoningPer1m}
                               onChange={(event) =>
                                 handlePricingFieldChange(

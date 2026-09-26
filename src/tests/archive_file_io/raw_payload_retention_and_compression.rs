@@ -4030,12 +4030,10 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
 
     let mut rx = state.broadcaster.subscribe();
     let invoke_id = "runtime-terminal-follow-up";
-    persist_and_broadcast_proxy_capture_terminal_record(
-        state.as_ref(),
-        test_proxy_capture_record(invoke_id, &now_local),
-    )
-    .await
-    .expect("queue runtime terminal record");
+    let record = test_proxy_capture_record(invoke_id, &now_local);
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), record, false)
+        .await
+        .expect("queue runtime terminal record");
 
     let mut saw_record = false;
     let mut saw_quota = false;
@@ -6260,7 +6258,7 @@ async fn drop_guard_runtime_remove_does_not_tombstone_later_terminal_record() {
     terminal_record.usage.output_tokens = Some(3);
     terminal_record.usage.total_tokens = Some(5);
     terminal_record.cost = Some(0.02);
-    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), terminal_record)
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), terminal_record, false)
         .await
         .expect("later terminal record should still enqueue after drop guard runtime cleanup");
 

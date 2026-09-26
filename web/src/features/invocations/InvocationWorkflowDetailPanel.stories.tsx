@@ -859,6 +859,7 @@ const successfulWorkflowRecord: ApiInvocation = {
   responseModel: "gpt-5.5",
   inputTokens: 132_219,
   cacheWriteTokens: 5_632,
+  reportedCacheWriteTokens: 4_096,
   cacheInputTokens: 126_587,
   outputTokens: 59,
   reasoningTokens: undefined,
@@ -1042,6 +1043,7 @@ const successfulWorkflowResponse: ApiInvocationWorkflowDetailResponse = {
           usage: {
             inputTokens: 132219,
             cacheWriteTokens: 5632,
+            reportedCacheWriteTokens: 4096,
             cacheInputTokens: 126587,
             outputTokens: 59,
             reasoningTokens: null,
@@ -1473,6 +1475,19 @@ export const PreviewOnlyTerminalAttemptResponseBody: Story = {
 
 export const SuccessfulTokenCostAudit: Story = {
   tags: ["test"],
+  render: (args) => (
+    <div
+      data-visual-evidence-surface="reported-cache-write-audit"
+      className="min-h-screen bg-base-200 px-8 py-8 text-base-content"
+    >
+      <div
+        data-visual-evidence-target="reported-cache-write-audit-panel"
+        className="mx-auto w-full max-w-6xl"
+      >
+        <InvocationWorkflowDetailPanel {...args} />
+      </div>
+    </div>
+  ),
   args: {
     record: successfulWorkflowRecord,
     size: "default",
@@ -1486,6 +1501,7 @@ export const SuccessfulTokenCostAudit: Story = {
     ),
   ],
   parameters: {
+    pageSurface: true,
     viewport: { defaultViewport: "desktop1660" },
     docs: {
       description: {
@@ -1498,6 +1514,7 @@ export const SuccessfulTokenCostAudit: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => {
       expect(canvas.getByText("输入写 5,632")).toBeTruthy();
+      expect(canvas.getByText("上游缓存写 4,096")).toBeTruthy();
       expect(canvas.getByText("输入读 126,587")).toBeTruthy();
     });
     await userEvent.hover(canvas.getByText("输入写 5,632"));

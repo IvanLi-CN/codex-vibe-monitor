@@ -262,7 +262,7 @@ pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_snapshot(
         record.payload = serde_json::to_string(&value).ok();
     }
     set_proxy_capture_record_pool_routing_no_candidate_audit(&mut record, Some(audit));
-    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), record).await
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), record, false).await
 }
 
 pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
@@ -3191,61 +3191,8 @@ pub(crate) fn with_codex_imagegen_rewrite_payload_summary(
     serde_json::to_string(&value).unwrap_or(payload)
 }
 
-pub(crate) fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
-    matches!(
-        status
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        INVOCATION_STATUS_RUNNING | INVOCATION_STATUS_PENDING
-    )
-}
-
-pub(crate) fn invocation_status_is_recoverable_proxy_interrupted(
-    status: Option<&str>,
-    failure_kind: Option<&str>,
-) -> bool {
-    status
-        .unwrap_or_default()
-        .trim()
-        .eq_ignore_ascii_case(INVOCATION_STATUS_INTERRUPTED)
-        && failure_kind
-            .unwrap_or_default()
-            .trim()
-            .eq_ignore_ascii_case(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-}
-
 pub(crate) fn nullable_runtime_timing_value(value: f64) -> Option<f64> {
     (value.is_finite() && value > 0.0).then_some(value)
-}
-
-#[derive(Debug, FromRow)]
-pub(crate) struct PersistedInvocationIdentityRow {
-    pub(crate) id: i64,
-    pub(crate) status: Option<String>,
-    pub(crate) failure_kind: Option<String>,
-}
-
-pub(crate) async fn load_persisted_invocation_identity_tx(
-    tx: &mut SqliteConnection,
-    invoke_id: &str,
-    occurred_at: &str,
-) -> Result<Option<PersistedInvocationIdentityRow>> {
-    sqlx::query_as::<_, PersistedInvocationIdentityRow>(
-        r#"
-        SELECT id, status, failure_kind
-        FROM codex_invocations
-        WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(invoke_id)
-    .bind(occurred_at)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(Into::into)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3277,6 +3224,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
             input_tokens = ?4,
             output_tokens = ?5,
             cache_input_tokens = ?6,
+            reported_cache_write_tokens = COALESCE(?43, reported_cache_write_tokens),
             reasoning_tokens = ?7,
             total_tokens = ?8,
             cost = ?9,
@@ -3365,6 +3313,7 @@ pub(crate) async fn update_existing_proxy_invocation_record_tx(
     .bind(t_upstream_stream_ms)
     .bind(t_resp_parse_ms)
     .bind(t_persist_ms)
+    .bind(record.usage.reported_cache_write_tokens)
     .execute(&mut *tx)
     .await?;
 
@@ -3451,6 +3400,7 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
         cache_write_tokens: record.usage.input_tokens.map(|input| {
             input.saturating_sub(record.usage.cache_input_tokens.unwrap_or_default().max(0))
         }),
+        reported_cache_write_tokens: record.usage.reported_cache_write_tokens,
         status: Some(record.status.clone()),
         live_phase: None,
         error_message: record.error_message.clone(),
@@ -3518,19 +3468,6 @@ pub(crate) fn api_invocation_from_runtime_record(record: &ProxyCaptureRecord) ->
     }
 }
 
-pub(crate) fn persisted_invocation_allows_proxy_record_update(
-    existing_status: Option<&str>,
-    existing_failure_kind: Option<&str>,
-    incoming_status: &str,
-) -> bool {
-    invocation_status_is_in_flight(existing_status)
-        || (!invocation_status_is_in_flight(Some(incoming_status))
-            && invocation_status_is_recoverable_proxy_interrupted(
-                existing_status,
-                existing_failure_kind,
-            ))
-}
-
 pub(crate) async fn load_persisted_api_invocation_tx(
     tx: &mut SqliteConnection,
     invoke_id: &str,
@@ -3550,6 +3487,7 @@ pub(crate) async fn load_persisted_api_invocation_tx(
             input_tokens,
             output_tokens,
             cache_input_tokens,
+            reported_cache_write_tokens,
             reasoning_tokens,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort,
         total_tokens,
@@ -4034,12 +3972,25 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
+    allow_websocket_terminal_usage_refresh: bool,
 ) -> Result<()> {
     let enqueue_started = Instant::now();
     let persisted_record = api_invocation_from_runtime_record(&record);
     let invoke_id = persisted_record.invoke_id.clone();
     let duplicate_terminal = remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
     if duplicate_terminal {
+        if allow_websocket_terminal_usage_refresh
+            && websocket_terminal_payload(record.payload.as_deref())
+        {
+            if !enqueue_websocket_terminal_usage_refresh(state, record).await? {
+                warn!(
+                    invoke_id = %invoke_id,
+                    occurred_at = %persisted_record.occurred_at,
+                    "websocket terminal usage refresh dropped by sqlite write controller"
+                );
+            }
+            return Ok(());
+        }
         debug!(
             invoke_id = %invoke_id,
             occurred_at = %persisted_record.occurred_at,
@@ -4159,7 +4110,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
 
 pub(crate) async fn persist_proxy_capture_runtime_record_tx(
     tx: &mut SqliteConnection,
-    record: ProxyCaptureRecord,
+    mut record: ProxyCaptureRecord,
     write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
     let raw_response = if record.response_body_preview_enabled {
@@ -4199,41 +4150,55 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
     let existing_identity =
         load_persisted_invocation_identity_tx(&mut *tx, &record.invoke_id, &record.occurred_at)
             .await?;
+    let mut refresh_websocket_terminal_usage = existing_identity
+        .as_ref()
+        .is_some_and(|existing| websocket_terminal_usage_refresh_allowed(existing, &record));
     if let Some(existing) = existing_identity.as_ref()
         && !persisted_invocation_allows_proxy_record_update(
             existing.status.as_deref(),
             existing.failure_kind.as_deref(),
             &record.status,
         )
+        && !refresh_websocket_terminal_usage
     {
         return Ok(None);
     }
 
     if let Some(existing) = existing_identity.as_ref() {
-        let updated = update_existing_proxy_invocation_record_tx(
-            &mut *tx,
-            existing.id,
-            &record,
-            &raw_response,
-            &resp_raw,
-            failure_kind.as_deref(),
-            failure.failure_class.as_str(),
-            failure.is_actionable,
-            None,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
-            first_token_ms,
-            None,
-            None,
-            None,
-        )
-        .await?;
-        if !updated {
-            return Ok(None);
+        if refresh_websocket_terminal_usage {
+            preserve_websocket_terminal_rollup_metadata(&mut record, existing);
+            if !refresh_websocket_terminal_usage_tx(&mut *tx, existing.id, existing, &record)
+                .await?
+            {
+                return Ok(None);
+            }
+            core_write_path = "refresh_websocket_terminal_usage";
+        } else {
+            let updated = update_existing_proxy_invocation_record_tx(
+                &mut *tx,
+                existing.id,
+                &record,
+                &raw_response,
+                &resp_raw,
+                failure_kind.as_deref(),
+                failure.failure_class.as_str(),
+                failure.is_actionable,
+                None,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                first_token_ms,
+                None,
+                None,
+                None,
+            )
+            .await?;
+            if !updated {
+                return Ok(None);
+            }
+            core_write_path = "update_existing";
         }
-        core_write_path = "update_existing";
     } else {
         let insert_result = sqlx::query(
             r#"
@@ -4281,12 +4246,13 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms,
-                created_at
+                created_at,
+                reported_cache_write_tokens
             )
             VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44
+                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
             )
             "#,
         )
@@ -4334,6 +4300,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
         .bind(None::<f64>)
         .bind(None::<f64>)
         .bind(created_at)
+        .bind(record.usage.reported_cache_write_tokens)
         .execute(&mut *tx)
         .await?;
         if insert_result.rows_affected() == 0 {
@@ -4346,37 +4313,51 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
             else {
                 return Ok(None);
             };
+            let refresh_terminal_usage =
+                websocket_terminal_usage_refresh_allowed(&existing, &record);
             if !persisted_invocation_allows_proxy_record_update(
                 existing.status.as_deref(),
                 existing.failure_kind.as_deref(),
                 &record.status,
-            ) {
+            ) && !refresh_terminal_usage
+            {
                 return Ok(None);
             }
-            let updated = update_existing_proxy_invocation_record_tx(
-                &mut *tx,
-                existing.id,
-                &record,
-                &raw_response,
-                &resp_raw,
-                failure_kind.as_deref(),
-                failure.failure_class.as_str(),
-                failure.is_actionable,
-                None,
-                t_req_read_ms,
-                t_req_parse_ms,
-                t_upstream_connect_ms,
-                t_upstream_ttfb_ms,
-                first_token_ms,
-                None,
-                None,
-                None,
-            )
-            .await?;
-            if !updated {
-                return Ok(None);
+            if refresh_terminal_usage {
+                preserve_websocket_terminal_rollup_metadata(&mut record, &existing);
+                if !refresh_websocket_terminal_usage_tx(&mut *tx, existing.id, &existing, &record)
+                    .await?
+                {
+                    return Ok(None);
+                }
+                refresh_websocket_terminal_usage = true;
+                core_write_path = "refresh_websocket_terminal_usage_race";
+            } else {
+                let updated = update_existing_proxy_invocation_record_tx(
+                    &mut *tx,
+                    existing.id,
+                    &record,
+                    &raw_response,
+                    &resp_raw,
+                    failure_kind.as_deref(),
+                    failure.failure_class.as_str(),
+                    failure.is_actionable,
+                    None,
+                    t_req_read_ms,
+                    t_req_parse_ms,
+                    t_upstream_connect_ms,
+                    t_upstream_ttfb_ms,
+                    first_token_ms,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+                if !updated {
+                    return Ok(None);
+                }
+                core_write_path = "update_race";
             }
-            core_write_path = "update_race";
         }
     }
 
@@ -4387,47 +4368,52 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
                 anyhow!("persisted proxy runtime invocation row disappeared after upsert")
             })?;
     if write_derived_inline {
-        upsert_invocation_hourly_rollups_tx(
-            &mut *tx,
-            &[InvocationHourlySourceRecord {
-                id: persisted_identity.id,
-                occurred_at: record.occurred_at.clone(),
-                source: SOURCE_PROXY.to_string(),
-                status: Some(record.status.clone()),
-                detail_level: DETAIL_LEVEL_FULL.to_string(),
-                model: record.model.clone(),
-                input_tokens: record.usage.input_tokens,
-                output_tokens: record.usage.output_tokens,
-                cache_input_tokens: record.usage.cache_input_tokens,
-                reasoning_tokens: record.usage.reasoning_tokens,
-                total_tokens: record.usage.total_tokens,
-                cost: record.cost,
-                upstream_account_id: crate::proxy::upstream_account_id_from_payload(
-                    record.payload.as_deref(),
-                ),
-                cost_input: record.cost_breakdown.map(|value| value.input),
-                cost_cache_write: record.cost_breakdown.map(|value| value.cache_write),
-                cost_cache_read: record.cost_breakdown.map(|value| value.cache_read),
-                cost_output: record.cost_breakdown.map(|value| value.output),
-                cost_reasoning: record.cost_breakdown.map(|value| value.reasoning),
-                error_message: record.error_message.clone(),
-                failure_kind: failure_kind.clone(),
-                failure_class: Some(failure.failure_class.as_str().to_string()),
-                is_actionable: Some(failure.is_actionable as i64),
-                payload: record.payload.clone(),
-                t_total_ms: None,
-                t_req_read_ms,
-                t_req_parse_ms,
-                t_upstream_connect_ms,
-                t_upstream_ttfb_ms,
-                first_token_ms,
-                t_upstream_stream_ms: None,
-                t_resp_parse_ms: None,
-                t_persist_ms: None,
-            }],
-            &INVOCATION_HOURLY_ROLLUP_TARGETS,
-        )
-        .await?;
+        if refresh_websocket_terminal_usage {
+            recompute_invocation_hourly_rollups_for_ids_tx(&mut *tx, &[persisted_identity.id])
+                .await?;
+        } else {
+            upsert_invocation_hourly_rollups_tx(
+                &mut *tx,
+                &[InvocationHourlySourceRecord {
+                    id: persisted_identity.id,
+                    occurred_at: record.occurred_at.clone(),
+                    source: SOURCE_PROXY.to_string(),
+                    status: Some(record.status.clone()),
+                    detail_level: DETAIL_LEVEL_FULL.to_string(),
+                    model: record.model.clone(),
+                    input_tokens: record.usage.input_tokens,
+                    output_tokens: record.usage.output_tokens,
+                    cache_input_tokens: record.usage.cache_input_tokens,
+                    reasoning_tokens: record.usage.reasoning_tokens,
+                    total_tokens: record.usage.total_tokens,
+                    cost: record.cost,
+                    upstream_account_id: crate::proxy::upstream_account_id_from_payload(
+                        record.payload.as_deref(),
+                    ),
+                    cost_input: record.cost_breakdown.map(|value| value.input),
+                    cost_cache_write: record.cost_breakdown.map(|value| value.cache_write),
+                    cost_cache_read: record.cost_breakdown.map(|value| value.cache_read),
+                    cost_output: record.cost_breakdown.map(|value| value.output),
+                    cost_reasoning: record.cost_breakdown.map(|value| value.reasoning),
+                    error_message: record.error_message.clone(),
+                    failure_kind: failure_kind.clone(),
+                    failure_class: Some(failure.failure_class.as_str().to_string()),
+                    is_actionable: Some(failure.is_actionable as i64),
+                    payload: record.payload.clone(),
+                    t_total_ms: None,
+                    t_req_read_ms,
+                    t_req_parse_ms,
+                    t_upstream_connect_ms,
+                    t_upstream_ttfb_ms,
+                    first_token_ms,
+                    t_upstream_stream_ms: None,
+                    t_resp_parse_ms: None,
+                    t_persist_ms: None,
+                }],
+                &INVOCATION_HOURLY_ROLLUP_TARGETS,
+            )
+            .await?;
+        }
         save_hourly_rollup_live_progress_tx(
             &mut *tx,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,

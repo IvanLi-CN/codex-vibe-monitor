@@ -2919,9 +2919,10 @@ pub(crate) fn merge_models_payload_with_upstream(
         .cloned()
         .unwrap_or_default();
     let mut seen_ids: HashSet<String> = enabled_model_ids.iter().cloned().collect();
-
     for item in upstream_items {
         if let Some(id) = item.get("id").and_then(|v| v.as_str())
+            && !id.eq_ignore_ascii_case("gpt-6-terra")
+            && !id.starts_with("gpt-6-terra-")
             && seen_ids.insert(id.to_string())
         {
             merged.push(item.clone());
