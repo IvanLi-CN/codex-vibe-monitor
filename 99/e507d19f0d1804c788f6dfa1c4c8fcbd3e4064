@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.72.3",
+  "base_stable_version": "2.72.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-26T10:57:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.72.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "de549e4963817ddd740701d95b5f06e0370403ac",
+  "pr_number": 1026,
+  "pr_title": "fix(web): preserve pointer handoff into overlays",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.72.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.72.3",
+  "target_sha": "99e507d19f0d1804c788f6dfa1c4c8fcbd3e4064",
+  "type_label": "type:patch"
+}
