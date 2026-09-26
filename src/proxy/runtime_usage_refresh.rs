@@ -191,12 +191,12 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
           AND json_valid(payload)
           AND LOWER(TRIM(COALESCE(json_extract(payload, '$.transport'), ''))) = 'websocket'
           AND json_extract(payload, '$.streamTerminalEvent') IS NOT NULL
-          AND (input_tokens IS NULL OR ?3 IS NOT NULL)
-          AND (output_tokens IS NULL OR ?4 IS NOT NULL)
-          AND (cache_input_tokens IS NULL OR ?5 IS NOT NULL)
-          AND (reported_cache_write_tokens IS NULL OR ?6 IS NOT NULL)
-          AND (reasoning_tokens IS NULL OR ?7 IS NOT NULL)
-          AND (total_tokens IS NULL OR ?8 IS NOT NULL)
+          AND (input_tokens IS NULL OR (?3 IS NOT NULL AND input_tokens = ?3))
+          AND (output_tokens IS NULL OR (?4 IS NOT NULL AND output_tokens = ?4))
+          AND (cache_input_tokens IS NULL OR (?5 IS NOT NULL AND cache_input_tokens = ?5))
+          AND (reported_cache_write_tokens IS NULL OR (?6 IS NOT NULL AND reported_cache_write_tokens = ?6))
+          AND (reasoning_tokens IS NULL OR (?7 IS NOT NULL AND reasoning_tokens = ?7))
+          AND (total_tokens IS NULL OR (?8 IS NOT NULL AND total_tokens = ?8))
           AND (
                 (input_tokens IS NULL AND ?3 IS NOT NULL)
                 OR (output_tokens IS NULL AND ?4 IS NOT NULL)

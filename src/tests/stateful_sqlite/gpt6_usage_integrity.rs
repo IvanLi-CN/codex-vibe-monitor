@@ -163,6 +163,26 @@ fn gpt_6_default_actual_tier_does_not_fall_back_to_standard() {
     assert!(!estimated, "unsupported actual tier must not be estimated");
 }
 
+#[test]
+fn estimate_gpt_6_returns_unknown_cost_for_negative_output_tokens() {
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(-1),
+        total_tokens: Some(999),
+        ..ParsedUsage::default()
+    };
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &default_pricing_catalog(),
+        Some("gpt-6-astra"),
+        &usage,
+        None,
+        ProxyPricingMode::ResponseTier,
+    );
+
+    assert!(cost.is_none(), "negative output must have unknown cost");
+    assert!(!estimated, "negative output must not be estimated");
+}
+
 #[tokio::test]
 async fn concurrent_reported_cache_write_column_migration_is_database_serialized() {
     let temp_dir = make_temp_test_dir("reported-cache-write-concurrent-migration");
@@ -846,7 +866,9 @@ async fn stale_poorer_websocket_refresh_cannot_overwrite_a_richer_commit() {
     poorer.usage = ParsedUsage {
         input_tokens: Some(1_200),
         output_tokens: Some(40),
-        cache_input_tokens: Some(325),
+        cache_input_tokens: Some(400),
+        reported_cache_write_tokens: Some(60),
+        reasoning_tokens: Some(11),
         total_tokens: Some(1_240),
         ..ParsedUsage::default()
     };
@@ -872,17 +894,18 @@ async fn stale_poorer_websocket_refresh_cannot_overwrite_a_richer_commit() {
     );
     tx.commit().await.expect("finish stale terminal refresh");
 
-    let persisted = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<f64>)>(
-        "SELECT reported_cache_write_tokens, reasoning_tokens, cost FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    let persisted = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<f64>)>(
+        "SELECT cache_input_tokens, reported_cache_write_tokens, reasoning_tokens, cost FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
     .expect("load rich usage after stale refresh attempt");
-    assert_eq!(persisted.0, Some(50));
-    assert_eq!(persisted.1, Some(10));
-    assert_eq!(persisted.2, Some(0.02));
+    assert_eq!(persisted.0, Some(325));
+    assert_eq!(persisted.1, Some(50));
+    assert_eq!(persisted.2, Some(10));
+    assert_eq!(persisted.3, Some(0.02));
 }
 
 #[tokio::test]
