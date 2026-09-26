@@ -183,8 +183,8 @@ dashboard realtime projection region from `BroadcastStateCache` through
 `src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs`.
 On the verified main merge base `b2db1923d5022c0a4c742650b91f5961392f211c`,
 the source regions contain 1,314 and 1,063 physical lines. The resulting
-parent is 2,414 physical lines, the production child is 1,065 lines, and the
-test child is 1,286 lines, all within their targets. The test module path,
+parent is 2,416 physical lines, the production child is 1,065 lines, and the
+test child is 1,287 lines, all within their targets. The test module path,
 test names, assertions, route and serde contracts, and runtime behavior remain
 unchanged; the required dashboard helper visibility is crate-scoped and the
 existing parent re-export preserves callers. The parent is removed from the

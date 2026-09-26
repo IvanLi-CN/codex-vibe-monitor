@@ -172,9 +172,9 @@ the dashboard realtime projection state/model/build/scheduler region from
 into `src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs`.
 On the verified main merge base `b2db1923d5022c0a4c742650b91f5961392f211c`,
 the approved source regions were 1,314 and 1,063 physical lines. After
-rustfmt and the narrow crate-visible helper re-exports, the parent is 2,414
+rustfmt and the narrow crate-visible helper re-exports, the parent is 2,416
 physical lines, the production child is 1,065 lines, and the test child is
-1,286 lines. The out-of-line test module keeps its path, names, assertions,
+1,287 lines. The out-of-line test module keeps its path, names, assertions,
 and test behavior; the parent retains the existing crate-visible API through
 the dashboard child re-export. Routes, serde contracts, visibility outside
 the required helper adjustment, and runtime behavior remain unchanged. The
