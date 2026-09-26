@@ -2015,6 +2015,8 @@ pub(crate) struct ModelPerformanceResponse {
     pub(crate) available: bool,
     pub(crate) total: ModelPerformanceMetricsResponse,
     pub(crate) models: Vec<ModelPerformanceModelResponse>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) model_groups: Vec<ModelPerformanceModelResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

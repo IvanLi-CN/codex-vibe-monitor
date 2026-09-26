@@ -171,6 +171,30 @@ const sampleModelPerformance: ModelPerformance = {
       parallelism: 1.3,
     },
   ],
+  modelGroups: [
+    {
+      model: "gpt-5.6",
+      reasoningEffort: null,
+      tokensPerMinute: 760,
+      streamingResponseRate: 162.4,
+      avgResponseMs: 4500,
+      avgFirstTokenMs: 1100,
+      wallClockUsageDurationMs: 82000,
+      cumulativeUsageDurationMs: 107000,
+      parallelism: 1.3,
+    },
+    {
+      model: "gpt-5.4-mini",
+      reasoningEffort: null,
+      tokensPerMinute: 440,
+      streamingResponseRate: null,
+      avgResponseMs: null,
+      avgFirstTokenMs: 860,
+      wallClockUsageDurationMs: 47000,
+      cumulativeUsageDurationMs: 61000,
+      parallelism: 1.3,
+    },
+  ],
 };
 
 const comparisonStats: StatsResponse = {

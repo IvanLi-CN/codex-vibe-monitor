@@ -1,5 +1,7 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles） - History
 
+- 2026-09-26: Dashboard 模型性能与用量明细浮窗新增跨窗口简单/详细分组记忆、按浮窗类型隔离的排序记忆，以及精确的模型级性能分组接口；排序入口改为表头直接操作，用量缓存写入/读取与输出列保持纯展示，长期统计表面保持原有范围；一般手机视口的用量明细改为无横向滚动的纵向指标布局。
+
 - 2026-08-04: Implemented Codex standalone search recording as an exact `POST /v1/alpha/search` non-streaming capture target. It reuses pool and OAuth passthrough accounting, records one parent invocation per downstream request, and enters the existing source-level hourly rollup without inventing search usage or adding an endpoint rollup dimension.
 - 2026-08-05: Connected API-key standalone search attempts to an independent account capability axis without changing invocation, attempt, OAuth passthrough, or source-level rollup accounting.
 - 2026-08-18: Added the account-scoped `upstream-account-attempts.window/v1` SSE read model. Matching `PoolAttempts` broadcasts coalesce into a fixed 250ms refresh window with in-flight replay and last-good retention; the request tab now renders snapshot/replay/live payloads while preserving pagination, deep-link focus, and expanded attempt identity.

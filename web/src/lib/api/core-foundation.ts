@@ -993,6 +993,7 @@ export interface ModelPerformance {
   available: boolean;
   total: ModelPerformanceMetrics;
   models: ModelPerformanceModel[];
+  modelGroups?: ModelPerformanceModel[];
 }
 
 export interface UpstreamAccountActivityAccount {
@@ -4380,27 +4381,33 @@ function normalizeModelPerformanceMetrics(raw: unknown): ModelPerformanceMetrics
 
 function normalizeModelPerformance(raw: unknown): ModelPerformance {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const models = Array.isArray(payload.models)
-    ? payload.models.flatMap((item) => {
-        const modelPayload = item as Record<string, unknown>;
-        const model = typeof modelPayload.model === "string" ? modelPayload.model.trim() : "";
-        if (!model) return [];
-        return [
-          {
-            model,
-            reasoningEffort:
-              typeof modelPayload.reasoningEffort === "string"
-                ? modelPayload.reasoningEffort.trim() || null
-                : null,
-            ...normalizeModelPerformanceMetrics(modelPayload),
-          },
-        ];
-      })
-    : [];
+  const normalizeModels = (value: unknown) =>
+    Array.isArray(value)
+      ? value.flatMap((item) => {
+          const modelPayload = item as Record<string, unknown>;
+          const model = typeof modelPayload.model === "string" ? modelPayload.model.trim() : "";
+          if (!model) return [];
+          return [
+            {
+              model,
+              reasoningEffort:
+                typeof modelPayload.reasoningEffort === "string"
+                  ? modelPayload.reasoningEffort.trim() || null
+                  : null,
+              ...normalizeModelPerformanceMetrics(modelPayload),
+            },
+          ];
+        })
+      : [];
+  const models = normalizeModels(payload.models);
+  const modelGroups = Array.isArray(payload.modelGroups)
+    ? normalizeModels(payload.modelGroups)
+    : models;
   return {
     available: payload.available === true,
     total: normalizeModelPerformanceMetrics(payload.total),
     models,
+    modelGroups,
   };
 }
 

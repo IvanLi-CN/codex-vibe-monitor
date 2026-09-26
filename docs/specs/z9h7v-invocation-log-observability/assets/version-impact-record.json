@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add exact model-level Dashboard performance groups, shared simple/detailed floater mode, and per-floater frontend sorting preferences.",
+    "release_unit_description": "Dashboard model performance and usage breakdown grouping and sorting behavior.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "The modelGroups response field is additive and optional to existing consumers. Frontend sorting and grouping preferences use new localStorage keys that earlier versions ignore; no existing stored state or API field changes meaning.",
+      "assessed_at": "2026-09-26T15:22:14Z",
+      "evidence": [
+        "docs/specs/z9h7v-invocation-log-observability/SPEC.md",
+        "src/api/slices/settings_models_and_cache.rs",
+        "web/src/features/dashboard/dashboardModelBreakdown.ts"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "The candidate remains within the approved Dashboard floater grouping, sorting, persistence, responsive layout, and exact model-performance aggregation scope."
+      },
+      "reasoning": "The backend contract only adds modelGroups to the existing dashboard activity response. Browser preferences are additive localStorage state with defensive normalization; older clients can ignore the new keys.",
+      "reassessed_at": "2026-09-26T15:22:14Z",
+      "evidence": [
+        "src/api/slices/invocations_and_summary.rs",
+        "src/api/slices/settings_models_and_cache.rs",
+        "web/src/lib/api/core-foundation.ts",
+        "web/src/features/dashboard/dashboardModelBreakdown.ts"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Focused Rust aggregation tests, web typechecking, targeted web tests, Storybook interaction tests, production build, formatting, and spec drift checks cover the additive API projection and frontend-only preference behavior. No database schema or archive format changes are present.",
+      "verified_at": "2026-09-26T15:22:14Z",
+      "evidence": [
+        "cargo fmt --all -- --check",
+        "cargo test wall_clock_duration_merges_overlapping_efforts_for_simple_model_groups -- --nocapture",
+        "cargo test model_performance_emits_one_exact_model_group_for_multiple_efforts -- --nocapture",
+        "cd web && bun run typecheck:web",
+        "cd web && bun run test -- UsageBreakdownTooltip.test.tsx",
+        "cd web && bun run test-storybook",
+        "cd web && bun run build",
+        "bash /Users/ivan/.codex/skills/spec-sync/scripts/spec_drift_check.sh --base-ref eaf5ffba --spec-path docs/specs/z9h7v-invocation-log-observability/SPEC.md"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing dashboard activity consumers within the current Major; modelGroups is an additive optional projection and existing modelPerformance fields remain unchanged.",
+      "evidence": [
+        "src/api/slices/settings_models_and_cache.rs",
+        "web/src/lib/api/core-foundation.ts"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Browser localStorage entries for the shared Dashboard grouping mode and logical floater sort preferences.",
+      "source_program_compatibility_range": "Supported earlier application versions that ignore unknown localStorage keys; no database or archive state is changed.",
+      "evidence": [
+        "web/src/features/dashboard/dashboardModelBreakdown.ts",
+        "web/src/features/dashboard/dashboardModelBreakdown.test.ts"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/z9h7v-invocation-log-observability/assets/version-impact-record.json"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "public_api=patch",
+      "persistent_state=patch",
+      "release unit=max(public_api,persistent_state)=patch"
+    ]
+  }
+}

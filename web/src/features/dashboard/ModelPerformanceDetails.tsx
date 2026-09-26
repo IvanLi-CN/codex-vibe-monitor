@@ -2,6 +2,20 @@ import type { ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import type { ModelPerformance } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { ModelIdentity } from "../shared/ModelIdentity";
+import {
+  ModelBreakdownMetricGridButton,
+  ModelBreakdownMetricHeader,
+  ModelBreakdownModelHeader,
+  ModelBreakdownModelSortButton,
+  ModelBreakdownModeToggle,
+} from "./DashboardModelBreakdownControls";
+import {
+  sortForMode,
+  sortModelPerformanceModels,
+  useDashboardModelBreakdownMode,
+  useDashboardModelBreakdownSort,
+} from "./dashboardModelBreakdown";
 import { ModelPerformanceModelIdentity } from "./ModelPerformanceModelIdentity";
 
 const METRIC_CELL_KEYS = [
@@ -11,6 +25,16 @@ const METRIC_CELL_KEYS = [
   "first-byte",
   "wall-clock-duration",
   "cumulative-duration",
+  "parallelism",
+] as const;
+
+const METRIC_LABEL_KEYS = [
+  "tpm",
+  "streamingRate",
+  "response",
+  "firstByte",
+  "wallClockDuration",
+  "cumulativeDuration",
   "parallelism",
 ] as const;
 
@@ -54,6 +78,14 @@ export function ModelPerformanceDetails({
 }: ModelPerformanceDetailsProps) {
   const { locale, t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const [mode] = useDashboardModelBreakdownMode();
+  const [sort, setSort] = useDashboardModelBreakdownSort("model-performance");
+  const effectiveSort = sortForMode(sort, mode);
+  const modelRows = sortModelPerformanceModels(
+    mode === "simple" ? (performance.modelGroups ?? performance.models) : performance.models,
+    effectiveSort,
+    localeTag,
+  );
   const labels = {
     tpm: t("dashboard.modelPerformance.columns.tpm"),
     streamingRate: t("dashboard.modelPerformance.columns.streamingRate"),
@@ -86,7 +118,7 @@ export function ModelPerformanceDetails({
     );
   }
 
-  if (performance.models.length === 0) {
+  if (modelRows.length === 0) {
     return (
       <div className="space-y-2" data-testid="model-performance-empty">
         <p className="font-semibold text-base-content">{title}</p>
@@ -100,33 +132,60 @@ export function ModelPerformanceDetails({
   if (presentation === "drawer") {
     return (
       <div className="space-y-4" data-testid="model-performance-drawer-content">
-        <div className="space-y-1.5">
-          <p className="text-sm leading-6 text-base-content/70">
-            {t("dashboard.modelPerformance.description")}
-          </p>
-          <p className="text-xs leading-5 text-base-content/58">
-            {t("dashboard.modelPerformance.overlapNote")}
-          </p>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <p className="text-sm leading-6 text-base-content/70">
+                {mode === "simple"
+                  ? t("dashboard.modelPerformance.descriptionSimple")
+                  : t("dashboard.modelPerformance.description")}
+              </p>
+              <p className="text-xs leading-5 text-base-content/58">
+                {t("dashboard.modelPerformance.overlapNote")}
+              </p>
+            </div>
+            <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+              <ModelBreakdownModelSortButton
+                label={
+                  mode === "simple"
+                    ? t("dashboard.modelPerformance.modelSimple")
+                    : t("dashboard.modelPerformance.model")
+                }
+                sort={effectiveSort}
+                onSort={setSort}
+                simple={mode === "simple"}
+              />
+              <ModelBreakdownModeToggle />
+            </div>
+          </div>
         </div>
         <ModelPerformanceMetricGrid
           label={t("dashboard.modelPerformance.total")}
           values={valuesFor(performance.total)}
           labels={labels}
+          sort={effectiveSort}
+          onSort={setSort}
         />
-        {performance.models.map((model) => (
+        {modelRows.map((model) => (
           <section
             key={`${model.model}:${model.reasoningEffort ?? ""}`}
             className="border-t border-base-300/70 pt-3.5 first:border-t-0 first:pt-0"
           >
-            <ModelPerformanceModelIdentity
+            <ModelPerformanceRowIdentity
               model={model.model}
-              effortValue={model.reasoningEffort}
+              reasoningEffort={model.reasoningEffort}
+              detailed={mode === "detailed"}
               className="w-full"
               modelClassName="text-sm font-semibold text-base-content"
               testId="model-performance-drawer-model-context"
             />
             <div className="mt-3">
-              <ModelPerformanceMetricGrid values={valuesFor(model)} labels={labels} />
+              <ModelPerformanceMetricGrid
+                values={valuesFor(model)}
+                labels={labels}
+                sort={effectiveSort}
+                onSort={setSort}
+              />
             </div>
           </section>
         ))}
@@ -137,13 +196,22 @@ export function ModelPerformanceDetails({
   return (
     <div className="space-y-2" data-testid="model-performance-tooltip-content">
       <div>
-        <p className="font-semibold text-base-content">{title}</p>
-        <p className="mt-0.5 text-xs leading-4 text-base-content/65">
-          {t("dashboard.modelPerformance.description")}
-        </p>
-        <p className="mt-1 text-xs leading-4 text-base-content/55">
-          {t("dashboard.modelPerformance.overlapNote")}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-base-content">{title}</p>
+            <p className="mt-0.5 text-xs leading-4 text-base-content/65">
+              {mode === "simple"
+                ? t("dashboard.modelPerformance.descriptionSimple")
+                : t("dashboard.modelPerformance.description")}
+            </p>
+            <p className="mt-1 text-xs leading-4 text-base-content/55">
+              {t("dashboard.modelPerformance.overlapNote")}
+            </p>
+          </div>
+          <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+            <ModelBreakdownModeToggle />
+          </div>
+        </div>
       </div>
       <div
         className="max-h-[min(28rem,calc(100dvh-8rem))] overflow-x-hidden overflow-y-auto"
@@ -157,26 +225,58 @@ export function ModelPerformanceDetails({
           </colgroup>
           <thead className="border-y border-base-300/55 bg-base-200/55 text-xs text-base-content/60">
             <tr>
-              <th scope="col" className="w-[19%] px-2 py-2 text-left font-semibold">
-                {t("dashboard.modelPerformance.model")}
-              </th>
-              {[
-                labels.tpm,
-                labels.streamingRate,
-                labels.response,
-                labels.firstByte,
-                labels.wallClockDuration,
-                labels.cumulativeDuration,
-                labels.parallelism,
-              ].map((label) => (
-                <th
-                  key={label}
-                  scope="col"
-                  className="border-l border-base-300/35 px-1.5 py-2 text-right font-semibold"
-                >
-                  {label}
-                </th>
-              ))}
+              <ModelBreakdownModelHeader
+                label={
+                  mode === "simple"
+                    ? t("dashboard.modelPerformance.modelSimple")
+                    : t("dashboard.modelPerformance.model")
+                }
+                sort={effectiveSort}
+                onSort={setSort}
+                simple={mode === "simple"}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.tpm}
+                column="tpm"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.streamingRate}
+                column="streaming-rate"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.response}
+                column="response"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.firstByte}
+                column="first-byte"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.wallClockDuration}
+                column="wall-clock-duration"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.cumulativeDuration}
+                column="cumulative-duration"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
+              <ModelBreakdownMetricHeader
+                label={labels.parallelism}
+                column="parallelism"
+                sort={effectiveSort}
+                onSort={setSort}
+              />
             </tr>
           </thead>
           <tbody>
@@ -185,13 +285,14 @@ export function ModelPerformanceDetails({
               values={valuesFor(performance.total)}
               emphasized
             />
-            {performance.models.map((model) => (
+            {modelRows.map((model) => (
               <ModelPerformanceTableRow
                 key={`${model.model}:${model.reasoningEffort ?? ""}`}
                 label={
-                  <ModelPerformanceModelIdentity
+                  <ModelPerformanceRowIdentity
                     model={model.model}
-                    effortValue={model.reasoningEffort}
+                    reasoningEffort={model.reasoningEffort}
+                    detailed={mode === "detailed"}
                     className="w-full"
                     modelClassName="font-semibold text-base-content/85"
                     testId="model-performance-table-model-context"
@@ -204,6 +305,52 @@ export function ModelPerformanceDetails({
         </table>
       </div>
     </div>
+  );
+}
+
+function ModelPerformanceRowIdentity({
+  model,
+  reasoningEffort,
+  detailed,
+  className,
+  modelClassName,
+  testId,
+}: {
+  model: string;
+  reasoningEffort?: string | null;
+  detailed: boolean;
+  className?: string;
+  modelClassName?: string;
+  testId?: string;
+}) {
+  if (detailed) {
+    return (
+      <ModelPerformanceModelIdentity
+        model={model}
+        effortValue={reasoningEffort}
+        className={className}
+        modelClassName={modelClassName}
+        testId={testId}
+      />
+    );
+  }
+
+  return (
+    <span
+      data-testid={testId}
+      data-model-context-display="model-only"
+      className={cn("flex min-w-0 max-w-full items-center gap-1.5", className)}
+      title={model}
+    >
+      <span aria-hidden="true">
+        <ModelIdentity
+          model={model}
+          className="h-5 w-5 max-w-full justify-start"
+          iconClassName="h-3.5 w-3.5"
+        />
+      </span>
+      <span className={cn("min-w-0 truncate font-mono", modelClassName)}>{model}</span>
+    </span>
   );
 }
 
@@ -243,13 +390,18 @@ function ModelPerformanceMetricGrid({
   label,
   values,
   labels,
+  sort,
+  onSort,
 }: {
   label?: string;
   values: string[];
   labels: Record<string, string>;
+  sort: Parameters<typeof ModelBreakdownMetricGridButton>[0]["sort"];
+  onSort: Parameters<typeof ModelBreakdownMetricGridButton>[0]["onSort"];
 }) {
-  const entries = Object.values(labels).map((metricLabel, index) => ({
-    label: metricLabel,
+  const entries = METRIC_CELL_KEYS.map((column, index) => ({
+    column,
+    label: labels[METRIC_LABEL_KEYS[index] ?? ""],
     value: values[index] ?? "—",
   }));
   return (
@@ -258,7 +410,14 @@ function ModelPerformanceMetricGrid({
       <dl className="grid grid-cols-2 gap-x-5 gap-y-2.5">
         {entries.map((entry) => (
           <div key={entry.label} className="min-w-0">
-            <dt className="text-xs leading-4 text-base-content/60">{entry.label}</dt>
+            <dt className="text-xs leading-4 text-base-content/60">
+              <ModelBreakdownMetricGridButton
+                label={entry.label}
+                column={entry.column}
+                sort={sort}
+                onSort={onSort}
+              />
+            </dt>
             <dd className="mt-0.5 truncate font-mono text-sm font-semibold tabular-nums text-base-content">
               {entry.value}
             </dd>
