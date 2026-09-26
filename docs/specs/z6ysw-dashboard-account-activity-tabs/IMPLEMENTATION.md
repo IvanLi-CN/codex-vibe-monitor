@@ -19,7 +19,7 @@
 
 - Shared Dashboard Tooltips now sync hover visibility through Radix `onOpenChange`, keeping the existing hoverable-content grace area while preserving controlled, click-pinned, focus, and long-press behavior.
 - InfoTooltip, upstream account metric details, Batch OAuth actions, and mailbox copy/editor overlays use `usePointerTransitionGuard`: an 8px padded trigger-to-surface corridor keeps slow pointer transfers open, leaving the corridor closes immediately, and stopping within it closes after 500ms. Pinned overlays bypass the guard.
-- Component tests and Storybook interaction stories cover 300ms transfer, surface entry, corridor exit, static timeout, click pinning, keyboard dismissal, long press, and narrow viewport entry.
+- Component tests and Storybook interaction stories cover 300ms transfer, surface entry, corridor exit, static timeout, click pinning, keyboard dismissal, long press, and narrow viewport entry. The Dashboard recent transfer story mounts the production `DashboardNetworkRecentPopover` with a fixed topic snapshot, and its outside-press test verifies that the lock clears before the next hover timeout.
 
 ## Coverage / rollout summary
 
