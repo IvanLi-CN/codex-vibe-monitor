@@ -174,3 +174,25 @@ immutable preparation baseline remains 32 and 23.
 Validation for this extraction is the focused runtime overlay/capture-phase
 tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
 Cargo checking, all-target Clippy, and `git diff --check`.
+
+The error-distribution and SSE extraction moves the complete inline test module
+from `src/api/slices/error_distribution_and_sse.rs` into
+`src/api/slices/error_distribution_and_sse/tests.rs`, and moves the complete
+dashboard realtime projection region from `BroadcastStateCache` through
+`complete_dashboard_projection_publish_window` into
+`src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs`.
+On the verified main merge base `b2db1923d5022c0a4c742650b91f5961392f211c`,
+the source regions contain 1,314 and 1,063 physical lines. The resulting
+parent is 2,416 physical lines, the production child is 1,065 lines, and the
+test child is 1,287 lines, all within their targets. The test module path,
+test names, assertions, route and serde contracts, and runtime behavior remain
+unchanged; the required dashboard helper visibility is crate-scoped and the
+existing parent re-export preserves callers. The parent is removed from the
+quality policy inventory. The current inventory is 27 production and 21
+test/helper candidates (48 entries total), while the immutable preparation
+baseline remains 32 and 23.
+
+Validation for this extraction is the focused
+`cargo test error_distribution_and_sse::tests -- --nocapture` selector,
+rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
+checking, all-target Clippy, and `git diff --check`.
