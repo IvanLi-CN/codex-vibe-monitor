@@ -1735,6 +1735,13 @@ async fn legacy_raw_blob_link_seed_completed(
         != 0)
 }
 
+pub(crate) async fn proxy_raw_blob_link_seed_completed(pool: &Pool<Sqlite>) -> Result<bool> {
+    let mut tx = pool.begin().await?;
+    let completed = legacy_raw_blob_link_seed_completed(&mut tx).await?;
+    tx.rollback().await?;
+    Ok(completed)
+}
+
 fn legacy_archive_segment_id_range(part_key: &str) -> Option<(i64, i64)> {
     let encoded = part_key.strip_prefix("part-")?;
     let (lower, remainder) = encoded.split_once('-')?;

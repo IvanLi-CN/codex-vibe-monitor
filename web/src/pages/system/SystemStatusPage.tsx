@@ -447,6 +447,7 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const eventBusState = eventBus?.state ?? "unknown";
   const backfillState = backfill?.state ?? "unknown";
   const recovery = health?.retentionRecovery;
+  const rawOrphanSweep = health?.rawOrphanSweep;
   const rawCapture = health?.rawCapture;
   const rawCaptureState = ["capturing", "storage_suppressed", "unknown"].includes(
     rawCapture?.state ?? "unknown",
@@ -510,6 +511,44 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
         recovery.consecutiveFailureCount != null
           ? t("system.status.runtimePressure.retentionRecovery.failureCountHint", {
               count: recovery.consecutiveFailureCount.toLocaleString(),
+            })
+          : undefined,
+      ]
+        .filter((hint): hint is string => hint != null)
+        .join(" · ")
+    : "";
+  const rawOrphanSweepState = ["idle", "scanning", "deferred", "degraded"].includes(
+    rawOrphanSweep?.state ?? "",
+  )
+    ? (rawOrphanSweep?.state ?? "unknown")
+    : "unknown";
+  const rawOrphanSweepDeferReason = ["sqlite_pressure", "retry_backoff"].includes(
+    rawOrphanSweep?.deferReason ?? "",
+  )
+    ? rawOrphanSweep?.deferReason
+    : undefined;
+  const rawOrphanSweepHints = rawOrphanSweep
+    ? [
+        rawOrphanSweep.lastProgressAt
+          ? t("system.status.runtimePressure.rawOrphanSweep.progressHint", {
+              progress: formatRecoveryTimestamp(rawOrphanSweep.lastProgressAt),
+            })
+          : undefined,
+        rawOrphanSweep.nextRetryAt
+          ? t("system.status.runtimePressure.retentionRecovery.retryHint", {
+              retry: formatRecoveryTimestamp(rawOrphanSweep.nextRetryAt),
+            })
+          : undefined,
+        rawOrphanSweepDeferReason
+          ? t("system.status.runtimePressure.rawOrphanSweep.deferHint", {
+              reason: t(
+                `system.status.runtimePressure.retentionRecovery.deferReasons.${rawOrphanSweepDeferReason}`,
+              ),
+            })
+          : undefined,
+        rawOrphanSweep.failureFingerprint
+          ? t("system.status.runtimePressure.rawOrphanSweep.failureHint", {
+              fingerprint: rawOrphanSweep.failureFingerprint,
             })
           : undefined,
       ]
@@ -840,6 +879,57 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                     value={formatRecoveryTimestamp(recovery?.lastProgressAt)}
                     valueTitle={recovery?.lastProgressAt}
                     hint={recoveryHints || t("system.status.runtimePressure.additiveUnknown")}
+                  />
+                </div>
+              </div>
+              <div
+                className="col-span-full border-t border-base-300/60 pt-3"
+                data-testid="system-status-raw-orphan-sweep"
+              >
+                <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                  <h4 className="text-sm font-semibold text-base-content">
+                    {t("system.status.runtimePressure.rawOrphanSweep.title")}
+                  </h4>
+                  <span className="text-xs font-medium text-base-content/70">
+                    {t(
+                      `system.status.runtimePressure.rawOrphanSweep.states.${rawOrphanSweepState}`,
+                    )}
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.inspected")}
+                    value={
+                      rawOrphanSweep?.inspectedEntries != null
+                        ? rawOrphanSweep.inspectedEntries.toLocaleString()
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                    hint={t("system.status.runtimePressure.rawOrphanSweep.inspectedHint")}
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.referenced")}
+                    value={
+                      rawOrphanSweep?.referencedSkipped != null
+                        ? rawOrphanSweep.referencedSkipped.toLocaleString()
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.quarantined")}
+                    value={
+                      rawOrphanSweep?.quarantined != null
+                        ? rawOrphanSweep.quarantined.toLocaleString()
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.removed")}
+                    value={
+                      rawOrphanSweep?.removed != null
+                        ? rawOrphanSweep.removed.toLocaleString()
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                    hint={rawOrphanSweepHints || t("system.status.runtimePressure.additiveUnknown")}
                   />
                 </div>
               </div>

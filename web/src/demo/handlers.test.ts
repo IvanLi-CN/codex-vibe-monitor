@@ -87,10 +87,14 @@ describe("demo MSW handlers", () => {
       runtimePressureHealth: {
         state: string;
         dashboardProjection: { livePathDbReadCount: number };
+        rawOrphanSweep: { state: string };
       };
     };
     expect(payload.runtimePressureHealth.state).toBe(expectedState);
     expect(payload.runtimePressureHealth.dashboardProjection.livePathDbReadCount).toBe(0);
+    expect(payload.runtimePressureHealth.rawOrphanSweep.state).toBe(
+      expectedState === "deferred" || expectedState === "degraded" ? expectedState : "idle",
+    );
   });
 
   it("serves deterministic dashboard activity in the shape used by the production normalizer", async () => {

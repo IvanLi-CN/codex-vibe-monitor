@@ -30,6 +30,7 @@
 - Missing or partial backlog/prepared/quarantined counters remain unknown in the UI rather than being presented as zero.
 - Status fields, UI copy, and structured recovery logs expose the recovery snapshot fields without raw content, SQL/bindings, account identifiers, or complete paths.
 - Runtime Pressure renders an unmeasured raw-reference confirmation as `-`; measured values are emitted only for transactions that performed the ledger confirmation.
+- Runtime Pressure also exposes optional `rawOrphanSweep` state and per-slice directory, reference-skip, quarantine, and release counts, along with durable retry/progress fields. A restarted process rehydrates scheduling fields from the existing `raw_payload_files` cursor; last-slice counters remain unknown until the worker completes a slice.
 
 ## PR2: Raw Capture Circuit Breaker
 
@@ -43,10 +44,13 @@
 
 ## PR3: Historical Raw-File Reconciliation
 
-- `retention_recovery_cursors` adds the `raw_payload_files` scope. Each pass selects at most 32 direct regular raw files with a fixed-size heap and advances a monotonic cursor with a conditional tail wrap. The scanner never descends into the overflow spool or another subdirectory and never retains the complete directory listing.
+- The `raw_payload_files` cursor scope and retry columns are reused without schema changes. Its cursor rotates only through bounded missing-ledger cleanup; directory traversal is held in one process-local `ReadDir` iterator and is never inferred from a filename.
 - `retention_raw_reconciliation` records a normalized candidate path, metadata identity, byte size, and durable quarantine timestamp. First observation commits the ledger before a candidate can become eligible; a path replacement or metadata identity change resets its quarantine observation. Missing files are cleaned from the ledger in bounded batches so a crash between physical deletion and ledger cleanup is recoverable.
-- Raw release checks the link table and all live raw-owner columns, including `.bin`/`.bin.gz` fallback resolution. It rechecks identity and references immediately before removal under maintenance admission and the existing raw-directory lock. Physical deletion precedes ledger cleanup; any failure retains the file or leaves a stale ledger for a later bounded repair.
-- Dry-run retention does not create quarantine rows or mutate raw files. Confirmed releases continue to trigger the existing bounded physical-inventory reset, without changing the System Status field contract.
+- One independent worker per service process reads no more than 128 directory entries and considers no more than 32 supported direct regular files per slice. It resumes after one second while work remains, closes and reopens the iterator after EOF with a five-minute delay, and restarts from the directory root after process restart.
+- Ownership is checked in a bounded batch only through indexed `proxy_raw_payload_blob_links(raw_path)` lookups after confirming the legacy seed marker. Existing absolute/relative aliases and compressed-path fallback precedence are preserved in memory; the final metadata and indexed-link check is repeated under maintenance admission and the existing directory lock.
+- The worker fails closed while the seed marker is absent. It records reset intent before unlink, adjusts in-memory raw bytes only after successful unlink, and clears the quarantine ledger only after successful deletion or a later bounded check proves the file absent. Per-item failures do not skip the rest of the current candidate batch.
+- Final release attempts the directory lock without blocking while maintenance admission is held. Contention records an item failure and releases admission before continuing; a failed unlink is isolated to that candidate so the same slice can release later proven orphans. Successful progress resumes after one second, while an exhausted directory iterator closes and retries after five minutes.
+- Pressure denial occurs before raw filesystem inspection, including directory open/advance, reconciliation-ledger metadata checks, candidate metadata, and fallback-path checks; it schedules a five-minute retry. For bounded filesystem-only slices, the worker retains the background pressure slot but releases the SQLite write-coordinator permit, preventing another background task from entering without blocking P1 or interactive writes. Ordinary failed slices use 5/10/20/40/60-minute persisted backoff; successful progress resumes after one second and EOF schedules a five-minute rescan. Dry-run retention performs one bounded read-only slice, does not create quarantine rows or mutate raw files, and reports zero quarantined work.
 
 ### System Status
 
@@ -58,23 +62,20 @@
 
 - Recovery requires no operator command, manual deletion, process restart, or `VACUUM`.
 - The archive file format and deterministic path contract are unchanged. SQLite row deletion may make pages reusable but does not guarantee a smaller database file.
-- Unlinked raw residuals are reconciled by the independent bounded raw-file stage. Files that fail supported-name, regular-file, identity, owner-reference, or quarantine gates are not deleted; filesystem-available space remains the safety boundary for those retained residuals.
+- Unlinked raw residuals are reconciled by the independently scheduled bounded worker. Files that fail supported-name, regular-file, identity, owner-reference, seed-marker, or quarantine gates are not deleted; filesystem-available space remains the safety boundary for those retained residuals.
 - This work reduces retention failure amplification; it does not establish a cause for observed upstream throughput changes or the previously observed approximately 50 GiB project footprint.
 
 ## Verification
 
 - `cargo fmt --all -- --check`, Linux `cargo check --locked --all-targets --all-features`, and Linux Clippy with `-D warnings` pass.
-- The current candidate passes the targeted Rust checks and the stateful SQLite profile; archive-specific recovery tests run in the disjoint archive-file-I/O profile. Any unrelated lightweight summary-projection failure is not part of this retention change and is not used as evidence for this candidate.
-- The `stateful-sqlite` profile passes 1306 tests, including P1 admission for failure persistence, prepared-schema re-entry, unmeasured status counts, due published work past 32 unexpired quarantines, and successful live-mirror ledger retirement.
-- The current candidate `archive-file-io` profile passes 277 tests, including full archive-column identity mismatch rollback, retry after publication failure, source/raw ownership retention, independent orphan cleanup, sanitized failure fingerprints, prepared-key failure attribution, publication-kind quarantine and cursor backoff preservation, the authoritative-manifest preservation guard, the republish-safe quarantine guard, admission-before-I/O legacy recovery, bounded directory-entry discovery, monotonic cursor advancement, the referenced-window and truncated-sibling starvation guards, the 32-file bound, cursor wrap for late earlier paths, and expired live-mirror cleanup without Summary proof.
-- Startup hydrates the raw-capture circuit fail-closed until a fresh bounded inventory pass completes. Inventory refreshes carry an in-memory generation and mutation checkpoint so retention resets cannot be overwritten and concurrent raw file accounting cannot be undercounted; durable raw bytes are refreshed with the accepted inventory snapshot.
-- The archive-file-I/O coverage also verifies expired live-mirror cleanup without Summary proof and bounded legacy identity reconciliation.
-- The focused retention regression verifies absolute fallback-root aliases for both raw compression variants and preserves shared ownership during finalization.
-- Web unit tests pass 1542 tests, type checking passes, and repo-wide Biome exits successfully with 86 existing warnings. Storybook System Workspace interaction tests pass 98 tests and the production build passes for the System Status retention-recovery and raw-capture surfaces and their translations; the build reports the existing large-bundle warning.
+- Source commit `f7bf57fdaeb88b856fc2dc5367ec120f775e2d11` passes the refreshed Linux `stateful-sqlite` profile (1309/1309) and `archive-file-io` profile (288/288), including bounded directory slices, persistent retry scheduling, pressure refusal before every raw filesystem inspection (including existing reconciliation-ledger rows), retention of the background pressure slot while the SQLite write-coordinator permit is released for bounded filesystem work, indexed ownership checks, root anchoring, restart recovery, expired-orphan release, continuation after one unlink failure, nonblocking behavior under a held directory lock, and zero quarantine reporting during dry-run. Logs: `/srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final3-stateful-sqlite.log` and `/srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final3-archive-file-io.log`.
+- Shared-testbox empirical test `bounded_raw_sweep_yields_to_concurrent_p1_and_interactive_writes` passes with 1,024 filler directory entries, concurrent 40-write P1 and 40-write interactive loops, zero write errors, per-pass inspection bounded to 128 entries, and physical release of the expired orphan. Evidence: `/srv/codex/agents/01a0bf3a-771a-7483-8a9c-b8e3cb703af0/raw-orphan-final3-archive-file-io.log`.
+- Web unit tests pass 1553 tests (6 skipped); type checking, lint, and production build pass. Repository-wide Biome reports 85 existing warnings, with no diagnostics in the changed UI files. Storybook System Workspace interactions pass 103 tests (55 skipped).
+- The System Status UI evidence is a fixed `ui_demo` sample captured from the rendered page surface and confirmed by the owner. The persisted image is `./assets/raw-orphan-sweep-desktop.png`; it is demo data, not production telemetry.
 
 ## References
 
 - `./SPEC.md`
 - `./HISTORY.md`
 - `../../adr/0016-autonomous-raw-capture-circuit-breaker.md`
-- `../../adr/0017-historical-raw-file-reconciliation.md`
+- `../../adr/0018-bounded-raw-orphan-sweep-worker.md`

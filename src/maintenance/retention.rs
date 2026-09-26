@@ -4,9 +4,9 @@ use futures_util::TryStreamExt;
 use sqlx::{FromRow, Row};
 use std::{
     cell::RefCell,
-    fs::File,
+    fs::{File, ReadDir},
     future::Future,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -28,7 +28,13 @@ const SYSTEM_TASK_RUN_RETENTION_PASS_INTERVAL: Duration = Duration::from_secs(15
 const SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const RETENTION_RECOVERY_LEGACY_SCAN_BATCH: usize = 32;
 const RETENTION_RAW_RECONCILIATION_SCAN_BATCH: usize = 32;
+const RETENTION_RAW_RECONCILIATION_DIRECTORY_ENTRY_BATCH: usize = 128;
 const RETENTION_RAW_RECONCILIATION_SCOPE: &str = "raw_payload_files";
+const RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS: i64 = 1;
+const RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS: i64 = 5 * 60;
+const RETENTION_RAW_RECONCILIATION_EMPTY_RETRY_SECS: i64 = 5 * 60;
+const RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS: [i64; 5] =
+    [5 * 60, 10 * 60, 20 * 60, 40 * 60, 60 * 60];
 const RETENTION_RECOVERY_QUARANTINE_GRACE_SECS: i64 = 24 * 60 * 60;
 const RETENTION_RECOVERY_STATE_PREPARING: &str = "preparing";
 const RETENTION_RECOVERY_STATE_PUBLISHED: &str = "published";
@@ -107,6 +113,18 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_ARCHIVE_IO:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_DIRECTORY_OPENS:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_DIRECTORY_ENTRIES:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_DIRECTORY_PRESSURE_PROBES:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_DIRECTORY_P1_PROBES:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_FILE_METADATA_CHECKS:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>;
+    pub(crate) static RETENTION_TEST_RAW_UNLINK_FAILURE:
+        std::sync::Arc<std::sync::atomic::AtomicBool>;
 }
 
 #[cfg(test)]
@@ -163,8 +181,63 @@ fn retention_test_legacy_archive_io_event() {
     });
 }
 
+#[cfg(test)]
+fn retention_test_raw_directory_open_event() {
+    let _ = RETENTION_TEST_RAW_DIRECTORY_OPENS.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+#[cfg(test)]
+fn retention_test_raw_directory_entry_event() {
+    let _ = RETENTION_TEST_RAW_DIRECTORY_ENTRIES.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    let _ = RETENTION_TEST_RAW_DIRECTORY_PRESSURE_PROBES.try_with(|counter| {
+        let pressure_gate = RETENTION_TEST_DB_PRESSURE_GATE
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        if pressure_gate.is_some_and(|gate| {
+            gate.try_begin_background("raw_sweep_directory_probe")
+                .is_err()
+        }) {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let _ = RETENTION_TEST_RAW_DIRECTORY_P1_PROBES.try_with(|counter| {
+        let coordinator = RETENTION_TEST_WRITE_COORDINATOR
+            .try_with(std::sync::Arc::clone)
+            .ok();
+        if coordinator.is_some_and(|coordinator| {
+            coordinator
+                .try_acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal,
+                )
+                .is_some()
+        }) {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
+fn retention_raw_file_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    #[cfg(test)]
+    let _ = RETENTION_TEST_RAW_FILE_METADATA_CHECKS.try_with(|counter| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+    fs::symlink_metadata(path)
+}
+
+#[cfg(test)]
+fn retention_test_raw_unlink_should_fail() -> bool {
+    RETENTION_TEST_RAW_UNLINK_FAILURE
+        .try_with(|flag| flag.swap(false, std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
 static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static RAW_ORPHAN_SWEEP_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Advisory directory lock shared by archive publishers and cleanup finalizers. SQLite admission
 /// serializes database writers, while this lock also fences their filesystem rename/delete window.
@@ -317,6 +390,36 @@ pub(crate) struct RetentionRecoveryHealthSnapshot {
     pub(crate) consecutive_failure_count: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RawOrphanSweepHealthSnapshot {
+    pub(crate) state: String,
+    pub(crate) inspected_entries: Option<usize>,
+    pub(crate) referenced_skipped: Option<usize>,
+    pub(crate) quarantined: Option<usize>,
+    pub(crate) removed: Option<usize>,
+    pub(crate) last_progress_at: Option<String>,
+    pub(crate) next_retry_at: Option<String>,
+    pub(crate) defer_reason: Option<String>,
+    pub(crate) failure_fingerprint: Option<String>,
+}
+
+impl Default for RawOrphanSweepHealthSnapshot {
+    fn default() -> Self {
+        Self {
+            state: "unknown".to_string(),
+            inspected_entries: None,
+            referenced_skipped: None,
+            quarantined: None,
+            removed: None,
+            last_progress_at: None,
+            next_retry_at: None,
+            defer_reason: None,
+            failure_fingerprint: None,
+        }
+    }
+}
+
 impl Default for RetentionRecoveryHealthSnapshot {
     fn default() -> Self {
         Self {
@@ -338,11 +441,20 @@ impl Default for RetentionRecoveryHealthSnapshot {
 
 static RETENTION_RECOVERY_HEALTH: Lazy<std::sync::Mutex<RetentionRecoveryHealthSnapshot>> =
     Lazy::new(|| std::sync::Mutex::new(RetentionRecoveryHealthSnapshot::default()));
+static RAW_ORPHAN_SWEEP_HEALTH: Lazy<std::sync::Mutex<RawOrphanSweepHealthSnapshot>> =
+    Lazy::new(|| std::sync::Mutex::new(RawOrphanSweepHealthSnapshot::default()));
 
 pub(crate) fn retention_recovery_health_snapshot() -> RetentionRecoveryHealthSnapshot {
     RETENTION_RECOVERY_HEALTH
         .lock()
         .expect("retention recovery health")
+        .clone()
+}
+
+pub(crate) fn raw_orphan_sweep_health_snapshot() -> RawOrphanSweepHealthSnapshot {
+    RAW_ORPHAN_SWEEP_HEALTH
+        .lock()
+        .expect("raw orphan sweep health")
         .clone()
 }
 
@@ -912,6 +1024,24 @@ impl RetentionWriteAdmission {
     pub(super) fn p1_waiter_count(&self) -> usize {
         self.p1_waiter_count
     }
+
+    fn release_write_permit_keep_pressure_slot(self) -> crate::db_pressure::DbBackgroundPermit {
+        let Self {
+            write_permit,
+            _pressure_permit,
+            ..
+        } = self;
+        drop(write_permit);
+        _pressure_permit
+    }
+}
+
+async fn acquire_retention_filesystem_pressure_slot(
+    operation: &'static str,
+) -> Option<crate::db_pressure::DbBackgroundPermit> {
+    acquire_retention_write_admission(operation)
+        .await
+        .map(RetentionWriteAdmission::release_write_permit_keep_pressure_slot)
 }
 
 pub(super) async fn acquire_retention_write_admission(
@@ -931,6 +1061,29 @@ pub(super) async fn acquire_retention_write_admission(
         retention_record_defer(operation, reason);
         return None;
     }
+    let (mut write_permit, coordinator_snapshot) =
+        acquire_retention_write_coordinator(operation).await?;
+    match pressure_gate.try_begin_background(operation) {
+        Ok(pressure_permit) => Some(RetentionWriteAdmission {
+            write_permit,
+            _pressure_permit: pressure_permit,
+            p1_waiter_count: coordinator_snapshot.p1_waiter_count,
+        }),
+        Err(reason) => {
+            retention_record_defer(operation, reason);
+            write_permit.revoke_fairness_admission();
+            drop(write_permit);
+            None
+        }
+    }
+}
+
+async fn acquire_retention_write_coordinator(
+    operation: &'static str,
+) -> Option<(
+    crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
+    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
+)> {
     #[cfg(test)]
     let coordinator = RETENTION_TEST_WRITE_COORDINATOR
         .try_with(std::sync::Arc::clone)
@@ -951,24 +1104,11 @@ pub(super) async fn acquire_retention_write_admission(
                 .await,
         ),
     };
-    let Some(mut write_permit) = write_permit else {
+    let Some(write_permit) = write_permit else {
         retention_record_defer(operation, "shutdown");
         return None;
     };
-    let coordinator_snapshot = coordinator.snapshot().await;
-    match pressure_gate.try_begin_background(operation) {
-        Ok(pressure_permit) => Some(RetentionWriteAdmission {
-            write_permit,
-            _pressure_permit: pressure_permit,
-            p1_waiter_count: coordinator_snapshot.p1_waiter_count,
-        }),
-        Err(reason) => {
-            retention_record_defer(operation, reason);
-            write_permit.revoke_fairness_admission();
-            drop(write_permit);
-            None
-        }
-    }
+    Some((write_permit, coordinator.snapshot().await))
 }
 
 #[derive(Debug, Default)]
@@ -3876,108 +4016,95 @@ struct RetentionRawReconciliationRow {
     quarantined_at: String,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Default)]
+pub(crate) struct RetentionRawDirectoryTraversal {
+    root: Option<PathBuf>,
+    directory: Option<ReadDir>,
+}
+
 struct RetentionRawDirectoryEntry {
-    name: String,
     path: PathBuf,
 }
 
-impl Ord for RetentionRawDirectoryEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name.cmp(&other.name)
-    }
+struct RetentionRawDirectorySlice {
+    directory: Option<ReadDir>,
+    candidates: Vec<RetentionRawDirectoryEntry>,
+    inspected_entries: usize,
+    reached_end: bool,
+    failures: usize,
 }
 
-impl PartialOrd for RetentionRawDirectoryEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-struct RetentionRawDirectorySelection {
-    entries: Vec<RetentionRawDirectoryEntry>,
-}
-
-struct RetentionRawCandidateScan {
-    candidates: Vec<PathBuf>,
-    progress: Option<String>,
-}
-
-fn collect_bounded_retention_raw_directory_entries(
+fn read_retention_raw_directory_slice(
     root: &Path,
-    cursor: &str,
-    limit: usize,
-) -> Result<RetentionRawDirectorySelection> {
-    if limit == 0 {
-        return Ok(RetentionRawDirectorySelection {
-            entries: Vec::new(),
-        });
-    }
-    let directory = match fs::read_dir(root) {
-        Ok(directory) => directory,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(RetentionRawDirectorySelection {
-                entries: Vec::new(),
-            });
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "failed to read raw reconciliation directory {}",
-                    root.display()
-                )
-            });
-        }
-    };
-    let entries = directory.map(
-        |entry| -> std::io::Result<Option<RetentionRawDirectoryEntry>> {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if !file_type.is_file() {
-                return Ok(None);
+    mut directory: Option<ReadDir>,
+) -> Result<RetentionRawDirectorySlice> {
+    if directory.is_none() {
+        #[cfg(test)]
+        retention_test_raw_directory_open_event();
+        directory = match fs::read_dir(root) {
+            Ok(directory) => Some(directory),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(RetentionRawDirectorySlice {
+                    directory: None,
+                    candidates: Vec::new(),
+                    inspected_entries: 0,
+                    reached_end: true,
+                    failures: 0,
+                });
             }
-            Ok(Some(RetentionRawDirectoryEntry {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                path: entry.path(),
-            }))
-        },
-    );
-    let mut heap = std::collections::BinaryHeap::with_capacity(limit);
-    for entry in entries {
-        let Some(entry) = entry? else {
-            continue;
+            Err(error) => {
+                return Err(anyhow!(
+                    "failed to open raw reconciliation directory ({})",
+                    error.kind()
+                ));
+            }
         };
-        if !cursor.is_empty() && entry.name.as_str() <= cursor {
+    }
+
+    let mut candidates = Vec::with_capacity(RETENTION_RAW_RECONCILIATION_SCAN_BATCH);
+    let mut inspected_entries = 0;
+    let mut failures = 0;
+    let mut reached_end = false;
+    let directory_state = directory
+        .as_mut()
+        .expect("raw directory is opened or returned as absent");
+    for _ in 0..RETENTION_RAW_RECONCILIATION_DIRECTORY_ENTRY_BATCH {
+        #[cfg(test)]
+        retention_test_raw_directory_entry_event();
+        let Some(entry) = directory_state.next() else {
+            reached_end = true;
+            break;
+        };
+        inspected_entries += 1;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                failures += 1;
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        if !retention_raw_reconciliation_supported_name(&name.to_string_lossy()) {
             continue;
         }
-        if heap.len() < limit {
-            heap.push(entry);
-        } else if heap.peek().is_some_and(|largest| entry.name < largest.name) {
-            heap.pop();
-            heap.push(entry);
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_file() => {
+                candidates.push(RetentionRawDirectoryEntry { path: entry.path() });
+                if candidates.len() >= RETENTION_RAW_RECONCILIATION_SCAN_BATCH {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => failures += 1,
         }
     }
-    let mut entries = heap.into_vec();
-    entries.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-    Ok(RetentionRawDirectorySelection { entries })
-}
 
-fn collect_retention_raw_candidates_after_cursor(
-    root: &Path,
-    cursor: &str,
-    limit: usize,
-) -> Result<RetentionRawCandidateScan> {
-    let selection = collect_bounded_retention_raw_directory_entries(root, cursor, limit)?;
-    let progress = selection.entries.last().map(|entry| entry.name.clone());
-    let candidates = selection
-        .entries
-        .into_iter()
-        .filter(|entry| retention_raw_reconciliation_supported_name(&entry.name))
-        .map(|entry| entry.path)
-        .collect();
-    Ok(RetentionRawCandidateScan {
+    Ok(RetentionRawDirectorySlice {
+        directory: if reached_end { None } else { directory },
         candidates,
-        progress,
+        inspected_entries,
+        reached_end,
+        failures,
     })
 }
 
@@ -4045,48 +4172,71 @@ fn retention_raw_reference_path_variants(config: &AppConfig, candidate: &Path) -
     paths
 }
 
-async fn retention_raw_reference_paths(
+async fn retention_raw_link_paths(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
-    candidate: &Path,
-) -> Result<Vec<String>> {
-    let paths = retention_raw_reference_path_variants(config, candidate);
+    candidates: &[PathBuf],
+) -> Result<std::collections::HashSet<String>> {
+    if candidates.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    if !crate::schema::proxy_raw_blob_link_seed_completed(pool).await? {
+        bail!("raw blob-link seed completion marker is missing");
+    }
+
+    let mut paths = std::collections::HashSet::new();
+    for candidate in candidates {
+        paths.extend(retention_raw_reference_path_variants(config, candidate));
+    }
+    let paths = paths.into_iter().collect::<Vec<_>>();
     let placeholders = (1..=paths.len())
-        .map(|index| format!("(?{index})"))
+        .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()
         .join(", ");
     let query = format!(
-        r#"
-        WITH candidate_paths(raw_path) AS (VALUES {placeholders})
-        SELECT DISTINCT referenced.raw_path
-        FROM (
-            SELECT links.raw_path
-            FROM proxy_raw_payload_blob_links AS links
-            INNER JOIN candidate_paths ON candidate_paths.raw_path = links.raw_path
-            UNION ALL
-            SELECT invocations.request_raw_path
-            FROM codex_invocations AS invocations
-            INNER JOIN candidate_paths ON candidate_paths.raw_path = invocations.request_raw_path
-            WHERE invocations.request_raw_path IS NOT NULL
-            UNION ALL
-            SELECT invocations.response_raw_path
-            FROM codex_invocations AS invocations
-            INNER JOIN candidate_paths ON candidate_paths.raw_path = invocations.response_raw_path
-            WHERE invocations.response_raw_path IS NOT NULL
-            UNION ALL
-            SELECT attempts.response_raw_path
-            FROM pool_upstream_request_attempts AS attempts
-            INNER JOIN candidate_paths ON candidate_paths.raw_path = attempts.response_raw_path
-            WHERE attempts.response_raw_path IS NOT NULL
-        ) AS referenced
-        WHERE referenced.raw_path IS NOT NULL
-        "#
+        "SELECT DISTINCT raw_path FROM proxy_raw_payload_blob_links WHERE raw_path IN ({placeholders})"
     );
     let mut query = sqlx::query_scalar::<_, String>(&query);
     for path in &paths {
         query = query.bind(path);
     }
-    Ok(query.fetch_all(pool).await?)
+    Ok(query.fetch_all(pool).await?.into_iter().collect())
+}
+
+fn retention_raw_candidates_with_links(
+    config: &AppConfig,
+    candidates: &[PathBuf],
+    link_paths: &std::collections::HashSet<String>,
+    raw_path_fallback_root: Option<&Path>,
+) -> std::collections::HashSet<PathBuf> {
+    let mut referenced = std::collections::HashSet::new();
+    for candidate in candidates {
+        let candidate = normalize_path_for_compare(candidate);
+        let variants = retention_raw_reference_path_variants(config, &candidate);
+        for referenced_path in link_paths {
+            if !variants.iter().any(|variant| variant == referenced_path) {
+                continue;
+            }
+            let resolved =
+                resolved_raw_path_read_candidates(referenced_path, raw_path_fallback_root);
+            let Some(candidate_index) = resolved
+                .iter()
+                .position(|path| normalize_path_for_compare(path) == candidate)
+            else {
+                continue;
+            };
+            if candidate_index == 0
+                || !resolved
+                    .iter()
+                    .take(candidate_index)
+                    .any(|path| path.exists())
+            {
+                referenced.insert(candidate.clone());
+                break;
+            }
+        }
+    }
+    referenced
 }
 
 async fn retention_raw_candidate_is_referenced(
@@ -4096,25 +4246,15 @@ async fn retention_raw_candidate_is_referenced(
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<bool> {
     let candidate = normalize_path_for_compare(candidate);
-    let referenced_paths = retention_raw_reference_paths(pool, config, &candidate).await?;
-    for referenced_path in referenced_paths {
-        let resolved = resolved_raw_path_read_candidates(&referenced_path, raw_path_fallback_root);
-        let Some(candidate_index) = resolved
-            .iter()
-            .position(|path| normalize_path_for_compare(path) == candidate)
-        else {
-            continue;
-        };
-        if candidate_index == 0
-            || !resolved
-                .iter()
-                .take(candidate_index)
-                .any(|path| path.exists())
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let candidates = [candidate.clone()];
+    let linked_paths = retention_raw_link_paths(pool, config, &candidates).await?;
+    Ok(retention_raw_candidates_with_links(
+        config,
+        &candidates,
+        &linked_paths,
+        raw_path_fallback_root,
+    )
+    .contains(&candidate))
 }
 
 async fn load_retention_raw_reconciliation_row(
@@ -4201,46 +4341,152 @@ async fn clear_retention_raw_reconciliation_row(
     Ok(())
 }
 
+async fn clear_retention_raw_reconciliation_row_with_pressure_slot(
+    pool: &Pool<Sqlite>,
+    raw_path: &str,
+    file_identity: Option<&str>,
+) -> Result<()> {
+    let Some((write_permit, _snapshot)) =
+        acquire_retention_write_coordinator("raw_reconciliation_ledger_cleanup").await
+    else {
+        return Err(retention_write_deferred(
+            "raw_reconciliation_ledger_cleanup",
+        ));
+    };
+    if let Some(file_identity) = file_identity {
+        sqlx::query(
+            "DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1 AND file_identity = ?2",
+        )
+        .bind(raw_path)
+        .bind(file_identity)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(raw_path)
+            .execute(pool)
+            .await?;
+    }
+    drop(write_permit);
+    Ok(())
+}
+
 async fn cleanup_missing_retention_raw_reconciliation_rows(
     pool: &Pool<Sqlite>,
+    raw_root: &Path,
     limit: usize,
-) -> Result<()> {
+) -> Result<(usize, usize, bool)> {
+    let cursor = sqlx::query_scalar::<_, String>(
+        "SELECT cursor FROM retention_recovery_cursors WHERE scope = ?1",
+    )
+    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
     let rows = sqlx::query_as::<_, RetentionRawReconciliationRow>(
         r#"
         SELECT raw_path, file_identity, byte_size, quarantined_at
         FROM retention_raw_reconciliation
+        WHERE raw_path > ?1
         ORDER BY raw_path
-        LIMIT ?1
+        LIMIT ?2
         "#,
     )
+    .bind(&cursor)
     .bind(limit as i64)
     .fetch_all(pool)
     .await?;
-    for row in rows {
-        match fs::symlink_metadata(&row.raw_path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                clear_retention_raw_reconciliation_row(
-                    pool,
-                    &row.raw_path,
-                    Some(&row.file_identity),
-                )
-                .await?;
+    let mut failures = 0;
+    let mut progressed = None;
+    for row in &rows {
+        let candidate = normalize_path_for_compare(Path::new(&row.raw_path));
+        if !candidate.starts_with(raw_root) {
+            if let Err(error) = clear_retention_raw_reconciliation_row(
+                pool,
+                &row.raw_path,
+                Some(&row.file_identity),
+            )
+            .await
+            {
+                failures += 1;
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
             }
-            Ok(metadata) if !metadata.file_type().is_file() => {
-                clear_retention_raw_reconciliation_row(
-                    pool,
-                    &row.raw_path,
-                    Some(&row.file_identity),
-                )
-                .await?;
-            }
-            Err(error) => {
-                return Err(error).context("failed to inspect raw reconciliation ledger path");
-            }
-            Ok(_) => {}
+            progressed = Some(row.raw_path.as_str());
+            continue;
         }
+        let Some(_pressure_permit) =
+            acquire_retention_filesystem_pressure_slot("raw_reconciliation_ledger_metadata").await
+        else {
+            return Err(retention_write_deferred(
+                "raw_reconciliation_ledger_metadata",
+            ));
+        };
+        let metadata_missing_or_non_file =
+            match retention_raw_file_metadata(Path::new(&row.raw_path)) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                Ok(metadata) if !metadata.file_type().is_file() => true,
+                Err(_) => {
+                    failures += 1;
+                    false
+                }
+                Ok(_) => false,
+            };
+        if metadata_missing_or_non_file
+            && let Err(error) = clear_retention_raw_reconciliation_row_with_pressure_slot(
+                pool,
+                &row.raw_path,
+                Some(&row.file_identity),
+            )
+            .await
+        {
+            failures += 1;
+            if is_retention_write_deferred(&error) {
+                return Err(error);
+            }
+        }
+        progressed = Some(row.raw_path.as_str());
     }
-    Ok(())
+
+    if let Some(progress) = progressed {
+        advance_retention_recovery_cursor_for_scope(
+            pool,
+            RETENTION_RAW_RECONCILIATION_SCOPE,
+            &cursor,
+            progress,
+        )
+        .await?;
+    } else if rows.is_empty() && !cursor.is_empty() {
+        let Some(admission) = acquire_retention_write_admission("retention_recovery_cursor").await
+        else {
+            return Err(retention_write_deferred("retention_recovery_cursor"));
+        };
+        sqlx::query(
+            "UPDATE retention_recovery_cursors SET cursor = '', updated_at = datetime('now') \
+             WHERE scope = ?1 AND cursor = ?2",
+        )
+        .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+        .bind(&cursor)
+        .execute(pool)
+        .await?;
+        drop(admission);
+    }
+
+    let has_more = rows.len() == limit;
+    Ok((rows.len(), failures, has_more))
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RawOrphanSweepPassResult {
+    pub(crate) inspected_entries: usize,
+    pub(crate) reconciliation_rows_checked: usize,
+    pub(crate) reconciliation_has_more: bool,
+    pub(crate) referenced_skipped: usize,
+    pub(crate) quarantined: usize,
+    pub(crate) removed: usize,
+    pub(crate) failures: usize,
+    pub(crate) reached_end: bool,
 }
 
 pub(crate) async fn sweep_orphan_proxy_raw_files(
@@ -4249,69 +4495,165 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<usize> {
+    let mut traversal = RetentionRawDirectoryTraversal::default();
+    Ok(sweep_orphan_proxy_raw_files_slice(
+        pool,
+        config,
+        raw_path_fallback_root,
+        dry_run,
+        &mut traversal,
+    )
+    .await?
+    .removed)
+}
+
+pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+    traversal: &mut RetentionRawDirectoryTraversal,
+) -> Result<RawOrphanSweepPassResult> {
+    let mut result = RawOrphanSweepPassResult::default();
     let raw_root = normalize_path_for_compare(&config.resolved_proxy_raw_dir());
     let effective_fallback_root = raw_path_fallback_root.or(config.database_path.parent());
-    let Some(admission) = acquire_retention_write_admission("raw_reconciliation_scan").await else {
-        return Err(retention_write_deferred("raw_reconciliation_scan"));
-    };
-    drop(admission);
 
     if !dry_run {
-        cleanup_missing_retention_raw_reconciliation_rows(
+        match cleanup_missing_retention_raw_reconciliation_rows(
             pool,
+            &raw_root,
             RETENTION_RAW_RECONCILIATION_SCAN_BATCH,
         )
-        .await?;
+        .await
+        {
+            Ok((examined, failures, has_more)) => {
+                result.reconciliation_rows_checked = examined;
+                result.reconciliation_has_more = has_more;
+                result.failures += failures;
+            }
+            Err(error) if is_retention_write_deferred(&error) => return Err(error),
+            Err(_) => result.failures += 1,
+        }
     }
 
-    let cursor = sqlx::query_scalar::<_, String>(
-        "SELECT cursor FROM retention_recovery_cursors WHERE scope = ?1",
-    )
-    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
-    .fetch_optional(pool)
-    .await?
-    .unwrap_or_default();
-    let scan = collect_retention_raw_candidates_after_cursor(
-        &raw_root,
-        &cursor,
-        RETENTION_RAW_RECONCILIATION_SCAN_BATCH,
-    )?;
-    let mut removed = 0usize;
-    for path in &scan.candidates {
+    if traversal.root.as_deref() != Some(raw_root.as_path()) {
+        traversal.root = Some(raw_root.clone());
+        traversal.directory = None;
+    }
+    let Some(scan_admission) = acquire_retention_write_admission("raw_reconciliation_scan").await
+    else {
+        return Err(retention_write_deferred("raw_reconciliation_scan"));
+    };
+    let _scan_pressure_permit = scan_admission.release_write_permit_keep_pressure_slot();
+    let scan = read_retention_raw_directory_slice(&raw_root, traversal.directory.take())?;
+    drop(_scan_pressure_permit);
+    result.inspected_entries += scan.inspected_entries;
+    result.failures += scan.failures;
+    result.reached_end = scan.reached_end;
+    traversal.directory = scan.directory;
+    if scan.reached_end {
+        traversal.directory = None;
+    }
+
+    let candidate_paths = scan
+        .candidates
+        .iter()
+        .map(|candidate| normalize_path_for_compare(&candidate.path))
+        .collect::<Vec<_>>();
+    let linked_paths = match retention_raw_link_paths(pool, config, &candidate_paths).await {
+        Ok(paths) => paths,
+        Err(_) => {
+            result.failures += 1;
+            return Ok(result);
+        }
+    };
+    let Some(_reference_resolution_pressure_permit) =
+        acquire_retention_filesystem_pressure_slot("raw_reconciliation_reference_resolution").await
+    else {
+        return Err(retention_write_deferred(
+            "raw_reconciliation_reference_resolution",
+        ));
+    };
+    let referenced_candidates = retention_raw_candidates_with_links(
+        config,
+        &candidate_paths,
+        &linked_paths,
+        effective_fallback_root,
+    );
+    drop(_reference_resolution_pressure_permit);
+
+    for path in &candidate_paths {
         let path = normalize_path_for_compare(path);
-        let metadata = match fs::symlink_metadata(&path) {
+        let Some(_metadata_pressure_permit) =
+            acquire_retention_filesystem_pressure_slot("raw_reconciliation_candidate_metadata")
+                .await
+        else {
+            return Err(retention_write_deferred(
+                "raw_reconciliation_candidate_metadata",
+            ));
+        };
+        let metadata = match retention_raw_file_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).context("failed to inspect raw reconciliation candidate");
+            Err(_) => {
+                result.failures += 1;
+                continue;
             }
         };
+        drop(_metadata_pressure_permit);
         let raw_path = path.to_string_lossy().into_owned();
         let file_identity = retention_raw_file_identity(&metadata);
-        let byte_size = i64::try_from(metadata.len())
-            .context("raw reconciliation candidate size exceeds SQLite integer range")?;
-        let existing = load_retention_raw_reconciliation_row(pool, &raw_path).await?;
-        if retention_raw_candidate_is_referenced(pool, config, &path, effective_fallback_root)
-            .await?
-        {
-            if !dry_run && existing.is_some() {
-                clear_retention_raw_reconciliation_row(pool, &raw_path, None).await?;
+        let byte_size = match i64::try_from(metadata.len()) {
+            Ok(size) => size,
+            Err(_) => {
+                result.failures += 1;
+                continue;
             }
+        };
+        let existing = match load_retention_raw_reconciliation_row(pool, &raw_path).await {
+            Ok(existing) => existing,
+            Err(_) => {
+                result.failures += 1;
+                continue;
+            }
+        };
+        if referenced_candidates.contains(&path) {
+            if !dry_run
+                && existing.is_some()
+                && let Err(error) =
+                    clear_retention_raw_reconciliation_row(pool, &raw_path, None).await
+            {
+                result.failures += 1;
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+                continue;
+            }
+            result.referenced_skipped += 1;
             continue;
         }
         if existing
             .as_ref()
             .is_none_or(|row| row.file_identity != file_identity || row.byte_size != byte_size)
         {
-            if !dry_run {
-                record_retention_raw_reconciliation_observation(
+            if !dry_run
+                && let Err(error) = record_retention_raw_reconciliation_observation(
                     pool,
                     &raw_path,
                     &file_identity,
                     byte_size,
                 )
-                .await?;
+                .await
+            {
+                result.failures += 1;
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+                continue;
+            }
+            if !dry_run {
+                result.quarantined += 1;
             }
             continue;
         }
@@ -4327,46 +4669,103 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
         else {
             return Err(retention_write_deferred("raw_reconciliation_release"));
         };
-        let _directory_lock = retention_archive_file_lock(&path)?;
+        let _directory_lock =
+            match retention_try_archive_locks_scope(async { retention_archive_file_lock(&path) })
+                .await
+            {
+                Ok(lock) => lock,
+                Err(_) => {
+                    result.failures += 1;
+                    continue;
+                }
+            };
         let final_metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                clear_retention_raw_reconciliation_row(
+                if let Err(error) = clear_retention_raw_reconciliation_row(
                     pool,
                     &raw_path,
                     Some(&existing.file_identity),
                 )
-                .await?;
+                .await
+                {
+                    result.failures += 1;
+                    if is_retention_write_deferred(&error) {
+                        return Err(error);
+                    }
+                }
                 continue;
             }
-            Err(error) => {
-                return Err(error).context("failed to recheck raw reconciliation candidate");
+            Err(_) => {
+                result.failures += 1;
+                continue;
             }
         };
         let final_identity = retention_raw_file_identity(&final_metadata);
-        let final_size = i64::try_from(final_metadata.len())
-            .context("raw reconciliation candidate size exceeds SQLite integer range")?;
-        let Some(current) = load_retention_raw_reconciliation_row(pool, &raw_path).await? else {
-            continue;
+        let final_size = match i64::try_from(final_metadata.len()) {
+            Ok(size) => size,
+            Err(_) => {
+                result.failures += 1;
+                continue;
+            }
+        };
+        let current = match load_retention_raw_reconciliation_row(pool, &raw_path).await {
+            Ok(Some(current)) => current,
+            Ok(None) => continue,
+            Err(_) => {
+                result.failures += 1;
+                continue;
+            }
         };
         if current.file_identity != final_identity || current.byte_size != final_size {
-            record_retention_raw_reconciliation_observation(
+            if let Err(error) = record_retention_raw_reconciliation_observation(
                 pool,
                 &raw_path,
                 &final_identity,
                 final_size,
             )
-            .await?;
+            .await
+            {
+                result.failures += 1;
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+            }
             continue;
         }
-        if !retention_raw_quarantine_due(&current.quarantined_at)
-            || retention_raw_candidate_is_referenced(pool, config, &path, effective_fallback_root)
-                .await?
+        if !retention_raw_quarantine_due(&current.quarantined_at) {
+            continue;
+        }
+        match retention_raw_candidate_is_referenced(pool, config, &path, effective_fallback_root)
+            .await
         {
+            Ok(true) => {
+                result.referenced_skipped += 1;
+                continue;
+            }
+            Ok(false) => {}
+            Err(_) => {
+                result.failures += 1;
+                continue;
+            }
+        }
+        if mark_retention_raw_inventory_reset_intent(pool)
+            .await
+            .is_err()
+        {
+            result.failures += 1;
             continue;
         }
-        fs::remove_file(&path).context("failed to remove raw reconciliation candidate")?;
+        #[cfg(test)]
+        if retention_test_raw_unlink_should_fail() {
+            result.failures += 1;
+            continue;
+        }
+        if fs::remove_file(&path).is_err() {
+            result.failures += 1;
+            continue;
+        }
         RETENTION_RAW_CAPTURE_CIRCUIT
             .try_with(|circuit| {
                 if let Some(circuit) = circuit.borrow().as_ref() {
@@ -4374,49 +4773,481 @@ pub(crate) async fn sweep_orphan_proxy_raw_files(
                 }
             })
             .ok();
-        mark_retention_raw_inventory_reset_intent(pool).await?;
         drop(release_admission);
-        clear_retention_raw_reconciliation_row(pool, &raw_path, Some(&final_identity)).await?;
-        removed += 1;
+        if let Err(error) =
+            clear_retention_raw_reconciliation_row(pool, &raw_path, Some(&final_identity)).await
+        {
+            result.failures += 1;
+            if is_retention_write_deferred(&error) {
+                return Err(error);
+            }
+            continue;
+        }
+        result.removed += 1;
     }
 
-    if !dry_run {
-        let progress_after_cursor = scan
-            .progress
-            .as_deref()
-            .filter(|progress| *progress > cursor.as_str());
-        if let Some(progress) = progress_after_cursor {
-            advance_retention_recovery_cursor_for_scope(
-                pool,
-                RETENTION_RAW_RECONCILIATION_SCOPE,
-                cursor.as_str(),
-                progress,
-            )
-            .await?;
-        } else if !cursor.is_empty() {
-            let Some(admission) =
-                acquire_retention_write_admission("retention_recovery_cursor").await
-            else {
-                return Err(retention_write_deferred("retention_recovery_cursor"));
-            };
-            sqlx::query(
-                r#"
-                UPDATE retention_recovery_cursors
-                SET cursor = '', updated_at = datetime('now')
-                WHERE scope = ?1 AND cursor = ?2
-                "#,
-            )
-            .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
-            .bind(&cursor)
-            .execute(pool)
-            .await?;
-            drop(admission);
+    Ok(result)
+}
+
+#[derive(Debug)]
+pub(crate) struct RawOrphanSweepSchedule {
+    pub(crate) next_retry_at: Option<String>,
+    pub(crate) consecutive_failure_count: u32,
+    pub(crate) last_failure_fingerprint: Option<String>,
+    pub(crate) defer_reason: Option<String>,
+    pub(crate) last_progress_at: Option<String>,
+    pub(crate) retry_after_secs: i64,
+}
+
+pub(crate) async fn load_raw_orphan_sweep_schedule(
+    pool: &Pool<Sqlite>,
+) -> Result<RawOrphanSweepSchedule> {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        ),
+    >(
+        r#"SELECT next_retry_at, consecutive_failure_count,
+                  last_failure_fingerprint, defer_reason, last_progress_at,
+                  CASE WHEN next_retry_at IS NULL THEN 0
+                       ELSE MAX(0, CAST(strftime('%s', next_retry_at) - strftime('%s', 'now') AS INTEGER))
+                  END
+           FROM retention_recovery_cursors WHERE scope = ?1"#,
+    )
+    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+    .fetch_optional(pool)
+    .await?;
+    let Some((
+        next_retry_at,
+        failures,
+        fingerprint,
+        defer_reason,
+        last_progress_at,
+        retry_after_secs,
+    )) = row
+    else {
+        return Ok(RawOrphanSweepSchedule {
+            next_retry_at: None,
+            consecutive_failure_count: 0,
+            last_failure_fingerprint: None,
+            defer_reason: None,
+            last_progress_at: None,
+            retry_after_secs: 0,
+        });
+    };
+    Ok(RawOrphanSweepSchedule {
+        next_retry_at,
+        consecutive_failure_count: failures.max(0) as u32,
+        last_failure_fingerprint: fingerprint,
+        defer_reason,
+        last_progress_at,
+        retry_after_secs,
+    })
+}
+
+#[derive(Default)]
+struct RawOrphanSweepHealthUpdate<'a> {
+    inspected_entries: Option<usize>,
+    referenced_skipped: Option<usize>,
+    quarantined: Option<usize>,
+    removed: Option<usize>,
+    schedule: Option<&'a RawOrphanSweepSchedule>,
+    defer_reason: Option<&'a str>,
+    failure_fingerprint: Option<String>,
+}
+
+fn raw_orphan_sweep_set_health(state: &str, update: RawOrphanSweepHealthUpdate<'_>) {
+    let mut health = RAW_ORPHAN_SWEEP_HEALTH
+        .lock()
+        .expect("raw orphan sweep health");
+    health.state = state.to_string();
+    health.inspected_entries = update.inspected_entries;
+    health.referenced_skipped = update.referenced_skipped;
+    health.quarantined = update.quarantined;
+    health.removed = update.removed;
+    health.defer_reason = update.defer_reason.map(str::to_string);
+    health.failure_fingerprint = update.failure_fingerprint;
+    if let Some(schedule) = update.schedule {
+        health.last_progress_at = schedule.last_progress_at.clone();
+        health.next_retry_at = schedule.next_retry_at.clone();
+        if state != "scanning" && health.defer_reason.is_none() {
+            health.defer_reason = schedule.defer_reason.clone();
+        }
+        if state != "scanning" && health.failure_fingerprint.is_none() {
+            health.failure_fingerprint = schedule.last_failure_fingerprint.clone();
+        }
+        if state == "scanning" {
+            health.next_retry_at = None;
         }
     }
-    if !dry_run && (removed > 0 || scan.progress.is_some()) {
-        retention_recovery_record_progress();
+}
+
+pub(crate) async fn persist_raw_orphan_sweep_schedule(
+    pool: &Pool<Sqlite>,
+    retry_secs: i64,
+    transition: RawOrphanSweepScheduleTransition,
+) -> Result<Option<u32>> {
+    let Some(admission) = acquire_retention_write_admission("raw_reconciliation_schedule").await
+    else {
+        retention_recovery_persist_scheduler_cursor_without_pressure_for_scope(
+            pool,
+            RETENTION_RAW_RECONCILIATION_SCOPE,
+            RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
+            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
+            false,
+            None,
+        )
+        .await?;
+        return Ok(None);
+    };
+    sqlx::query("INSERT OR IGNORE INTO retention_recovery_cursors (scope, cursor) VALUES (?1, '')")
+        .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+        .execute(pool)
+        .await?;
+    let current_failures: i64 = sqlx::query_scalar(
+        "SELECT consecutive_failure_count FROM retention_recovery_cursors WHERE scope = ?1",
+    )
+    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+    .fetch_one(pool)
+    .await?;
+    let next_failures = match &transition {
+        RawOrphanSweepScheduleTransition::Failure { .. } => {
+            current_failures.saturating_add(1).min(5)
+        }
+        RawOrphanSweepScheduleTransition::Success { .. } => 0,
+        RawOrphanSweepScheduleTransition::Pressure => current_failures,
+    };
+    let (failure_count, defer_reason, fingerprint, progress) = match transition {
+        RawOrphanSweepScheduleTransition::Failure {
+            fingerprint,
+            progressed,
+        } => (
+            next_failures,
+            Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
+            Some(fingerprint),
+            progressed,
+        ),
+        RawOrphanSweepScheduleTransition::Pressure => (
+            next_failures,
+            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
+            None,
+            false,
+        ),
+        RawOrphanSweepScheduleTransition::Success { progressed } => (0, None, None, progressed),
+    };
+    sqlx::query(
+        r#"UPDATE retention_recovery_cursors
+           SET next_retry_at = CASE WHEN ?1 > 0 THEN datetime('now', printf('+%d seconds', ?1)) ELSE NULL END,
+               consecutive_failure_count = ?2,
+               last_failure_fingerprint = ?3,
+               defer_reason = ?4,
+               last_progress_at = CASE WHEN ?5 != 0 THEN datetime('now') ELSE last_progress_at END,
+               updated_at = datetime('now')
+           WHERE scope = ?6"#,
+    )
+    .bind(retry_secs)
+    .bind(failure_count)
+    .bind(fingerprint)
+    .bind(defer_reason)
+    .bind(i64::from(progress))
+    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+    .execute(pool)
+    .await?;
+    drop(admission);
+    Ok(Some(next_failures as u32))
+}
+
+pub(crate) enum RawOrphanSweepScheduleTransition {
+    Failure {
+        fingerprint: String,
+        progressed: bool,
+    },
+    Pressure,
+    Success {
+        progressed: bool,
+    },
+}
+
+pub(crate) fn raw_orphan_sweep_failure_retry_secs(failure_count: u32) -> i64 {
+    let index = failure_count
+        .min((RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS.len() - 1) as u32)
+        as usize;
+    RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS[index]
+}
+
+pub(crate) fn raw_orphan_sweep_next_retry_secs(
+    pass: &RawOrphanSweepPassResult,
+    consecutive_failure_count: u32,
+) -> i64 {
+    if pass.failures > 0 {
+        raw_orphan_sweep_failure_retry_secs(consecutive_failure_count)
+    } else if pass.reconciliation_has_more || !pass.reached_end {
+        RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS
+    } else {
+        RETENTION_RAW_RECONCILIATION_EMPTY_RETRY_SECS
     }
-    Ok(removed)
+}
+
+async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationToken) {
+    if !state.config.retention_enabled {
+        return;
+    }
+    if RAW_ORPHAN_SWEEP_WORKER_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        warn!("raw orphan sweep worker is already active in this process");
+        return;
+    }
+    let _worker_guard = RawOrphanSweepWorkerGuard;
+    let future = async {
+        let mut traversal = RetentionRawDirectoryTraversal::default();
+        loop {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let schedule = match load_raw_orphan_sweep_schedule(&state.pool).await {
+                Ok(schedule) => schedule,
+                Err(error) => {
+                    let fingerprint = retention_error_fingerprint(&error);
+                    raw_orphan_sweep_set_health(
+                        "degraded",
+                        RawOrphanSweepHealthUpdate {
+                            defer_reason: Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
+                            failure_fingerprint: Some(fingerprint),
+                            ..Default::default()
+                        },
+                    );
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        _ = sleep(Duration::from_secs(RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS[0] as u64)) => {}
+                    }
+                    continue;
+                }
+            };
+            if schedule.retry_after_secs > 0 {
+                let status = if schedule.defer_reason.as_deref()
+                    == Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
+                {
+                    "degraded"
+                } else if schedule.defer_reason.as_deref()
+                    == Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE)
+                {
+                    "deferred"
+                } else {
+                    "idle"
+                };
+                raw_orphan_sweep_set_health(
+                    status,
+                    RawOrphanSweepHealthUpdate {
+                        schedule: Some(&schedule),
+                        ..Default::default()
+                    },
+                );
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = sleep(Duration::from_secs(schedule.retry_after_secs as u64)) => {}
+                }
+                continue;
+            }
+
+            let Some(probe) = acquire_retention_write_admission("raw_reconciliation_probe").await
+            else {
+                let _ = persist_raw_orphan_sweep_schedule(
+                    &state.pool,
+                    RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
+                    RawOrphanSweepScheduleTransition::Pressure,
+                )
+                .await;
+                let updated = load_raw_orphan_sweep_schedule(&state.pool).await.ok();
+                raw_orphan_sweep_set_health(
+                    "deferred",
+                    RawOrphanSweepHealthUpdate {
+                        schedule: updated.as_ref(),
+                        defer_reason: Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
+                        ..Default::default()
+                    },
+                );
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = sleep(Duration::from_secs(RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS as u64)) => {}
+                }
+                continue;
+            };
+            drop(probe);
+
+            raw_orphan_sweep_set_health(
+                "scanning",
+                RawOrphanSweepHealthUpdate {
+                    inspected_entries: Some(0),
+                    referenced_skipped: Some(0),
+                    quarantined: Some(0),
+                    removed: Some(0),
+                    schedule: Some(&schedule),
+                    ..Default::default()
+                },
+            );
+            let result = RETENTION_SHUTDOWN
+                .scope(
+                    cancel.clone(),
+                    RETENTION_RAW_CAPTURE_CIRCUIT.scope(
+                        RefCell::new(Some(state.raw_capture_circuit.clone())),
+                        sweep_orphan_proxy_raw_files_slice(
+                            &state.pool,
+                            &state.config,
+                            state.config.database_path.parent(),
+                            state.config.retention_dry_run,
+                            &mut traversal,
+                        ),
+                    ),
+                )
+                .await;
+
+            match result {
+                Ok(pass) => {
+                    let progressed =
+                        pass.inspected_entries > 0 || pass.reconciliation_rows_checked > 0;
+                    let next_retry_secs =
+                        raw_orphan_sweep_next_retry_secs(&pass, schedule.consecutive_failure_count);
+                    let (status, defer_reason, fingerprint) = if pass.failures > 0 {
+                        let fingerprint = retention_error_fingerprint(&anyhow!(
+                            "raw orphan sweep item operation failed"
+                        ));
+                        (
+                            "degraded",
+                            Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
+                            Some(fingerprint),
+                        )
+                    } else {
+                        ("idle", None, None)
+                    };
+                    let transition = if let Some(fingerprint) = fingerprint.clone() {
+                        RawOrphanSweepScheduleTransition::Failure {
+                            fingerprint,
+                            progressed,
+                        }
+                    } else {
+                        RawOrphanSweepScheduleTransition::Success { progressed }
+                    };
+                    let updated = if state.config.retention_dry_run {
+                        None
+                    } else {
+                        let persisted = persist_raw_orphan_sweep_schedule(
+                            &state.pool,
+                            next_retry_secs,
+                            transition,
+                        )
+                        .await;
+                        match persisted {
+                            Ok(Some(_)) => load_raw_orphan_sweep_schedule(&state.pool).await.ok(),
+                            _ => None,
+                        }
+                    };
+                    raw_orphan_sweep_set_health(
+                        status,
+                        RawOrphanSweepHealthUpdate {
+                            inspected_entries: Some(pass.inspected_entries),
+                            referenced_skipped: Some(pass.referenced_skipped),
+                            quarantined: Some(pass.quarantined),
+                            removed: Some(pass.removed),
+                            schedule: updated.as_ref(),
+                            defer_reason,
+                            failure_fingerprint: fingerprint,
+                        },
+                    );
+                    if pass.removed > 0 {
+                        invalidate_system_status_cache(state.as_ref()).await;
+                    }
+                    let wait_secs = if state.config.retention_dry_run {
+                        next_retry_secs as u64
+                    } else {
+                        updated
+                            .as_ref()
+                            .map(|schedule| schedule.retry_after_secs as u64)
+                            .unwrap_or(RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS as u64)
+                    };
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        _ = sleep(Duration::from_secs(wait_secs)) => {}
+                    }
+                }
+                Err(error) if is_retention_write_deferred(&error) => {
+                    let _ = persist_raw_orphan_sweep_schedule(
+                        &state.pool,
+                        RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
+                        RawOrphanSweepScheduleTransition::Pressure,
+                    )
+                    .await;
+                    let updated = load_raw_orphan_sweep_schedule(&state.pool).await.ok();
+                    raw_orphan_sweep_set_health(
+                        "deferred",
+                        RawOrphanSweepHealthUpdate {
+                            schedule: updated.as_ref(),
+                            defer_reason: Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
+                            ..Default::default()
+                        },
+                    );
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        _ = sleep(Duration::from_secs(RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS as u64)) => {}
+                    }
+                }
+                Err(error) => {
+                    let retry_secs =
+                        raw_orphan_sweep_failure_retry_secs(schedule.consecutive_failure_count);
+                    let fingerprint = retention_error_fingerprint(&error);
+                    let updated = if state.config.retention_dry_run {
+                        None
+                    } else {
+                        let _ = persist_raw_orphan_sweep_schedule(
+                            &state.pool,
+                            retry_secs,
+                            RawOrphanSweepScheduleTransition::Failure {
+                                fingerprint: fingerprint.clone(),
+                                progressed: false,
+                            },
+                        )
+                        .await;
+                        load_raw_orphan_sweep_schedule(&state.pool).await.ok()
+                    };
+                    raw_orphan_sweep_set_health(
+                        "degraded",
+                        RawOrphanSweepHealthUpdate {
+                            schedule: updated.as_ref(),
+                            defer_reason: Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
+                            failure_fingerprint: Some(fingerprint),
+                            ..Default::default()
+                        },
+                    );
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return,
+                        _ = sleep(Duration::from_secs(retry_secs as u64)) => {}
+                    }
+                }
+            }
+        }
+    };
+    RETENTION_SHUTDOWN.scope(cancel.clone(), future).await;
+}
+
+struct RawOrphanSweepWorkerGuard;
+
+impl Drop for RawOrphanSweepWorkerGuard {
+    fn drop(&mut self) {
+        RAW_ORPHAN_SWEEP_WORKER_ACTIVE.store(false, Ordering::Release);
+    }
 }
 
 struct RetentionArchiveCandidateScan {
@@ -5562,41 +6393,47 @@ pub(crate) fn spawn_data_retention_maintenance(
             return;
         }
 
-        if cancel.is_cancelled() {
-            info!("data retention maintenance skipped because shutdown is already in progress");
-            return;
-        }
-        loop {
-            if run_data_retention_maintenance_best_effort(&state, &cancel, "startup").await {
-                break;
+        let raw_orphan_sweep =
+            tokio::spawn(run_raw_orphan_sweep_worker(state.clone(), cancel.clone()));
+        let retention_task = async {
+            if cancel.is_cancelled() {
+                info!("data retention maintenance skipped because shutdown is already in progress");
+                return;
             }
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    info!("data retention maintenance received shutdown");
-                    return;
-                }
-                _ = sleep(Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)) => {}
-            }
-        }
-
-        let mut ticker = interval(state.config.retention_interval);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        ticker.tick().await;
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    info!("data retention maintenance received shutdown");
+            loop {
+                if run_data_retention_maintenance_best_effort(&state, &cancel, "startup").await {
                     break;
                 }
-                _ = ticker.tick() => {
-                    run_data_retention_maintenance_best_effort(
-                        &state,
-                        &cancel,
-                        "interval",
-                    ).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        info!("data retention maintenance received shutdown");
+                        return;
+                    }
+                    _ = sleep(Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)) => {}
                 }
             }
-        }
+
+            let mut ticker = interval(state.config.retention_interval);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        info!("data retention maintenance received shutdown");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        run_data_retention_maintenance_best_effort(
+                            &state,
+                            &cancel,
+                            "interval",
+                        ).await;
+                    }
+                }
+            }
+        };
+        retention_task.await;
+        let _ = raw_orphan_sweep.await;
     })
 }
 
@@ -5895,21 +6732,10 @@ async fn run_data_retention_maintenance_inner(
         return Ok(summary);
     }
 
-    retention_recovery_set_stage("orphan_sweep");
-    match sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await {
-        Ok(removed) => summary.orphan_raw_files_removed += removed,
-        Err(error) => {
-            if dry_run {
-                retention_recovery_record_failure("orphan_sweep", &error);
-            } else {
-                retention_recovery_persist_latest_failure_best_effort(pool, "orphan_sweep", &error)
-                    .await;
-            }
-            retention_recovery_log_event(
-                tracing::Level::WARN,
-                "orphan_sweep",
-                "raw orphan sweep deferred; continuing independent retention stages",
-            );
+    if dry_run {
+        match sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, true).await {
+            Ok(removed) => summary.orphan_raw_files_removed += removed,
+            Err(error) => retention_recovery_record_failure("orphan_sweep", &error),
         }
     }
 

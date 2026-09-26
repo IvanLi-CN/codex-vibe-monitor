@@ -129,6 +129,7 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) prompt_cache_projection: PromptCacheTopicProjectionHealthSnapshot,
     pub(crate) retention_write_health: RetentionWriteHealthSnapshot,
     pub(crate) retention_recovery: RetentionRecoveryHealthSnapshot,
+    pub(crate) raw_orphan_sweep: RawOrphanSweepHealthSnapshot,
     pub(crate) raw_capture: SystemRawCaptureHealth,
     pub(crate) event_bus: RuntimeMutationBusHealth,
     pub(crate) backfill: StartupBackfillHealthSnapshot,
@@ -232,6 +233,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         .await;
     let retention_write_health = retention_write_health_snapshot();
     let retention_recovery = retention_recovery_health_snapshot();
+    let raw_orphan_sweep = raw_orphan_sweep_health_snapshot();
     let raw_capture_snapshot = state.raw_capture_circuit.snapshot();
     let event_bus = state.subscription_hub.runtime_mutation_bus_health();
     let backfill = startup_backfill_health_snapshot();
@@ -319,6 +321,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
         prompt_cache_projection,
         retention_write_health,
         retention_recovery,
+        raw_orphan_sweep,
         raw_capture: SystemRawCaptureHealth {
             state: raw_capture_snapshot.state,
             reason: raw_capture_snapshot.reason,
