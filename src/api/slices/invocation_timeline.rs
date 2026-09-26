@@ -17,6 +17,7 @@ const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
 const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
+const INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE: usize = 100;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
@@ -426,26 +427,56 @@ async fn prune_timeline_snapshot_rows(pool: &Pool<Sqlite>) -> Result<(), ApiErro
     Ok(())
 }
 
-async fn insert_timeline_snapshot_record_on_connection(
-    connection: &mut SqliteConnection,
-    snapshot_token: &str,
+#[derive(Debug)]
+struct TimelineSnapshotInsertRow {
+    invoke_id: String,
+    occurred_at: String,
+    record_id: i64,
+    is_runtime: i64,
+    is_in_flight: i64,
+    payload: String,
+}
+
+fn encode_timeline_snapshot_insert_row(
     record: &InvocationTimelineRecord,
     is_runtime: bool,
-) -> Result<(), ApiError> {
+) -> Result<TimelineSnapshotInsertRow, ApiError> {
     let payload = serde_json::to_string(record)
         .map_err(|error| ApiError::from(anyhow!("encode timeline snapshot row: {error}")))?;
-    sqlx::query(&format!(
-        "INSERT INTO {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(snapshot_token, invoke_id, occurred_at) DO UPDATE SET record_id = excluded.record_id, is_runtime = excluded.is_runtime, is_in_flight = excluded.is_in_flight, payload = excluded.payload WHERE {INVOCATION_TIMELINE_SNAPSHOT_TABLE}.is_runtime = 0 OR excluded.record_id > {INVOCATION_TIMELINE_SNAPSHOT_TABLE}.record_id"
-    ))
-    .bind(snapshot_token)
-    .bind(&record.invoke_id)
-    .bind(&record.occurred_at)
-    .bind(record.id)
-    .bind(i64::from(is_runtime))
-    .bind(i64::from(record.is_in_flight))
-    .bind(payload)
-    .execute(&mut *connection)
-    .await?;
+    Ok(TimelineSnapshotInsertRow {
+        invoke_id: record.invoke_id.clone(),
+        occurred_at: record.occurred_at.clone(),
+        record_id: record.id,
+        is_runtime: i64::from(is_runtime),
+        is_in_flight: i64::from(record.is_in_flight),
+        payload,
+    })
+}
+
+async fn insert_timeline_snapshot_records_on_connection(
+    connection: &mut SqliteConnection,
+    snapshot_token: &str,
+    rows: &[TimelineSnapshotInsertRow],
+) -> Result<(), ApiError> {
+    for batch in rows.chunks(INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(&format!(
+            "INSERT INTO {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) "
+        ));
+        query.push_values(batch, |mut values, row| {
+            values
+                .push_bind(snapshot_token)
+                .push_bind(&row.invoke_id)
+                .push_bind(&row.occurred_at)
+                .push_bind(row.record_id)
+                .push_bind(row.is_runtime)
+                .push_bind(row.is_in_flight)
+                .push_bind(&row.payload);
+        });
+        query.push(format!(
+            " ON CONFLICT(snapshot_token, invoke_id, occurred_at) DO UPDATE SET record_id = excluded.record_id, is_runtime = excluded.is_runtime, is_in_flight = excluded.is_in_flight, payload = excluded.payload WHERE {INVOCATION_TIMELINE_SNAPSHOT_TABLE}.is_runtime = 0 OR excluded.record_id > {INVOCATION_TIMELINE_SNAPSHOT_TABLE}.record_id"
+        ));
+        query.build().execute(&mut *connection).await?;
+    }
     Ok(())
 }
 
@@ -678,16 +709,17 @@ async fn materialize_timeline_snapshot(
             .then_with(|| left.invoke_id.cmp(&right.invoke_id))
             .then_with(|| left.id.cmp(&right.id))
     });
+    let published_rows = published_records
+        .iter()
+        .map(|(record, is_runtime)| encode_timeline_snapshot_insert_row(record, *is_runtime))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    for (record, is_runtime) in published_records {
-        insert_timeline_snapshot_record_on_connection(
-            &mut publish_transaction,
-            snapshot_token,
-            &record,
-            is_runtime,
-        )
-        .await?;
-    }
+    insert_timeline_snapshot_records_on_connection(
+        &mut publish_transaction,
+        snapshot_token,
+        &published_rows,
+    )
+    .await?;
     publish_transaction.commit().await?;
     set_timeline_snapshot_usage(
         snapshot_token,
