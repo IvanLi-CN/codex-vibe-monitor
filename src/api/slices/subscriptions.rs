@@ -15355,10 +15355,14 @@ mod tests {
         // A terminal slice at a moving-window boundary marks typed bases dirty. Production runs
         // this bounded rebase from the dashboard runtime reconciler before later live mutations
         // are applied, so keep this fixture on the same path as the runtime.
-        state
-            .subscription_hub
-            .reconcile_dashboard_terminal_window_bases(state.clone())
-            .await;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            state
+                .subscription_hub
+                .reconcile_dashboard_terminal_window_bases(state.clone()),
+        )
+        .await
+        .expect("dashboard terminal window rebase must stay within the fixture budget");
         state.dashboard_network_speed_cache.record_request_bytes(
             "dashboard-runtime-topology-network",
             &occurred_at,
@@ -16046,7 +16050,7 @@ mod tests {
     #[test]
     fn parallel_work_projection_rebases_at_utc_minute_boundary() {
         let base_start = Utc
-            .timestamp_opt(1_700_000_000, 0)
+            .timestamp_opt(1_700_000_040, 0)
             .single()
             .expect("construct fixed minute boundary");
 
