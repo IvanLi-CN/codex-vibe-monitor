@@ -60,10 +60,6 @@ vi.mock("../features/stats/SuccessFailureChart", () => ({
   SuccessFailureChart: () => <div data-testid="success-failure-chart" />,
 }));
 
-vi.mock("../features/stats/ErrorReasonPieChart", () => ({
-  ErrorReasonPieChart: () => <div data-testid="error-reason-pie-chart" />,
-}));
-
 vi.mock("../features/stats/ParallelWorkStatsSection", () => ({
   ParallelWorkStatsSection: () => <div data-testid="parallel-work-section" />,
 }));
@@ -189,6 +185,7 @@ describe("StatsPage", () => {
       host?.querySelector('[data-testid="stats-bucket-select-trigger"]')?.textContent,
     ).toContain("每 15 分钟");
     expect(host?.querySelector('[data-testid="parallel-work-section"]')).toBeTruthy();
+    expect(hookMocks.useErrorDistribution).toHaveBeenCalledWith("today", 8, "service");
     expect(hookMocks.useParallelWorkStats).toHaveBeenCalledWith({
       range: "today",
       bucket: "15m",
