@@ -104,6 +104,7 @@ const INVOCATION_X_AXIS_HEIGHT_PX = 28;
 const INVOCATION_LANE_MIN_HEIGHT_PX = 8;
 const INVOCATION_LANE_MAX_HEIGHT_PX = 16;
 const INVOCATION_LANE_GAP_PX = 1;
+const INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX = 16;
 
 export interface InvocationTimelineLayout {
   chartHeightPx: number;
@@ -343,7 +344,11 @@ export function DashboardInvocationTimeline({
   );
   const visibleAxisValueSpan = Math.max(1, visibleAxisTopValue - visibleAxisBottomValue);
   const callAxisTopForValue = (value: number) =>
-    lanePlotHeight - (value * laneHeight + Math.max(0, value - 1) * INVOCATION_LANE_GAP_PX);
+    useLinearLanePositions
+      ? INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX +
+        (1 - value / Math.max(1, callAxisMaxValue)) *
+          (laneAreaHeightPx - INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX)
+      : lanePlotHeight - (value * laneHeight + Math.max(0, value - 1) * INVOCATION_LANE_GAP_PX);
   const callAxisTicks = Array.from({ length: callAxisTickCount }, (_, index) => {
     const fraction = index / Math.max(1, callAxisTickCount - 1);
     const value =
@@ -366,7 +371,8 @@ export function DashboardInvocationTimeline({
   const zeroIsVisible =
     callAxisTopForValue(0) >= laneScrollTop &&
     callAxisTopForValue(0) <= laneScrollTop + laneAreaHeightPx;
-  const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1);
+  const laneTopFor = (lane: number) =>
+    lanePlotHeight - ((lane + 1) * laneHeight + lane * INVOCATION_LANE_GAP_PX);
   const laneCenterFor = (lane: number) => laneTopFor(lane);
 
   return (

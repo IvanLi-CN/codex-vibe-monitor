@@ -177,6 +177,16 @@ export const LiveTraffic: Story = {
     const callAxisTicks = callsAxis.querySelectorAll("[data-call-axis-tick]");
     expect(callAxisTicks).toHaveLength(4);
     expect(callAxisTicks[0]?.textContent).toBe("4");
+    const firstCallTickRect = callAxisTicks[0]?.getBoundingClientRect();
+    const lastCallTickRect = callAxisTicks[callAxisTicks.length - 1]?.getBoundingClientRect();
+    expect(firstCallTickRect).toBeDefined();
+    expect(lastCallTickRect).toBeDefined();
+    if (firstCallTickRect && lastCallTickRect) {
+      expect(firstCallTickRect.top - callsAxis.getBoundingClientRect().top).toBeLessThan(24);
+      expect(lastCallTickRect.top).toBeGreaterThan(
+        callsAxis.getBoundingClientRect().top + callsAxis.getBoundingClientRect().height * 0.7,
+      );
+    }
     expect(Math.abs(ttftZeroRect.bottom - xAxisRect.top)).toBeLessThanOrEqual(1);
     expect(Math.abs(laneZeroRect.bottom - ttftZeroRect.bottom)).toBeLessThanOrEqual(0.01);
     const ttftTicks = canvasElement.querySelectorAll("[data-ttft-axis-tick]");
