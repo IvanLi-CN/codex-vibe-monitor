@@ -548,6 +548,7 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
         parallelism: null,
       },
       models: [],
+      modelGroups: [],
     };
   }
   const includedIndexes = [...new Set(modelIndexes)].sort((left, right) => left - right);
@@ -565,6 +566,52 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
       model.cumulativeUsageDurationMs,
     ),
   }));
+  const modelGroups = [...new Set(models.map((model) => model.model))].map((modelName) => {
+    const entries = models.filter((model) => model.model === modelName);
+    const cumulativeUsageDurationMs = entries.reduce(
+      (total, model) => total + model.cumulativeUsageDurationMs,
+      0,
+    );
+    const wallClockUsageDurationMs = Math.max(
+      0,
+      entries.reduce((total, model) => total + model.wallClockUsageDurationMs, 0) -
+        DEMO_MODEL_PERFORMANCE_PAIR_OVERLAPS_MS.reduce(
+          (total, [left, right, pairOverlapMs]) =>
+            includedIndexes.includes(left) &&
+            includedIndexes.includes(right) &&
+            DEMO_MODEL_PERFORMANCE_MODELS[left]?.model === modelName &&
+            DEMO_MODEL_PERFORMANCE_MODELS[right]?.model === modelName
+              ? total + pairOverlapMs
+              : total,
+          0,
+        ),
+    );
+    const weightedAverage = (select: (model: (typeof entries)[number]) => number) =>
+      cumulativeUsageDurationMs > 0
+        ? entries.reduce(
+            (total, model) => total + select(model) * model.cumulativeUsageDurationMs,
+            0,
+          ) / cumulativeUsageDurationMs
+        : null;
+    return {
+      model: modelName,
+      reasoningEffort: null,
+      tokensPerMinute: entries.reduce((total, model) => total + model.tokensPerMinute, 0),
+      streamingResponseRate:
+        cumulativeUsageDurationMs > 0
+          ? entries.reduce(
+              (total, model) =>
+                total + model.streamingResponseRate * model.cumulativeUsageDurationMs,
+              0,
+            ) / cumulativeUsageDurationMs
+          : null,
+      avgResponseMs: weightedAverage((model) => model.avgResponseMs),
+      avgFirstTokenMs: weightedAverage((model) => model.avgFirstTokenMs),
+      wallClockUsageDurationMs,
+      cumulativeUsageDurationMs,
+      parallelism: computeDemoParallelism(wallClockUsageDurationMs, cumulativeUsageDurationMs),
+    };
+  });
   const cumulativeUsageDurationMs = models.reduce(
     (total, model) => total + model.cumulativeUsageDurationMs,
     0,
@@ -597,6 +644,7 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
       parallelism: computeDemoParallelism(wallClockUsageDurationMs, cumulativeUsageDurationMs),
     },
     models,
+    modelGroups,
   };
 }
 

@@ -1,9 +1,13 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type { ModelPerformance } from "../../lib/api";
+import {
+  DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY,
+  DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX,
+} from "./dashboardModelBreakdown";
 import { ModelPerformanceTrigger } from "./ModelPerformanceTrigger";
 
 const modelPerformance: ModelPerformance = {
@@ -41,6 +45,30 @@ const modelPerformance: ModelPerformance = {
       parallelism: 1.13,
     },
   ],
+  modelGroups: [
+    {
+      model: "gpt-5.6-sol",
+      reasoningEffort: null,
+      tokensPerMinute: 1200,
+      streamingResponseRate: 110,
+      avgResponseMs: 3000,
+      avgFirstTokenMs: 720,
+      wallClockUsageDurationMs: 100000,
+      cumulativeUsageDurationMs: 310000,
+      parallelism: 3.1,
+    },
+    {
+      model: "gpt-5.6-terra-experimental-routing-variant-with-a-very-long-name",
+      reasoningEffort: null,
+      tokensPerMinute: 480,
+      streamingResponseRate: 72,
+      avgResponseMs: 4100,
+      avgFirstTokenMs: 830,
+      wallClockUsageDurationMs: 64000,
+      cumulativeUsageDurationMs: 72000,
+      parallelism: 1.13,
+    },
+  ],
 };
 
 let host: HTMLDivElement | null = null;
@@ -67,6 +95,13 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  window.localStorage.removeItem(DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY);
+  window.localStorage.removeItem(
+    `${DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX}.model-performance`,
+  );
+});
+
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -75,6 +110,10 @@ afterEach(() => {
   host = null;
   root = null;
   compactViewport = false;
+  window.localStorage.removeItem(DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY);
+  window.localStorage.removeItem(
+    `${DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX}.model-performance`,
+  );
 });
 
 async function renderTrigger(performance = modelPerformance) {
@@ -164,6 +203,51 @@ describe("ModelPerformanceTrigger", () => {
     expect(
       dialog?.querySelector('[data-testid="model-performance-drawer-model-context"]'),
     ).not.toBeNull();
+    expect(dialog?.querySelector("select")).toBeNull();
+    expect(
+      dialog?.querySelector('[data-testid="dashboard-model-breakdown-model-sort"]'),
+    ).not.toBeNull();
+    expect(
+      dialog?.querySelector('[data-testid="dashboard-model-breakdown-sort-tpm"]'),
+    ).not.toBeNull();
+  });
+
+  it("switches the open tooltip to exact model-only rows", async () => {
+    await renderTrigger();
+    const trigger = host?.querySelector('[aria-label="Open model performance details"]');
+
+    await act(async () => {
+      trigger?.dispatchEvent(new FocusEvent("focus", { bubbles: true }));
+      trigger?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await vi.waitFor(() => {
+        expect(
+          document.body.querySelector('[data-testid="model-performance-table-model-context"]'),
+        ).not.toBeNull();
+      });
+    });
+
+    const simpleButton = document.body.querySelector(
+      '[data-testid="dashboard-model-breakdown-mode-simple"]',
+    );
+    await act(async () => {
+      simpleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.waitFor(() => {
+        const tooltip = document.body.querySelector('[role="tooltip"]');
+        const contexts = tooltip?.querySelectorAll(
+          '[data-testid="model-performance-table-model-context"]',
+        );
+        expect(contexts).toHaveLength(2);
+        expect(contexts[0]?.getAttribute("data-model-context-display")).toBe("model-only");
+      });
+    });
+
+    expect(window.localStorage.getItem(DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY)).toBe("simple");
+    expect(
+      document.body
+        .querySelector('[role="tooltip"]')
+        ?.querySelectorAll("[data-reasoning-effort-tone]"),
+    ).toHaveLength(0);
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain("gpt-5.6-sol");
   });
 
   it("normalizes rounded wall-clock durations and fixed parallelism formatting", async () => {

@@ -122,6 +122,13 @@ describe("demo MSW handlers", () => {
             cumulativeUsageDurationMs: number;
             parallelism: number;
           }>;
+          modelGroups: Array<{
+            model: string;
+            reasoningEffort: string | null;
+            wallClockUsageDurationMs: number;
+            cumulativeUsageDurationMs: number;
+            parallelism: number;
+          }>;
         };
       };
     };
@@ -155,6 +162,22 @@ describe("demo MSW handlers", () => {
       expect.objectContaining({
         model: "gpt-5.6-sol",
         reasoningEffort: "medium",
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
+      expect.objectContaining({
+        model: "gpt-5.6-terra",
+        reasoningEffort: null,
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
+    ]);
+    expect(payload.summary.modelPerformance.modelGroups).toEqual([
+      expect.objectContaining({
+        model: "gpt-5.6-sol",
+        reasoningEffort: null,
         wallClockUsageDurationMs: expect.any(Number),
         cumulativeUsageDurationMs: expect.any(Number),
         parallelism: expect.any(Number),

@@ -1,8 +1,13 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { I18nProvider } from "../../i18n";
 import type { UsageBreakdown } from "../../lib/api";
+import {
+  DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY,
+  DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX,
+} from "./dashboardModelBreakdown";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 const labels = {
@@ -39,14 +44,16 @@ function renderTooltip(breakdown: UsageBreakdown) {
   const root = createRoot(host);
   act(() => {
     root.render(
-      <UsageBreakdownTooltip
-        title="Usage details"
-        breakdown={breakdown}
-        formatNumber={(value) => `T${value}`}
-        formatRatio={(value) => (value == null ? "—" : `${(value * 100).toFixed(1)}%`)}
-        formatCurrency={(value) => `$${value.toFixed(2)}`}
-        labels={labels}
-      />,
+      <I18nProvider>
+        <UsageBreakdownTooltip
+          title="Usage details"
+          breakdown={breakdown}
+          formatNumber={(value) => `T${value}`}
+          formatRatio={(value) => (value == null ? "—" : `${(value * 100).toFixed(1)}%`)}
+          formatCurrency={(value) => `$${value.toFixed(2)}`}
+          labels={labels}
+        />
+      </I18nProvider>,
     );
   });
   return { host, root };
@@ -60,6 +67,17 @@ function totalRowCells(host: HTMLElement) {
 
 afterEach(() => {
   document.body.replaceChildren();
+  window.localStorage.removeItem(DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY);
+  window.localStorage.removeItem(
+    `${DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX}.usage-breakdown`,
+  );
+});
+
+beforeEach(() => {
+  window.localStorage.removeItem(DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY);
+  window.localStorage.removeItem(
+    `${DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX}.usage-breakdown`,
+  );
 });
 
 describe("UsageBreakdownTooltip", () => {
@@ -69,6 +87,22 @@ describe("UsageBreakdownTooltip", () => {
     expect(
       Array.from(host.querySelectorAll("thead th")).map((header) => header.textContent),
     ).toEqual(["Model", "Cache write", "Cache read", "Cache hit rate", "Output", "Total"]);
+    expect(host.querySelector("select")).toBeNull();
+    expect(
+      host.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-write"]'),
+    ).toBeNull();
+    expect(
+      host.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-read"]'),
+    ).toBeNull();
+    expect(host.querySelector('[data-testid="dashboard-model-breakdown-sort-output"]')).toBeNull();
+    expect(
+      host.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-hit-rate"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="dashboard-model-breakdown-sort-total"]'),
+    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="usage-breakdown-mobile-list"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="usage-breakdown-mobile-controls"]')).not.toBeNull();
     expect(totalRowCells(host)).toEqual([
       "T100$3.00",
       "T20$0.50",
@@ -172,6 +206,49 @@ describe("UsageBreakdownTooltip", () => {
     expect(host.querySelector('[data-model-identity="gpt-5.6-luna-2026-07-27"]')).not.toBeNull();
     expect(host.textContent).not.toContain("MAX");
     expect(host.textContent).not.toContain("ULTRA");
+
+    act(() => root.unmount());
+  });
+
+  it("merges effort rows in simple mode and removes the effort label", () => {
+    const breakdown = exactBreakdown();
+    breakdown.models = [
+      {
+        model: "gpt-5.6",
+        reasoningEffort: "max",
+        cacheWriteTokens: 50,
+        cacheReadTokens: 10,
+        outputTokens: 20,
+      },
+      {
+        model: "gpt-5.6",
+        reasoningEffort: "low",
+        cacheWriteTokens: 20,
+        cacheReadTokens: 5,
+        outputTokens: 5,
+      },
+      {
+        model: "other-model",
+        reasoningEffort: "medium",
+        cacheWriteTokens: 10,
+        cacheReadTokens: 0,
+        outputTokens: 5,
+      },
+    ];
+    const { host, root } = renderTooltip(breakdown);
+    const simpleButton = host.querySelector(
+      '[data-testid="dashboard-model-breakdown-mode-simple"]',
+    );
+
+    act(() => {
+      simpleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(3);
+    expect(host.textContent).not.toContain("Reasoning effort");
+    expect(host.textContent).toContain("T110");
+    expect(host.textContent).toContain("gpt-5.6");
+    expect(window.localStorage.getItem(DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY)).toBe("simple");
 
     act(() => root.unmount());
   });
