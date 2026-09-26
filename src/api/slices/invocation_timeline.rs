@@ -1,12 +1,138 @@
 use super::*;
 use anyhow::{Context, anyhow};
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, QueryBuilder, Sqlite};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 
-const INVOCATION_TIMELINE_MAX_RECORDS: i64 = 2_000;
+const INVOCATION_TIMELINE_PAGE_SIZE: i64 = 500;
+const INVOCATION_TIMELINE_MAX_PAGE_SIZE: i64 = 2_000;
 const INVOCATION_TIMELINE_MAX_DURATION_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1_000.0;
+const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
+const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 32;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TimelineCursor {
+    as_of: String,
+    occurred_at: Option<String>,
+    invoke_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TimelineSnapshot {
+    snapshot_id: i64,
+    revision: u64,
+    range_start: String,
+    range_end: String,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
+    runtime_records: Vec<ApiInvocation>,
+    expires_at: Instant,
+}
+
+static INVOCATION_TIMELINE_SNAPSHOTS: once_cell::sync::Lazy<
+    StdMutex<HashMap<String, TimelineSnapshot>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
+
+fn encode_timeline_cursor(cursor: &TimelineCursor) -> Result<String, ApiError> {
+    let payload = serde_json::to_vec(cursor)
+        .map_err(|error| ApiError::from(anyhow!("encode timeline cursor: {error}")))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload))
+}
+
+fn decode_timeline_cursor(raw: &str) -> Result<TimelineCursor, ApiError> {
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw)
+        .map_err(|_| ApiError::bad_request(anyhow!("invalid invocation timeline cursor")))?;
+    serde_json::from_slice(&payload)
+        .map_err(|_| ApiError::bad_request(anyhow!("invalid invocation timeline cursor")))
+}
+
+fn timeline_record_order(left: &ApiInvocation, right: &ApiInvocation) -> std::cmp::Ordering {
+    left.occurred_at
+        .cmp(&right.occurred_at)
+        .then_with(|| left.invoke_id.cmp(&right.invoke_id))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn timeline_record_is_after_cursor(record: &ApiInvocation, cursor: &TimelineCursor) -> bool {
+    let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id) else {
+        return true;
+    };
+    record.occurred_at > *occurred_at
+        || (record.occurred_at == *occurred_at && record.invoke_id > *invoke_id)
+}
+
+fn create_timeline_snapshot(
+    snapshot_id: i64,
+    range_start: String,
+    range_end: String,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
+    runtime_records: Vec<ApiInvocation>,
+) -> String {
+    let token = nanoid::nanoid!(16);
+    let now = Instant::now();
+    let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.expires_at > now);
+    if snapshots.len() >= INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT
+        && let Some(oldest) = snapshots
+            .iter()
+            .min_by_key(|(_, snapshot)| snapshot.expires_at)
+            .map(|(key, _)| key.clone())
+    {
+        snapshots.remove(&oldest);
+    }
+    snapshots.insert(
+        token.clone(),
+        TimelineSnapshot {
+            snapshot_id,
+            revision: current_dashboard_activity_live_revision(),
+            range_start,
+            range_end,
+            upstream_account_id,
+            include_live,
+            runtime_records,
+            expires_at: now + INVOCATION_TIMELINE_SNAPSHOT_TTL,
+        },
+    );
+    token
+}
+
+fn load_timeline_snapshot(
+    token: &str,
+    range_start: &str,
+    range_end: &str,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
+) -> Result<TimelineSnapshot, ApiError> {
+    let now = Instant::now();
+    let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.expires_at > now);
+    let snapshot = snapshots
+        .get(token)
+        .cloned()
+        .ok_or_else(|| ApiError::bad_request(anyhow!("invocation timeline snapshot expired")))?;
+    if snapshot.upstream_account_id != upstream_account_id || snapshot.include_live != include_live
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "invocation timeline snapshot does not match query"
+        )));
+    }
+    if snapshot.range_start != range_start || snapshot.range_end != range_end {
+        return Err(ApiError::bad_request(anyhow!(
+            "invocation timeline snapshot does not match window"
+        )));
+    }
+    Ok(snapshot)
+}
 
 #[derive(Debug, FromRow)]
 struct TimelineAccountFallbackRow {
@@ -23,6 +149,9 @@ pub(crate) struct InvocationTimelineQuery {
     pub(crate) to: String,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) include_live: Option<bool>,
+    pub(crate) limit: Option<i64>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) as_of: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,7 +179,8 @@ pub(crate) struct InvocationTimelineResponse {
     pub(crate) range_end: String,
     pub(crate) as_of: String,
     pub(crate) total: i64,
-    pub(crate) over_limit: bool,
+    pub(crate) has_more: bool,
+    pub(crate) next_cursor: Option<String>,
     pub(crate) records: Vec<InvocationTimelineRecord>,
 }
 
@@ -78,6 +208,60 @@ pub(crate) async fn fetch_timeline(
 
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let include_live = params.include_live.unwrap_or(true);
+    let canonical_range_start = format_utc_iso(range_start);
+    let canonical_range_end = format_utc_iso(range_end);
+    let page_size = params
+        .limit
+        .unwrap_or(INVOCATION_TIMELINE_PAGE_SIZE)
+        .clamp(1, INVOCATION_TIMELINE_MAX_PAGE_SIZE);
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(decode_timeline_cursor)
+        .transpose()?;
+    if cursor
+        .as_ref()
+        .is_some_and(|value| value.occurred_at.is_some() != value.invoke_id.is_some())
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "invalid invocation timeline cursor position"
+        )));
+    }
+    let as_of = if let Some(as_of) = params.as_of.as_deref() {
+        if let Some(cursor) = cursor.as_ref()
+            && cursor.as_of != as_of
+        {
+            return Err(ApiError::bad_request(anyhow!(
+                "invocation timeline cursor does not match asOf"
+            )));
+        }
+        as_of.to_string()
+    } else if cursor.is_some() {
+        return Err(ApiError::bad_request(anyhow!(
+            "asOf is required with an invocation timeline cursor"
+        )));
+    } else {
+        create_timeline_snapshot(
+            resolve_invocation_snapshot_id(&state.pool, source_scope).await?,
+            canonical_range_start.clone(),
+            canonical_range_end.clone(),
+            params.upstream_account_id,
+            include_live,
+            if include_live {
+                runtime_overlay_snapshot(state.as_ref())
+            } else {
+                Vec::new()
+            },
+        )
+    };
+    let snapshot = load_timeline_snapshot(
+        &as_of,
+        &canonical_range_start,
+        &canonical_range_end,
+        params.upstream_account_id,
+        include_live,
+    )?;
+    let snapshot_id = snapshot.snapshot_id;
     let filters = build_invocation_filters(&ListQuery {
         upstream_account_id: params.upstream_account_id,
         ..ListQuery::default()
@@ -90,7 +274,12 @@ pub(crate) async fn fetch_timeline(
     let mut query = build_invocation_select_query();
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
-    apply_invocation_records_filters(&mut query, &persisted_filters, source_scope, None);
+    apply_invocation_records_filters(
+        &mut query,
+        &persisted_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
     if let Some(upstream_account_id) = params.upstream_account_id {
         query
             .push(" AND ")
@@ -99,10 +288,10 @@ pub(crate) async fn fetch_timeline(
             .push_bind(upstream_account_id);
     }
     query
-        .push(" AND occurred_at < ")
+        .push(" AND (occurred_at < ")
         .push_bind(end_bound.clone())
         .push(" AND occurred_at >= ")
-        .push_bind(overlap_start_bound)
+        .push_bind(overlap_start_bound.clone())
         .push(" AND (occurred_at >= ")
         .push_bind(start_bound.clone())
         .push(" OR (t_total_ms IS NOT NULL AND t_total_ms >= 0 AND t_total_ms <= ")
@@ -114,24 +303,21 @@ pub(crate) async fn fetch_timeline(
     if include_live {
         query.push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
     }
-    query
-        .push(") ORDER BY occurred_at ASC, id ASC LIMIT ")
-        .push_bind(INVOCATION_TIMELINE_MAX_RECORDS + 1);
-    let mut records = query
-        .build_query_as::<ApiInvocation>()
-        .fetch_all(&state.pool)
-        .await?;
-    for record in &mut records {
-        hydrate_api_invocation_blocked_binding(record);
+    query.push("))");
+    if let Some(cursor) = cursor.as_ref()
+        && let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id)
+    {
+        query
+            .push(" AND (occurred_at > ")
+            .push_bind(occurred_at.clone())
+            .push(" OR (occurred_at = ")
+            .push_bind(occurred_at.clone())
+            .push(" AND invoke_id > ")
+            .push_bind(invoke_id.clone())
+            .push("))");
     }
-
-    let include_runtime_records = include_live;
-    let mut runtime_records = if include_runtime_records {
-        runtime_overlay_snapshot(state.as_ref())
-    } else {
-        Vec::new()
-    };
-    runtime_records.retain(|record| {
+    let mut all_runtime_records = snapshot.runtime_records.clone();
+    all_runtime_records.retain(|record| {
         if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
             return false;
         }
@@ -141,28 +327,54 @@ pub(crate) async fn fetch_timeline(
         occurred_at < range_end
             && (runtime_record_is_in_flight(record)
                 || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
+            && runtime_record_matches_filters(record, &filters, source_scope)
     });
-    let skip_account_hydration = records.len() > INVOCATION_TIMELINE_MAX_RECORDS as usize;
-    if !skip_account_hydration {
-        hydrate_timeline_accounts(&state.pool, &mut records, source_scope).await?;
-        hydrate_timeline_accounts(&state.pool, &mut runtime_records, source_scope).await?;
-    }
-    let terminal_runtime_keys = if runtime_records.is_empty() {
+    hydrate_timeline_accounts(&state.pool, &mut all_runtime_records, source_scope).await?;
+    let terminal_runtime_keys = if all_runtime_records.is_empty() {
         HashSet::new()
     } else {
-        query_terminal_db_keys_for_runtime_records(&state.pool, &runtime_records, None).await?
+        query_terminal_db_keys_for_runtime_records(
+            &state.pool,
+            &all_runtime_records,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
     };
-    let mut runtime_keys = HashSet::new();
+    all_runtime_records.retain(|record| {
+        !terminal_runtime_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
+    });
+    let runtime_records_for_page = all_runtime_records
+        .iter()
+        .filter(|record| {
+            cursor
+                .as_ref()
+                .is_none_or(|cursor| timeline_record_is_after_cursor(record, cursor))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    query
+        .push(" ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+        .push_bind(page_size + 1);
+    let mut records = query
+        .build_query_as::<ApiInvocation>()
+        .fetch_all(&state.pool)
+        .await?;
+    let db_has_more = records.len() as i64 > page_size;
+    for record in &mut records {
+        hydrate_api_invocation_blocked_binding(record);
+    }
+    hydrate_timeline_accounts(&state.pool, &mut records, source_scope).await?;
+
     let mut merged = records
         .into_iter()
         .map(|record| {
             (
                 (record.invoke_id.clone(), record.occurred_at.clone()),
-                record,
+                (record, false),
             )
         })
         .collect::<BTreeMap<_, _>>();
-    for record in runtime_records {
+    for record in runtime_records_for_page {
         let key = (record.invoke_id.clone(), record.occurred_at.clone());
         if terminal_runtime_keys.contains(&key)
             || !runtime_record_matches_filters(&record, &filters, source_scope)
@@ -174,73 +386,188 @@ pub(crate) async fn fetch_timeline(
         };
         let overlaps = runtime_record_is_in_flight(&record)
             || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end);
-        if occurred_at < range_end && overlaps {
-            runtime_keys.insert(key.clone());
-            merged.insert(key, record);
+        if occurred_at < range_end
+            && overlaps
+            && cursor
+                .as_ref()
+                .is_none_or(|cursor| timeline_record_is_after_cursor(&record, cursor))
+        {
+            merged
+                .entry(key)
+                .and_modify(|(existing, is_runtime)| {
+                    if !*is_runtime || record.id > existing.id {
+                        *existing = record.clone();
+                        *is_runtime = true;
+                    }
+                })
+                .or_insert((record, true));
         }
     }
 
-    let total = merged.len() as i64;
-    let over_limit = total > INVOCATION_TIMELINE_MAX_RECORDS;
-    let timeline_records = if over_limit {
-        Vec::new()
-    } else {
+    let mut merged = merged.into_values().collect::<Vec<_>>();
+    merged.sort_by(|(left, _), (right, _)| timeline_record_order(left, right));
+    let has_deduped_more = merged.len() > page_size as usize;
+    let has_more = db_has_more || has_deduped_more;
+    merged.truncate(page_size as usize);
+    let next_cursor = if has_more {
         merged
-            .into_values()
-            .map(|record| {
-                let is_in_flight = runtime_record_is_in_flight(&record);
-                let total_ms = valid_timeline_duration_ms(record.t_total_ms);
-                let end_at = if is_in_flight {
-                    None
-                } else {
-                    total_ms.and_then(|duration| {
-                        parse_to_utc_datetime(&record.occurred_at)
-                            .and_then(|start| timeline_end_at(start, Some(duration)))
-                    })
-                };
-                let occurred_at = record.occurred_at.clone();
-                let status = invocation_display_status_value(&record).map(str::to_string);
-                let is_runtime =
-                    runtime_keys.contains(&(record.invoke_id.clone(), occurred_at.clone()));
-                InvocationTimelineRecord {
-                    id: record.id,
-                    invoke_id: record.invoke_id.clone(),
-                    occurred_at: parse_to_utc_datetime(&occurred_at)
-                        .map(format_utc_iso_precise)
-                        .unwrap_or(occurred_at),
-                    end_at,
-                    is_in_flight,
-                    status,
-                    live_phase: if is_runtime {
-                        runtime_record_live_phase(&record).map(str::to_string)
-                    } else {
-                        record.live_phase.clone()
-                    },
-                    first_token_ms: if is_runtime {
-                        runtime_record_first_token_ms(&record)
-                    } else {
-                        record
-                            .first_token_ms
-                            .filter(|value| value.is_finite() && *value >= 0.0)
-                    },
-                    t_total_ms: total_ms,
-                    pool_attempt_count: record.pool_attempt_count,
-                    upstream_account_id: record.upstream_account_id,
-                    upstream_account_name: record.upstream_account_name,
-                    failure_class: record.failure_class,
-                }
+            .last()
+            .map(|(record, _)| {
+                encode_timeline_cursor(&TimelineCursor {
+                    as_of: as_of.clone(),
+                    occurred_at: Some(record.occurred_at.clone()),
+                    invoke_id: Some(record.invoke_id.clone()),
+                })
             })
-            .collect()
+            .transpose()?
+    } else {
+        None
     };
+
+    let persisted_total = count_timeline_records(
+        &state.pool,
+        &persisted_filters,
+        source_scope,
+        snapshot_id,
+        params.upstream_account_id,
+        &start_bound,
+        &overlap_start_bound,
+        &end_bound,
+        include_live,
+    )
+    .await?;
+    let active_runtime_keys = if all_runtime_records.is_empty() {
+        HashSet::new()
+    } else {
+        query_current_runtime_db_keys(
+            &state.pool,
+            &filters,
+            source_scope,
+            Some(SnapshotConstraint::UpTo(snapshot_id)),
+        )
+        .await?
+    };
+    let persisted_runtime_keys = active_runtime_keys
+        .union(&terminal_runtime_keys)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let runtime_only_count = all_runtime_records
+        .iter()
+        .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+        .filter(|key| !persisted_runtime_keys.contains(key))
+        .collect::<HashSet<_>>()
+        .len() as i64;
+    let total = persisted_total + runtime_only_count;
+    let timeline_records = merged
+        .into_iter()
+        .map(|(record, is_runtime)| {
+            let is_in_flight = runtime_record_is_in_flight(&record);
+            let total_ms = valid_timeline_duration_ms(record.t_total_ms);
+            let end_at = if is_in_flight {
+                None
+            } else {
+                total_ms.and_then(|duration| {
+                    parse_to_utc_datetime(&record.occurred_at)
+                        .and_then(|start| timeline_end_at(start, Some(duration)))
+                })
+            };
+            let occurred_at = record.occurred_at.clone();
+            let status = invocation_display_status_value(&record).map(str::to_string);
+            InvocationTimelineRecord {
+                id: record.id,
+                invoke_id: record.invoke_id.clone(),
+                occurred_at: parse_to_utc_datetime(&occurred_at)
+                    .map(format_utc_iso_precise)
+                    .unwrap_or(occurred_at),
+                end_at,
+                is_in_flight,
+                status,
+                live_phase: if is_runtime {
+                    runtime_record_live_phase(&record).map(str::to_string)
+                } else {
+                    record.live_phase.clone()
+                },
+                first_token_ms: if is_runtime {
+                    runtime_record_first_token_ms(&record)
+                } else {
+                    record
+                        .first_token_ms
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                },
+                t_total_ms: total_ms,
+                pool_attempt_count: record.pool_attempt_count,
+                upstream_account_id: record.upstream_account_id,
+                upstream_account_name: record.upstream_account_name,
+                failure_class: record.failure_class,
+            }
+        })
+        .collect();
 
     Ok(Json(InvocationTimelineResponse {
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
-        as_of: format_utc_iso_precise(Utc::now()),
+        as_of: as_of.clone(),
         total,
-        over_limit,
+        has_more,
+        next_cursor,
         records: timeline_records,
     }))
+}
+
+async fn count_timeline_records(
+    pool: &Pool<Sqlite>,
+    filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: Option<i64>,
+    start_bound: &str,
+    overlap_start_bound: &str,
+    end_bound: &str,
+    include_live: bool,
+) -> Result<i64, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct CountRow {
+        total: i64,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(*) AS total FROM (SELECT invoke_id, occurred_at FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(
+        &mut query,
+        filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(timeline_upstream_account_id_sql("codex_invocations"))
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    query
+        .push(" AND (occurred_at < ")
+        .push_bind(end_bound.to_string())
+        .push(" AND occurred_at >= ")
+        .push_bind(overlap_start_bound.to_string())
+        .push(" AND (occurred_at >= ")
+        .push_bind(start_bound.to_string())
+        .push(" OR (t_total_ms IS NOT NULL AND t_total_ms >= 0 AND t_total_ms <= ")
+        .push_bind(INVOCATION_TIMELINE_MAX_DURATION_MS)
+        .push(" AND julianday(occurred_at) + t_total_ms / 86400000.0 >= julianday(")
+        .push_bind(start_bound.to_string())
+        .push(")")
+        .push(")");
+    if include_live {
+        query.push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    }
+    query.push(")) GROUP BY invoke_id, occurred_at) AS timeline_keys");
+    Ok(query
+        .build_query_as::<CountRow>()
+        .fetch_one(pool)
+        .await?
+        .total)
 }
 
 fn timeline_record_overlaps(
@@ -339,6 +666,15 @@ async fn hydrate_timeline_accounts(
         if let Some(row) = fallbacks.get(&(record.invoke_id.clone(), record.occurred_at.clone())) {
             record.upstream_account_id = row.upstream_account_id;
             record.upstream_account_name = row.upstream_account_name.clone();
+        }
+        if record.upstream_account_id == Some(i64::MAX) {
+            record.upstream_account_id = sqlx::query_scalar(
+                "SELECT upstream_account_id FROM pool_upstream_request_attempts WHERE invoke_id = ?1 AND occurred_at = ?2 AND upstream_account_id IS NOT NULL AND upstream_account_id > 0 ORDER BY attempt_index DESC, id DESC LIMIT 1",
+            )
+            .bind(&record.invoke_id)
+            .bind(&record.occurred_at)
+            .fetch_optional(pool)
+            .await?;
         }
     }
     Ok(())
@@ -465,6 +801,14 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("insert live timeline fixture");
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('live-future', ?1, 'proxy', 'running', ?2, '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(90_001)))
+        .bind(r#"{"upstreamAccountId":42}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert future live timeline fixture");
         let Json(response) = fetch_timeline(
             State(state.clone()),
             Query(InvocationTimelineQuery {
@@ -472,11 +816,14 @@ mod tests {
                 to: format_utc_iso(range_end),
                 upstream_account_id: Some(42),
                 include_live: None,
+                limit: None,
+                cursor: None,
+                as_of: None,
             }),
         )
         .await
         .expect("fetch timeline fixture");
-        assert!(!response.over_limit);
+        assert!(!response.has_more);
         assert_eq!(response.total, 2);
         assert_eq!(response.records.len(), 2);
         assert_eq!(response.records[0].invoke_id, "cross");
@@ -492,6 +839,9 @@ mod tests {
                 to: format_utc_iso(range_end),
                 upstream_account_id: Some(42),
                 include_live: Some(false),
+                limit: None,
+                cursor: None,
+                as_of: None,
             }),
         )
         .await
@@ -561,6 +911,9 @@ mod tests {
                 to: format_utc_iso(at(87_000)),
                 upstream_account_id: Some(42),
                 include_live: None,
+                limit: None,
+                cursor: None,
+                as_of: None,
             }),
         )
         .await
@@ -575,6 +928,9 @@ mod tests {
                 to: format_utc_iso(at(87_000)),
                 upstream_account_id: Some(43),
                 include_live: None,
+                limit: None,
+                cursor: None,
+                as_of: None,
             }),
         )
         .await
@@ -589,6 +945,9 @@ mod tests {
                 to: format_utc_iso(at(87_000)),
                 upstream_account_id: Some(44),
                 include_live: None,
+                limit: None,
+                cursor: None,
+                as_of: None,
             }),
         )
         .await
@@ -596,6 +955,157 @@ mod tests {
         assert_eq!(malformed_response.total, 1);
         assert_eq!(malformed_response.records[0].invoke_id, "malformed");
         assert_eq!(malformed_response.records[0].upstream_account_id, Some(44));
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn stable_cursor_paginates_logical_invocations_without_mixing_snapshots() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        for (invoke_id, occurred_at) in [
+            ("paged-first", at(10_000)),
+            ("paged-retry", at(10_001)),
+            ("paged-second", at(10_002)),
+            ("paged-third", at(10_003)),
+        ] {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{\"upstreamAccountId\":42}', '', 'full')",
+            )
+            .bind(invoke_id)
+            .bind(db_occurred_at_lower_bound(occurred_at))
+            .execute(&state.pool)
+            .await
+            .expect("insert pagination fixture");
+        }
+
+        let base_query = || InvocationTimelineQuery {
+            from: format_utc_iso(at(9_999)),
+            to: format_utc_iso(at(10_010)),
+            upstream_account_id: Some(42),
+            include_live: Some(false),
+            limit: Some(2),
+            cursor: None,
+            as_of: None,
+        };
+        let Json(first) = fetch_timeline(State(state.clone()), Query(base_query()))
+            .await
+            .expect("fetch first pagination page");
+        assert!(first.has_more);
+        let first_cursor = first.next_cursor.clone().expect("next cursor");
+        assert_eq!(first.total, 4);
+        assert_eq!(first.records.len(), 2);
+
+        let Json(second) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                cursor: Some(first_cursor.clone()),
+                as_of: Some(first.as_of.clone()),
+                ..base_query()
+            }),
+        )
+        .await
+        .expect("fetch second pagination page");
+        assert!(!second.has_more);
+        assert_eq!(second.next_cursor, None);
+        assert_eq!(second.as_of, first.as_of);
+        assert_eq!(second.total, 4);
+
+        let mismatched_window = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(9_998)),
+                to: format_utc_iso(at(10_010)),
+                cursor: Some(first_cursor),
+                as_of: Some(first.as_of),
+                ..base_query()
+            }),
+        )
+        .await;
+        assert!(mismatched_window.is_err());
+
+        let mut keys = first
+            .records
+            .iter()
+            .chain(second.records.iter())
+            .map(|record| (record.invoke_id.clone(), record.occurred_at.clone()))
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 4);
+
+        let mut live =
+            crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+        live.id = 99_001;
+        live.invoke_id = "paged-live".to_string();
+        live.occurred_at = db_occurred_at_lower_bound(at(10_001));
+        live.source = SOURCE_PROXY.to_string();
+        live.status = Some("running".to_string());
+        live.live_phase = Some("requesting".to_string());
+        live.t_total_ms = None;
+        live.upstream_account_id = Some(42);
+        state.proxy_runtime_invocations.upsert(live);
+
+        let live_query = || InvocationTimelineQuery {
+            from: format_utc_iso(at(9_999)),
+            to: format_utc_iso(at(10_010)),
+            upstream_account_id: Some(42),
+            include_live: Some(true),
+            limit: Some(2),
+            cursor: None,
+            as_of: None,
+        };
+        let Json(live_first) = fetch_timeline(State(state.clone()), Query(live_query()))
+            .await
+            .expect("fetch interleaved live first page");
+        let live_first_cursor = live_first.next_cursor.clone().expect("live next cursor");
+        assert_eq!(live_first.total, 5);
+        assert_eq!(
+            live_first
+                .records
+                .iter()
+                .map(|record| record.invoke_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["paged-first", "paged-live"]
+        );
+        let Json(live_second) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                cursor: Some(live_first_cursor),
+                as_of: Some(live_first.as_of.clone()),
+                ..live_query()
+            }),
+        )
+        .await
+        .expect("fetch interleaved live second page");
+        assert_eq!(
+            live_second
+                .records
+                .iter()
+                .map(|record| record.invoke_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["paged-retry", "paged-second"]
+        );
+        let Json(live_third) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                cursor: live_second.next_cursor.clone(),
+                as_of: Some(live_first.as_of),
+                ..live_query()
+            }),
+        )
+        .await
+        .expect("fetch interleaved live third page");
+        assert_eq!(
+            live_third
+                .records
+                .iter()
+                .map(|record| record.invoke_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["paged-third"]
+        );
+        assert!(!live_third.has_more);
         state.pool.close().await;
     }
 }

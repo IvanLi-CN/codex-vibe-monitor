@@ -4,6 +4,8 @@ import { fetchInvocationTimeline } from "../lib/api";
 
 const DEFAULT_WINDOW_MS = 30 * 60 * 1_000;
 const LIVE_REFRESH_MS = 15_000;
+const INVOCATION_TIMELINE_PAGE_SIZE = 500;
+const INVOCATION_TIMELINE_MAX_PAGES = 1_000;
 
 export interface InvocationTimelineWindow {
   startMs: number;
@@ -60,6 +62,70 @@ function resolveInitialWindow(
   return clampWindow({ startMs: activityEnd - DEFAULT_WINDOW_MS, endMs: activityEnd }, bounds);
 }
 
+function timelineRecordKey(record: InvocationTimelineResponse["records"][number]) {
+  return `${record.invokeId}\u0000${record.occurredAt}`;
+}
+
+function preferTimelineRecord(
+  current: InvocationTimelineResponse["records"][number],
+  next: InvocationTimelineResponse["records"][number],
+) {
+  if (current.isInFlight !== next.isInFlight) return current.isInFlight ? next : current;
+  return next.id >= current.id ? next : current;
+}
+
+async function fetchInvocationTimelineSnapshot(options: {
+  from: string;
+  to: string;
+  upstreamAccountId?: number;
+  includeLive: boolean;
+  signal: AbortSignal;
+}) {
+  let cursor: string | undefined;
+  let asOf: string | undefined;
+  let firstPage: InvocationTimelineResponse | null = null;
+  const records = new Map<string, InvocationTimelineResponse["records"][number]>();
+
+  for (let pageIndex = 0; pageIndex < INVOCATION_TIMELINE_MAX_PAGES; pageIndex += 1) {
+    const page = await fetchInvocationTimeline({
+      ...options,
+      limit: INVOCATION_TIMELINE_PAGE_SIZE,
+      cursor,
+      asOf,
+    });
+    firstPage ??= page;
+    if (asOf == null) asOf = page.asOf;
+    if (page.asOf !== asOf) {
+      throw new Error("Invocation timeline snapshot changed while paging");
+    }
+    for (const record of page.records) {
+      const key = timelineRecordKey(record);
+      const current = records.get(key);
+      records.set(key, current ? preferTimelineRecord(current, record) : record);
+    }
+    if (!page.hasMore) break;
+    if (!page.nextCursor) throw new Error("Invocation timeline page is missing nextCursor");
+    cursor = page.nextCursor;
+    if (pageIndex === INVOCATION_TIMELINE_MAX_PAGES - 1) {
+      throw new Error("Invocation timeline has too many pages");
+    }
+  }
+
+  if (!firstPage || !asOf) throw new Error("Invocation timeline returned no snapshot");
+  const mergedRecords = [...records.values()].sort(
+    (left, right) =>
+      Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.id - right.id,
+  );
+  return {
+    ...firstPage,
+    asOf,
+    total: Math.max(firstPage.total, mergedRecords.length),
+    hasMore: false,
+    nextCursor: null,
+    records: mergedRecords,
+  } satisfies InvocationTimelineResponse;
+}
+
 export function useInvocationTimeline({
   response,
   closedNaturalDay,
@@ -84,6 +150,9 @@ export function useInvocationTimeline({
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const inFlightRefreshRef = useRef<Promise<void> | null>(null);
+  const pendingRefreshRef = useRef(false);
+  const hasDataRef = useRef(false);
   const suppressRefreshRef = useRef(false);
   const deferredRefreshRef = useRef(false);
   const [committedBoundsContextKey, setCommittedBoundsContextKey] = useState(boundsContextKey);
@@ -98,8 +167,11 @@ export function useInvocationTimeline({
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
+      inFlightRefreshRef.current = null;
+      pendingRefreshRef.current = false;
       setViewportWindow(null);
       setData(null);
+      hasDataRef.current = false;
       setError(null);
       setIsLoading(false);
       return;
@@ -111,9 +183,12 @@ export function useInvocationTimeline({
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
+      inFlightRefreshRef.current = null;
+      pendingRefreshRef.current = false;
       previousBounds.current = bounds;
       setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
       setData(null);
+      hasDataRef.current = false;
       setError(null);
       setIsLoading(enabled);
       return;
@@ -149,33 +224,45 @@ export function useInvocationTimeline({
 
   const refresh = useCallback(async () => {
     if (!enabled || !viewportWindow) return;
-    abortControllerRef.current?.abort();
-    const controller = new AbortController();
-    const sequence = requestSequence.current + 1;
-    requestSequence.current = sequence;
-    abortControllerRef.current = controller;
-    setIsLoading(true);
-    try {
-      const next = await fetchInvocationTimeline({
-        from: new Date(viewportWindow.startMs).toISOString(),
-        to: new Date(viewportWindow.endMs).toISOString(),
-        upstreamAccountId,
-        includeLive: !closedNaturalDay,
-        signal: controller.signal,
-      });
-      if (sequence !== requestSequence.current) return;
-      setData(next);
-      setError(null);
-    } catch (nextError) {
-      if (controller.signal.aborted) return;
-      if (sequence !== requestSequence.current) return;
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
-    } finally {
-      if (sequence === requestSequence.current && abortControllerRef.current === controller) {
-        abortControllerRef.current = null;
-        setIsLoading(false);
-      }
+    if (inFlightRefreshRef.current) {
+      pendingRefreshRef.current = true;
+      return inFlightRefreshRef.current;
     }
+    const controller = new AbortController();
+    const sequence = requestSequence.current;
+    abortControllerRef.current = controller;
+    setIsLoading(!hasDataRef.current);
+    const request = (async () => {
+      try {
+        const next = await fetchInvocationTimelineSnapshot({
+          from: new Date(viewportWindow.startMs).toISOString(),
+          to: new Date(viewportWindow.endMs).toISOString(),
+          upstreamAccountId,
+          includeLive: !closedNaturalDay,
+          signal: controller.signal,
+        });
+        if (sequence !== requestSequence.current) return;
+        hasDataRef.current = true;
+        setData(next);
+        setError(null);
+      } catch (nextError) {
+        if (controller.signal.aborted) return;
+        if (sequence !== requestSequence.current) return;
+        setError(nextError instanceof Error ? nextError.message : String(nextError));
+      } finally {
+        if (sequence === requestSequence.current && abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+          inFlightRefreshRef.current = null;
+          setIsLoading(false);
+          if (pendingRefreshRef.current) {
+            pendingRefreshRef.current = false;
+            globalThis.setTimeout(() => void refresh(), 0);
+          }
+        }
+      }
+    })();
+    inFlightRefreshRef.current = request;
+    return request;
   }, [closedNaturalDay, enabled, upstreamAccountId, viewportWindow]);
 
   useEffect(() => {
@@ -183,6 +270,8 @@ export function useInvocationTimeline({
     requestSequence.current += 1;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    inFlightRefreshRef.current = null;
+    pendingRefreshRef.current = false;
     setIsLoading(false);
     setError(null);
   }, [enabled]);
@@ -192,6 +281,8 @@ export function useInvocationTimeline({
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
+      inFlightRefreshRef.current = null;
+      pendingRefreshRef.current = false;
     },
     [],
   );
@@ -251,6 +342,8 @@ export function useInvocationTimeline({
   return {
     data: contextReady && dataMatchesWindow ? data : null,
     error,
+    isStale: data != null && error != null,
+    isFrozen: !closedNaturalDay && !liveRefreshAllowed,
     isLoading: contextReady ? isLoading || (data != null && !dataMatchesWindow) : enabled,
     isRefreshing: contextReady && isLoading && dataMatchesWindow,
     window: contextReady ? viewportWindow : null,

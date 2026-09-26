@@ -1,5 +1,5 @@
 // biome-ignore-all lint/a11y/noNoninteractiveTabindex: the scroll viewport must be focusable
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { useInvocationTimeline } from "../../hooks/useInvocationTimeline";
@@ -10,7 +10,10 @@ import type {
   InvocationTimelineResponse,
   TimeseriesResponse,
 } from "../../lib/api";
-import { recordTodayChartRender } from "../../lib/dashboardPerformanceDiagnostics";
+import {
+  recordTodayChartDataCommit,
+  recordTodayChartRender,
+} from "../../lib/dashboardPerformanceDiagnostics";
 import { AppIcon } from "../shared/AppIcon";
 
 // The dense timeline viewport is a keyboard-scrollable region for screen-reader users.
@@ -23,7 +26,6 @@ interface DashboardInvocationTimelineProps {
   upstreamAccountId?: number;
   liveRevision?: number;
   timelineData?: InvocationTimelineResponse | null;
-  fallback: ReactNode;
 }
 
 export interface LaneRecord {
@@ -37,7 +39,7 @@ export function getInvocationTimelineLaneCount(lanes: LaneRecord[]) {
   return Math.max(1, ...lanes.map((item) => item.lane + 1));
 }
 
-export function shouldFallbackForInvalidTimelineBounds(
+export function shouldShowTimelineUnavailable(
   response: TimeseriesResponse | null,
   bounds: { startMs: number; endMs: number } | null,
   timelineDataOverride: InvocationTimelineResponse | null | undefined,
@@ -49,8 +51,32 @@ export function shouldAdvanceInvocationTimelineBars(
   closedNaturalDay: boolean,
   liveConnected: boolean,
   hasTimelineDataOverride: boolean,
+  isStale = false,
 ) {
-  return !closedNaturalDay && liveConnected && !hasTimelineDataOverride;
+  return !closedNaturalDay && liveConnected && !hasTimelineDataOverride && !isStale;
+}
+
+function TimelineSurfaceState({
+  message,
+  loading = false,
+  compact = false,
+}: {
+  message: string;
+  loading?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      data-testid="dashboard-invocation-timeline-state"
+      className="flex min-h-64 items-center justify-center rounded-lg border border-base-content/10 bg-base-300/20 p-6"
+      role={loading ? "status" : "alert"}
+      style={{
+        minHeight: `${compact ? INVOCATION_CHART_HEIGHT_COMPACT_PX : INVOCATION_CHART_HEIGHT_DESKTOP_PX}px`,
+      }}
+    >
+      <Alert variant={loading ? "info" : "warning"}>{message}</Alert>
+    </div>
+  );
 }
 
 function parseEpoch(value: string | null | undefined) {
@@ -245,7 +271,6 @@ export function DashboardInvocationTimeline({
   upstreamAccountId,
   liveRevision,
   timelineData: timelineDataOverride,
-  fallback,
 }: DashboardInvocationTimelineProps) {
   const { locale, t } = useTranslation();
   const isCompactViewport = useCompactViewport();
@@ -274,6 +299,7 @@ export function DashboardInvocationTimeline({
   const renderedError = timelineDataOverride ? null : timeline.error;
   useEffect(() => {
     if (closedNaturalDay || !renderedData || !response) return;
+    recordTodayChartDataCommit("today");
     const lastPoint = response.points.at(-1);
     recordTodayChartRender(
       `${renderedData.rangeStart}:${renderedData.rangeEnd}:${renderedData.asOf}:${renderedData.records.length}:${response.rangeStart}:${response.rangeEnd}:${lastPoint?.totalCount ?? ""}`,
@@ -283,6 +309,7 @@ export function DashboardInvocationTimeline({
     closedNaturalDay,
     liveConnected,
     timelineDataOverride != null,
+    timeline.isStale,
   );
   const lanes = useMemo(
     () =>
@@ -344,21 +371,31 @@ export function DashboardInvocationTimeline({
     [laneLayout.laneAreaHeightPx, plotWindow, response],
   );
 
-  if (error || (!response && !loading && !timelineDataOverride)) return <>{fallback}</>;
-  if (!closedNaturalDay && !liveRefreshAllowed && !timelineDataOverride) return <>{fallback}</>;
-  if (shouldFallbackForInvalidTimelineBounds(response, timeline.bounds, timelineDataOverride)) {
-    return <>{fallback}</>;
+  const stateMessage = timelineDataOverride
+    ? null
+    : !response && !loading
+      ? t("dashboard.activityOverview.timelineUnavailable")
+      : error || renderedError
+        ? t("dashboard.activityOverview.timelineUnavailable")
+        : !closedNaturalDay && !liveRefreshAllowed
+          ? t("dashboard.activityOverview.timelineOffline")
+          : shouldShowTimelineUnavailable(response, timeline.bounds, timelineDataOverride)
+            ? t("dashboard.activityOverview.timelineUnavailable")
+            : null;
+  if (stateMessage && !renderedData) {
+    return (
+      <div data-testid="dashboard-today-activity-chart">
+        <TimelineSurfaceState message={stateMessage} compact={isCompactViewport} />
+      </div>
+    );
   }
   if (!plotWindow || (timeline.isLoading && !renderedData && !timelineDataOverride)) {
     return (
-      <div
-        className="min-h-64 animate-pulse rounded-lg bg-base-200/45"
-        role="status"
-        aria-label={t("chart.loading")}
-      />
+      <div data-testid="dashboard-today-activity-chart">
+        <TimelineSurfaceState message={t("chart.loading")} loading compact={isCompactViewport} />
+      </div>
     );
   }
-  if (renderedError || error || renderedData?.overLimit) return <>{fallback}</>;
 
   const windowSpan = Math.max(1, plotWindow.endMs - plotWindow.startMs);
   const xFor = (value: number) => ((value - plotWindow.startMs) / windowSpan) * 100;
@@ -443,6 +480,14 @@ export function DashboardInvocationTimeline({
             </span>
             {timeline.isRefreshing ? (
               <span className="text-info">{t("dashboard.activityOverview.timelineLive")}</span>
+            ) : null}
+            {timeline.isStale ? (
+              <span className="text-warning">{t("dashboard.activityOverview.timelineStale")}</span>
+            ) : null}
+            {timeline.isFrozen ? (
+              <span className="text-warning">
+                {t("dashboard.activityOverview.timelineOffline")}
+              </span>
             ) : null}
           </div>
           <div className="flex items-center gap-1">

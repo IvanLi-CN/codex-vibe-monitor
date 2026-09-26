@@ -346,6 +346,9 @@ function DashboardNaturalDayRangePanel({
     summaryWindow,
     closedNaturalDay: timeseriesRange === "yesterday",
   });
+  const activeChartResponse = metric === "totalCount" ? data : chartResponse;
+  const activeChartLoading =
+    metric === "totalCount" ? isLoading && data == null : isLoading && chartResponse == null;
 
   return (
     <div className="flex flex-col gap-5" data-testid={testId} data-active="true">
@@ -369,8 +372,8 @@ function DashboardNaturalDayRangePanel({
         />
       )}
       <DashboardNaturalDayChartSection
-        response={chartResponse}
-        loading={isLoading && chartResponse == null}
+        response={activeChartResponse}
+        loading={activeChartLoading}
         error={error}
         metric={metric}
         closedNaturalDay={timeseriesRange === "yesterday"}
@@ -770,16 +773,6 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   upstreamAccountId?: number;
   liveRevision?: number;
 }) {
-  const legacyMetric = metric === "network" ? "totalCount" : metric;
-  const legacyChart = (
-    <DashboardTodayActivityChartBoundary
-      response={response}
-      loading={loading}
-      error={error}
-      metric={legacyMetric}
-      closedNaturalDay={closedNaturalDay}
-    />
-  );
   if (metric === "network") {
     return (
       <DashboardNetworkActivityChartBoundary
@@ -798,7 +791,6 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
         closedNaturalDay={closedNaturalDay}
         upstreamAccountId={upstreamAccountId}
         liveRevision={liveRevision}
-        fallback={legacyChart}
       />
     );
   }

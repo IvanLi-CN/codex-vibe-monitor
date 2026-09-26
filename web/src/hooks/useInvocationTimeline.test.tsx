@@ -37,7 +37,8 @@ function createTimeline(
     rangeEnd,
     asOf: rangeEnd,
     total: 1,
-    overLimit: false,
+    hasMore: false,
+    nextCursor: null,
     records: [
       {
         id: 1,
@@ -255,6 +256,55 @@ describe("useInvocationTimeline", () => {
     });
 
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces live revisions while one snapshot traversal is in flight", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRevision={1} />);
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} />);
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    pending.shift()?.(createTimeline("revision-1"));
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+    pending.shift()?.(createTimeline("revision-2"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("revision-2");
+  });
+
+  it("keeps the last successful snapshot when a refresh fails", async () => {
+    timelineMocks.fetch.mockResolvedValueOnce(createTimeline("last-good"));
+    timelineMocks.fetch.mockRejectedValueOnce(new Error("snapshot unavailable"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("last-good");
+
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("last-good");
   });
 
   it("uses one request when the live time bounds advance", async () => {

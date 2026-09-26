@@ -864,7 +864,8 @@ describe("fetchInvocationTimeline", () => {
             rangeEnd: "2026-03-26T12:30:00Z",
             asOf: "2026-03-26T12:10:00Z",
             total: 1,
-            overLimit: false,
+            hasMore: false,
+            nextCursor: null,
             records: [
               {
                 id: 7,
@@ -908,7 +909,8 @@ describe("fetchInvocationTimeline", () => {
             rangeEnd: "2026-03-26T12:30:00Z",
             asOf: "2026-03-26T12:10:00Z",
             total: 0,
-            overLimit: false,
+            hasMore: false,
+            nextCursor: null,
             records: [],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -925,7 +927,7 @@ describe("fetchInvocationTimeline", () => {
     expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("includeLive=false");
   });
 
-  it("rejects incomplete timeline payloads so the dashboard can use its aggregate fallback", async () => {
+  it("rejects incomplete timeline payloads so the timeline surface can show unavailable state", async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(JSON.stringify({ records: [] }), {
@@ -952,7 +954,8 @@ describe("fetchInvocationTimeline", () => {
             rangeEnd: "2026-03-26T12:30:00Z",
             asOf: "2026-03-26T12:10:00Z",
             total: 1,
-            overLimit: false,
+            hasMore: false,
+            nextCursor: null,
             records: [{ id: 1, invokeId: "missing-time" }],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -977,7 +980,8 @@ describe("fetchInvocationTimeline", () => {
             rangeEnd: "2026-03-26T12:30:00Z",
             asOf: "2026-03-26T12:10:00Z",
             total: 1,
-            overLimit: false,
+            hasMore: false,
+            nextCursor: null,
             records: [
               {
                 id: 0,
@@ -1013,7 +1017,8 @@ describe("fetchInvocationTimeline", () => {
             rangeEnd: "2026-03-26T12:30:00Z",
             asOf: "2026-03-26T12:10:00Z",
             total: 1,
-            overLimit: false,
+            hasMore: false,
+            nextCursor: null,
             records: [
               {
                 id: 1,

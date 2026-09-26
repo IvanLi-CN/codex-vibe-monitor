@@ -5,7 +5,7 @@ import {
   getInvocationTimelineLaneCount,
   resolveInvocationTimelineLayout,
   shouldAdvanceInvocationTimelineBars,
-  shouldFallbackForInvalidTimelineBounds,
+  shouldShowTimelineUnavailable,
 } from "./DashboardInvocationTimeline";
 
 function record(
@@ -107,8 +107,8 @@ describe("assignInvocationTimelineLanes", () => {
   });
 });
 
-describe("shouldFallbackForInvalidTimelineBounds", () => {
-  it("falls back when a response exists without valid bounds", () => {
+describe("shouldShowTimelineUnavailable", () => {
+  it("keeps the new timeline surface unavailable when bounds are invalid", () => {
     const response = {
       rangeStart: "not-a-date",
       rangeEnd: "2026-03-26T12:00:00.000Z",
@@ -116,13 +116,11 @@ describe("shouldFallbackForInvalidTimelineBounds", () => {
       points: [],
     };
 
-    expect(shouldFallbackForInvalidTimelineBounds(response, null, null)).toBe(true);
-    expect(shouldFallbackForInvalidTimelineBounds(response, { startMs: 1, endMs: 2 }, null)).toBe(
+    expect(shouldShowTimelineUnavailable(response, null, null)).toBe(true);
+    expect(shouldShowTimelineUnavailable(response, { startMs: 1, endMs: 2 }, null)).toBe(false);
+    expect(shouldShowTimelineUnavailable(response, null, {} as InvocationTimelineResponse)).toBe(
       false,
     );
-    expect(
-      shouldFallbackForInvalidTimelineBounds(response, null, {} as InvocationTimelineResponse),
-    ).toBe(false);
   });
 });
 
@@ -132,6 +130,7 @@ describe("shouldAdvanceInvocationTimelineBars", () => {
     expect(shouldAdvanceInvocationTimelineBars(true, true, false)).toBe(false);
     expect(shouldAdvanceInvocationTimelineBars(false, false, false)).toBe(false);
     expect(shouldAdvanceInvocationTimelineBars(false, true, true)).toBe(false);
+    expect(shouldAdvanceInvocationTimelineBars(false, true, false, true)).toBe(false);
   });
 });
 

@@ -1289,7 +1289,8 @@ export interface InvocationTimelineResponse {
   rangeEnd: string;
   asOf: string;
   total: number;
-  overLimit: boolean;
+  hasMore: boolean;
+  nextCursor?: string | null;
   records: InvocationTimelineRecord[];
 }
 
@@ -2758,7 +2759,8 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
   const rangeEnd = payload.rangeEnd;
   const asOf = payload.asOf;
   const total = payload.total;
-  const overLimit = payload.overLimit;
+  const hasMore = payload.hasMore;
+  const nextCursor = payload.nextCursor;
   const records = payload.records;
   if (
     typeof rangeStart !== "string" ||
@@ -2767,15 +2769,17 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
     !Number.isFinite(Date.parse(rangeEnd)) ||
     Date.parse(rangeEnd) <= Date.parse(rangeStart) ||
     typeof asOf !== "string" ||
-    !Number.isFinite(Date.parse(asOf)) ||
+    !asOf.trim() ||
     typeof total !== "number" ||
     !Number.isFinite(total) ||
     total < 0 ||
     !Number.isInteger(total) ||
-    typeof overLimit !== "boolean" ||
+    typeof hasMore !== "boolean" ||
+    (nextCursor != null && typeof nextCursor !== "string") ||
+    (hasMore && (!nextCursor || nextCursor.trim() === "")) ||
+    (!hasMore && nextCursor != null) ||
     !Array.isArray(records) ||
-    (!overLimit && total !== records.length) ||
-    (overLimit && records.length !== 0)
+    records.length > total
   ) {
     throw new Error("Invalid invocation timeline response");
   }
@@ -2784,7 +2788,8 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
     rangeEnd,
     asOf,
     total,
-    overLimit,
+    hasMore,
+    nextCursor: nextCursor == null ? null : nextCursor,
     records: records.map((rawRecord): InvocationTimelineRecord => {
       if (rawRecord == null || typeof rawRecord !== "object" || Array.isArray(rawRecord)) {
         throw new Error("Invalid invocation timeline record");
@@ -5512,6 +5517,9 @@ export async function fetchInvocationTimeline(options: {
   to: string;
   upstreamAccountId?: number;
   includeLive?: boolean;
+  limit?: number;
+  cursor?: string;
+  asOf?: string;
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams({ from: options.from, to: options.to });
@@ -5521,6 +5529,9 @@ export async function fetchInvocationTimeline(options: {
   if (options.includeLive != null) {
     search.set("includeLive", String(options.includeLive));
   }
+  if (options.limit != null) search.set("limit", String(options.limit));
+  if (options.cursor) search.set("cursor", options.cursor);
+  if (options.asOf) search.set("asOf", options.asOf);
   const response = await fetchJson<unknown>(`/api/stats/invocation-timeline?${search.toString()}`, {
     signal: options.signal,
   });

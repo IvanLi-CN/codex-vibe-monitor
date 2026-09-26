@@ -3104,38 +3104,60 @@ function demoInvocationTimeline(url: URL) {
     if (record.tTotalMs == null) return startMs >= rangeStart;
     return startMs + Math.max(0, record.tTotalMs) >= rangeStart;
   });
-  const overLimit = candidates.length > 2_000;
+  const pageSize = Math.min(
+    2_000,
+    Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "500", 10) || 500),
+  );
+  const asOf = url.searchParams.get("asOf") ?? `demo:${rangeStart}:${rangeEnd}`;
+  let offset = 0;
+  const rawCursor = url.searchParams.get("cursor");
+  if (rawCursor) {
+    try {
+      const cursor = JSON.parse(atob(rawCursor)) as { asOf?: string; offset?: number };
+      const cursorOffset = cursor.offset;
+      if (
+        cursor.asOf !== asOf ||
+        typeof cursorOffset !== "number" ||
+        !Number.isSafeInteger(cursorOffset) ||
+        cursorOffset < 0
+      ) {
+        throw new Error("invalid demo timeline cursor");
+      }
+      offset = cursorOffset as number;
+    } catch {
+      throw new Error("invalid demo invocation timeline cursor");
+    }
+  }
+  const page = candidates.slice(offset, offset + pageSize);
+  const hasMore = offset + page.length < candidates.length;
   return {
     rangeStart: new Date(rangeStart).toISOString(),
     rangeEnd: new Date(rangeEnd).toISOString(),
-    asOf: demoNow(),
+    asOf,
     total: candidates.length,
-    overLimit,
-    records: overLimit
-      ? []
-      : candidates.map((record) => {
-          const isInFlight = record.status === "running";
-          return {
-            id: record.id,
-            invokeId: record.invokeId,
-            occurredAt: record.occurredAt,
-            endAt:
-              !isInFlight && record.tTotalMs != null
-                ? new Date(
-                    Date.parse(record.occurredAt) + Math.max(0, record.tTotalMs),
-                  ).toISOString()
-                : null,
-            isInFlight,
-            status: record.status,
-            livePhase: record.livePhase,
-            firstTokenMs: record.firstTokenMs,
-            tTotalMs: record.tTotalMs,
-            poolAttemptCount: record.poolAttemptCount,
-            upstreamAccountId: record.upstreamAccountId,
-            upstreamAccountName: record.upstreamAccountName,
-            failureClass: record.failureClass,
-          };
-        }),
+    hasMore,
+    nextCursor: hasMore ? btoa(JSON.stringify({ asOf, offset: offset + page.length })) : null,
+    records: page.map((record) => {
+      const isInFlight = record.status === "running";
+      return {
+        id: record.id,
+        invokeId: record.invokeId,
+        occurredAt: record.occurredAt,
+        endAt:
+          !isInFlight && record.tTotalMs != null
+            ? new Date(Date.parse(record.occurredAt) + Math.max(0, record.tTotalMs)).toISOString()
+            : null,
+        isInFlight,
+        status: record.status,
+        livePhase: record.livePhase,
+        firstTokenMs: record.firstTokenMs,
+        tTotalMs: record.tTotalMs,
+        poolAttemptCount: record.poolAttemptCount,
+        upstreamAccountId: record.upstreamAccountId,
+        upstreamAccountName: record.upstreamAccountName,
+        failureClass: record.failureClass,
+      };
+    }),
   };
 }
 

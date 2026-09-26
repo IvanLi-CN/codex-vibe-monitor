@@ -198,7 +198,8 @@ describe("demo MSW handlers", () => {
     );
     const payload = (await response.json()) as {
       total: number;
-      overLimit: boolean;
+      hasMore: boolean;
+      nextCursor: string | null;
       records: Array<{
         invokeId: string;
         upstreamAccountId: number | null;
@@ -208,7 +209,8 @@ describe("demo MSW handlers", () => {
     };
 
     expect(response.ok).toBe(true);
-    expect(payload.overLimit).toBe(false);
+    expect(payload.hasMore).toBe(false);
+    expect(payload.nextCursor).toBeNull();
     expect(payload.total).toBeGreaterThan(0);
     expect(payload.records.every((record) => record.upstreamAccountId === 101)).toBe(true);
     expect(payload.records).toEqual(
