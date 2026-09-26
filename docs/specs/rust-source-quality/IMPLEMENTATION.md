@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 50 explicit file budgets, and
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 49 explicit file budgets, and
   117 standalone suppression declarations.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
@@ -146,12 +146,30 @@ parent uses an explicit path declaration and crate-visible re-export, while
 routes, signatures, serde behavior, tests, resource buckets, and runtime
 behavior remain unchanged.
 
+The runtime overlay capture-phase extraction moves the complete contiguous test
+and fixture group from physical lines 315 through 1,793 of
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors.rs` into
+`src/tests/stateful_sqlite/runtime_overlay_and_group_rule_behaviors/runtime_overlay_capture_phases.rs`.
+On the verified main merge base `4490fe2a95e0225ae82705ead4f6ee40699db2a7`,
+the exact boundary contains 1,479 moved lines, including runtime overlay
+capture, cleanup, terminalization, account-switch, and capture persistence
+coverage plus its fixture upstreams. The parent is now 2,817 physical lines
+and the 1,480-line child is below the 3,000-line test/helper target, so the
+parent is removed from the policy inventory. The existing top-level helpers
+remain in the parent and are available to the child through `use super::*`;
+test names, assertions, resource bucket, helper access, and runtime behavior
+remain unchanged.
+
+Validation for this extraction is the focused runtime overlay/capture-phase
+tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.
+
 ## Inventory Contract
 
 The policy has 28 `production` entries above the 2,500-line destination target
-and 22 `test_helper` entries above the 3,000-line destination target. Each
+and 21 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 50 paths; a long path absent from the inventory is
+The checker only reads those 49 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
