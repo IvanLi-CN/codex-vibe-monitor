@@ -16,6 +16,9 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
       encryptedSessionOwnerRoutingEnabled: true,
       defaultHijackEnabled: false,
       models: [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -25,6 +28,9 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
         "gpt-5.4-pro",
       ],
       enabledModels: [
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -43,6 +49,12 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
     pricing: {
       catalogVersion: "test-pricing",
       entries: [
+        {
+          model: "gpt-6-terra",
+          inputPer1m: 2,
+          outputPer1m: 12,
+          source: "temporary",
+        },
         {
           model: "gpt-5",
           inputPer1m: 1,
@@ -64,6 +76,9 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
 describe("extractAvailableModelOptions", () => {
   it("uses only proxy preset models and excludes pricing-only models", () => {
     expect(extractAvailableModelOptions(createSettingsPayload())).toEqual([
+      "gpt-6-astra",
+      "gpt-6-sol",
+      "gpt-6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",

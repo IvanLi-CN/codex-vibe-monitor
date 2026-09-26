@@ -2139,9 +2139,11 @@ pub(crate) struct WsUsageTracker {
     turn_occurred_at: Option<String>,
     turn_index: u64,
     response_id: Option<String>,
+    service_tier: Option<String>,
     runtime_snapshot_published: bool,
     runtime_snapshot_invoke_id: Option<String>,
     first_token_ms: Option<f64>,
+    usage: WebSocketUsageAccumulator,
 }
 
 impl WsUsageTracker {
@@ -2165,9 +2167,11 @@ impl WsUsageTracker {
             turn_occurred_at: None,
             turn_index: 0,
             response_id: None,
+            service_tier: None,
             runtime_snapshot_published: false,
             runtime_snapshot_invoke_id: None,
             first_token_ms: None,
+            usage: WebSocketUsageAccumulator::default(),
         }
     }
 
@@ -2178,9 +2182,11 @@ impl WsUsageTracker {
         self.turn_occurred_at = Some(shanghai_now_string());
         self.turn_index = self.ordinal.saturating_add(1);
         self.response_id = None;
+        self.service_tier = None;
         self.runtime_snapshot_published = false;
         self.runtime_snapshot_invoke_id = None;
         self.first_token_ms = None;
+        self.usage.reset();
     }
 
     fn stream_duration_ms(&self) -> Option<f64> {
@@ -2221,7 +2227,7 @@ impl WsUsageTracker {
         if self.observe_first_token_text(text) {
             self.publish_first_token_runtime_snapshot(state).await;
         }
-        let Some(event) = parse_ws_usage_event(text) else {
+        let Some(mut event) = parse_ws_usage_event(text) else {
             if ws_terminal_event_is_failure_without_usage(text)
                 && let Some((reason_code, http_status)) = ws_terminal_temporary_classification(text)
                 && let Some(attempt_id) = self.attempt_id
@@ -2256,10 +2262,20 @@ impl WsUsageTracker {
             }
             return;
         };
+        if let Some(service_tier) = event.service_tier.as_ref() {
+            self.service_tier = Some(service_tier.clone());
+        } else {
+            event.service_tier = self.service_tier.clone();
+        }
+        let (usage, usage_changed) = self.usage.update_with_change(event.usage);
+        event.usage = usage;
+        if !websocket_event_is_terminal(event.event_type.as_str()) {
+            return;
+        }
         self.ordinal = self.ordinal.saturating_add(1);
         let response_id_override = self.response_id.clone();
         let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
-        let stream_duration_ms = ws_usage_event_is_terminal(&event)
+        let stream_duration_ms = websocket_event_is_terminal(event.event_type.as_str())
             .then(|| self.stream_duration_ms())
             .flatten();
         if let Err(err) = persist_ws_usage_event(
@@ -2278,6 +2294,7 @@ impl WsUsageTracker {
             response_id_override.as_deref(),
             self.first_token_ms,
             stream_duration_ms,
+            usage_changed,
         )
         .await
         {
@@ -2357,8 +2374,8 @@ impl WsUsageTracker {
             response_id: None,
             response_status: Some("incomplete".to_string()),
             model: self.trace.request_model.clone(),
-            service_tier: None,
-            usage: ParsedUsage::default(),
+            service_tier: self.service_tier.clone(),
+            usage: self.usage.snapshot(),
             contains_encrypted_content: self.request_contains_encrypted_content,
         };
         let raw_event = serde_json::json!({
@@ -2384,6 +2401,7 @@ impl WsUsageTracker {
             self.response_id.as_deref(),
             Some(first_token_ms),
             self.stream_duration_ms(),
+            false,
         )
         .await
         {
@@ -2403,7 +2421,7 @@ pub(crate) struct WsUsageEvent {
     response_status: Option<String>,
     model: Option<String>,
     service_tier: Option<String>,
-    usage: ParsedUsage,
+    pub(crate) usage: ParsedUsage,
     contains_encrypted_content: bool,
 }
 
@@ -2493,16 +2511,14 @@ fn ws_response_id_from_text(text: &str) -> Option<String> {
 pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let event_type = value.get("type")?.as_str()?.trim().to_string();
-    if !ws_event_type_has_billable_usage(event_type.as_str()) {
+    if !websocket_event_contains_usage(event_type.as_str()) {
         return None;
     }
     let usage = value
         .pointer("/response/usage")
         .map(parse_usage_value)
         .unwrap_or_default();
-    if (usage.input_tokens.is_none() || usage.output_tokens.is_none())
-        && !ws_terminal_event_is_failure_without_usage(text)
-    {
+    if !has_ws_usage(&usage, ws_terminal_event_is_failure_without_usage(text)) {
         return None;
     }
     Some(WsUsageEvent {
@@ -2533,13 +2549,6 @@ pub(crate) fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
         usage,
         contains_encrypted_content: value_contains_encrypted_content(&value),
     })
-}
-
-pub(crate) fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
-    matches!(
-        event_type,
-        "response.completed" | "response.done" | "response.failed"
-    )
 }
 
 fn ws_terminal_event_is_failure_without_usage(text: &str) -> bool {
@@ -2633,16 +2642,6 @@ pub(crate) fn websocket_account_uses_official_openai_base_url(
         .upstream_base_url
         .host_str()
         .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
-}
-
-pub(crate) fn ws_text_event_is_terminal(event_type: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<Value>(event_type) else {
-        return false;
-    };
-    value
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(ws_event_type_has_billable_usage)
 }
 
 pub(crate) fn ws_upstream_close_requires_retry(
@@ -2915,10 +2914,6 @@ pub(crate) fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool 
     }
 }
 
-fn ws_usage_event_is_terminal(event: &WsUsageEvent) -> bool {
-    ws_event_type_has_billable_usage(event.event_type.as_str())
-}
-
 pub(crate) async fn persist_ws_usage_event(
     state: &AppState,
     account: &PoolResolvedAccount,
@@ -2935,6 +2930,7 @@ pub(crate) async fn persist_ws_usage_event(
     response_id_override: Option<&str>,
     first_token_ms: Option<f64>,
     stream_duration_ms: Option<f64>,
+    allow_duplicate_usage_refresh: bool,
 ) -> Result<()> {
     let proxy_settings = state.proxy_model_settings.read().await.clone();
     let model = event.model.as_deref();
@@ -3148,6 +3144,7 @@ pub(crate) async fn persist_ws_usage_event(
                 t_persist_ms: 0.0,
             },
         },
+        allow_duplicate_usage_refresh,
     )
     .await
 }
@@ -4369,6 +4366,27 @@ mod websocket_tests {
     }
 
     #[test]
+    fn websocket_usage_event_accepts_reported_cache_write_without_input_or_output_counts() {
+        let event = parse_ws_usage_event(
+            r#"{
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens_details": {
+                            "cache_write_tokens": 250
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("cache-write-only usage event");
+
+        assert_eq!(event.usage.reported_cache_write_tokens, Some(250));
+        assert_eq!(event.usage.input_tokens, None);
+        assert_eq!(event.usage.output_tokens, None);
+    }
+
+    #[test]
     fn websocket_usage_event_detects_encrypted_content() {
         let event = parse_ws_usage_event(
             r#"{
@@ -4574,11 +4592,11 @@ mod websocket_tests {
     }
 
     #[test]
-    fn websocket_usage_event_rejects_non_terminal_or_partial_usage() {
+    fn websocket_usage_event_accepts_non_terminal_usage_and_rejects_partial_terminal_usage() {
         assert!(parse_ws_usage_event(
             r#"{"type":"response.in_progress","response":{"usage":{"input_tokens":7,"output_tokens":3}}}"#
         )
-        .is_none());
+        .is_some());
         assert!(
             parse_ws_usage_event(
                 r#"{"type":"response.completed","response":{"usage":{"input_tokens":7}}}"#
@@ -4853,4 +4871,7 @@ mod websocket_tests {
             Some(AxumWsMessage::Binary(vec![1, 2, 3]))
         );
     }
+
+    #[path = "usage_tests.rs"]
+    mod usage_tests;
 }

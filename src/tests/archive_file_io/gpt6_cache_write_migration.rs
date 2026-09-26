@@ -1,0 +1,329 @@
+use super::*;
+
+#[tokio::test]
+async fn usage_backfill_without_exact_cache_write_preserves_existing_value() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let temp_dir = make_temp_test_dir("cache-write-backfill-preserves-exact");
+    let raw_response_path = temp_dir.join("response.json");
+    let raw_response = br#"{"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}"#;
+    fs::write(&raw_response_path, raw_response).expect("write raw response payload");
+
+    let mut record = test_proxy_capture_record(
+        "cache-write-backfill-preserves-exact",
+        "2026-09-24 14:00:00",
+    );
+    record.usage = ParsedUsage {
+        reported_cache_write_tokens: Some(50),
+        ..ParsedUsage::default()
+    };
+    record.resp_raw.path = Some(raw_response_path.to_string_lossy().into_owned());
+    record.resp_raw.size_bytes = raw_response.len() as i64;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin partial invocation write");
+    persist_proxy_capture_runtime_record_tx(tx.as_mut(), record.clone(), false)
+        .await
+        .expect("persist partial invocation with exact cache-write usage");
+    tx.commit().await.expect("commit partial invocation");
+
+    let row_id =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(&record.invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load partial invocation id");
+    let outcome = backfill_proxy_usage_tokens_up_to_id(&state.pool, row_id, None)
+        .await
+        .expect("backfill token counts from the retained raw response");
+    assert_eq!(outcome.updated, 1);
+
+    let usage = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT total_tokens, reported_cache_write_tokens FROM codex_invocations WHERE id = ?1",
+    )
+    .bind(row_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load backfilled invocation usage");
+    assert_eq!(usage.0, Some(120));
+    assert_eq!(usage.1, Some(50));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("retention-legacy-archive").await;
+    let occurred_at = shanghai_local_days_ago(91, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let final_archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve legacy archive path");
+    fs::create_dir_all(
+        final_archive_path
+            .parent()
+            .expect("legacy archive path should have parent"),
+    )
+    .expect("create legacy archive dir");
+
+    let legacy_archive_db_path = temp_dir.join("legacy-archive.sqlite");
+    fs::File::create(&legacy_archive_db_path).expect("create legacy archive sqlite file");
+    let legacy_archive_pool =
+        SqlitePool::connect(&test_sqlite_url_for_path(&legacy_archive_db_path))
+            .await
+            .expect("open legacy archive sqlite");
+    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL
+        .replace("archive_db.", "")
+        .replace("    first_token_ms REAL,\n", "")
+        .replace("    reported_cache_write_tokens INTEGER,\n", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("create legacy archive schema baseline");
+    sqlx::query("ALTER TABLE codex_invocations ADD COLUMN raw_expires_at TEXT")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("add legacy raw_expires_at column");
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("checkpoint legacy archive sqlite before compression");
+    legacy_archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&legacy_archive_db_path, &final_archive_path)
+        .expect("compress legacy archive batch");
+
+    insert_retention_invocation(
+        &pool,
+        "archive-into-legacy-batch",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sqlx::query(
+        "UPDATE codex_invocations SET reported_cache_write_tokens = 123 WHERE invoke_id = ?1",
+    )
+    .bind("archive-into-legacy-batch")
+    .execute(&pool)
+    .await
+    .expect("set exact cache-write count before archiving");
+
+    let live_row_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind("archive-into-legacy-batch")
+    .bind(&occurred_at)
+    .fetch_one(&pool)
+    .await
+    .expect("load live invocation row id");
+    let archive_outcome = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("codex_invocations"),
+        &month_key,
+        &[live_row_id],
+    )
+    .await
+    .expect("append into legacy archive batch");
+    assert!(
+        archive_outcome.row_count >= 1,
+        "legacy archive batch should accept appended rows with legacy schema (row_count={})",
+        archive_outcome.row_count
+    );
+
+    let inflated_legacy_path = temp_dir.join("legacy-archive-inflated.sqlite");
+    inflate_gzip_sqlite_file(&final_archive_path, &inflated_legacy_path)
+        .expect("inflate retained legacy archive batch");
+    let archived_pool = SqlitePool::connect(&test_sqlite_url_for_path(&inflated_legacy_path))
+        .await
+        .expect("open retained legacy archive batch");
+    let archived_ids: HashSet<String> =
+        sqlx::query_scalar("SELECT invoke_id FROM codex_invocations")
+            .fetch_all(&archived_pool)
+            .await
+            .expect("load legacy archive invoke ids")
+            .into_iter()
+            .collect();
+    assert!(archived_ids.contains("archive-into-legacy-batch"));
+    let archive_columns: HashSet<String> = sqlx::query("PRAGMA table_info('codex_invocations')")
+        .fetch_all(&archived_pool)
+        .await
+        .expect("inspect retained legacy archive schema")
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(
+        archive_columns.contains("raw_expires_at"),
+        "historical archive files should keep their legacy schema"
+    );
+    assert!(
+        archive_columns.contains("first_token_ms"),
+        "append should upgrade legacy archives with nullable TTFT storage"
+    );
+    assert!(
+        archive_columns.contains("reported_cache_write_tokens"),
+        "append should upgrade legacy archives with nullable exact cache-write storage"
+    );
+    let archived_first_token_ms: Option<f64> =
+        sqlx::query_scalar("SELECT first_token_ms FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("archive-into-legacy-batch")
+            .fetch_one(&archived_pool)
+            .await
+            .expect("load archived TTFT");
+    assert_eq!(archived_first_token_ms, None);
+    let archived_reported_cache_write_tokens: Option<i64> = sqlx::query_scalar(
+        "SELECT reported_cache_write_tokens FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("archive-into-legacy-batch")
+    .fetch_one(&archived_pool)
+    .await
+    .expect("load archived exact cache-write count");
+    assert_eq!(archived_reported_cache_write_tokens, Some(123));
+    archived_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_recovery_accepts_prepared_archives_with_legacy_source_identity() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("legacy-prepared-identity").await;
+    let occurred_at = shanghai_local_days_ago(91, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve prepared archive path");
+    fs::create_dir_all(archive_path.parent().expect("archive path parent"))
+        .expect("create prepared archive directory");
+    insert_retention_invocation(
+        &pool,
+        "legacy-prepared-identity-source",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"error\":true}",
+        None,
+        None,
+        Some(15),
+        Some(0.15),
+    )
+    .await;
+    let row_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM codex_invocations WHERE invoke_id = 'legacy-prepared-identity-source'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load prepared source row id");
+
+    let legacy_archive_db_path = temp_dir.join("legacy-prepared-archive.sqlite");
+    fs::File::create(&legacy_archive_db_path).expect("create legacy prepared archive file");
+    let mut connection = pool
+        .acquire()
+        .await
+        .expect("acquire archive fixture connection");
+    sqlx::query("ATTACH DATABASE ?1 AS archive_db")
+        .bind(legacy_archive_db_path.to_string_lossy().as_ref())
+        .execute(connection.as_mut())
+        .await
+        .expect("attach legacy archive database");
+    let legacy_create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL
+        .replace("    reported_cache_write_tokens INTEGER,\n", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(connection.as_mut())
+        .await
+        .expect("create legacy archive schema");
+    let legacy_columns =
+        CODEX_INVOCATIONS_ARCHIVE_COLUMNS.replace("reported_cache_write_tokens, ", "");
+    let copy_legacy_row = format!(
+        "INSERT INTO archive_db.codex_invocations ({legacy_columns}) SELECT {legacy_columns} FROM main.codex_invocations WHERE id = ?1"
+    );
+    sqlx::query(&copy_legacy_row)
+        .bind(row_id)
+        .execute(connection.as_mut())
+        .await
+        .expect("copy source row into the old archive layout");
+    let legacy_identity = invocation_archive_source_identity_sha256_legacy_for_test(
+        connection.as_mut(),
+        InvocationArchiveIdentityDatabase::Main,
+        &[row_id],
+    )
+    .await
+    .expect("calculate pre-column source identity");
+    sqlx::query("DETACH DATABASE archive_db")
+        .execute(connection.as_mut())
+        .await
+        .expect("detach legacy archive database");
+    drop(connection);
+    deflate_sqlite_file_to_gzip(&legacy_archive_db_path, &archive_path)
+        .expect("compress legacy prepared archive");
+
+    let prepared_key = "legacy-prepared-identity-journal";
+    let source_ids_json = serde_json::to_string(&[row_id]).expect("encode prepared source ids");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, file_path, source_ids_json,
+            source_identity_sha256, state, attempt_count
+        ) VALUES (?1, 'codex_invocations', ?2, ?3, ?4, ?5, 'preparing', 1)
+        "#,
+    )
+    .bind(prepared_key)
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().as_ref())
+    .bind(&source_ids_json)
+    .bind(&legacy_identity)
+    .execute(&pool)
+    .await
+    .expect("seed legacy preparing archive journal");
+
+    reconcile_retention_prepared_archives_for_test(&pool, &config)
+        .await
+        .expect("reconcile legacy prepared archive");
+
+    let journal = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT state, last_failure_stage FROM retention_prepared_archives WHERE prepared_key = ?1",
+    )
+    .bind(prepared_key)
+    .fetch_one(&pool)
+    .await
+    .expect("load reconciled archive journal");
+    assert_eq!(journal.0, "published");
+    assert_eq!(journal.1, None);
+
+    sqlx::query(
+        "UPDATE retention_recovery_cursors SET next_retry_at = NULL WHERE scope = 'prepared_archives'",
+    )
+    .execute(&pool)
+    .await
+    .expect("make the published archive retry due");
+    reconcile_retention_prepared_archives_for_test(&pool, &config)
+        .await
+        .expect("finalize the published legacy archive");
+    let remaining_live_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE id = ?1")
+            .bind(row_id)
+            .fetch_one(&pool)
+            .await
+            .expect("check finalized legacy source row");
+    assert_eq!(remaining_live_rows, 0);
+    let remaining_journal_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE prepared_key = ?1",
+    )
+    .bind(prepared_key)
+    .fetch_one(&pool)
+    .await
+    .expect("check finalized legacy journal");
+    assert_eq!(remaining_journal_rows, 0);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
