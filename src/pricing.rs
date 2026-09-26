@@ -70,7 +70,7 @@ pub(crate) async fn save_proxy_model_settings(
     Ok(())
 }
 
-const LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION: i64 = 2;
+const LATEST_PROXY_PRESET_MODELS_MIGRATION_VERSION: i64 = 3;
 
 pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
     pool: &Pool<Sqlite>,
@@ -117,9 +117,16 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
             .map(|id| (*id).to_string())
             .collect::<Vec<_>>(),
     );
+    let pre_gpt6_default = normalize_enabled_preset_models(
+        PRE_GPT6_PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>(),
+    );
     if settings.enabled_preset_models != legacy_default
         && settings.enabled_preset_models != previous_default
         && settings.enabled_preset_models != oldest_legacy_default
+        && settings.enabled_preset_models != pre_gpt6_default
     {
         // Respect user customizations: only auto-append when the enabled list matches
         // a repo-managed default preset list exactly.
@@ -136,6 +143,9 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
     ] {
         if !settings
             .enabled_preset_models
@@ -422,15 +432,29 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
     .await?;
     ensure_pricing_model_present(
         pool,
+        "gpt-6-astra",
+        ModelPricing {
+            input_per_1m: 10.0,
+            output_per_1m: 50.0,
+            cache_input_per_1m: Some(1.0),
+            cache_read_per_1m: Some(1.0),
+            cache_write_per_1m: Some(12.5),
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
         "gpt-6-sol",
         ModelPricing {
-            input_per_1m: 5.0,
-            output_per_1m: 30.0,
-            cache_input_per_1m: Some(0.5),
-            cache_read_per_1m: Some(0.5),
-            cache_write_per_1m: Some(6.25),
+            input_per_1m: 2.0,
+            output_per_1m: 10.0,
+            cache_input_per_1m: Some(0.2),
+            cache_read_per_1m: Some(0.2),
+            cache_write_per_1m: Some(2.5),
             reasoning_per_1m: None,
-            source: "temporary".to_string(),
+            source: "official".to_string(),
         },
     )
     .await?;
@@ -452,13 +476,13 @@ pub(crate) async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result
         pool,
         "gpt-6-luna",
         ModelPricing {
-            input_per_1m: 0.20,
-            output_per_1m: 1.20,
-            cache_input_per_1m: Some(0.02),
-            cache_read_per_1m: Some(0.02),
-            cache_write_per_1m: Some(0.25),
+            input_per_1m: 0.1,
+            output_per_1m: 0.5,
+            cache_input_per_1m: Some(0.01),
+            cache_read_per_1m: Some(0.01),
+            cache_write_per_1m: Some(0.125),
             reasoning_per_1m: None,
-            source: "temporary".to_string(),
+            source: "official".to_string(),
         },
     )
     .await?;
@@ -474,6 +498,7 @@ pub(crate) fn is_repo_managed_default_pricing_catalog_version(version: &str) -> 
             | LEGACY_DEFAULT_PRICING_CATALOG_VERSION
             | OLDEST_LEGACY_DEFAULT_PRICING_CATALOG_VERSION
             | EARLIEST_LEGACY_DEFAULT_PRICING_CATALOG_VERSION
+            | OLDEST_SUPPORTED_DEFAULT_PRICING_CATALOG_VERSION
     )
 }
 
@@ -601,6 +626,85 @@ pub(crate) async fn refresh_repriced_gpt_5_6_defaults(pool: &Pool<Sqlite>) -> Re
     Ok(())
 }
 
+async fn refresh_temporary_gpt_6_seed_if_unchanged(
+    pool: &Pool<Sqlite>,
+    model: &str,
+    previous: CachedPricingRate,
+    updated: CachedPricingRate,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET input_per_1m = ?1,
+            output_per_1m = ?2,
+            cache_input_per_1m = ?3,
+            cache_read_per_1m = ?3,
+            cache_write_per_1m = ?4,
+            source = 'official',
+            updated_at = datetime('now')
+        WHERE model = ?5
+          AND lower(trim(source)) = 'temporary'
+          AND input_per_1m = ?6
+          AND output_per_1m = ?7
+          AND cache_input_per_1m = ?8
+          AND COALESCE(cache_read_per_1m, cache_input_per_1m) = ?8
+          AND cache_write_per_1m = ?9
+          AND reasoning_per_1m IS NULL
+        "#,
+    )
+    .bind(updated.input_per_1m)
+    .bind(updated.output_per_1m)
+    .bind(updated.cache_read_per_1m)
+    .bind(updated.cache_write_per_1m)
+    .bind(model)
+    .bind(previous.input_per_1m)
+    .bind(previous.output_per_1m)
+    .bind(previous.cache_read_per_1m)
+    .bind(previous.cache_write_per_1m)
+    .execute(pool)
+    .await
+    .with_context(|| format!("failed to refresh unchanged temporary pricing row: {model}"))?;
+    Ok(())
+}
+
+pub(crate) async fn refresh_repriced_gpt_6_defaults(pool: &Pool<Sqlite>) -> Result<()> {
+    refresh_temporary_gpt_6_seed_if_unchanged(
+        pool,
+        "gpt-6-sol",
+        CachedPricingRate {
+            input_per_1m: 5.0,
+            cache_read_per_1m: 0.5,
+            cache_write_per_1m: 6.25,
+            output_per_1m: 30.0,
+        },
+        CachedPricingRate {
+            input_per_1m: 2.0,
+            cache_read_per_1m: 0.2,
+            cache_write_per_1m: 2.5,
+            output_per_1m: 10.0,
+        },
+    )
+    .await?;
+    refresh_temporary_gpt_6_seed_if_unchanged(
+        pool,
+        "gpt-6-luna",
+        CachedPricingRate {
+            input_per_1m: 0.2,
+            cache_read_per_1m: 0.02,
+            cache_write_per_1m: 0.25,
+            output_per_1m: 1.2,
+        },
+        CachedPricingRate {
+            input_per_1m: 0.1,
+            cache_read_per_1m: 0.01,
+            cache_write_per_1m: 0.125,
+            output_per_1m: 0.5,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn seed_default_pricing_catalog(pool: &Pool<Sqlite>) -> Result<()> {
     let legacy_path = resolve_legacy_pricing_catalog_path();
     seed_default_pricing_catalog_with_legacy_path(pool, Some(&legacy_path)).await
@@ -638,6 +742,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
             ensure_pricing_models_present(pool).await?;
             normalize_default_pricing_sources(pool).await?;
             refresh_repriced_gpt_5_6_defaults(pool).await?;
+            refresh_repriced_gpt_6_defaults(pool).await?;
             promote_repo_managed_default_pricing_catalog_version(pool).await?;
         }
         return Ok(());
@@ -667,6 +772,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
         .context("failed to ensure default pricing_settings_meta row")?;
         ensure_pricing_models_present(pool).await?;
         normalize_default_pricing_sources(pool).await?;
+        refresh_repriced_gpt_6_defaults(pool).await?;
         return Ok(());
     }
 
@@ -684,6 +790,7 @@ pub(crate) async fn seed_default_pricing_catalog_with_legacy_path(
                     ensure_pricing_models_present(pool).await?;
                     normalize_default_pricing_sources(pool).await?;
                     refresh_repriced_gpt_5_6_defaults(pool).await?;
+                    refresh_repriced_gpt_6_defaults(pool).await?;
                     promote_repo_managed_default_pricing_catalog_version(pool).await?;
                 }
                 return Ok(());
@@ -1007,15 +1114,27 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
             },
         ),
         (
+            "gpt-6-astra",
+            ModelPricing {
+                input_per_1m: 10.0,
+                output_per_1m: 50.0,
+                cache_input_per_1m: Some(1.0),
+                cache_read_per_1m: Some(1.0),
+                cache_write_per_1m: Some(12.5),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
             "gpt-6-sol",
             ModelPricing {
-                input_per_1m: 5.0,
-                output_per_1m: 30.0,
-                cache_input_per_1m: Some(0.5),
-                cache_read_per_1m: Some(0.5),
-                cache_write_per_1m: Some(6.25),
+                input_per_1m: 2.0,
+                output_per_1m: 10.0,
+                cache_input_per_1m: Some(0.2),
+                cache_read_per_1m: Some(0.2),
+                cache_write_per_1m: Some(2.5),
                 reasoning_per_1m: None,
-                source: "temporary".to_string(),
+                source: "official".to_string(),
             },
         ),
         (
@@ -1033,13 +1152,13 @@ pub(crate) fn default_pricing_catalog() -> PricingCatalog {
         (
             "gpt-6-luna",
             ModelPricing {
-                input_per_1m: 0.20,
-                output_per_1m: 1.20,
-                cache_input_per_1m: Some(0.02),
-                cache_read_per_1m: Some(0.02),
-                cache_write_per_1m: Some(0.25),
+                input_per_1m: 0.1,
+                output_per_1m: 0.5,
+                cache_input_per_1m: Some(0.01),
+                cache_read_per_1m: Some(0.01),
+                cache_write_per_1m: Some(0.125),
                 reasoning_per_1m: None,
-                source: "temporary".to_string(),
+                source: "official".to_string(),
             },
         ),
         (

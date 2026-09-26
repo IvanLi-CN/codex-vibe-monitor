@@ -335,6 +335,7 @@ export interface ApiInvocation {
   outputTokens?: number;
   cacheInputTokens?: number;
   cacheWriteTokens?: number;
+  reportedCacheWriteTokens?: number | null;
   reasoningTokens?: number;
   reasoningEffort?: string;
   totalTokens?: number;

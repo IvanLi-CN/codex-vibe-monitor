@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add official GPT-6 Astra/Sol/Luna pricing and model discovery, plus nullable exact upstream cache-write usage in invocation APIs and durable records.",
+    "release_unit_description": "Formal GPT-6 Astra, Sol, and Luna pricing, usage accounting, API, and durable-state support.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The additive nullable API field is nonbreaking, while persisted exact usage requires preserving a new column through future writes and older Minor binaries cannot preserve it when re-archiving.",
+      "assessed_at": "2026-09-23T14:11:50Z",
+      "evidence": [
+        "docs/specs/97dds-gpt-5-6-series-pricing-support/SPEC.md",
+        "docs/specs/97dds-gpt-5-6-series-pricing-support/assets/persistent-state-migration-record.json"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "No compatibility scope drift from the approved GPT-6 and exact cache-write usage plan."
+      },
+      "reasoning": "Public API impact remains patch because reportedCacheWriteTokens is nullable and additive. Persistent state is minor because the candidate reads prior schemas and archives, but older same-Minor binaries cannot preserve the new column on re-archive; release impact is the higher of the two.",
+      "reassessed_at": "2026-09-23T14:11:50Z",
+      "evidence": [
+        "src/schema.rs",
+        "src/api/slices/invocations_and_summary.rs",
+        "src/maintenance/retention.rs",
+        "src/pricing.rs"
+      ]
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "Automated migration, archive compatibility, and API tests validate additive same-Major reads and the documented write-forward compatibility boundary; public API remains nonbreaking. The release unit therefore takes persistent-state minor impact.",
+      "verified_at": "2026-09-23T14:11:50Z",
+      "evidence": [
+        "bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite",
+        "bash .github/scripts/run-backend-tests.sh --profile archive-file-io",
+        "cargo check --locked --all-targets --all-features",
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+        "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing API consumers within the current Major; reportedCacheWriteTokens is nullable and omitted or NULL for older records.",
+      "evidence": [
+        "src/api/slices/invocations_and_summary.rs",
+        "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "SQLite invocation rows, future invocation archives, and repo-managed pricing catalog seeds.",
+      "source_program_compatibility_range": "Supported earlier 0.2.x repository-managed state including pre-column schema and archive layouts; direct Major skips are not supported.",
+      "evidence": [
+        "docs/specs/97dds-gpt-5-6-series-pricing-support/assets/persistent-state-migration-record.json",
+        "src/schema.rs",
+        "src/maintenance/retention.rs",
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/97dds-gpt-5-6-series-pricing-support/assets/persistent-state-migration-record.json"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "public_api=patch",
+      "persistent_state=minor",
+      "release unit=max(public_api,persistent_state)=minor"
+    ]
+  }
+}

@@ -259,6 +259,7 @@ pub(crate) fn has_billable_usage(usage: &ParsedUsage) -> bool {
     usage.input_tokens.unwrap_or(0).max(0) > 0
         || usage.output_tokens.unwrap_or(0).max(0) > 0
         || usage.cache_input_tokens.unwrap_or(0).max(0) > 0
+        || usage.reported_cache_write_tokens.is_some()
         || usage.reasoning_tokens.unwrap_or(0).max(0) > 0
 }
 
@@ -266,6 +267,27 @@ pub(crate) fn resolve_pricing_for_model<'a>(
     catalog: &'a PricingCatalog,
     model: &str,
 ) -> Option<&'a ModelPricing> {
+    const GPT_6_PRICING_MODELS: [&str; 4] =
+        ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6-terra"];
+
+    for base in GPT_6_PRICING_MODELS {
+        if model == base {
+            return catalog.models.get(base);
+        }
+        if model
+            .strip_prefix(base)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+        {
+            if dated_model_alias_base(model) == Some(base) {
+                return catalog
+                    .models
+                    .get(model)
+                    .or_else(|| catalog.models.get(base));
+            }
+            return None;
+        }
+    }
+
     if let Some(pricing) = catalog.models.get(model) {
         return Some(pricing);
     }
@@ -302,6 +324,53 @@ pub(crate) fn dated_model_alias_base(model: &str) -> Option<&str> {
 pub(crate) fn is_gpt_5_4_long_context_surcharge_model(model: &str) -> bool {
     let base = dated_model_alias_base(model).unwrap_or(model);
     matches!(base, "gpt-5.4" | "gpt-5.4-pro")
+}
+
+fn is_official_gpt_6_pricing_model(model: &str) -> bool {
+    let base = dated_model_alias_base(model).unwrap_or(model);
+    matches!(base, "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna")
+}
+
+pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode_for_model(
+    model: Option<&str>,
+    explicit_billing_service_tier: Option<&str>,
+    requested_service_tier: Option<&str>,
+    response_service_tier: Option<&str>,
+    upstream_account_kind: Option<&str>,
+) -> (Option<String>, ProxyPricingMode) {
+    let use_response_tier = model.is_some_and(is_official_gpt_6_pricing_model)
+        && explicit_billing_service_tier
+            .and_then(normalize_service_tier)
+            .is_none()
+        && response_service_tier
+            .and_then(normalize_service_tier)
+            .is_some();
+    resolve_proxy_billing_service_tier_and_pricing_mode(
+        explicit_billing_service_tier,
+        if use_response_tier {
+            None
+        } else {
+            requested_service_tier
+        },
+        response_service_tier,
+        upstream_account_kind,
+    )
+}
+
+pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode_for_model_and_account(
+    model: Option<&str>,
+    explicit_billing_service_tier: Option<&str>,
+    requested_service_tier: Option<&str>,
+    response_service_tier: Option<&str>,
+    account: Option<&PoolResolvedAccount>,
+) -> (Option<String>, ProxyPricingMode) {
+    resolve_proxy_billing_service_tier_and_pricing_mode_for_model(
+        model,
+        explicit_billing_service_tier,
+        requested_service_tier,
+        response_service_tier,
+        account.map(|entry| entry.kind.as_str()),
+    )
 }
 
 pub(crate) fn proxy_price_version(catalog_version: &str, pricing_mode: ProxyPricingMode) -> String {
@@ -403,14 +472,39 @@ pub(crate) fn estimate_proxy_cost_breakdown(
         return (None, false, price_version);
     }
 
-    let apply_long_context_surcharge = is_gpt_5_4_long_context_surcharge_model(model)
+    let official_gpt_6_model = is_official_gpt_6_pricing_model(model);
+    let apply_long_context_surcharge = (is_gpt_5_4_long_context_surcharge_model(model)
+        || official_gpt_6_model)
         && input_tokens > GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS;
-    let apply_priority_billing_multiplier = billing_service_tier
-        .and_then(normalize_service_tier)
-        .as_deref()
-        .is_some_and(|tier| tier == PRIORITY_SERVICE_TIER);
+    let actual_tier = billing_service_tier.and_then(normalize_service_tier);
+    let apply_priority_billing_multiplier = if official_gpt_6_model {
+        if pricing_mode == ProxyPricingMode::RequestedTier {
+            false
+        } else {
+            match actual_tier.as_deref() {
+                None | Some("standard") => false,
+                Some("priority") | Some("fast") => true,
+                Some(_) => return (None, false, price_version),
+            }
+        }
+    } else {
+        actual_tier
+            .as_deref()
+            .is_some_and(|tier| tier == PRIORITY_SERVICE_TIER)
+    };
 
     let cache_read_price = pricing.effective_cache_read_per_1m();
+    if official_gpt_6_model
+        && (usage
+            .input_tokens
+            .is_some_and(|tokens| tokens < 0 || cache_input_tokens > tokens)
+            || usage.output_tokens.is_some_and(|tokens| tokens < 0)
+            || usage.cache_input_tokens.is_some_and(|tokens| tokens < 0)
+            || usage.reasoning_tokens.is_some_and(|tokens| tokens < 0)
+            || reasoning_tokens > output_tokens)
+    {
+        return (None, false, price_version);
+    }
     let billable_cache_tokens = if cache_read_price.is_some() {
         cache_input_tokens
     } else {
@@ -418,12 +512,36 @@ pub(crate) fn estimate_proxy_cost_breakdown(
     };
     let non_cached_input_tokens = input_tokens.saturating_sub(billable_cache_tokens);
 
+    let (ordinary_input_tokens, cache_write_tokens) =
+        if let Some(reported_cache_write_tokens) = usage.reported_cache_write_tokens {
+            let Some(available_after_cache_read) = usage
+                .input_tokens
+                .filter(|input| *input >= 0)
+                .map(|input| input.saturating_sub(cache_input_tokens))
+            else {
+                return (None, false, price_version);
+            };
+            if reported_cache_write_tokens < 0
+                || cache_input_tokens > input_tokens
+                || reported_cache_write_tokens > available_after_cache_read
+            {
+                return (None, false, price_version);
+            }
+            (
+                available_after_cache_read - reported_cache_write_tokens,
+                reported_cache_write_tokens,
+            )
+        } else {
+            (0, non_cached_input_tokens)
+        };
+
     let mut breakdown = if pricing.has_explicit_cache_pricing_split() {
         let cache_write_price = pricing
             .cache_write_per_1m
             .expect("explicit cache split requires write pricing");
         ProxyCostBreakdown {
-            cache_write: (non_cached_input_tokens as f64 / 1_000_000.0) * cache_write_price,
+            input: (ordinary_input_tokens as f64 / 1_000_000.0) * pricing.input_per_1m,
+            cache_write: (cache_write_tokens as f64 / 1_000_000.0) * cache_write_price,
             cache_read: cache_read_price
                 .map(|cache_price| (billable_cache_tokens as f64 / 1_000_000.0) * cache_price)
                 .unwrap_or(0.0),
@@ -438,11 +556,17 @@ pub(crate) fn estimate_proxy_cost_breakdown(
             ..ProxyCostBreakdown::default()
         }
     };
-    breakdown.output = (output_tokens / 1_000_000.0) * pricing.output_per_1m;
-    breakdown.reasoning = pricing
-        .reasoning_per_1m
-        .map(|reasoning_price| (reasoning_tokens / 1_000_000.0) * reasoning_price)
-        .unwrap_or(0.0);
+    if official_gpt_6_model {
+        breakdown.output =
+            ((output_tokens - reasoning_tokens) / 1_000_000.0) * pricing.output_per_1m;
+        breakdown.reasoning = (reasoning_tokens / 1_000_000.0) * pricing.output_per_1m;
+    } else {
+        breakdown.output = (output_tokens / 1_000_000.0) * pricing.output_per_1m;
+        breakdown.reasoning = pricing
+            .reasoning_per_1m
+            .map(|reasoning_price| (reasoning_tokens / 1_000_000.0) * reasoning_price)
+            .unwrap_or(0.0);
+    }
 
     if apply_long_context_surcharge {
         breakdown.input *= 2.0;
@@ -1244,12 +1368,13 @@ pub(crate) async fn persist_proxy_capture_record_tx(
                 t_upstream_stream_ms,
                 t_resp_parse_ms,
                 t_persist_ms,
-                created_at
+                created_at,
+                reported_cache_write_tokens
             )
             VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
-                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44
+                ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
             )
             "#,
         )
@@ -1297,6 +1422,7 @@ pub(crate) async fn persist_proxy_capture_record_tx(
         .bind(record.timings.t_resp_parse_ms)
         .bind(t_persist_ms)
         .bind(created_at)
+        .bind(record.usage.reported_cache_write_tokens)
         .execute(&mut *tx)
         .await?;
         if insert_result.rows_affected() > 0 {
@@ -1548,6 +1674,7 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                 || usage.input_tokens.is_some()
                 || usage.output_tokens.is_some()
                 || usage.cache_input_tokens.is_some()
+                || usage.reported_cache_write_tokens.is_some()
                 || usage.reasoning_tokens.is_some();
             if !has_usage {
                 if decode_error.is_some() {
@@ -1576,9 +1703,10 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                         output_tokens = ?2,
                         cache_input_tokens = ?3,
                         reasoning_tokens = ?4,
-                        total_tokens = ?5
-                    WHERE id = ?6
-                      AND source = ?7
+                        total_tokens = ?5,
+                        reported_cache_write_tokens = COALESCE(?6, reported_cache_write_tokens)
+                    WHERE id = ?7
+                      AND source = ?8
                       AND total_tokens IS NULL
                     "#,
                 )
@@ -1587,6 +1715,7 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                 .bind(update.usage.cache_input_tokens)
                 .bind(update.usage.reasoning_tokens)
                 .bind(update.usage.total_tokens)
+                .bind(update.usage.reported_cache_write_tokens)
                 .bind(update.id)
                 .bind(SOURCE_PROXY)
                 .execute(&mut *tx)
@@ -1736,6 +1865,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                     inv.input_tokens,
                     inv.output_tokens,
                     inv.cache_input_tokens,
+                    inv.reported_cache_write_tokens,
                     inv.reasoning_tokens,
                     inv.total_tokens,
                     inv.cost,
@@ -1877,6 +2007,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 input_tokens,
                 output_tokens,
                 cache_input_tokens,
+                reported_cache_write_tokens,
                 reasoning_tokens,
                 total_tokens,
                 cost,
@@ -1919,6 +2050,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 input_tokens: candidate.input_tokens,
                 output_tokens: candidate.output_tokens,
                 cache_input_tokens: candidate.cache_input_tokens,
+                reported_cache_write_tokens: candidate.reported_cache_write_tokens,
                 reasoning_tokens: candidate.reasoning_tokens,
                 total_tokens: candidate.total_tokens,
             };
@@ -1936,7 +2068,8 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
                 allow_live_fallback,
             );
             let (billing_service_tier, pricing_mode) =
-                resolve_proxy_billing_service_tier_and_pricing_mode(
+                resolve_proxy_billing_service_tier_and_pricing_mode_for_model(
+                    Some(model),
                     None,
                     candidate.requested_service_tier.as_deref(),
                     candidate.service_tier.as_deref(),

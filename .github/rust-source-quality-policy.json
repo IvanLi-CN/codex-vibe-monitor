@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 49,
+    "inventory_entries": 48,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -13,15 +13,9 @@
   },
   "files": [
     {
-      "path": "src/api/slices/error_distribution_and_sse.rs",
-      "role": "production",
-      "line_budget": 4787,
-      "next_module_workstream": "Split SSE error classification, query assembly, and response projection into bounded modules."
-    },
-    {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
-      "line_budget": 40532,
+      "line_budget": 40547,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
@@ -39,7 +33,7 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24000,
+      "line_budget": 24001,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
@@ -75,7 +69,7 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4428,
+      "line_budget": 4433,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -105,7 +99,7 @@
     {
       "path": "src/proxy/payload_utils.rs",
       "role": "production",
-      "line_budget": 2935,
+      "line_budget": 2936,
       "next_module_workstream": "Split proxy payload normalization, classification, backfill, and CORS helpers."
     },
     {
@@ -129,13 +123,13 @@
     {
       "path": "src/proxy/websocket.rs",
       "role": "production",
-      "line_budget": 4856,
+      "line_budget": 4877,
       "next_module_workstream": "Split WebSocket connection, preparation, tunnel, usage, and protocol event handling."
     },
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6426,
+      "line_budget": 6447,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -171,7 +165,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 7757,
+      "line_budget": 7805,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -189,7 +183,7 @@
     {
       "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
       "role": "test_helper",
-      "line_budget": 3185,
+      "line_budget": 3395,
       "next_module_workstream": "Split pricing catalog/model passthrough fixtures by catalog, fallback, and accounting cases."
     },
     {
@@ -201,13 +195,13 @@
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
       "role": "test_helper",
-      "line_budget": 4170,
+      "line_budget": 4236,
       "next_module_workstream": "Split proxy broadcast/runtime harness fixtures by forward-proxy history, settings, and timeseries."
     },
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
       "role": "test_helper",
-      "line_budget": 3617,
+      "line_budget": 3884,
       "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {

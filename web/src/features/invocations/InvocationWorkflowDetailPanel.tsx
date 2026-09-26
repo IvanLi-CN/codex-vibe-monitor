@@ -59,6 +59,7 @@ interface PayloadFetchState<T> {
 interface AttemptUsageAudit {
   inputTokens: number | null;
   cacheWriteTokens: number | null;
+  reportedCacheWriteTokens: number | null;
   cacheInputTokens: number | null;
   outputTokens: number | null;
   reasoningTokens: number | null;
@@ -423,6 +424,7 @@ function readAttemptUsageAudit(value: unknown): AttemptUsageAudit | null {
   return {
     inputTokens: readNumber(usage.inputTokens) ?? readNumber(tokens?.input),
     cacheWriteTokens: readNumber(usage.cacheWriteTokens) ?? readNumber(tokens?.cacheWrite),
+    reportedCacheWriteTokens: readNumber(usage.reportedCacheWriteTokens),
     cacheInputTokens: readNumber(usage.cacheInputTokens) ?? readNumber(tokens?.cacheRead),
     outputTokens: readNumber(usage.outputTokens) ?? readNumber(tokens?.output),
     reasoningTokens: readNumber(usage.reasoningTokens) ?? readNumber(tokens?.reasoning),
@@ -859,6 +861,17 @@ function buildTimelineFacts(
           ? `输入写 ${usageAudit.cacheWriteTokens.toLocaleString(localeTag)}`
           : `Input write ${usageAudit.cacheWriteTokens.toLocaleString(localeTag)}`,
         tooltip: isZh ? "输入（未命中缓存）" : "Input (uncached)",
+      });
+    }
+    if (usageAudit?.reportedCacheWriteTokens != null) {
+      facts.push({
+        key: "reported-cache-write",
+        label: isZh
+          ? `上游缓存写 ${usageAudit.reportedCacheWriteTokens.toLocaleString(localeTag)}`
+          : `Reported cache write ${usageAudit.reportedCacheWriteTokens.toLocaleString(localeTag)}`,
+        tooltip: isZh
+          ? "上游精确上报的缓存写入 Token"
+          : "Exact upstream-reported cache-write tokens",
       });
     }
     if (usageAudit?.cacheInputTokens != null) {
