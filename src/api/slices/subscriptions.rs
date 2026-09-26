@@ -15210,7 +15210,6 @@ mod tests {
                 .proxy_runtime_invocations
                 .complete_dashboard_publish_window(consumed);
         }
-
         let descriptors = dashboard_runtime_topology_descriptors();
         let topics = descriptors
             .iter()
@@ -15283,7 +15282,6 @@ mod tests {
             );
         }
         spawn_subscription_broadcast_listener(state.clone());
-
         let process_started_epoch_second = state
             .dashboard_network_speed_cache
             .process_started_at_utc()
@@ -15352,9 +15350,7 @@ mod tests {
                 deltas: terminal_capture.deltas,
             })
             .await;
-        // A terminal slice at a moving-window boundary marks typed bases dirty. Production runs
-        // this bounded rebase from the dashboard runtime reconciler before later live mutations
-        // are applied, so keep this fixture on the same path as the runtime.
+        // Match the production boundary rebase before applying later live mutations.
         tokio::time::timeout(
             Duration::from_secs(5),
             state
@@ -15362,7 +15358,7 @@ mod tests {
                 .reconcile_dashboard_terminal_window_bases(state.clone()),
         )
         .await
-        .expect("dashboard terminal window rebase must stay within the fixture budget");
+        .expect("dashboard terminal window rebase timed out");
         state.dashboard_network_speed_cache.record_request_bytes(
             "dashboard-runtime-topology-network",
             &occurred_at,
@@ -15388,8 +15384,6 @@ mod tests {
         let mut fallback = terminal.clone();
         fallback.id = 748_004;
         fallback.invoke_id = "dashboard-runtime-topology-fallback".to_string();
-        // Parallel-work only reports completed buckets, so place the live mutation in the
-        // previous minute while still applying it after both subscriptions are established.
         fallback.occurred_at = format_naive(
             (Utc::now() - ChronoDuration::minutes(1))
                 .with_timezone(&Shanghai)
@@ -15506,9 +15500,6 @@ mod tests {
             .iter()
             .find(|point| point.bucket_start == fallback_bucket_start)
             .expect("exact fallback point");
-        // The full lightweight profile can schedule this materializer behind other test
-        // processes. Keep the assertion bounded while allowing the documented async projection
-        // debounce and serialization work to complete under shared CI load.
         let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let projected_parallel = loop {
             let projected_parallel = {
@@ -16046,28 +16037,10 @@ mod tests {
         );
         assert_eq!(state.response.current.avg_count, Some(2.6));
     }
-
     #[test]
-    fn parallel_work_projection_rebases_at_utc_minute_boundary() {
-        let base_start = Utc
-            .timestamp_opt(1_700_000_040, 0)
-            .single()
-            .expect("construct fixed minute boundary");
-
-        assert!(!rolling_dashboard_window_requires_rebase(
-            Some(base_start),
-            Some(base_start + ChronoDuration::seconds(59)),
-        ));
-        assert!(rolling_dashboard_window_requires_rebase(
-            Some(base_start),
-            Some(base_start + ChronoDuration::minutes(1)),
-        ));
-    }
-
-    #[test]
-    fn parallel_work_projection_promotes_persisted_current_minute_after_boundary() {
+    fn parallel_work_projection_promotes_persisted_current_minute_at_utc_boundary() {
         let minute_start = Utc
-            .timestamp_opt(1_700_000_000, 0)
+            .timestamp_opt(1_700_000_040, 0)
             .single()
             .expect("construct minute start");
         let mut state = parallel_work_materializer_state(
@@ -16097,7 +16070,6 @@ mod tests {
             window.active_minute_count = Some(4);
             window.avg_count = Some(3.0);
         }
-
         let next_minute = RuntimeInvocationMutation {
             identity: RuntimeInvocationIdentity::new(
                 "next-minute-invoke",
