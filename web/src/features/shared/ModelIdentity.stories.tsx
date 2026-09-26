@@ -233,17 +233,14 @@ export const GPT6AstraSolLuna: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("model-astra")).toHaveAttribute(
-      "data-model-icon",
-      "star-four-points",
-    );
+    await expect(canvas.getByTestId("model-astra")).toHaveAttribute("data-model-icon", "creation");
     await expect(canvas.getByTestId("model-gpt6-sol")).toHaveAttribute(
       "data-model-icon",
-      "white-balance-sunny",
+      "weather-sunny",
     );
     await expect(canvas.getByTestId("model-gpt6-luna")).toHaveAttribute(
       "data-model-icon",
-      "weather-night",
+      "moon-waning-crescent",
     );
   },
 };
