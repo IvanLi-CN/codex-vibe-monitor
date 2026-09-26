@@ -141,26 +141,37 @@ fn gpt_6_api_key_request_tier_hint_without_response_tier_stays_standard() {
 }
 
 #[test]
-fn gpt_6_default_actual_tier_does_not_fall_back_to_standard() {
+fn gpt_6_default_actual_tier_uses_standard_pricing() {
     let usage = ParsedUsage {
         input_tokens: Some(1_000),
         output_tokens: Some(100),
         total_tokens: Some(1_100),
         ..ParsedUsage::default()
     };
-    let (cost, estimated, _) = estimate_proxy_cost(
+    let (default_cost, default_estimated, _) = estimate_proxy_cost(
         &default_pricing_catalog(),
         Some("gpt-6-astra"),
         &usage,
         Some("default"),
         ProxyPricingMode::ResponseTier,
     );
+    let (standard_cost, standard_estimated, _) = estimate_proxy_cost(
+        &default_pricing_catalog(),
+        Some("gpt-6-astra"),
+        &usage,
+        Some("standard"),
+        ProxyPricingMode::ResponseTier,
+    );
 
     assert!(
-        cost.is_none(),
-        "unsupported actual tier must have unknown cost"
+        (default_cost.expect("default response tier has a price")
+            - standard_cost.expect("standard response tier has a price"))
+        .abs()
+            < 1e-12,
+        "default response tier must use Standard pricing"
     );
-    assert!(!estimated, "unsupported actual tier must not be estimated");
+    assert!(default_estimated);
+    assert!(standard_estimated);
 }
 
 #[test]
