@@ -169,6 +169,36 @@ describe("demo MSW handlers", () => {
     ]);
   });
 
+  it("serves invocation timeline records with account filtering and in-flight state", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/stats/invocation-timeline?from=2026-08-16T00:00:00.000Z&to=2026-08-16T11:31:00.000Z&upstreamAccountId=101",
+    );
+    const payload = (await response.json()) as {
+      total: number;
+      overLimit: boolean;
+      records: Array<{
+        invokeId: string;
+        upstreamAccountId: number | null;
+        isInFlight: boolean;
+        tTotalMs: number | null;
+      }>;
+    };
+
+    expect(response.ok).toBe(true);
+    expect(payload.overLimit).toBe(false);
+    expect(payload.total).toBeGreaterThan(0);
+    expect(payload.records.every((record) => record.upstreamAccountId === 101)).toBe(true);
+    expect(payload.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          invokeId: "demo-invocation-9001",
+          isInFlight: true,
+          tTotalMs: null,
+        }),
+      ]),
+    );
+  });
+
   it("derives live summary counters from the same invocation ledger as routing attempts", async () => {
     const [summaryResponse, recordsResponse] = await Promise.all([
       fetch("http://demo.invalid/api/stats/summary"),

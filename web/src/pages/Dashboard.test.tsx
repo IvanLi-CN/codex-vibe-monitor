@@ -72,6 +72,12 @@ vi.mock("../features/dashboard/DashboardTodayActivityChart", () => ({
   ),
 }));
 
+vi.mock("../features/dashboard/DashboardInvocationTimeline", () => ({
+  DashboardInvocationTimeline: () => (
+    <div data-testid="dashboard-today-activity-chart-mock">metric:totalCount</div>
+  ),
+}));
+
 vi.mock("../features/dashboard/UsageCalendar", () => ({
   UsageCalendar: ({
     metric,

@@ -129,6 +129,8 @@ export type {
   InvocationSuggestionField,
   InvocationSuggestionItem,
   InvocationSuggestionsResponse,
+  InvocationTimelineRecord,
+  InvocationTimelineResponse,
   InvocationTokenSummary,
   ListResponse,
   LocalLimitSnapshot,

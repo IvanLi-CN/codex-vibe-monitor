@@ -11,6 +11,7 @@ import {
   fetchForwardProxyTimeseries,
   fetchInvocationRecordLocation,
   fetchInvocationRecords,
+  fetchInvocationTimeline,
   fetchModelRoutingLive,
   fetchParallelWorkStats,
   fetchParallelWorkStatsConditional,
@@ -846,6 +847,196 @@ describe("fetchTimeseries", () => {
     expect(url).toContain("range=today");
     expect(url).toContain("bucket=1m");
     expect(url).toContain("upstreamAccountId=42");
+  });
+});
+
+describe("fetchInvocationTimeline", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes invocation bars and preserves the account scope", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 1,
+            overLimit: false,
+            records: [
+              {
+                id: 7,
+                invokeId: "invoke-7",
+                occurredAt: "2026-03-26T12:09:00Z",
+                endAt: null,
+                isInFlight: true,
+                livePhase: "responding",
+                firstTokenMs: null,
+                tTotalMs: null,
+                upstreamAccountId: 42,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchInvocationTimeline({
+      from: "2026-03-26T12:00:00Z",
+      to: "2026-03-26T12:30:00Z",
+      upstreamAccountId: 42,
+    });
+
+    expect(response.records[0]).toMatchObject({
+      invokeId: "invoke-7",
+      isInFlight: true,
+      firstTokenMs: null,
+      upstreamAccountId: 42,
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("upstreamAccountId=42");
+  });
+
+  it("passes the live overlay contract explicitly", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 0,
+            overLimit: false,
+            records: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchInvocationTimeline({
+      from: "2026-03-26T12:00:00Z",
+      to: "2026-03-26T12:30:00Z",
+      includeLive: false,
+    });
+
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("includeLive=false");
+  });
+
+  it("rejects incomplete timeline payloads so the dashboard can use its aggregate fallback", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ records: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchInvocationTimeline({
+        from: "2026-03-26T12:00:00Z",
+        to: "2026-03-26T12:30:00Z",
+      }),
+    ).rejects.toThrow("Invalid invocation timeline response");
+  });
+
+  it("rejects malformed timeline records instead of silently dropping them", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 1,
+            overLimit: false,
+            records: [{ id: 1, invokeId: "missing-time" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchInvocationTimeline({
+        from: "2026-03-26T12:00:00Z",
+        to: "2026-03-26T12:30:00Z",
+      }),
+    ).rejects.toThrow("Invalid invocation timeline record");
+  });
+
+  it("preserves a valid zero-attempt timeline record", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 1,
+            overLimit: false,
+            records: [
+              {
+                id: 0,
+                invokeId: "zero-attempt",
+                occurredAt: "2026-03-26T12:09:00Z",
+                endAt: null,
+                isInFlight: false,
+                status: "failed",
+                tTotalMs: 0,
+                poolAttemptCount: 0,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchInvocationTimeline({
+      from: "2026-03-26T12:00:00Z",
+      to: "2026-03-26T12:30:00Z",
+    });
+
+    expect(response.records[0]?.poolAttemptCount).toBe(0);
+  });
+
+  it("rejects terminal durations outside the server contract", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 1,
+            overLimit: false,
+            records: [
+              {
+                id: 1,
+                invokeId: "too-long",
+                occurredAt: "2026-03-26T12:09:00Z",
+                endAt: null,
+                isInFlight: false,
+                status: "success",
+                tTotalMs: 1_000_000_000_000_000,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchInvocationTimeline({
+        from: "2026-03-26T12:00:00Z",
+        to: "2026-03-26T12:30:00Z",
+      }),
+    ).rejects.toThrow("Invalid invocation timeline tTotalMs");
   });
 });
 

@@ -2,6 +2,16 @@
 
 This context freezes the project-specific terms used in invocation observability and release automation. It exists to keep transport paths, request semantics, response outcomes, and publication surfaces from drifting into overloaded labels.
 
+## Invocation Identity
+
+**对外调用（Invocation）**:
+One logical request or WebSocket turn handled by the proxy and counted once regardless of upstream retries. Its queue, upstream work, and terminal outcome share one invocation identity.
+_Avoid_: 上游尝试, 重试次数
+
+**上游尝试（Upstream Attempt）**:
+One attempt to send an invocation to an upstream route or account. An invocation may contain several upstream attempts, so attempt counts do not equal invocation counts.
+_Avoid_: 对外调用, 调用次数
+
 ## Invocation Compaction
 
 **Compact**:

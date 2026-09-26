@@ -13,6 +13,7 @@ const hookMocks = vi.hoisted(() => ({
   useTimeseries: vi.fn(),
   useParallelWorkStats: vi.fn(),
   useDashboardNetworkTimeseries: vi.fn(),
+  useDashboardActivitySnapshot: vi.fn(),
 }));
 
 const componentState = vi.hoisted(() => ({
@@ -37,6 +38,10 @@ vi.mock("../../hooks/useParallelWorkStats", () => ({
 
 vi.mock("../../hooks/useDashboardNetworkTimeseries", () => ({
   useDashboardNetworkTimeseries: hookMocks.useDashboardNetworkTimeseries,
+}));
+
+vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
+  useDashboardActivitySnapshot: hookMocks.useDashboardActivitySnapshot,
 }));
 
 vi.mock("../../lib/sse", () => ({
@@ -133,6 +138,20 @@ vi.mock("./DashboardTodayActivityChart", () => ({
         data-render-count={String(componentState.chartRenderCount)}
       >
         {`metric:${metric ?? "unset"}`}
+      </div>
+    );
+  },
+}));
+
+vi.mock("./DashboardInvocationTimeline", () => ({
+  DashboardInvocationTimeline: () => {
+    componentState.chartRenderCount += 1;
+    return (
+      <div
+        data-testid="dashboard-today-activity-chart-mock"
+        data-render-count={String(componentState.chartRenderCount)}
+      >
+        metric:totalCount
       </div>
     );
   },
@@ -295,6 +314,17 @@ function useSummaryStoreValue(window: string) {
 }
 
 beforeAll(() => {
+  hookMocks.useDashboardActivitySnapshot.mockReturnValue({
+    data: null,
+    isLoading: false,
+    isRefreshing: false,
+    error: null,
+    reload: vi.fn(),
+    recentLoading: false,
+    recentError: null,
+    recentInvocationLimit: 0,
+    retryRecent: vi.fn(),
+  });
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: localStorageMock,
@@ -304,6 +334,10 @@ beforeAll(() => {
     writable: true,
     value: true,
   });
+});
+
+beforeAll(async () => {
+  await import("./DashboardTodayActivityChart");
 });
 
 afterEach(() => {
@@ -746,7 +780,7 @@ describe("DashboardActivityOverview", () => {
     expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).not.toContain("yesterday");
   });
 
-  it("loads only the active range and keeps per-range metric memory across all five tabs", () => {
+  it("loads only the active range and keeps per-range metric memory across all five tabs", async () => {
     installSummaryMocks();
 
     render(<DashboardActivityOverview />);
@@ -783,9 +817,12 @@ describe("DashboardActivityOverview", () => {
     expect(metricSelect?.getAttribute("aria-label")).toBe("Switch metric");
 
     clickTab("Cost");
-    expect(
-      host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
-    ).toBe("metric:totalCost");
+    await vi.dynamicImportSettled();
+    await vi.waitFor(() => {
+      expect(
+        host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
+      ).toBe("metric:totalCost");
+    });
 
     clickTab("Yesterday");
     expect(

@@ -4,6 +4,7 @@ import { Chip } from "../../components/ui/chip";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { SelectField } from "../../components/ui/select-field";
 import { useDashboardNetworkTimeseries } from "../../hooks/useDashboardNetworkTimeseries";
+import { useDashboardActivitySnapshot } from "../../hooks/useDashboardUpstreamAccountActivity";
 import { useParallelWorkStats } from "../../hooks/useParallelWorkStats";
 import { useSummary } from "../../hooks/useStats";
 import { useTimeseries } from "../../hooks/useTimeseries";
@@ -13,6 +14,7 @@ import { metricAccent } from "../../lib/chartTheme";
 import { recordTodayChartDataCommit } from "../../lib/dashboardPerformanceDiagnostics";
 import { useTheme } from "../../theme";
 import { StatsCards } from "../stats/StatsCards";
+import { DashboardInvocationTimeline } from "./DashboardInvocationTimeline";
 import type { DashboardNetworkActivityChartProps } from "./DashboardNetworkActivityChart";
 import type { DashboardTodayActivityChartProps } from "./DashboardTodayActivityChart";
 import {
@@ -319,6 +321,7 @@ function DashboardNaturalDayRangePanel({
   dashboardActivity,
   dashboardActivityLoading = false,
   dashboardActivityError = null,
+  liveRevision,
 }: {
   metric: NaturalDayChartMetric;
   summaryWindow: "today" | "yesterday";
@@ -328,6 +331,7 @@ function DashboardNaturalDayRangePanel({
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  liveRevision?: number;
 }) {
   const { data, isLoading, error } = useTimeseries(
     timeseriesRange,
@@ -373,6 +377,12 @@ function DashboardNaturalDayRangePanel({
         networkResponse={networkData}
         networkLoading={networkLoading}
         networkError={networkError}
+        upstreamAccountId={upstreamAccountId}
+        liveRevision={
+          timeseriesRange === "today"
+            ? (liveRevision ?? dashboardActivity?.liveRevision)
+            : undefined
+        }
       />
     </div>
   );
@@ -746,6 +756,8 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   networkResponse,
   networkLoading,
   networkError,
+  upstreamAccountId,
+  liveRevision,
 }: {
   response: ReturnType<typeof useTimeseries>["data"];
   loading: boolean;
@@ -755,13 +767,38 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   networkResponse: ReturnType<typeof useDashboardNetworkTimeseries>["data"];
   networkLoading: boolean;
   networkError: string | null;
+  upstreamAccountId?: number;
+  liveRevision?: number;
 }) {
+  const legacyMetric = metric === "network" ? "totalCount" : metric;
+  const legacyChart = (
+    <DashboardTodayActivityChartBoundary
+      response={response}
+      loading={loading}
+      error={error}
+      metric={legacyMetric}
+      closedNaturalDay={closedNaturalDay}
+    />
+  );
   if (metric === "network") {
     return (
       <DashboardNetworkActivityChartBoundary
         response={networkResponse}
         loading={networkLoading && networkResponse == null}
         error={networkError}
+      />
+    );
+  }
+  if (metric === "totalCount") {
+    return (
+      <DashboardInvocationTimeline
+        response={response}
+        loading={loading}
+        error={error}
+        closedNaturalDay={closedNaturalDay}
+        upstreamAccountId={upstreamAccountId}
+        liveRevision={liveRevision}
+        fallback={legacyChart}
       />
     );
   }
@@ -782,12 +819,14 @@ function DashboardTodayRangePanel({
   dashboardActivity,
   dashboardActivityLoading,
   dashboardActivityError,
+  liveRevision,
 }: {
   metric: NaturalDayChartMetric;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  liveRevision?: number;
 }) {
   return (
     <DashboardNaturalDayRangePanel
@@ -799,6 +838,7 @@ function DashboardTodayRangePanel({
       dashboardActivity={dashboardActivity}
       dashboardActivityLoading={dashboardActivityLoading}
       dashboardActivityError={dashboardActivityError}
+      liveRevision={liveRevision}
     />
   );
 }
@@ -809,12 +849,14 @@ function DashboardYesterdayRangePanel({
   dashboardActivity,
   dashboardActivityLoading,
   dashboardActivityError,
+  liveRevision,
 }: {
   metric: NaturalDayChartMetric;
   upstreamAccountId?: number;
   dashboardActivity?: DashboardActivityResponse | null;
   dashboardActivityLoading?: boolean;
   dashboardActivityError?: string | null;
+  liveRevision?: number;
 }) {
   return (
     <DashboardNaturalDayRangePanel
@@ -826,6 +868,7 @@ function DashboardYesterdayRangePanel({
       dashboardActivity={dashboardActivity}
       dashboardActivityLoading={dashboardActivityLoading}
       dashboardActivityError={dashboardActivityError}
+      liveRevision={liveRevision}
     />
   );
 }
@@ -1160,6 +1203,14 @@ export function DashboardActivityOverview({
   const [metric24h, setMetric24h] = useState<Dashboard24HourMetric>("totalCount");
   const [metric7d, setMetric7d] = useState<MetricKey>("totalCount");
   const [metricUsage, setMetricUsage] = useState<MetricKey>("totalCount");
+  const accountActivity = useDashboardActivitySnapshot(
+    "today",
+    upstreamAccountId != null,
+    false,
+    false,
+  );
+  const timelineLiveRevision =
+    dashboardActivity?.liveRevision ?? accountActivity.data?.liveRevision;
 
   const activeRange = controlledActiveRange ?? uncontrolledActiveRange;
   const setActiveRange = (range: DashboardActivityRangeKey) => {
@@ -1345,6 +1396,7 @@ export function DashboardActivityOverview({
             dashboardActivity={dashboardActivity}
             dashboardActivityLoading={dashboardActivityLoading}
             dashboardActivityError={dashboardActivityError}
+            liveRevision={timelineLiveRevision}
           />
         ) : null}
         {showSnapshotEmptyState ? null : activeRange === "yesterday" &&
