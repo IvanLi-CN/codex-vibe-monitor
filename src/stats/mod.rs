@@ -3506,7 +3506,10 @@ pub(crate) fn archived_failure_rollup_key(
         row.source.clone(),
         classification.failure_class.as_str().to_string(),
         classification.is_actionable as i64,
-        categorize_error(row.error_message.as_deref().unwrap_or_default()),
+        categorize_error_with_failure_kind(
+            row.error_message.as_deref().unwrap_or_default(),
+            row.failure_kind.as_deref(),
+        ),
     )))
 }
 
