@@ -1,7 +1,6 @@
 use super::*;
 use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
-use chrono_tz::Asia::Shanghai;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, QueryBuilder, Sqlite};
 use std::collections::{BTreeMap, HashSet};
@@ -23,6 +22,7 @@ pub(crate) struct InvocationTimelineQuery {
     pub(crate) from: String,
     pub(crate) to: String,
     pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) include_live: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -121,7 +121,7 @@ pub(crate) async fn fetch_timeline(
         hydrate_api_invocation_blocked_binding(record);
     }
 
-    let include_runtime_records = timeline_window_includes_current_day(range_start, range_end);
+    let include_runtime_records = params.include_live.unwrap_or(true);
     let mut runtime_records = if include_runtime_records {
         runtime_overlay_snapshot(state.as_ref())
     } else {
@@ -254,24 +254,6 @@ fn timeline_record_overlaps(
             .is_some_and(|end| end >= range_start),
         None => occurred_at >= range_start,
     }
-}
-
-fn timeline_window_includes_current_day(
-    range_start: DateTime<Utc>,
-    range_end: DateTime<Utc>,
-) -> bool {
-    let now = Utc::now();
-    let current_day_start = now
-        .with_timezone(&Shanghai)
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .and_then(|midnight| Shanghai.from_local_datetime(&midnight).single())
-        .map(|value| value.with_timezone(&Utc));
-    let Some(current_day_start) = current_day_start else {
-        return false;
-    };
-    let next_day_start = current_day_start + chrono::Duration::days(1);
-    range_end > current_day_start && range_start < next_day_start
 }
 
 fn valid_timeline_duration_ms(value: Option<f64>) -> Option<f64> {
@@ -447,31 +429,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn runtime_overlay_is_limited_to_windows_that_intersect_the_current_day() {
-        let now = Utc::now();
-        let current_day_start = now
-            .with_timezone(&Shanghai)
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .and_then(|midnight| Shanghai.from_local_datetime(&midnight).single())
-            .map(|value| value.with_timezone(&Utc))
-            .expect("current day midnight");
-
-        assert!(!timeline_window_includes_current_day(
-            current_day_start - chrono::Duration::days(1),
-            current_day_start,
-        ));
-        assert!(timeline_window_includes_current_day(
-            current_day_start,
-            current_day_start + chrono::Duration::hours(1),
-        ));
-        assert!(timeline_window_includes_current_day(
-            current_day_start - chrono::Duration::minutes(5),
-            current_day_start + chrono::Duration::minutes(5),
-        ));
-    }
-
     #[tokio::test]
     async fn endpoint_returns_cross_window_overlap_once_with_account_filter() {
         let state = crate::tests::test_state_with_openai_base(
@@ -510,6 +467,7 @@ mod tests {
                 from: format_utc_iso(range_start),
                 to: format_utc_iso(range_end),
                 upstream_account_id: Some(42),
+                include_live: None,
             }),
         )
         .await
@@ -583,6 +541,7 @@ mod tests {
                 from: format_utc_iso(at(86_000)),
                 to: format_utc_iso(at(87_000)),
                 upstream_account_id: Some(42),
+                include_live: None,
             }),
         )
         .await
@@ -596,6 +555,7 @@ mod tests {
                 from: format_utc_iso(at(86_000)),
                 to: format_utc_iso(at(87_000)),
                 upstream_account_id: Some(43),
+                include_live: None,
             }),
         )
         .await
@@ -609,6 +569,7 @@ mod tests {
                 from: format_utc_iso(at(86_000)),
                 to: format_utc_iso(at(87_000)),
                 upstream_account_id: Some(44),
+                include_live: None,
             }),
         )
         .await

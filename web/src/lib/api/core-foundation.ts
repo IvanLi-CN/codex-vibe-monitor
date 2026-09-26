@@ -2790,24 +2790,69 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
       const record = rawRecord as Record<string, unknown>;
       const invokeId = typeof record.invokeId === "string" ? record.invokeId : "";
       const occurredAt = typeof record.occurredAt === "string" ? record.occurredAt : "";
-      if (!invokeId || !occurredAt || !Number.isFinite(Date.parse(occurredAt))) {
+      const occurredAtMs = Date.parse(occurredAt);
+      const endAt = record.endAt;
+      const endAtMs = typeof endAt === "string" ? Date.parse(endAt) : null;
+      const id = record.id;
+      const isInFlight = record.isInFlight;
+      const firstTokenMs = record.firstTokenMs;
+      const tTotalMs = record.tTotalMs;
+      const poolAttemptCount = record.poolAttemptCount;
+      const upstreamAccountId = record.upstreamAccountId;
+      const optionalString = (value: unknown, field: string) => {
+        if (value == null) return null;
+        if (typeof value !== "string") throw new Error(`Invalid invocation timeline ${field}`);
+        return value;
+      };
+      const optionalNonNegativeNumber = (value: unknown, field: string) => {
+        if (value == null) return null;
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+          throw new Error(`Invalid invocation timeline ${field}`);
+        }
+        return value;
+      };
+      if (
+        !invokeId ||
+        !occurredAt ||
+        !Number.isFinite(occurredAtMs) ||
+        (endAt != null && (typeof endAt !== "string" || !Number.isFinite(endAtMs))) ||
+        (endAtMs != null && endAtMs < occurredAtMs) ||
+        typeof id !== "number" ||
+        !Number.isSafeInteger(id) ||
+        id < 0 ||
+        typeof isInFlight !== "boolean"
+      ) {
+        throw new Error("Invalid invocation timeline record");
+      }
+      const normalizedFirstTokenMs = optionalNonNegativeNumber(firstTokenMs, "firstTokenMs");
+      const normalizedTotalMs = optionalNonNegativeNumber(tTotalMs, "tTotalMs");
+      const normalizedPoolAttemptCount = optionalNonNegativeNumber(
+        poolAttemptCount,
+        "poolAttemptCount",
+      );
+      const normalizedAccountId = optionalNonNegativeNumber(upstreamAccountId, "upstreamAccountId");
+      if (
+        (normalizedPoolAttemptCount != null &&
+          (!Number.isSafeInteger(normalizedPoolAttemptCount) || normalizedPoolAttemptCount < 1)) ||
+        (normalizedAccountId != null &&
+          (!Number.isSafeInteger(normalizedAccountId) || normalizedAccountId < 1))
+      ) {
         throw new Error("Invalid invocation timeline record");
       }
       return {
-        id: normalizeFiniteNumber(record.id) ?? 0,
+        id,
         invokeId,
         occurredAt,
-        endAt: typeof record.endAt === "string" ? record.endAt : null,
-        isInFlight: record.isInFlight === true,
-        status: typeof record.status === "string" ? record.status : null,
-        livePhase: typeof record.livePhase === "string" ? record.livePhase : null,
-        firstTokenMs: normalizeFiniteNumber(record.firstTokenMs) ?? null,
-        tTotalMs: normalizeFiniteNumber(record.tTotalMs) ?? null,
-        poolAttemptCount: normalizeFiniteNumber(record.poolAttemptCount) ?? null,
-        upstreamAccountId: normalizeFiniteNumber(record.upstreamAccountId) ?? null,
-        upstreamAccountName:
-          typeof record.upstreamAccountName === "string" ? record.upstreamAccountName : null,
-        failureClass: typeof record.failureClass === "string" ? record.failureClass : null,
+        endAt: endAt == null ? null : endAt,
+        isInFlight,
+        status: optionalString(record.status, "status"),
+        livePhase: optionalString(record.livePhase, "livePhase"),
+        firstTokenMs: normalizedFirstTokenMs,
+        tTotalMs: normalizedTotalMs,
+        poolAttemptCount: normalizedPoolAttemptCount,
+        upstreamAccountId: normalizedAccountId,
+        upstreamAccountName: optionalString(record.upstreamAccountName, "upstreamAccountName"),
+        failureClass: optionalString(record.failureClass, "failureClass"),
       };
     }),
   };
@@ -5449,11 +5494,15 @@ export async function fetchInvocationTimeline(options: {
   from: string;
   to: string;
   upstreamAccountId?: number;
+  includeLive?: boolean;
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams({ from: options.from, to: options.to });
   if (options.upstreamAccountId != null) {
     search.set("upstreamAccountId", String(options.upstreamAccountId));
+  }
+  if (options.includeLive != null) {
+    search.set("includeLive", String(options.includeLive));
   }
   const response = await fetchJson<unknown>(`/api/stats/invocation-timeline?${search.toString()}`, {
     signal: options.signal,

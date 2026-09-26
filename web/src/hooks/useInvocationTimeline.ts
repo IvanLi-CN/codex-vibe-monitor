@@ -25,6 +25,10 @@ function parseEpoch(value: string | null | undefined) {
   return Number.isFinite(epoch) ? epoch : null;
 }
 
+function canonicalTimelineEpoch(value: number) {
+  return Math.floor(value / 1_000) * 1_000;
+}
+
 function clampWindow(window: InvocationTimelineWindow, bounds: InvocationTimelineWindow) {
   const boundSpan = Math.max(1, bounds.endMs - bounds.startMs);
   const span = Math.min(boundSpan, Math.max(60_000, window.endMs - window.startMs));
@@ -156,6 +160,7 @@ export function useInvocationTimeline({
         from: new Date(viewportWindow.startMs).toISOString(),
         to: new Date(viewportWindow.endMs).toISOString(),
         upstreamAccountId,
+        includeLive: !closedNaturalDay,
         signal: controller.signal,
       });
       if (sequence !== requestSequence.current) return;
@@ -171,7 +176,7 @@ export function useInvocationTimeline({
         setIsLoading(false);
       }
     }
-  }, [enabled, upstreamAccountId, viewportWindow]);
+  }, [closedNaturalDay, enabled, upstreamAccountId, viewportWindow]);
 
   useEffect(() => {
     if (enabled) return;
@@ -236,8 +241,12 @@ export function useInvocationTimeline({
   const dataMatchesWindow =
     data != null &&
     viewportWindow != null &&
-    parseEpoch(data.rangeStart) === viewportWindow.startMs &&
-    parseEpoch(data.rangeEnd) === viewportWindow.endMs;
+    parseEpoch(data.rangeStart) != null &&
+    parseEpoch(data.rangeEnd) != null &&
+    canonicalTimelineEpoch(parseEpoch(data.rangeStart) as number) ===
+      canonicalTimelineEpoch(viewportWindow.startMs) &&
+    canonicalTimelineEpoch(parseEpoch(data.rangeEnd) as number) ===
+      canonicalTimelineEpoch(viewportWindow.endMs);
 
   return {
     data: contextReady && dataMatchesWindow ? data : null,

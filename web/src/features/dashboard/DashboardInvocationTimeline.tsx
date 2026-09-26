@@ -299,7 +299,7 @@ export function DashboardInvocationTimeline({
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
   const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
   const plotWindow = timeline.window;
-  const autoScrollViewKey = `${plotWindow?.startMs ?? "empty"}:${plotWindow?.endMs ?? "empty"}:${closedNaturalDay}:${upstreamAccountId ?? "all"}:${timelineDataOverride ? "override" : "remote"}`;
+  const autoScrollViewKey = `${timeline.bounds?.startMs ?? "empty"}:${closedNaturalDay}:${upstreamAccountId ?? "all"}:${timelineDataOverride ? "override" : "remote"}`;
   useEffect(() => {
     if (closedNaturalDay || !liveConnected || !hasInFlightLanes) return;
     const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1_000);

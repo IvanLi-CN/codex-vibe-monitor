@@ -300,6 +300,21 @@ describe("useInvocationTimeline", () => {
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("");
   });
 
+  it("accepts whole-second server bounds for fractional-second windows", async () => {
+    timelineMocks.fetch.mockResolvedValue(
+      createTimeline("fractional-window", "2026-07-16T10:00:00.000Z", "2026-07-16T10:20:01.000Z"),
+    );
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:20:01.500Z");
+
+    render(<Probe response={response} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("fractional-window");
+  });
+
   it("refreshes immediately after a reconnect when bounds advanced while disconnected", async () => {
     timelineMocks.fetch.mockResolvedValue(createTimeline("reconnected-window"));
     const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");

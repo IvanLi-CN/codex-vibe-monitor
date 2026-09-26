@@ -12,7 +12,7 @@
 
 - `Invocation`: 一次对外调用，以 `invokeId` 和 `occurredAt` 标识；同一次调用的上游重试不产生新的时间线横条。
 - `Virtual row`: 按开始时间分配给调用的最低空闲并发行，用来表达并发关系。
-- Interface: `GET /api/stats/invocation-timeline` accepts UTC `from`, `to`, and optional `upstreamAccountId`.
+- Interface: `GET /api/stats/invocation-timeline` accepts UTC `from`, `to`, optional `upstreamAccountId`, and optional `includeLive`; the dashboard sends `includeLive=false` for closed natural days so browser-local yesterday views stay HTTP-only.
 
 ## Requirements
 
