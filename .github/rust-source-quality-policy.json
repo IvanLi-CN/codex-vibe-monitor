@@ -141,7 +141,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 5833,
+      "line_budget": 5836,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {
@@ -177,7 +177,7 @@
     {
       "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
       "role": "test_helper",
-      "line_budget": 23764,
+      "line_budget": 23829,
       "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
     },
     {
