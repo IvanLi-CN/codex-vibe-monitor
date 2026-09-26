@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.72.0",
+  "base_stable_version": "2.71.45",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-26T08:09:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.72.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e6931ed4973752143adb423c967a7358e5905e3c",
+  "pr_number": 1025,
+  "pr_title": "feat(pricing): support GPT-6 Astra, Sol, and Luna",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.72.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.72.0",
+  "target_sha": "eaf5ffba3db6901c5ed70b624d09244b1ce2ae22",
+  "type_label": "type:minor"
+}
