@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 49,
+    "inventory_entries": 48,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -12,12 +12,6 @@
     "test_helper": 3000
   },
   "files": [
-    {
-      "path": "src/api/slices/error_distribution_and_sse.rs",
-      "role": "production",
-      "line_budget": 4787,
-      "next_module_workstream": "Split SSE error classification, query assembly, and response projection into bounded modules."
-    },
     {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
