@@ -17,22 +17,22 @@ use sqlx::{
     FromRow, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use std::{fs, io};
 use tracing::{debug, info};
 
-#[cfg(test)]
-use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-
 mod invocation_query;
+#[path = "invocation_timeline.rs"]
+mod invocation_timeline;
 mod invocation_workflow_detail;
 mod summary_projection_lifecycle;
 
@@ -138,8 +138,8 @@ pub(crate) use invocation_query::{
     resolve_invocation_snapshot_id, resolve_invocation_snapshot_id_on_connection,
 };
 
-#[cfg(test)]
 pub(crate) use invocation_query::build_invocation_filters;
+pub(crate) use invocation_timeline::*;
 
 pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =

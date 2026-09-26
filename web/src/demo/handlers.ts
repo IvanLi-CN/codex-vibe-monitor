@@ -3043,6 +3043,54 @@ function filterDemoInvocations(url: URL) {
   return records;
 }
 
+function demoInvocationTimeline(url: URL) {
+  const requestedEnd = Date.parse(url.searchParams.get("to") ?? "");
+  const rangeEnd = Number.isFinite(requestedEnd) ? requestedEnd : Date.parse(demoNow());
+  const requestedStart = Date.parse(url.searchParams.get("from") ?? "");
+  const rangeStart = Number.isFinite(requestedStart)
+    ? requestedStart
+    : rangeEnd - 24 * 60 * 60 * 1_000;
+  const candidates = filterDemoInvocations(url).filter((record) => {
+    const startMs = Date.parse(record.occurredAt);
+    if (!Number.isFinite(startMs) || startMs >= rangeEnd) return false;
+    if (record.tTotalMs == null) return startMs >= rangeStart;
+    return startMs + Math.max(0, record.tTotalMs) >= rangeStart;
+  });
+  const overLimit = candidates.length > 2_000;
+  return {
+    rangeStart: new Date(rangeStart).toISOString(),
+    rangeEnd: new Date(rangeEnd).toISOString(),
+    asOf: demoNow(),
+    total: candidates.length,
+    overLimit,
+    records: overLimit
+      ? []
+      : candidates.map((record) => {
+          const isInFlight = record.status === "running";
+          return {
+            id: record.id,
+            invokeId: record.invokeId,
+            occurredAt: record.occurredAt,
+            endAt:
+              !isInFlight && record.tTotalMs != null
+                ? new Date(
+                    Date.parse(record.occurredAt) + Math.max(0, record.tTotalMs),
+                  ).toISOString()
+                : null,
+            isInFlight,
+            status: record.status,
+            livePhase: record.livePhase,
+            firstTokenMs: record.firstTokenMs,
+            tTotalMs: record.tTotalMs,
+            poolAttemptCount: record.poolAttemptCount,
+            upstreamAccountId: record.upstreamAccountId,
+            upstreamAccountName: record.upstreamAccountName,
+            failureClass: record.failureClass,
+          };
+        }),
+  };
+}
+
 export async function handleDemoRequest(request: Request) {
   const url = new URL(request.url);
   const pathname = apiPathname(url.pathname);
@@ -3115,6 +3163,7 @@ export async function handleDemoRequest(request: Request) {
     });
   }
   if (pathname === "/api/stats/timeseries") return json(timeseries(url.searchParams.get("range")));
+  if (pathname === "/api/stats/invocation-timeline") return json(demoInvocationTimeline(url));
   if (pathname === "/api/stats/parallel-work")
     return json(parallelWork(), { headers: { ETag: "demo-parallel-work" } });
   if (pathname === "/api/stats/errors") {

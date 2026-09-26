@@ -22,6 +22,7 @@ const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
+const MAX_INVOCATION_TIMELINE_DURATION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1_800,
@@ -1264,6 +1265,31 @@ export interface TimeseriesResponse {
   availableBuckets?: string[];
   bucketLimitedToDaily?: boolean;
   points: TimeseriesPoint[];
+}
+
+export interface InvocationTimelineRecord {
+  id: number;
+  invokeId: string;
+  occurredAt: string;
+  endAt?: string | null;
+  isInFlight: boolean;
+  status?: string | null;
+  livePhase?: InvocationLivePhase | string | null;
+  firstTokenMs?: number | null;
+  tTotalMs?: number | null;
+  poolAttemptCount?: number | null;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string | null;
+  failureClass?: string | null;
+}
+
+export interface InvocationTimelineResponse {
+  rangeStart: string;
+  rangeEnd: string;
+  asOf: string;
+  total: number;
+  overLimit: boolean;
+  records: InvocationTimelineRecord[];
 }
 
 export interface ParallelWorkPoint {
@@ -2719,6 +2745,126 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
     points: pointsRaw
       .map(normalizeTimeseriesPoint)
       .filter((point): point is TimeseriesPoint => point != null),
+  };
+}
+
+function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineResponse {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Invalid invocation timeline response");
+  }
+  const payload = raw as Record<string, unknown>;
+  const rangeStart = payload.rangeStart;
+  const rangeEnd = payload.rangeEnd;
+  const asOf = payload.asOf;
+  const total = payload.total;
+  const overLimit = payload.overLimit;
+  const records = payload.records;
+  if (
+    typeof rangeStart !== "string" ||
+    !Number.isFinite(Date.parse(rangeStart)) ||
+    typeof rangeEnd !== "string" ||
+    !Number.isFinite(Date.parse(rangeEnd)) ||
+    Date.parse(rangeEnd) <= Date.parse(rangeStart) ||
+    typeof asOf !== "string" ||
+    !Number.isFinite(Date.parse(asOf)) ||
+    typeof total !== "number" ||
+    !Number.isFinite(total) ||
+    total < 0 ||
+    !Number.isInteger(total) ||
+    typeof overLimit !== "boolean" ||
+    !Array.isArray(records) ||
+    (!overLimit && total !== records.length) ||
+    (overLimit && records.length !== 0)
+  ) {
+    throw new Error("Invalid invocation timeline response");
+  }
+  return {
+    rangeStart,
+    rangeEnd,
+    asOf,
+    total,
+    overLimit,
+    records: records.map((rawRecord): InvocationTimelineRecord => {
+      if (rawRecord == null || typeof rawRecord !== "object" || Array.isArray(rawRecord)) {
+        throw new Error("Invalid invocation timeline record");
+      }
+      const record = rawRecord as Record<string, unknown>;
+      const invokeId = typeof record.invokeId === "string" ? record.invokeId : "";
+      const occurredAt = typeof record.occurredAt === "string" ? record.occurredAt : "";
+      const occurredAtMs = Date.parse(occurredAt);
+      const endAt = record.endAt;
+      const endAtMs = typeof endAt === "string" ? Date.parse(endAt) : null;
+      const id = record.id;
+      const isInFlight = record.isInFlight;
+      const firstTokenMs = record.firstTokenMs;
+      const tTotalMs = record.tTotalMs;
+      const poolAttemptCount = record.poolAttemptCount;
+      const upstreamAccountId = record.upstreamAccountId;
+      const optionalString = (value: unknown, field: string) => {
+        if (value == null) return null;
+        if (typeof value !== "string") throw new Error(`Invalid invocation timeline ${field}`);
+        return value;
+      };
+      const optionalNonNegativeNumber = (value: unknown, field: string, max?: number) => {
+        if (value == null) return null;
+        if (
+          typeof value !== "number" ||
+          !Number.isFinite(value) ||
+          value < 0 ||
+          (max != null && value > max)
+        ) {
+          throw new Error(`Invalid invocation timeline ${field}`);
+        }
+        return value;
+      };
+      if (
+        !invokeId ||
+        !occurredAt ||
+        !Number.isFinite(occurredAtMs) ||
+        (endAt != null && (typeof endAt !== "string" || !Number.isFinite(endAtMs))) ||
+        (endAtMs != null && endAtMs < occurredAtMs) ||
+        typeof id !== "number" ||
+        !Number.isSafeInteger(id) ||
+        id < 0 ||
+        typeof isInFlight !== "boolean"
+      ) {
+        throw new Error("Invalid invocation timeline record");
+      }
+      const normalizedFirstTokenMs = optionalNonNegativeNumber(firstTokenMs, "firstTokenMs");
+      const normalizedTotalMs = optionalNonNegativeNumber(
+        tTotalMs,
+        "tTotalMs",
+        MAX_INVOCATION_TIMELINE_DURATION_MS,
+      );
+      const normalizedPoolAttemptCount = optionalNonNegativeNumber(
+        poolAttemptCount,
+        "poolAttemptCount",
+      );
+      const normalizedAccountId = optionalNonNegativeNumber(upstreamAccountId, "upstreamAccountId");
+      if (
+        (normalizedPoolAttemptCount != null &&
+          (!Number.isSafeInteger(normalizedPoolAttemptCount) || normalizedPoolAttemptCount < 0)) ||
+        (normalizedAccountId != null &&
+          (!Number.isSafeInteger(normalizedAccountId) || normalizedAccountId < 1))
+      ) {
+        throw new Error("Invalid invocation timeline record");
+      }
+      return {
+        id,
+        invokeId,
+        occurredAt,
+        endAt: endAt == null ? null : endAt,
+        isInFlight,
+        status: optionalString(record.status, "status"),
+        livePhase: optionalString(record.livePhase, "livePhase"),
+        firstTokenMs: normalizedFirstTokenMs,
+        tTotalMs: normalizedTotalMs,
+        poolAttemptCount: normalizedPoolAttemptCount,
+        upstreamAccountId: normalizedAccountId,
+        upstreamAccountName: optionalString(record.upstreamAccountName, "upstreamAccountName"),
+        failureClass: optionalString(record.failureClass, "failureClass"),
+      };
+    }),
   };
 }
 
@@ -5352,6 +5498,26 @@ export async function fetchTimeseries(
     signal: params?.signal,
   });
   return normalizeTimeseriesResponse(response);
+}
+
+export async function fetchInvocationTimeline(options: {
+  from: string;
+  to: string;
+  upstreamAccountId?: number;
+  includeLive?: boolean;
+  signal?: AbortSignal;
+}) {
+  const search = new URLSearchParams({ from: options.from, to: options.to });
+  if (options.upstreamAccountId != null) {
+    search.set("upstreamAccountId", String(options.upstreamAccountId));
+  }
+  if (options.includeLive != null) {
+    search.set("includeLive", String(options.includeLive));
+  }
+  const response = await fetchJson<unknown>(`/api/stats/invocation-timeline?${search.toString()}`, {
+    signal: options.signal,
+  });
+  return normalizeInvocationTimelineResponse(response);
 }
 
 export async function fetchParallelWorkStats(params?: {
