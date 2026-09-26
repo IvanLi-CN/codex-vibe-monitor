@@ -15700,7 +15700,6 @@ mod tests {
                 .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
             "terminal topic {topic} must reuse one frame across two SSE owners",
         );
-
         let projection = state
             .proxy_runtime_invocations
             .dashboard_topology_counters();
@@ -15721,7 +15720,6 @@ mod tests {
             0,
             "active Dashboard producer must remain on the in-memory live path",
         );
-
         let delivery = state.subscription_hub.dashboard_topology_counters();
         for topic in [
             delivery.activity,
@@ -15968,7 +15966,6 @@ mod tests {
         assert_eq!(state.response.current.active_minute_count, Some(4));
         assert_eq!(state.response.current.avg_count, Some(3.0));
     }
-
     #[test]
     fn parallel_work_projection_promotes_closed_runtime_minutes_on_next_overlay() {
         let minute_start = Utc
@@ -15996,7 +15993,6 @@ mod tests {
             window.active_minute_count = Some(4);
             window.avg_count = Some(3.0);
         }
-
         let first = RuntimeInvocationMutation {
             identity: RuntimeInvocationIdentity::new(
                 "completed-minute-invoke",
@@ -16011,7 +16007,6 @@ mod tests {
         };
         assert!(state.apply_runtime_overlay_at(&first, minute_start + ChronoDuration::seconds(30)));
         assert_eq!(state.active_minute_stats, active_minute_stats);
-
         let next_minute = RuntimeInvocationMutation {
             identity: RuntimeInvocationIdentity::new(
                 "next-minute-invoke",
@@ -16043,6 +16038,14 @@ mod tests {
             .timestamp_opt(1_700_000_040, 0)
             .single()
             .expect("construct minute start");
+        let rebase = |seconds| {
+            rolling_dashboard_window_requires_rebase(
+                Some(minute_start),
+                Some(minute_start + ChronoDuration::seconds(seconds)),
+            )
+        };
+        assert!(!rebase(59));
+        assert!(rebase(60));
         let mut state = parallel_work_materializer_state(
             "1d",
             minute_start - ChronoDuration::minutes(2),
@@ -16095,7 +16098,6 @@ mod tests {
         );
         assert_eq!(state.response.current.avg_count, Some(2.6));
     }
-
     #[test]
     fn parallel_work_projection_skips_rows_already_in_its_cold_baseline() {
         let occurred_at = Utc::now() - ChronoDuration::seconds(30);
@@ -16112,11 +16114,9 @@ mod tests {
             sticky_key: None,
             upstream_account_id: None,
         });
-
         assert!(!outcome.changed);
         assert_eq!(state.response.current.conversations[0].request_count, 1);
     }
-
     #[test]
     fn parallel_work_projection_requires_typed_reconcile_for_unknown_account_fallback() {
         let occurred_at = Utc::now() - ChronoDuration::seconds(30);
