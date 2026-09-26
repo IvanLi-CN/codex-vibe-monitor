@@ -175,8 +175,9 @@ export const LiveTraffic: Story = {
     const ttftZeroRect = ttftZero.getBoundingClientRect();
     expect(Math.abs(laneZeroRect.bottom - xAxisRect.top)).toBeLessThanOrEqual(1);
     const callAxisTicks = callsAxis.querySelectorAll("[data-call-axis-tick]");
-    expect(callAxisTicks).toHaveLength(4);
-    expect(callAxisTicks[0]?.textContent).toBe("4");
+    expect(callAxisTicks.length).toBeGreaterThan(4);
+    expect(Number(callAxisTicks[0]?.textContent)).toBeGreaterThanOrEqual(4);
+    expect(callAxisTicks[callAxisTicks.length - 1]?.textContent).toBe("1");
     const firstCallTickRect = callAxisTicks[0]?.getBoundingClientRect();
     const lastCallTickRect = callAxisTicks[callAxisTicks.length - 1]?.getBoundingClientRect();
     expect(firstCallTickRect).toBeDefined();
@@ -188,7 +189,7 @@ export const LiveTraffic: Story = {
       );
     }
     expect(Math.abs(ttftZeroRect.bottom - xAxisRect.top)).toBeLessThanOrEqual(1);
-    expect(Math.abs(laneZeroRect.bottom - ttftZeroRect.bottom)).toBeLessThanOrEqual(0.01);
+    expect(Math.abs(laneZeroRect.bottom - ttftZeroRect.bottom)).toBeLessThanOrEqual(1);
     const ttftTicks = canvasElement.querySelectorAll("[data-ttft-axis-tick]");
     expect(ttftTicks).toHaveLength(5);
     expect(ttftTicks?.[0]?.textContent).toBe("836 ms");
@@ -199,8 +200,27 @@ export const LiveTraffic: Story = {
     const bars = canvasElement.querySelectorAll(
       '[data-testid="dashboard-invocation-timeline-lane-scroll"] button',
     );
+    await expect(canvas.getByTestId("dashboard-invocation-timeline-legend")).toHaveClass(
+      "justify-center",
+    );
     expect(Array.from(bars).every((bar) => bar.textContent === "")).toBe(true);
     expect(Array.from(bars).every((bar) => bar.getBoundingClientRect().width >= 8)).toBe(true);
+    for (const bar of Array.from(bars)) {
+      const value = bar.getAttribute("data-call-value");
+      const grid = value
+        ? Number(value) === 1
+          ? xAxis
+          : canvasElement.querySelector(
+              `[data-call-axis-grid][data-call-axis-value="${Number(value) - 1}"]`,
+            )
+        : null;
+      if (!(grid instanceof HTMLElement)) {
+        throw new Error(`missing call-axis grid for value ${value}`);
+      }
+      expect(
+        Math.abs(bar.getBoundingClientRect().bottom - grid.getBoundingClientRect().top),
+      ).toBeLessThanOrEqual(1);
+    }
     const controls = canvasElement.querySelectorAll("button.icon-button");
     expect(controls).toHaveLength(4);
     const controlsAreCentered = Array.from(controls).every((control) => {

@@ -105,6 +105,7 @@ const INVOCATION_LANE_MIN_HEIGHT_PX = 8;
 const INVOCATION_LANE_MAX_HEIGHT_PX = 16;
 const INVOCATION_LANE_GAP_PX = 1;
 const INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX = 16;
+const INVOCATION_TTFT_AXIS_TOP_PX = 20;
 
 export interface InvocationTimelineLayout {
   chartHeightPx: number;
@@ -113,7 +114,6 @@ export interface InvocationTimelineLayout {
   laneStep: number;
   lanePlotHeight: number;
   laneContentHeight: number;
-  laneOffset: number;
   visibleLaneCount: number;
 }
 
@@ -139,7 +139,6 @@ export function resolveInvocationTimelineLayout(
   const laneContentHeight =
     visibleLaneCount * laneHeight + Math.max(0, visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX;
   const lanePlotHeight = Math.max(laneAreaHeightPx, laneContentHeight + 24);
-  const laneOffset = Math.max(12, Math.floor((lanePlotHeight - laneContentHeight) / 2));
   return {
     chartHeightPx,
     laneAreaHeightPx,
@@ -147,7 +146,6 @@ export function resolveInvocationTimelineLayout(
     laneStep,
     lanePlotHeight,
     laneContentHeight,
-    laneOffset,
     visibleLaneCount,
   };
 }
@@ -182,6 +180,8 @@ function buildTtftPath(
   points: TimeseriesResponse["points"],
   windowStartMs: number,
   windowEndMs: number,
+  plotHeightPx: number,
+  plotTopPx: number,
 ) {
   const values = points
     .map((point) => {
@@ -201,7 +201,8 @@ function buildTtftPath(
   const path = values
     .map((point, index) => {
       const x = ((point.xMs - windowStartMs) / Math.max(1, windowEndMs - windowStartMs)) * 100;
-      const y = 100 - (point.value / maxValue) * 88 - 6;
+      const yPx = plotHeightPx - (point.value / maxValue) * Math.max(0, plotHeightPx - plotTopPx);
+      const y = (yPx / Math.max(1, plotHeightPx)) * 100;
       return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
     })
     .join(" ");
@@ -263,7 +264,6 @@ export function DashboardInvocationTimeline({
   const laneCount = getInvocationTimelineLaneCount(lanes);
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
   const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
-
   useEffect(() => {
     if (closedNaturalDay || !liveConnected || !hasInFlightLanes) return;
     const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1_000);
@@ -285,9 +285,15 @@ export function DashboardInvocationTimeline({
   const ttft = useMemo(
     () =>
       plotWindow && response
-        ? buildTtftPath(response.points, plotWindow.startMs, plotWindow.endMs)
+        ? buildTtftPath(
+            response.points,
+            plotWindow.startMs,
+            plotWindow.endMs,
+            laneLayout.laneAreaHeightPx,
+            INVOCATION_TTFT_AXIS_TOP_PX,
+          )
         : { path: "", maxValue: 1 },
-    [plotWindow, response],
+    [laneLayout.laneAreaHeightPx, plotWindow, response],
   );
 
   if (error || (!response && !loading && !timelineDataOverride)) return <>{fallback}</>;
@@ -330,25 +336,22 @@ export function DashboardInvocationTimeline({
     visibleLaneCount,
   } = laneLayout;
   const plotOriginTopPx = laneAreaHeightPx;
-  const callAxisMaxValue = Math.max(visibleLaneCount, 1);
-  const useLinearLanePositions = callAxisMaxValue <= 10;
-  const linearLaneStep = laneStep;
-  const callAxisTickCount = useLinearLanePositions ? callAxisMaxValue + 1 : 5;
+  const callAxisCapacity = Math.max(
+    1,
+    Math.floor((laneAreaHeightPx - INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX) / laneStep),
+  );
+  const callAxisMaxValue = Math.max(visibleLaneCount, callAxisCapacity, 1);
+  const callAxisTickCount = callAxisMaxValue <= 20 ? callAxisMaxValue + 1 : 5;
   const visibleAxisTopValue = Math.min(
     callAxisMaxValue,
-    Math.ceil((lanePlotHeight - laneScrollTop) / linearLaneStep),
+    Math.ceil((lanePlotHeight - laneScrollTop) / laneStep),
   );
   const visibleAxisBottomValue = Math.max(
     0,
-    Math.floor((lanePlotHeight - (laneScrollTop + laneAreaHeightPx)) / linearLaneStep),
+    Math.floor((lanePlotHeight - (laneScrollTop + laneAreaHeightPx)) / laneStep),
   );
   const visibleAxisValueSpan = Math.max(1, visibleAxisTopValue - visibleAxisBottomValue);
-  const callAxisTopForValue = (value: number) =>
-    useLinearLanePositions
-      ? INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX +
-        (1 - value / Math.max(1, callAxisMaxValue)) *
-          (laneAreaHeightPx - INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX)
-      : lanePlotHeight - (value * laneHeight + Math.max(0, value - 1) * INVOCATION_LANE_GAP_PX);
+  const callAxisTopForValue = (value: number) => lanePlotHeight - value * laneStep;
   const callAxisTicks = Array.from({ length: callAxisTickCount }, (_, index) => {
     const fraction = index / Math.max(1, callAxisTickCount - 1);
     const value =
@@ -360,20 +363,22 @@ export function DashboardInvocationTimeline({
       top: callAxisTopForValue(value),
     };
   });
-  const ttftAxisTopPx = 20;
   const ttftTicks = Array.from({ length: 5 }, (_, index) => {
     const fraction = index / 4;
     return {
       value: Math.round(ttft.maxValue * (1 - fraction)),
-      top: ttftAxisTopPx + fraction * (laneAreaHeightPx - ttftAxisTopPx),
+      top:
+        INVOCATION_TTFT_AXIS_TOP_PX + fraction * (laneAreaHeightPx - INVOCATION_TTFT_AXIS_TOP_PX),
     };
   });
   const zeroIsVisible =
     callAxisTopForValue(0) >= laneScrollTop &&
     callAxisTopForValue(0) <= laneScrollTop + laneAreaHeightPx;
-  const laneTopFor = (lane: number) =>
-    lanePlotHeight - ((lane + 1) * laneHeight + lane * INVOCATION_LANE_GAP_PX);
-  const laneCenterFor = (lane: number) => laneTopFor(lane);
+  const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1) + INVOCATION_LANE_GAP_PX;
+  const callAxisGridValues =
+    callAxisMaxValue <= 20
+      ? Array.from({ length: callAxisMaxValue }, (_, index) => index + 1)
+      : Array.from({ length: visibleLaneCount }, (_, index) => index + 1);
 
   return (
     <div data-testid="dashboard-today-activity-chart">
@@ -578,12 +583,14 @@ export function DashboardInvocationTimeline({
                         className="absolute inset-x-0 top-0 z-10"
                         style={{ height: `${lanePlotHeight}px` }}
                       >
-                        {Array.from({ length: visibleLaneCount }, (_, lane) => (
+                        {callAxisGridValues.map((value) => (
                           <div
-                            key={`lane-${lane}`}
+                            data-call-axis-grid
+                            data-call-axis-value={value}
+                            key={`call-axis-${value}`}
                             className="absolute inset-x-0 border-t border-dashed border-base-content/10"
                             style={{
-                              top: `${laneCenterFor(lane)}px`,
+                              top: `${callAxisTopForValue(value)}px`,
                             }}
                           />
                         ))}
@@ -612,6 +619,7 @@ export function DashboardInvocationTimeline({
                             <button
                               type="button"
                               key={`${item.record.invokeId}:${item.record.occurredAt}`}
+                              data-call-value={item.lane + 1}
                               className={`absolute flex appearance-none items-center overflow-visible rounded border shadow-sm ${statusClass(status)}`}
                               aria-label={`${item.record.invokeId} · ${statusLabel} · ${formatDuration(item.record)}${ttftLabel}`}
                               style={{
@@ -700,7 +708,10 @@ export function DashboardInvocationTimeline({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 text-[11px] text-base-content/65">
+        <div
+          data-testid="dashboard-invocation-timeline-legend"
+          className="flex flex-wrap items-center justify-center gap-3 text-[11px] text-base-content/65"
+        >
           {[
             ["success", t("dashboard.activityOverview.timelineStatusSuccess")],
             ["requesting", t("dashboard.activityOverview.timelineStatusRequesting")],
