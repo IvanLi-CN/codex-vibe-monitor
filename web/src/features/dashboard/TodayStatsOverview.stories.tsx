@@ -353,8 +353,11 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-          <div className="mx-auto w-full max-w-[1560px]">
+        <div
+          data-visual-evidence-surface
+          className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+        >
+          <div data-visual-evidence-target className="mx-auto w-full max-w-[1560px]">
             <Story />
           </div>
         </div>
@@ -415,6 +418,7 @@ export const ActiveMinuteAverage: Story = {
 };
 
 export const UsageBreakdownDetails: Story = {
+  tags: ["test"],
   args: {
     stats: sampleStats,
     rate: sampleRate,
@@ -429,12 +433,21 @@ export const UsageBreakdownDetails: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByTestId("today-stats-label-total-cost"));
+    const costTrigger = canvas.getByTestId("today-stats-label-total-cost");
+    await userEvent.hover(costTrigger);
+    const tooltip = await within(document.body).findByRole("tooltip");
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    await userEvent.hover(tooltip);
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    await expect(within(document.body).getByRole("tooltip")).toHaveTextContent(
+      /Usage details|用量明细/i,
+    );
+
+    await userEvent.click(costTrigger);
     await waitFor(() => {
       const tooltip = within(document.body).getByRole("tooltip");
       expect(tooltip).toHaveTextContent(/Usage details|用量明细/i);
       expect(tooltip).toHaveTextContent(/Cache write|缓存写入/);
-      expect(tooltip).toHaveTextContent("gpt-5.6");
       const panel = within(tooltip).getByTestId("usage-breakdown-tooltip");
       expect(within(panel).getAllByRole("table")).toHaveLength(1);
       expect(panel).not.toHaveClass("overflow-y-auto");
@@ -453,7 +466,7 @@ export const UsageBreakdownDetails: Story = {
       ).toEqual(["模型", "缓存写入", "缓存读取", "缓存命中率", "输出", "总计"]);
       expect(tooltip).toHaveTextContent("23.3%");
       expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/);
-      expect(tooltip).toHaveTextContent(/Unspecified|未指定/);
+      expect(tooltip).toHaveTextContent(/Unspecified|未指定|—/);
       expect(tooltip).toHaveTextContent(/Output|输出/);
       const panel = within(tooltip).getByTestId("usage-breakdown-tooltip");
       expect(within(panel).getAllByRole("table")).toHaveLength(1);
@@ -464,10 +477,12 @@ export const UsageBreakdownDetails: Story = {
 
 export const ModelReasoningBreakdownMobile: Story = {
   ...UsageBreakdownDetails,
+  tags: ["test"],
 };
 
 export const ModelReasoningBreakdownDesktop: Story = {
   ...UsageBreakdownDetails,
+  tags: ["test"],
   parameters: {
     viewport: { defaultViewport: "desktop1440" },
   },

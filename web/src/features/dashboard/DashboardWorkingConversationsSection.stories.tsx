@@ -5586,6 +5586,7 @@ export const UpstreamAccountQuickPolicyTonePaletteMobile: Story = {
 };
 
 export const UpstreamAccountMetricTooltips: Story = {
+  tags: ["test"],
   args: UpstreamAccountTab.args,
   render: () => (
     <DrawerPreviewStory
@@ -5611,6 +5612,14 @@ export const UpstreamAccountMetricTooltips: Story = {
 
     const triggers = await canvas.findAllByTestId("dashboard-upstream-account-metric-card");
     await expect(triggers).toHaveLength(4);
+
+    await userEvent.hover(triggers[0]);
+    const hoverTooltip = await within(document.body).findByRole("tooltip");
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    await userEvent.hover(hoverTooltip);
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    await expect(within(document.body).getByRole("tooltip")).toBe(hoverTooltip);
+    await userEvent.unhover(hoverTooltip);
 
     const tpmInlineMetric = canvas.getByLabelText("TPM 37,280");
     await userEvent.click(tpmInlineMetric);
@@ -5669,6 +5678,14 @@ export const UpstreamAccountMetricTooltips: Story = {
           "Stable interaction coverage for the four upstream-account metric cards. Each whole metric card opens a structured tooltip with explicit field labels, values, and related computed data while the card surface stays compact.",
       },
     },
+  },
+};
+
+export const UpstreamAccountMetricTooltipsMobile: Story = {
+  ...UpstreamAccountMetricTooltips,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
   },
 };
 

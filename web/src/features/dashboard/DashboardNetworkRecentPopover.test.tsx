@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import type { ReactNode } from "react";
-import { act, useEffect } from "react";
+import { act, forwardRef, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardRecentNetworkWindowResponse } from "../../lib/api";
@@ -77,21 +77,16 @@ vi.mock("../../components/ui/popover", () => ({
 }));
 
 vi.mock("../../components/ui/bubble-popover", () => ({
-  BubblePopoverContent: ({
-    children,
-    ...props
-  }: {
-    children: ReactNode;
-    className?: string;
-    align?: string;
-    side?: string;
-    sideOffset?: number;
-  }) =>
+  BubblePopoverContent: forwardRef<
+    HTMLDivElement,
+    React.HTMLAttributes<HTMLDivElement> & { children: ReactNode }
+  >(({ children, ...props }, ref) =>
     overlayState.popoverOpen ? (
-      <div role="dialog" {...props}>
+      <div ref={ref} role="dialog" {...props}>
         {children}
       </div>
     ) : null,
+  ),
 }));
 
 vi.mock("../../components/ui/dialog", () => ({
@@ -236,8 +231,14 @@ describe("DashboardNetworkRecentPopover", () => {
     ).not.toBeNull();
 
     await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      vi.advanceTimersByTime(150);
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(500);
       await Promise.resolve();
     });
     expect(
@@ -253,8 +254,14 @@ describe("DashboardNetworkRecentPopover", () => {
     ).not.toBeNull();
 
     await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      vi.advanceTimersByTime(150);
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(500);
       await Promise.resolve();
     });
     expect(
@@ -268,6 +275,55 @@ describe("DashboardNetworkRecentPopover", () => {
     expect(
       document.body.querySelector('[data-testid="dashboard-network-recent-popover"]'),
     ).toBeNull();
+  });
+
+  it("keeps the recent panel open during a slow pointer crossing into its content", async () => {
+    render(
+      <DashboardNetworkRecentPopover
+        triggerAriaLabel="打开最近网速诊断面板"
+        trigger={<span>Trigger</span>}
+      />,
+    );
+
+    const trigger = host?.querySelector('[data-testid="dashboard-network-recent-trigger"]');
+    expect(trigger).toBeInstanceOf(HTMLButtonElement);
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const panel = document.body.querySelector('[data-testid="dashboard-network-recent-popover"]');
+    expect(panel).not.toBeNull();
+
+    await act(async () => {
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[data-testid="dashboard-network-recent-popover"]')).toBe(
+      panel,
+    );
+
+    await act(async () => {
+      panel?.dispatchEvent(
+        new PointerEvent("pointerover", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      panel?.dispatchEvent(
+        new PointerEvent("pointerenter", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      panel?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('[data-testid="dashboard-network-recent-popover"]')).toBe(
+      panel,
+    );
   });
 
   it("opens the compact dialog on small viewports", async () => {

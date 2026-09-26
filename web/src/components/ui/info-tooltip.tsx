@@ -1,6 +1,6 @@
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import {
-  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useId,
@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { AppIcon } from "../../features/shared/AppIcon";
+import { usePointerTransitionGuard } from "../../hooks/usePointerTransitionGuard";
 import { cn } from "../../lib/utils";
 import {
   bubbleArrowClassName,
@@ -33,6 +34,12 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const portalTheme = usePortaledTheme(rootElement);
+  const pointerTransition = usePointerTransitionGuard({
+    triggerRef: rootRef,
+    contentRef: tooltipRef,
+    onClose: () => setOpen(false),
+    pinned,
+  });
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current === null) return;
@@ -56,15 +63,20 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
 
   const handlePointerEnter = () => {
     clearCloseTimer();
+    pointerTransition.cancel();
     if (!pinned) setOpen(true);
   };
 
-  const handlePointerLeave = (event: ReactMouseEvent<HTMLElement>) => {
+  const handlePointerLeave = (
+    event: ReactPointerEvent<HTMLElement>,
+    from: "trigger" | "content",
+  ) => {
     if (isWithinTooltipCluster(event.relatedTarget)) {
       clearCloseTimer();
+      pointerTransition.cancel();
       return;
     }
-    scheduleClose();
+    pointerTransition.start(from, event);
   };
 
   useEffect(() => {
@@ -85,11 +97,12 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
       }
       setPinned(false);
       setOpen(false);
+      pointerTransition.cancel();
     };
 
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [open, tooltipId]);
+  }, [open, pointerTransition, tooltipId]);
 
   return (
     <PopoverPrimitive.Root
@@ -106,6 +119,8 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
           setRootElement(node);
         }}
         className={cn("inline-flex items-center", className)}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={(event) => handlePointerLeave(event, "trigger")}
       >
         <PopoverPrimitive.Anchor asChild>
           <button
@@ -114,7 +129,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
             aria-describedby={open ? tooltipId : undefined}
             className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[inherit] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             onMouseEnter={handlePointerEnter}
-            onMouseLeave={handlePointerLeave}
+            onPointerEnter={handlePointerEnter}
             onClick={() => {
               clearCloseTimer();
               setPinned((current) => {
@@ -160,7 +175,8 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
           open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
         onMouseEnter={handlePointerEnter}
-        onMouseLeave={handlePointerLeave}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={(event) => handlePointerLeave(event, "content")}
       >
         {content}
         <PopoverArrow

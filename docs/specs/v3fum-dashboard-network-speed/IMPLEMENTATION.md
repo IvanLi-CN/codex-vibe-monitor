@@ -64,6 +64,7 @@
   - 图表层将 `isAvailable=false` 样本渲染成空档；UI 不再显示 warming callout 或不可用点 tooltip，避免在窄屏面板中出现额外提示。
   - topic payload 超过 5 秒未同步时，仅图表区域显示 Loading/Spinner stale 遮罩；旧图保留，不再显示局部“刷新中”。
   - `DashboardNetworkRecentPanel` 的秒级图表 tick 计算改成普通派生值，避免组件从 loading 切到有数据时因条件分支后的额外 hook 触发 React hook order 崩溃。
+  - 桌面端触发胶囊与面板之间复用 `usePointerTransitionGuard`，以加宽 8px 的通道承接慢速指针移动；偏离通道即关闭，通道内静止 500ms 后关闭，点击固定时保持原状态。
 
 ## 测试与 Storybook
 
@@ -84,6 +85,7 @@
   - 300 秒 recent 窗口保留与上一完整秒快照语义。
   - 进程启动不足 5 分钟时 recent 前导空档的 `isAvailable=false` 语义。
   - recent endpoint response builder、subscription topic schema epoch、服务端 live payload 推送与多订阅者共享 cadence。
+- 前端指针交互测试覆盖 recent 面板从触发胶囊移入浮层的 300ms 过渡、进入面板后取消关闭、偏离通道关闭、静止超时关闭和点击固定；Storybook 交互使用固定 recent 响应，不依赖实时 SSE。
 - `DashboardPage.stories.tsx` 新增页面级 SSE / HTTP bootstrap，确保整页证据能同时覆盖活动总览网速图和上游账号顶部总速率胶囊，不再依赖缺失首帧 snapshot 的假空态。
 - Storybook 继续使用 `DashboardNetworkActivityChart` 与 `UpstreamAccountTab` 场景验证图表背景与账号 tab 顶部总速率展示，并补充整页 `UnifiedActivitySnapshot` 证据验证 page-shell 接线。
 - 新增 `DashboardNetworkRecentPopover.stories.tsx`，提供桌面固定展开态、stale 遮罩态与窄屏 sheet 前导空档无提示态，作为 recent 诊断面板的稳定视觉证据入口。

@@ -15,6 +15,12 @@
 - `header`, `compact` and `mailbox` presets preserve the existing 24px, 20px-class and 28px heights on desktop and mobile. No touch-only size expansion was introduced.
 - Light/dark Storybook gallery and source contract tests enforce opaque themed colors, WCAG AA text contrast, colored ink chroma, and the prohibition on black/white or `*-content` chip fallbacks.
 
+## Pointer Transition Repair
+
+- Shared Dashboard Tooltips now sync hover visibility through Radix `onOpenChange`, keeping the existing hoverable-content grace area while preserving controlled, click-pinned, focus, and long-press behavior.
+- InfoTooltip, upstream account metric details, Batch OAuth actions, and mailbox copy/editor overlays use `usePointerTransitionGuard`: an 8px padded trigger-to-surface corridor keeps slow pointer transfers open, leaving the corridor closes immediately, and stopping within it closes after 500ms. Pinned overlays bypass the guard.
+- Component tests and Storybook interaction stories cover 300ms transfer, surface entry, corridor exit, static timeout, click pinning, keyboard dismissal, long press, and narrow viewport entry.
+
 ## Coverage / rollout summary
 
 - 已实现：上游账号 recent 行保持既有“对话短 ID + 请求 ID + 状态”主标识行；下方的时间/模型/思考强度与 `Hit / Token / Cost` 现于宽屏同一行左右对齐，窄屏回流为前者在上、摘要在下。live 账号卡不再以 `h-full` 或宽屏最小高度等高拉伸，双列 grid 顶对齐；卡内 recent 列表同样不再分配等高 track，错误摘要只增加所属调用行与账号卡的内容高度。加载 skeleton 继续保留稳定高度。

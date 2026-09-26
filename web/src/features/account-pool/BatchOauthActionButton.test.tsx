@@ -142,6 +142,42 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).toContain("Copy OAuth URL");
   });
 
+  it("keeps the passive bubble open during a slow pointer crossing into its content", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(320);
+    });
+    const content = document.body.querySelector('[role="dialog"]');
+    expect(content).not.toBeNull();
+
+    act(() => {
+      button.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      button.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(300);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+
+    act(() => {
+      content?.dispatchEvent(
+        new PointerEvent("pointerover", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      content?.dispatchEvent(
+        new PointerEvent("pointerenter", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      content?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(500);
+    });
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+  });
+
   it("cancels a pending passive bubble when the primary action fires", () => {
     const onPrimaryAction = vi.fn();
     render(

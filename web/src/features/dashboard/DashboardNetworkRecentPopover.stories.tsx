@@ -1,5 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect } from "storybook/test";
+import { act, useRef, useState } from "react";
+import { expect, userEvent, within } from "storybook/test";
+import { BubblePopoverContent } from "../../components/ui/bubble-popover";
+import {
+  Dialog,
+  DialogCloseIcon,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "../../components/ui/dialog";
+import { Popover, PopoverTrigger } from "../../components/ui/popover";
+import { usePointerTransitionGuard } from "../../hooks/usePointerTransitionGuard";
 import { I18nProvider, useTranslation } from "../../i18n";
 import type { DashboardRecentNetworkWindowResponse } from "../../lib/api";
 import { DashboardNetworkRecentPanel } from "./DashboardNetworkRecentPopover";
@@ -184,8 +195,14 @@ function DesktopLockedPreview({
     [...response.points].reverse().find((point) => point.isAvailable) ?? null;
 
   return (
-    <div className={`inline-flex max-w-full p-[18px] text-base-content ${ambientClassName}`}>
-      <section className="surface-panel w-[56rem] max-w-[calc(100vw-4rem)] overflow-visible">
+    <div
+      data-visual-evidence-surface
+      className={`inline-flex max-w-full p-[18px] text-base-content ${ambientClassName}`}
+    >
+      <section
+        data-visual-evidence-target
+        className="surface-panel w-[56rem] max-w-[calc(100vw-4rem)] overflow-visible"
+      >
         <div className="surface-panel-body gap-4 sm:gap-5">
           <div className="flex justify-end">
             <DashboardNetworkSpeedCapsule
@@ -223,8 +240,9 @@ function CompactSheetPreview({
   const { t } = useTranslation();
 
   return (
-    <div className="inline-flex bg-[#08172b] p-4 text-white">
+    <div data-visual-evidence-surface className="inline-flex bg-[#08172b] p-4 text-white">
       <div
+        data-visual-evidence-target
         data-theme="vibe-dark"
         className="w-[398px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-[1.75rem] border border-base-300/70 bg-base-100 shadow-[0_32px_72px_rgba(3,9,20,0.55)]"
       >
@@ -280,6 +298,226 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
+
+function RecentPopoverTransferPreview() {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(true);
+  const [locked, setLocked] = useState(false);
+  const pointerTransition = usePointerTransitionGuard({
+    triggerRef,
+    contentRef,
+    onClose: () => setOpen(false),
+    pinned: locked,
+  });
+
+  return (
+    <div data-visual-evidence-surface className="min-h-screen bg-base-200 p-8 text-base-content">
+      <div
+        data-visual-evidence-target
+        className="flex min-h-32 items-start justify-end rounded-xl border border-base-300/65 bg-base-100/60 p-5"
+      >
+        <Popover
+          open={open}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) {
+              pointerTransition.cancel();
+              setOpen(false);
+              setLocked(false);
+            }
+          }}
+        >
+          <PopoverTrigger asChild>
+            <button
+              ref={triggerRef}
+              type="button"
+              aria-label="Open recent network diagnostics"
+              aria-haspopup="dialog"
+              aria-expanded={open}
+              data-testid="dashboard-network-recent-trigger"
+              onMouseEnter={() => {
+                pointerTransition.cancel();
+                setOpen(true);
+              }}
+              onPointerEnter={() => {
+                pointerTransition.cancel();
+                setOpen(true);
+              }}
+              onPointerLeave={(event) => {
+                if (!locked) pointerTransition.start("trigger", event);
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                pointerTransition.cancel();
+                setOpen(true);
+                setLocked((current) => !current);
+              }}
+              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <DashboardNetworkSpeedCapsule
+                uploadBytesPerSecond={3_072}
+                downloadBytesPerSecond={12_288}
+                localeTag="en-US"
+                uploadLabel="Upload"
+                downloadLabel="Download"
+                testId="dashboard-upstream-account-total-network-speed"
+              />
+            </button>
+          </PopoverTrigger>
+          <BubblePopoverContent
+            ref={contentRef}
+            align="end"
+            side="bottom"
+            sideOffset={10}
+            className="w-[min(52rem,calc(100vw-1rem))] max-w-[min(52rem,calc(100vw-1rem))] border-none bg-transparent p-0 shadow-none"
+            onPointerEnter={() => {
+              pointerTransition.cancel();
+              setOpen(true);
+            }}
+            onPointerLeave={(event) => {
+              if (!locked) pointerTransition.start("content", event);
+            }}
+            data-testid="dashboard-network-recent-popover"
+          >
+            <DashboardNetworkRecentPanel
+              response={populatedResponse}
+              loading={false}
+              stale={false}
+              error={null}
+            />
+          </BubblePopoverContent>
+        </Popover>
+      </div>
+    </div>
+  );
+}
+
+function CompactRecentDialogPreview() {
+  const [open, setOpen] = useState(false);
+  const { t } = useTranslation();
+
+  return (
+    <div data-visual-evidence-surface className="min-h-screen bg-base-200 p-4 text-base-content">
+      <div data-visual-evidence-target className="flex justify-end rounded-xl bg-base-100/60 p-5">
+        <button
+          type="button"
+          aria-label="Open recent network diagnostics"
+          data-testid="dashboard-network-recent-trigger"
+          onClick={() => setOpen(true)}
+          className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <DashboardNetworkSpeedCapsule
+            uploadBytesPerSecond={3_072}
+            downloadBytesPerSecond={12_288}
+            localeTag="en-US"
+            uploadLabel="Upload"
+            downloadLabel="Download"
+          />
+        </button>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent
+            className="max-h-[min(100dvh-0.5rem,100dvh)] overflow-hidden"
+            data-testid="dashboard-network-recent-dialog"
+          >
+            <div className="flex items-start gap-3 border-b border-base-300/70 px-4 py-4">
+              <div className="min-w-0 flex-1">
+                <DialogTitle className="min-w-0 text-lg">
+                  {t("dashboard.networkRecent.title")}
+                </DialogTitle>
+                <DialogDescription className="mt-1 text-sm leading-6 text-base-content/68">
+                  {t("dashboard.networkRecent.subtitle")}
+                </DialogDescription>
+              </div>
+              <DialogCloseIcon aria-label={t("dashboard.networkRecent.close")} />
+            </div>
+            <div className="max-h-[calc(min(100dvh-0.5rem,100dvh)-5.5rem)] overflow-y-auto px-4 py-4">
+              <DashboardNetworkRecentPanel
+                response={populatedResponse}
+                loading={false}
+                stale={false}
+                error={null}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </div>
+  );
+}
+
+async function waitForTransfer(milliseconds: number) {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+  });
+}
+
+export const DesktopPopoverTransfer: Story = {
+  tags: ["test"],
+  args: {
+    response: null,
+    loading: false,
+    error: null,
+  },
+  render: () => <RecentPopoverTransferPreview />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1440" },
+  },
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByTestId("dashboard-network-recent-trigger");
+    const panel = await within(document.body).findByTestId("dashboard-network-recent-popover");
+    const triggerRect = trigger.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const start = { x: triggerRect.right - 1, y: triggerRect.top + triggerRect.height / 2 };
+    const end = {
+      x: panelRect.left + panelRect.width / 2,
+      y: panelRect.top + panelRect.height / 2,
+    };
+    await act(async () => {
+      trigger.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: start.x,
+          clientY: start.y,
+        }),
+      );
+      for (const progress of [0.45, 0.8]) {
+        document.dispatchEvent(
+          new PointerEvent("pointermove", {
+            bubbles: true,
+            pointerType: "mouse",
+            clientX: start.x + (end.x - start.x) * progress,
+            clientY: start.y + (end.y - start.y) * progress,
+          }),
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+      }
+    });
+    await waitForTransfer(300);
+    await expect(within(document.body).getByTestId("dashboard-network-recent-popover")).toBe(panel);
+    await act(async () => {
+      panel.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+    });
+    await waitForTransfer(600);
+    await expect(within(document.body).getByTestId("dashboard-network-recent-popover")).toBe(panel);
+  },
+};
+
+export const CompactDialogEntry: Story = {
+  ...DesktopPopoverTransfer,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByTestId("dashboard-network-recent-trigger");
+    await userEvent.click(trigger);
+    const dialog = await within(document.body).findByTestId("dashboard-network-recent-dialog");
+    await expect(dialog).toBeInTheDocument();
+    await expect(within(dialog).getByTestId("dashboard-network-recent-panel")).toBeInTheDocument();
+  },
+  render: () => <CompactRecentDialogPreview />,
+};
 
 export const DesktopFixedOpen: Story = {
   args: {
