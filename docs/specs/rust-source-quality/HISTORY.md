@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 49 large-file entries explicit.
+  its 47 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -196,3 +196,20 @@ Validation for this extraction is the focused
 `cargo test error_distribution_and_sse::tests -- --nocapture` selector,
 rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
 checking, all-target Clippy, and `git diff --check`.
+
+The group note CRUD extraction moves the complete contiguous handler region from
+physical lines 2,043 through 2,501 of
+`src/upstream_accounts/crud_group_notes.rs` into
+`src/upstream_accounts/crud_group_notes/group_notes.rs`. The region contains
+`update_upstream_account_group` and `delete_upstream_account_group`; the parent
+re-exports both handlers with their existing crate-visible paths. After rustfmt,
+the parent is 2,261 physical lines and the child is 460 physical lines, both
+below the 2,500-line production target. The current inventory is 26 production
+and 21 test/helper candidates (47 entries total), while the immutable
+preparation baseline remains 32 and 23 and the suppression baseline remains
+117. SQL, validation, response behavior, tests, and runtime behavior remain
+unchanged.
+
+Validation for this extraction is the focused group-update tests, rustfmt, the
+Rust source-quality checker and fixture harness, all-target Cargo checking,
+all-target Clippy, and `git diff --check`.
