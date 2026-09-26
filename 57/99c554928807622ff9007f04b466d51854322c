@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.45",
+  "base_stable_version": "2.71.44",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-26T05:06:43Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.45",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b10dd3e712d8cd5fe929ba492b2d93c3d0b57978",
+  "pr_number": 1021,
+  "pr_title": "refactor(tests): split runtime overlay capture phases",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.45",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.45",
+  "target_sha": "5799c554928807622ff9007f04b466d51854322c",
+  "type_label": "type:patch"
+}
