@@ -1,3 +1,4 @@
+// biome-ignore-all lint/a11y/noNoninteractiveTabindex: the scroll viewport must be focusable
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
@@ -11,6 +12,8 @@ import type {
 } from "../../lib/api";
 import { recordTodayChartRender } from "../../lib/dashboardPerformanceDiagnostics";
 import { AppIcon } from "../shared/AppIcon";
+
+// The dense timeline viewport is a keyboard-scrollable region for screen-reader users.
 
 interface DashboardInvocationTimelineProps {
   response: TimeseriesResponse | null;
@@ -57,11 +60,28 @@ function resolveTerminalEndMs(record: InvocationTimelineRecord, startMs: number)
   return durationMs != null ? startMs + durationMs : startMs;
 }
 
-function formatDuration(record: InvocationTimelineRecord) {
-  if (record.isInFlight) return "进行中";
-  if (record.tTotalMs == null) return "时长未知";
+function formatDuration(
+  record: InvocationTimelineRecord,
+  translate: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (record.isInFlight) return translate("dashboard.activityOverview.timelineDurationRunning");
+  if (record.tTotalMs == null) {
+    return translate("dashboard.activityOverview.timelineDurationUnknown");
+  }
   if (record.tTotalMs < 1_000) return `${Math.round(record.tTotalMs)} ms`;
   return `${(record.tTotalMs / 1_000).toFixed(record.tTotalMs >= 10_000 ? 0 : 1)} s`;
+}
+
+function formatInvocationTime(startMs: number, locale: string) {
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(startMs));
 }
 
 function resolveStatus(record: InvocationTimelineRecord) {
@@ -219,7 +239,7 @@ export function DashboardInvocationTimeline({
   timelineData: timelineDataOverride,
   fallback,
 }: DashboardInvocationTimelineProps) {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const isCompactViewport = useCompactViewport();
   const sseStatus = useSseStatus();
   const liveRefreshAllowed =
@@ -249,6 +269,7 @@ export function DashboardInvocationTimeline({
       `${renderedData.rangeStart}:${renderedData.rangeEnd}:${renderedData.asOf}:${renderedData.records.length}:${response.rangeStart}:${response.rangeEnd}:${lastPoint?.totalCount ?? ""}`,
     );
   }, [closedNaturalDay, renderedData, response]);
+  const advanceLiveBars = liveConnected && timelineDataOverride == null;
   const lanes = useMemo(
     () =>
       renderedData
@@ -256,10 +277,10 @@ export function DashboardInvocationTimeline({
             renderedData.records,
             renderedData.asOf,
             nowMs,
-            liveConnected,
+            advanceLiveBars,
           )
         : [],
-    [liveConnected, nowMs, renderedData],
+    [advanceLiveBars, nowMs, renderedData],
   );
   const laneCount = getInvocationTimelineLaneCount(lanes);
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
@@ -564,10 +585,12 @@ export function DashboardInvocationTimeline({
                       className="text-info"
                     />
                   </svg>
-                  <div
+                  <section
                     data-testid="dashboard-invocation-timeline-lane-scroll"
                     ref={laneScrollRef}
                     className="absolute inset-x-0 top-0 overflow-y-auto overscroll-contain"
+                    tabIndex={0}
+                    aria-label={t("dashboard.activityOverview.timelineTitle")}
                     style={{ height: `${laneAreaHeightPx}px` }}
                     onScroll={(event) => {
                       const scrollTop = event.currentTarget.scrollTop;
@@ -611,17 +634,34 @@ export function DashboardInvocationTimeline({
                                 "dashboard.activityOverview.timelineStatusInterrupted",
                               ),
                             }[status] ?? t("dashboard.activityOverview.timelineStatusUnknown");
+                          const occurredAtLabel = t(
+                            "dashboard.activityOverview.timelineOccurredAt",
+                            { time: formatInvocationTime(item.startMs, locale) },
+                          );
+                          const durationLabel = formatDuration(item.record, t);
                           const ttftLabel =
                             item.record.firstTokenMs != null
-                              ? ` · TTFT ${Math.round(item.record.firstTokenMs)} ms`
+                              ? t("dashboard.activityOverview.timelineTtftValue", {
+                                  value: Math.round(item.record.firstTokenMs),
+                                })
                               : "";
+                          const accessibleLabel = t(
+                            "dashboard.activityOverview.timelineInvocationAria",
+                            {
+                              id: item.record.invokeId,
+                              occurredAt: occurredAtLabel,
+                              status: statusLabel,
+                              duration: durationLabel,
+                              ttft: ttftLabel,
+                            },
+                          );
                           return (
-                            <button
-                              type="button"
+                            <div
+                              role="img"
                               key={`${item.record.invokeId}:${item.record.occurredAt}`}
                               data-call-value={item.lane + 1}
                               className={`absolute flex appearance-none items-center overflow-visible rounded border shadow-sm ${statusClass(status)}`}
-                              aria-label={`${item.record.invokeId} · ${statusLabel} · ${formatDuration(item.record)}${ttftLabel}`}
+                              aria-label={accessibleLabel}
                               style={{
                                 left: `${left}%`,
                                 top: `${laneTopFor(item.lane)}px`,
@@ -629,21 +669,13 @@ export function DashboardInvocationTimeline({
                                 minWidth: "8px",
                                 height: `${laneHeight}px`,
                               }}
-                              title={`${item.record.invokeId} · ${formatDuration(item.record)}${ttftLabel}`}
-                              onFocus={() => setHoverMs((item.startMs + item.endMs) / 2)}
-                              onBlur={() => setHoverMs(null)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" || event.key === " ") {
-                                  event.preventDefault();
-                                  setHoverMs((item.startMs + item.endMs) / 2);
-                                }
-                              }}
+                              title={accessibleLabel}
                             />
                           );
                         })}
                       </div>
                     </div>
-                  </div>
+                  </section>
                   {hoverMs != null ? (
                     <div
                       className="pointer-events-none absolute inset-x-0 top-0 z-20 w-px bg-info/80"

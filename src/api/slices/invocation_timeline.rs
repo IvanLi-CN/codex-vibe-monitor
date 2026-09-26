@@ -335,14 +335,20 @@ async fn hydrate_timeline_accounts(
 }
 
 fn timeline_upstream_account_id_sql(invocation_ref: &str) -> String {
-    let value = format!("json_extract({invocation_ref}.payload, '$.upstreamAccountId')");
+    let payload_is_valid = format!("json_valid({invocation_ref}.payload)");
+    let value = format!(
+        "CASE WHEN {payload_is_valid} THEN json_extract({invocation_ref}.payload, '$.upstreamAccountId') END"
+    );
+    let value_type = format!(
+        "CASE WHEN {payload_is_valid} THEN json_type({invocation_ref}.payload, '$.upstreamAccountId') END"
+    );
     let trimmed = format!("TRIM({value})");
     let normalized = format!("ltrim({trimmed}, '0')");
     let valid_payload_id = format!(
-        "({value} IS NOT NULL AND ((json_type({invocation_ref}.payload, '$.upstreamAccountId') = 'integer' AND typeof({value}) = 'integer' AND {value} > 0) OR (json_type({invocation_ref}.payload, '$.upstreamAccountId') = 'real' AND {value} > 0 AND {value} < 9223372036854775807.0 AND CAST({value} AS REAL) = CAST({value} AS INTEGER)) OR (json_type({invocation_ref}.payload, '$.upstreamAccountId') = 'text' AND {trimmed} <> '' AND {trimmed} NOT GLOB '*[^0-9]*' AND {normalized} <> '' AND (length({normalized}) < 19 OR (length({normalized}) = 19 AND {normalized} <= '9223372036854775807')))))"
+        "({value} IS NOT NULL AND (({value_type} = 'integer' AND typeof({value}) = 'integer' AND {value} > 0) OR ({value_type} = 'real' AND {value} > 0 AND {value} < 9223372036854775807.0 AND CAST({value} AS REAL) = CAST({value} AS INTEGER)) OR ({value_type} = 'text' AND {trimmed} <> '' AND {trimmed} NOT GLOB '*[^0-9]*' AND {normalized} <> '' AND (length({normalized}) < 19 OR (length({normalized}) = 19 AND {normalized} <= '9223372036854775807')))))"
     );
     format!(
-        "COALESCE(CASE WHEN json_valid({invocation_ref}.payload) AND {valid_payload_id} THEN CAST({value} AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
+        "COALESCE(CASE WHEN {payload_is_valid} AND {valid_payload_id} THEN CAST({value} AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
     )
 }
 
@@ -505,8 +511,22 @@ mod tests {
         )
         .bind(db_occurred_at_lower_bound(at(86_500)))
         .execute(&state.pool)
+            .await
+            .expect("insert integer attempt fallback fixture");
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES ('malformed', ?1, 'proxy', 'success', 100, '{bad-json', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_600)))
+        .execute(&state.pool)
         .await
-        .expect("insert integer attempt fallback fixture");
+        .expect("insert malformed timeline fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (3, 'malformed', ?1, '/v1/responses', 'pool', 1, 1, 0, 'success', 44)",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_600)))
+        .execute(&state.pool)
+        .await
+        .expect("insert malformed attempt fallback fixture");
 
         let Json(response) = fetch_timeline(
             State(state.clone()),
@@ -534,6 +554,19 @@ mod tests {
         assert_eq!(integer_response.total, 1);
         assert_eq!(integer_response.records[0].invoke_id, "overflow-integer");
         assert_eq!(integer_response.records[0].upstream_account_id, Some(43));
+        let Json(malformed_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(44),
+            }),
+        )
+        .await
+        .expect("fetch malformed timeline fixture");
+        assert_eq!(malformed_response.total, 1);
+        assert_eq!(malformed_response.records[0].invoke_id, "malformed");
+        assert_eq!(malformed_response.records[0].upstream_account_id, Some(44));
         state.pool.close().await;
     }
 }

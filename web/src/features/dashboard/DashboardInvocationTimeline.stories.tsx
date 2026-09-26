@@ -198,8 +198,16 @@ export const LiveTraffic: Story = {
     expect(canvas.queryByText(/Y1|Y2/)).toBeNull();
     await expect(canvas.getByText("调用")).toBeVisible();
     const bars = canvasElement.querySelectorAll(
-      '[data-testid="dashboard-invocation-timeline-lane-scroll"] button',
+      '[data-testid="dashboard-invocation-timeline-lane-scroll"] [data-call-value]',
     );
+    expect(bars).toHaveLength(5);
+    expect(Array.from(bars).every((bar) => bar.getAttribute("role") === "img")).toBe(true);
+    expect(bars[0]).toHaveAttribute("aria-label", expect.stringContaining("开始时间"));
+    expect(
+      canvasElement.querySelectorAll(
+        '[data-testid="dashboard-invocation-timeline-lane-scroll"] button',
+      ),
+    ).toHaveLength(0);
     await expect(canvas.getByTestId("dashboard-invocation-timeline-legend")).toHaveClass(
       "justify-center",
     );
@@ -283,7 +291,7 @@ export const MobileTraffic: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("dashboard-invocation-timeline")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: /invoke-success-001/ })).toBeVisible();
+    await expect(canvas.getByRole("img", { name: /invoke-success-001/ })).toBeVisible();
   },
 };
 
