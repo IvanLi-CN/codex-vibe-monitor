@@ -321,6 +321,8 @@ export const DenseConcurrency190: Story = {
     expect(frameElement.getBoundingClientRect().height).toBe(320);
     expect(laneScrollElement.scrollHeight).toBe(1733);
     expect(laneScrollElement.clientHeight).toBe(292);
-    await expect(canvas.getByTestId("dashboard-invocation-timeline-x-axis")).toBeVisible();
+    expect(laneScrollElement.scrollTop).toBe(
+      laneScrollElement.scrollHeight - laneScrollElement.clientHeight,
+    );
   },
 };

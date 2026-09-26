@@ -77,6 +77,7 @@ pub(crate) async fn fetch_timeline(
     }
 
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let include_live = params.include_live.unwrap_or(true);
     let filters = build_invocation_filters(&ListQuery {
         upstream_account_id: params.upstream_account_id,
         ..ListQuery::default()
@@ -109,8 +110,11 @@ pub(crate) async fn fetch_timeline(
         .push(" AND julianday(occurred_at) + t_total_ms / 86400000.0 >= julianday(")
         .push_bind(start_bound.clone())
         .push(")")
-        .push(")")
-        .push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')")
+        .push(")");
+    if include_live {
+        query.push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    }
+    query
         .push(") ORDER BY occurred_at ASC, id ASC LIMIT ")
         .push_bind(INVOCATION_TIMELINE_MAX_RECORDS + 1);
     let mut records = query
@@ -121,7 +125,7 @@ pub(crate) async fn fetch_timeline(
         hydrate_api_invocation_blocked_binding(record);
     }
 
-    let include_runtime_records = params.include_live.unwrap_or(true);
+    let include_runtime_records = include_live;
     let mut runtime_records = if include_runtime_records {
         runtime_overlay_snapshot(state.as_ref())
     } else {
@@ -480,6 +484,21 @@ mod tests {
         assert_eq!(response.records[1].invoke_id, "live-cross");
         assert!(response.records[1].is_in_flight);
         assert_eq!(response.records[1].end_at, None);
+
+        let Json(closed_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(range_start),
+                to: format_utc_iso(range_end),
+                upstream_account_id: Some(42),
+                include_live: Some(false),
+            }),
+        )
+        .await
+        .expect("fetch closed timeline fixture");
+        assert_eq!(closed_response.total, 1);
+        assert_eq!(closed_response.records.len(), 1);
+        assert_eq!(closed_response.records[0].invoke_id, "cross");
         state.pool.close().await;
     }
 

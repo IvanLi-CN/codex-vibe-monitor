@@ -22,6 +22,7 @@ const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
+const MAX_INVOCATION_TIMELINE_DURATION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1_800,
@@ -2804,9 +2805,14 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
         if (typeof value !== "string") throw new Error(`Invalid invocation timeline ${field}`);
         return value;
       };
-      const optionalNonNegativeNumber = (value: unknown, field: string) => {
+      const optionalNonNegativeNumber = (value: unknown, field: string, max?: number) => {
         if (value == null) return null;
-        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+        if (
+          typeof value !== "number" ||
+          !Number.isFinite(value) ||
+          value < 0 ||
+          (max != null && value > max)
+        ) {
           throw new Error(`Invalid invocation timeline ${field}`);
         }
         return value;
@@ -2825,7 +2831,11 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
         throw new Error("Invalid invocation timeline record");
       }
       const normalizedFirstTokenMs = optionalNonNegativeNumber(firstTokenMs, "firstTokenMs");
-      const normalizedTotalMs = optionalNonNegativeNumber(tTotalMs, "tTotalMs");
+      const normalizedTotalMs = optionalNonNegativeNumber(
+        tTotalMs,
+        "tTotalMs",
+        MAX_INVOCATION_TIMELINE_DURATION_MS,
+      );
       const normalizedPoolAttemptCount = optionalNonNegativeNumber(
         poolAttemptCount,
         "poolAttemptCount",
@@ -2833,7 +2843,7 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
       const normalizedAccountId = optionalNonNegativeNumber(upstreamAccountId, "upstreamAccountId");
       if (
         (normalizedPoolAttemptCount != null &&
-          (!Number.isSafeInteger(normalizedPoolAttemptCount) || normalizedPoolAttemptCount < 1)) ||
+          (!Number.isSafeInteger(normalizedPoolAttemptCount) || normalizedPoolAttemptCount < 0)) ||
         (normalizedAccountId != null &&
           (!Number.isSafeInteger(normalizedAccountId) || normalizedAccountId < 1))
       ) {

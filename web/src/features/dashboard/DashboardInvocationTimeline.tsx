@@ -259,6 +259,7 @@ export function DashboardInvocationTimeline({
   const lastHoverUpdateMs = useRef(0);
   const laneScrollRef = useRef<HTMLDivElement | null>(null);
   const callsAxisScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastLaneScrollTopRef = useRef(0);
   const autoScrollViewKeyRef = useRef<string | null>(null);
   const timeline = useInvocationTimeline({
     response,
@@ -310,11 +311,20 @@ export function DashboardInvocationTimeline({
     const scrollElement = laneScrollRef.current;
     const callsAxisScrollElement = callsAxisScrollRef.current;
     if (!scrollElement || !callsAxisScrollElement || !renderedData) return;
-    if (autoScrollViewKeyRef.current === autoScrollViewKey) return;
     const maxScrollTop = Math.max(0, laneLayout.lanePlotHeight - laneLayout.laneAreaHeightPx);
+    if (autoScrollViewKeyRef.current === autoScrollViewKey) {
+      const restoredScrollTop = Math.min(maxScrollTop, Math.max(0, lastLaneScrollTopRef.current));
+      if (scrollElement.scrollTop !== restoredScrollTop) {
+        scrollElement.scrollTop = restoredScrollTop;
+        callsAxisScrollElement.scrollTop = restoredScrollTop;
+        setLaneScrollTop(restoredScrollTop);
+      }
+      return;
+    }
     if (maxScrollTop > 0 && scrollElement.scrollTop === 0) {
       scrollElement.scrollTop = maxScrollTop;
       callsAxisScrollElement.scrollTop = maxScrollTop;
+      lastLaneScrollTopRef.current = maxScrollTop;
       setLaneScrollTop(maxScrollTop);
     }
     autoScrollViewKeyRef.current = autoScrollViewKey;
@@ -544,6 +554,7 @@ export function DashboardInvocationTimeline({
                     }}
                     onScroll={(event) => {
                       const scrollTop = event.currentTarget.scrollTop;
+                      lastLaneScrollTopRef.current = scrollTop;
                       setLaneScrollTop(scrollTop);
                       const laneScroll = laneScrollRef.current;
                       if (laneScroll && laneScroll.scrollTop !== scrollTop) {
@@ -611,6 +622,7 @@ export function DashboardInvocationTimeline({
                     style={{ height: `${laneAreaHeightPx}px` }}
                     onScroll={(event) => {
                       const scrollTop = event.currentTarget.scrollTop;
+                      lastLaneScrollTopRef.current = scrollTop;
                       setLaneScrollTop(scrollTop);
                       const callsAxisScroll = callsAxisScrollRef.current;
                       if (callsAxisScroll && callsAxisScroll.scrollTop !== scrollTop) {
