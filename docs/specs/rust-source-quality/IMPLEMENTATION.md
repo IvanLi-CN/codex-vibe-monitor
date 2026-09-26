@@ -8,8 +8,9 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 49 explicit file budgets, and
-  117 standalone suppression declarations.
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 48 current explicit file
+  budgets, and 117 standalone suppression declarations. The immutable
+  preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -164,12 +165,33 @@ Validation for this extraction is the focused runtime overlay/capture-phase
 tests, rustfmt, the Rust source-quality checker and fixture harness, all-target
 Cargo checking, all-target Clippy, and `git diff --check`.
 
+The error-distribution and SSE extraction moves two complete cohesive regions
+from `src/api/slices/error_distribution_and_sse.rs`: the inline `#[cfg(test)] mod tests` block into `src/api/slices/error_distribution_and_sse/tests.rs`, and
+the dashboard realtime projection state/model/build/scheduler region from
+`BroadcastStateCache` through `complete_dashboard_projection_publish_window`
+into `src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs`.
+On the verified main merge base `b2db1923d5022c0a4c742650b91f5961392f211c`,
+the approved source regions were 1,314 and 1,063 physical lines. After
+rustfmt and the narrow crate-visible helper re-exports, the parent is 2,416
+physical lines, the production child is 1,065 lines, and the test child is
+1,287 lines. The out-of-line test module keeps its path, names, assertions,
+and test behavior; the parent retains the existing crate-visible API through
+the dashboard child re-export. Routes, serde contracts, visibility outside
+the required helper adjustment, and runtime behavior remain unchanged. The
+parent is removed from the policy inventory and no future source-quality PR
+may split this parent again.
+
+Validation for this extraction is the focused
+`cargo test error_distribution_and_sse::tests -- --nocapture` selector,
+rustfmt, the Rust source-quality checker and fixture harness, all-target
+Cargo checking, all-target Clippy, and `git diff --check`.
+
 ## Inventory Contract
 
-The policy has 28 `production` entries above the 2,500-line destination target
+The policy has 27 `production` entries above the 2,500-line destination target
 and 21 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 49 paths; a long path absent from the inventory is
+The checker only reads those 48 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
