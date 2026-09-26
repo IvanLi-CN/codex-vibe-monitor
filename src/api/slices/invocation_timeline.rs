@@ -13,6 +13,8 @@ const INVOCATION_TIMELINE_MAX_PAGE_SIZE: i64 = 2_000;
 const INVOCATION_TIMELINE_MAX_DURATION_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1_000.0;
 const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 256;
+const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
+const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
@@ -39,6 +41,8 @@ struct TimelineSnapshot {
 static INVOCATION_TIMELINE_SNAPSHOTS: once_cell::sync::Lazy<
     StdMutex<HashMap<String, TimelineSnapshot>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
+static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
 
 fn encode_timeline_cursor(cursor: &TimelineCursor) -> Result<String, ApiError> {
     let payload = serde_json::to_vec(cursor)
@@ -285,6 +289,32 @@ struct TimelineSnapshotDbRow {
     payload: String,
 }
 
+fn reserve_timeline_snapshot_budget(
+    row_count: &mut usize,
+    byte_count: &mut usize,
+    record: &InvocationTimelineRecord,
+) -> Result<(), ApiError> {
+    let payload_size = serde_json::to_vec(record)
+        .map_err(|error| ApiError::from(anyhow!("encode timeline snapshot row: {error}")))?
+        .len();
+    let next_row_count = row_count.checked_add(1).ok_or_else(|| {
+        ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
+    })?;
+    let next_byte_count = byte_count.checked_add(payload_size).ok_or_else(|| {
+        ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
+    })?;
+    if next_row_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS
+        || next_byte_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "invocation timeline snapshot capacity exhausted"
+        )));
+    }
+    *row_count = next_row_count;
+    *byte_count = next_byte_count;
+    Ok(())
+}
+
 async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<(), ApiError> {
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (\
@@ -427,6 +457,9 @@ async fn materialize_timeline_snapshot(
     .await?;
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
+    let mut transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut materialized_row_count = 0;
+    let mut materialized_byte_count = 0;
     let mut cursor = None;
     loop {
         let mut query = build_invocation_select_query();
@@ -448,7 +481,6 @@ async fn materialize_timeline_snapshot(
             .push_bind(snapshot_id)
             .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
             .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
-        let mut transaction = state.pool.begin().await?;
         let mut page = query
             .build_query_as::<ApiInvocation>()
             .fetch_all(&mut *transaction)
@@ -479,6 +511,11 @@ async fn materialize_timeline_snapshot(
             .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
         {
             let timeline_record = timeline_record_from_api(record, false);
+            reserve_timeline_snapshot_budget(
+                &mut materialized_row_count,
+                &mut materialized_byte_count,
+                &timeline_record,
+            )?;
             insert_timeline_snapshot_record_on_connection(
                 &mut transaction,
                 snapshot_token,
@@ -487,7 +524,6 @@ async fn materialize_timeline_snapshot(
             )
             .await?;
         }
-        transaction.commit().await?;
         if !has_more {
             break;
         }
@@ -513,7 +549,6 @@ async fn materialize_timeline_snapshot(
                 || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
             && runtime_record_matches_filters(record, &runtime_filters, source_scope)
     });
-    let mut transaction = state.pool.begin().await?;
     hydrate_timeline_accounts_on_connection(
         &mut transaction,
         &mut runtime_records,
@@ -524,18 +559,26 @@ async fn materialize_timeline_snapshot(
     .await?;
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
     for record in runtime_records {
+        let timeline_record = timeline_record_from_api(&record, true);
         let existing = sqlx::query_scalar::<_, Option<i64>>(&format!(
             "SELECT is_in_flight FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1 AND invoke_id = ?2 AND occurred_at = ?3"
         ))
         .bind(snapshot_token)
-        .bind(&record.invoke_id)
-        .bind(&record.occurred_at)
+        .bind(&timeline_record.invoke_id)
+        .bind(&timeline_record.occurred_at)
         .fetch_optional(&mut *transaction)
         .await?;
-        if existing.flatten() == Some(0) {
+        let creates_row = existing.is_none();
+        if existing.as_ref().is_some_and(|value| value == &Some(0)) {
             continue;
         }
-        let timeline_record = timeline_record_from_api(&record, true);
+        if creates_row {
+            reserve_timeline_snapshot_budget(
+                &mut materialized_row_count,
+                &mut materialized_byte_count,
+                &timeline_record,
+            )?;
+        }
         insert_timeline_snapshot_record_on_connection(
             &mut transaction,
             snapshot_token,
@@ -623,6 +666,7 @@ pub(crate) async fn fetch_timeline(
                 "asOf is required with an invocation timeline cursor"
             )));
         }
+        let _materialization_guard = INVOCATION_TIMELINE_MATERIALIZATION_LOCK.lock().await;
         let source_scope = resolve_default_source_scope(&state.pool).await?;
         let (snapshot_id, attempt_snapshot_id) =
             resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
