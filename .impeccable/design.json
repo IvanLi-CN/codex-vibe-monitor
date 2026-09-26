@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-27T13:50:25+08:00",
+  "generatedAt": "2026-09-26T12:48:26+08:00",
   "title": "Design System: Codex Vibe Monitor",
   "extensions": {
     "productContext": {
@@ -121,7 +121,23 @@
       "neutral-light": "oklch(30.8% 0.02 258)",
       "info-light": "oklch(69.5% 0.152 236)",
       "neutral-dark": "oklch(29.2% 0.025 259)",
-      "info-dark": "oklch(77.1% 0.125 234)"
+      "info-dark": "oklch(77.1% 0.125 234)",
+      "modelIdentity": {
+        "light": {
+          "tile": "#f1f4f7",
+          "border": "#cdd7e1",
+          "astraInk": "#6749ba",
+          "solInk": "#a95018",
+          "lunaInk": "#04766f"
+        },
+        "dark": {
+          "tile": "#28343f",
+          "border": "#566879",
+          "astraInk": "#bba6f6",
+          "solInk": "#ffb16a",
+          "lunaInk": "#64d1c7"
+        }
+      }
     },
     "semanticColorContract": {
       "primary": "Current selection, primary action, focus ring, and key request signal only.",
@@ -258,6 +274,20 @@
         "defaultHeight": "2.25rem",
         "notes": "Use icon-only buttons for familiar tools with an accessible label. Evaluate 44px targets in touch-first contexts."
       },
+      "chip": {
+        "source": "web/src/components/ui/chip.tsx",
+        "semanticTones": ["neutral", "primary", "secondary", "accent", "info", "success", "warning", "error"],
+        "categoricalTones": ["sky", "cyan", "blue", "indigo", "violet", "fuchsia", "teal", "emerald", "amber", "orange"],
+        "sizes": ["micro", "compact", "default", "header", "mailbox", "square"],
+        "notes": "Use explicit surface, border, and hue-bearing ink tokens in both themes; selected and interactive states also change border and weight."
+      },
+      "model-identity": {
+        "source": "web/src/features/shared/ModelIdentity.tsx",
+        "gpt56Variants": ["sol", "terra", "luna"],
+        "gpt6Variants": ["astra", "sol", "luna"],
+        "presentations": ["standalone", "embedded", "compact"],
+        "notes": "Read-only identity hints preserve the complete model id in title and accessible name; unknown ids remain text."
+      },
       "segmented-control": {
         "variants": ["compact", "default", "nav"],
         "notes": "Desktop top-level navigation and content switching share one visual family."
@@ -300,6 +330,8 @@
       "chartTokens": "web/src/lib/chartTheme.ts",
       "themeRuntime": "web/src/theme/context.tsx",
       "componentPrimitives": "web/src/components/ui/",
+      "chip": "web/src/components/ui/chip.tsx",
+      "modelIdentity": "web/src/features/shared/ModelIdentity.tsx",
       "productRoutes": "web/src/App.tsx"
     }
   },
@@ -337,12 +369,18 @@
       "css": ".ds-segmented { display: inline-flex; gap: 0.375rem; padding: 0.375rem; border: 1px solid oklch(var(--color-base-300) / 0.85); border-radius: 9999px; background: oklch(var(--color-base-100) / 0.7); box-shadow: inset 0 1px 0 color-mix(in oklab, oklch(var(--color-base-content)) 8%, transparent), 0 2px 8px color-mix(in oklab, oklch(var(--color-neutral)) 8%, transparent); } .ds-segment { min-height: 2.5rem; border: 1px solid transparent; border-radius: 9999px; background: transparent; color: oklch(var(--color-base-content) / 0.6); padding: 0 0.875rem; font: 500 0.875rem/1.25 IBM Plex Sans, Avenir Next, Segoe UI, sans-serif; cursor: pointer; transition: color 150ms ease-out, background-color 150ms ease-out, border-color 150ms ease-out; } .ds-segment:hover { border-color: oklch(var(--color-base-300) / 0.8); background: oklch(var(--color-base-200) / 0.75); color: oklch(var(--color-base-content) / 0.9); } .ds-segment-active { border-color: oklch(var(--color-primary) / 0.45); background: oklch(var(--color-primary) / 0.2); color: oklch(var(--color-primary)); font-weight: 600; box-shadow: inset 0 0 0 1px color-mix(in oklab, oklch(var(--color-primary)) 42%, transparent), 0 10px 18px color-mix(in oklab, oklch(var(--color-primary)) 24%, transparent); } .ds-segment:focus-visible { outline: 2px solid oklch(var(--color-primary)); outline-offset: 2px; }"
     },
     {
-      "name": "Semantic Badge",
+      "name": "Semantic Chip",
       "kind": "chip",
-      "refersTo": "badge-warning",
-      "description": "A compact status label that pairs text with semantic color rather than relying on color alone.",
-      "html": "<span class=\"ds-badge\">Attention</span>",
-      "css": ".ds-badge { display: inline-flex; align-items: center; border: 1px solid oklch(var(--color-warning) / 0.45); border-radius: 9999px; background: oklch(var(--color-warning) / 0.12); color: var(--tone-ink-warning, oklch(var(--color-base-content))); padding: 0.125rem 0.625rem; font: 500 0.75rem/1.35 IBM Plex Sans, Avenir Next, Segoe UI, sans-serif; }"
+      "description": "The shared status and filter surface with explicit semantic or categorical tone tokens.",
+      "html": "<span class=\"ds-chip ds-chip-warning\">Attention</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; border: 1px solid var(--chip-warning-border); border-radius: 9999px; background: var(--chip-warning-surface); color: var(--chip-warning-ink); padding: 0.125rem 0.625rem; font: 500 0.75rem/1.35 IBM Plex Sans, Avenir Next, Segoe UI, sans-serif; transition: border-color 150ms ease-out, background-color 150ms ease-out, color 150ms ease-out; } .ds-chip:focus-visible { outline: 2px solid oklch(var(--color-primary)); outline-offset: 2px; } .ds-chip-warning { --chip-surface: var(--chip-warning-surface); --chip-border: var(--chip-warning-border); --chip-ink: var(--chip-warning-ink); }"
+    },
+    {
+      "name": "GPT-6 Model Identity",
+      "kind": "custom",
+      "description": "A read-only, accessible model identity marker that changes presentation without changing the model text.",
+      "html": "<span class=\"ds-model-identity ds-model-identity-standalone\" role=\"img\" aria-label=\"gpt-6-astra\" title=\"gpt-6-astra\" data-model-variant=\"astra\" data-model-presentation=\"standalone\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"m19 1l-1.26 2.75L15 5l2.74 1.26L19 9l1.25-2.74L23 5l-2.75-1.25M9 4L6.5 9.5L1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5M19 15l-1.26 2.74L15 19l2.74 1.25L19 23l1.25-2.75L23 19l-2.75-1.26\"/></svg></span>",
+      "css": ".ds-model-identity { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1.25rem; height: 1.25rem; border: 1px solid var(--model-identity-gpt6-border); border-radius: 0.3125rem; background: var(--model-identity-gpt6-tile); color: var(--model-identity-gpt6-astra-ink); } .ds-model-identity svg { width: 1rem; height: 1rem; } .ds-model-identity[data-model-variant=\"sol\"] { color: var(--model-identity-gpt6-sol-ink); } .ds-model-identity[data-model-variant=\"luna\"] { color: var(--model-identity-gpt6-luna-ink); } .ds-model-identity[data-model-presentation=\"embedded\"] { border-color: transparent; }"
     },
     {
       "name": "Operational Card",
@@ -368,6 +406,7 @@
       "Keep primary scarce and bind every color to a state, metric, or interaction.",
       "Use stable numeric alignment and preserve evidence context.",
       "Treat light, dark, desktop, and compact layouts as first-class states.",
+      "Use the shared Chip entrypoint and preserve full model ids in identity tooltips and accessible names.",
       "Use Storybook and the mock-only Web Demo as stable review surfaces."
     ],
     "donts": [
@@ -376,6 +415,7 @@
       "Do not reproduce generic SaaS hero-metric card grids.",
       "Do not rely on neon dark-blue styling to communicate observability.",
       "Do not solve density by shrinking readable text or practical touch targets.",
+      "Do not keep page-private badge entrypoints or infer identity icons for unknown model names.",
       "Do not hard-code page-local colors when an existing semantic or chart token applies."
     ]
   }
