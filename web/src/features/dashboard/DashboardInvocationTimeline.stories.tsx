@@ -179,6 +179,10 @@ export const LiveTraffic: Story = {
     expect(callAxisTicks[0]?.textContent).toBe("4");
     expect(Math.abs(ttftZeroRect.bottom - xAxisRect.top)).toBeLessThanOrEqual(1);
     expect(Math.abs(laneZeroRect.bottom - ttftZeroRect.bottom)).toBeLessThanOrEqual(0.01);
+    const ttftTicks = canvasElement.querySelectorAll("[data-ttft-axis-tick]");
+    expect(ttftTicks).toHaveLength(5);
+    expect(ttftTicks?.[0]?.textContent).toBe("836 ms");
+    expect(ttftTicks?.[ttftTicks.length - 1]?.textContent).toBe("0 ms");
     expect(canvas.queryByText("全天")).toBeNull();
     expect(canvas.queryByText(/Y1|Y2/)).toBeNull();
     await expect(canvas.getByText("调用")).toBeVisible();
@@ -212,6 +216,7 @@ export const LiveTraffic: Story = {
     if (!firstBarRect || !secondBarRect) {
       throw new Error("missing invocation bars for linear-axis check");
     }
+    expect(Math.abs(firstBarRect.bottom - xAxisRect.top)).toBeLessThanOrEqual(1);
     expect(firstBarRect.top).toBeGreaterThan(secondBarRect.top);
   },
 };

@@ -26,7 +26,8 @@
 
 - The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, adapt each lane height between 8px and 16px within the original chart height strategy (`21rem` compact, `20rem` desktop), keep adjacent lanes separated by exactly 1 CSS pixel, and MUST expose parallel, running, and queued counts at the hovered time.
 - The calls axis MUST be a linear numeric axis with evenly spaced ticks from the maximum call count represented by the selected window to `0`; the `0` tick MUST share the coordinate origin at the X-axis baseline.
-- Each rendered invocation MUST map its assigned virtual row `n` to the positive Y value `n + 1`, with value `1` closest to the zero baseline and larger values above it.
+- Each rendered invocation MUST map its assigned virtual row `n` to the positive Y value `n + 1`, with value `1` closest to the zero baseline and larger values above it; the lower edge of the first row MUST meet the zero baseline without a gap.
+- The TTFT axis MUST show the maximum, intermediate quartile ticks, and `0 ms` at the same plot baseline, using evenly spaced positions.
 - The chart frame MUST retain the original fixed height while the lane body scrolls internally for high concurrency (including 190 simultaneous lanes); the X-axis and TTFT scale remain pinned to the frame.
 
 ### REQ-DIT-003
@@ -86,7 +87,7 @@ None
   submission_gate: pending-owner-approval
   story_id_or_title: Dashboard/DashboardInvocationTimeline/Live Traffic
   state: live traffic with success, responding, queued, failed, and unknown calls
-  evidence_note: verifies virtual invocation lanes, state colors, duration bars, overlaid TTFT curve, and the bottom X-axis.
+  evidence_note: verifies complete linear calls and TTFT ticks, the zero-origin baseline, state colors, duration bars, overlaid TTFT curve, and the bottom X-axis.
   image: ![Invocation timeline desktop](./assets/invocation-timeline-desktop.jpg)
 
 - source_type: storybook_canvas
@@ -102,7 +103,7 @@ None
   submission_gate: pending-owner-approval
   story_id_or_title: Dashboard/DashboardInvocationTimeline/Mobile Traffic
   state: responsive live traffic at the project-defined mobile393 viewport
-  evidence_note: verifies mobile readability, controls, the overlaid timeline/TTFT plot, and the bottom X-axis.
+  evidence_note: verifies mobile readability, complete Y-axis ticks, zero-origin alignment, controls, the overlaid timeline/TTFT plot, and the bottom X-axis.
   image: ![Invocation timeline mobile](./assets/invocation-timeline-mobile.png)
 
 ## References

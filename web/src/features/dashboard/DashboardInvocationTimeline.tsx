@@ -342,6 +342,8 @@ export function DashboardInvocationTimeline({
     Math.floor((lanePlotHeight - (laneScrollTop + laneAreaHeightPx)) / linearLaneStep),
   );
   const visibleAxisValueSpan = Math.max(1, visibleAxisTopValue - visibleAxisBottomValue);
+  const callAxisTopForValue = (value: number) =>
+    lanePlotHeight - (value * laneHeight + Math.max(0, value - 1) * INVOCATION_LANE_GAP_PX);
   const callAxisTicks = Array.from({ length: callAxisTickCount }, (_, index) => {
     const fraction = index / Math.max(1, callAxisTickCount - 1);
     const value =
@@ -350,14 +352,22 @@ export function DashboardInvocationTimeline({
         : Math.round(visibleAxisTopValue - visibleAxisValueSpan * fraction);
     return {
       value,
-      top: lanePlotHeight - value * linearLaneStep,
+      top: callAxisTopForValue(value),
+    };
+  });
+  const ttftAxisTopPx = 20;
+  const ttftTicks = Array.from({ length: 5 }, (_, index) => {
+    const fraction = index / 4;
+    return {
+      value: Math.round(ttft.maxValue * (1 - fraction)),
+      top: ttftAxisTopPx + fraction * (laneAreaHeightPx - ttftAxisTopPx),
     };
   });
   const zeroIsVisible =
-    lanePlotHeight >= laneScrollTop && lanePlotHeight <= laneScrollTop + laneAreaHeightPx;
-  const laneTopFor = (lane: number) =>
-    lanePlotHeight - (lane + 1) * linearLaneStep - laneHeight / 2;
-  const laneCenterFor = (lane: number) => lanePlotHeight - (lane + 1) * linearLaneStep;
+    callAxisTopForValue(0) >= laneScrollTop &&
+    callAxisTopForValue(0) <= laneScrollTop + laneAreaHeightPx;
+  const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1);
+  const laneCenterFor = (lane: number) => laneTopFor(lane);
 
   return (
     <div data-testid="dashboard-today-activity-chart">
@@ -656,18 +666,27 @@ export function DashboardInvocationTimeline({
                   <span className="absolute right-0 top-0 leading-4">
                     {t("dashboard.activityOverview.timelineTtftAxis")}
                   </span>
-                  <span className="absolute right-0 top-5">{Math.round(ttft.maxValue)} ms</span>
-                  <span
-                    data-testid="dashboard-invocation-timeline-ttft-zero"
-                    className="absolute right-0 -translate-y-full"
-                    style={{ top: `${plotOriginTopPx}px` }}
-                  >
-                    0 ms
-                  </span>
+                  {ttftTicks.map((tick, index) => (
+                    <span
+                      data-ttft-axis-tick
+                      data-testid={
+                        index === ttftTicks.length - 1
+                          ? "dashboard-invocation-timeline-ttft-zero"
+                          : undefined
+                      }
+                      key={`${tick.value}-${tick.top}`}
+                      className={`absolute right-0 ${index === 0 ? "" : index === ttftTicks.length - 1 ? "-translate-y-full" : "-translate-y-1/2"}`}
+                      style={{ top: `${tick.top}px` }}
+                    >
+                      {tick.value} ms
+                    </span>
+                  ))}
                   <span
                     aria-hidden="true"
                     className="absolute left-0 h-px w-2 bg-base-content/25"
-                    style={{ top: `${plotOriginTopPx}px` }}
+                    style={{
+                      top: `${ttftTicks.at(-1)?.top ?? plotOriginTopPx}px`,
+                    }}
                   />
                 </div>
               </div>
