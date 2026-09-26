@@ -669,7 +669,14 @@ pub(crate) struct RangeWindow {
 }
 
 pub(crate) fn resolve_range_window(spec: &str, tz: Tz) -> Result<RangeWindow> {
-    let now = Utc::now();
+    resolve_range_window_at(spec, tz, Utc::now())
+}
+
+pub(crate) fn resolve_range_window_at(
+    spec: &str,
+    tz: Tz,
+    now: DateTime<Utc>,
+) -> Result<RangeWindow> {
     if let Some((start, raw_end)) = named_range_bounds(spec, now, tz) {
         // Clamp to "now" so charts do not render future empty buckets.
         let mut end = now.min(raw_end);

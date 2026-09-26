@@ -1850,8 +1850,7 @@ async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
         "pck-after-range",
     )
     .await;
-
-    let Json(response) = fetch_parallel_work_stats(
+    let Json(response) = fetch_parallel_work_stats_at(
         State(state),
         Query(ParallelWorkStatsQuery {
             range: "7d".to_string(),
@@ -1859,6 +1858,7 @@ async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
             time_zone: Some("Asia/Shanghai".to_string()),
             upstream_account_id: None,
         }),
+        now,
     )
     .await
     .expect("fetch parallel-work stats");
