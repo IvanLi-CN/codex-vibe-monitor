@@ -17,7 +17,8 @@
 
 ## Coverage / rollout summary
 
-- The endpoint is additive and read-only. It creates a short-lived server snapshot anchor containing the invocation and attempt row watermarks, live revision, and runtime overlay, then serves stable opaque-cursor pages from that anchor. Snapshot entries expire after 30 minutes; a bounded cache rejects new first-page anchors when full instead of evicting a cursor that may still be in use.
+- The endpoint is additive and read-only. It captures invocation and attempt row watermarks, then materializes the folded records and runtime overlay into short-lived SQLite snapshot rows under one `BEGIN IMMEDIATE` transaction. Subsequent requests read only those rows through the opaque cursor, so mutable source rows cannot drift between pages. Snapshot entries expire after 30 minutes; a bounded cache rejects new first-page anchors when full instead of evicting a cursor that may still be in use.
+- Each materialized snapshot has explicit row and serialized-payload budgets. Exceeding either budget returns the timeline's unavailable state and rolls back the partial snapshot; it never truncates the result, samples rows, or mounts the legacy aggregate chart.
 - The target `totalCount` path mounts `DashboardInvocationTimeline` without a legacy chart prop. Loading, unavailable, stale, disconnected, and pagination errors remain inside the timeline surface; non-target metrics and ranges keep the aggregate chart.
 - The live hook traverses every page with one `asOf`, merges records by `(invokeId, occurredAt)`, coalesces revisions while a request is in flight, and retains the last good snapshot when a refresh fails.
 - Today's dashboard activity revision triggers an authoritative timeline refresh; a bounded polling refresh keeps bars current between revisions. Yesterday remains HTTP-only.
