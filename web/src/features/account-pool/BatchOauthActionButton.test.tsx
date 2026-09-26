@@ -201,6 +201,80 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).toContain("Copy OAuth URL");
   });
 
+  it("keeps an open focused bubble when the pointer leaves the trigger", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.focus();
+      vi.advanceTimersByTime(320);
+    });
+    const content = document.body.querySelector('[role="dialog"]');
+    expect(content).not.toBeNull();
+
+    act(() => {
+      button.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+  });
+
+  it("keeps an open focused bubble when the pointer leaves a focused content control", () => {
+    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+
+    const trigger = getButton(/copy oauth url/i);
+    act(() => {
+      trigger.focus();
+      vi.advanceTimersByTime(320);
+    });
+    const content = document.body.querySelector('[role="dialog"]');
+    expect(content).not.toBeNull();
+    const regenerateButton = getButton(/regenerate oauth url/i);
+    act(() => {
+      regenerateButton.focus();
+    });
+
+    act(() => {
+      content?.dispatchEvent(
+        new PointerEvent("pointerout", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      content?.dispatchEvent(
+        new PointerEvent("pointerleave", {
+          bubbles: true,
+          pointerType: "mouse",
+          clientX: 0,
+          clientY: 0,
+        }),
+      );
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(document.activeElement).toBe(regenerateButton);
+    expect(document.body.querySelector('[role="dialog"]')).toBe(content);
+  });
+
   it("keeps the passive bubble open during a slow pointer crossing into its content", () => {
     render(<BatchOauthActionButton mode="generate" {...baseProps} />);
 

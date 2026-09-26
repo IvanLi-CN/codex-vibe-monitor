@@ -75,10 +75,20 @@ export function BatchOauthActionButton({
   const [hoverOpen, setHoverOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
   const resolvedOpen = hoverOpen || pinnedOpen || Boolean(manualCopyValue);
+  const hasPopoverFocus = () => {
+    const activeElement = document.activeElement;
+    return Boolean(
+      activeElement &&
+        (triggerRef.current?.contains(activeElement) ||
+          popoverContentRef.current?.contains(activeElement)),
+    );
+  };
   const pointerTransition = usePointerTransitionGuard({
     triggerRef,
     contentRef: popoverContentRef,
-    onClose: () => setHoverOpen(false),
+    onClose: () => {
+      if (!hasPopoverFocus()) setHoverOpen(false);
+    },
     pinned: pinnedOpen || Boolean(manualCopyValue),
   });
 
@@ -199,8 +209,9 @@ export function BatchOauthActionButton({
 
   const handleTriggerPointerLeave = (event: ReactPointerEvent<HTMLButtonElement>) => {
     handlePointerRelease();
-    if (document.activeElement !== triggerRef.current) clearPassiveOpenTimer();
-    if (!pinnedOpen && !manualCopyValue) pointerTransition.start("trigger", event);
+    const hasFocus = hasPopoverFocus();
+    if (!hasFocus) clearPassiveOpenTimer();
+    if (!pinnedOpen && !manualCopyValue && !hasFocus) pointerTransition.start("trigger", event);
   };
 
   const scheduleHoverPopoverClose = () => {
@@ -355,7 +366,9 @@ export function BatchOauthActionButton({
         onMouseEnter={openHoverPopover}
         onPointerEnter={openHoverPopover}
         onPointerLeave={(event) => {
-          if (!pinnedOpen && !manualCopyValue) pointerTransition.start("content", event);
+          if (!pinnedOpen && !manualCopyValue && !hasPopoverFocus()) {
+            pointerTransition.start("content", event);
+          }
         }}
         onFocusCapture={openHoverPopover}
         onBlurCapture={(event) => {
