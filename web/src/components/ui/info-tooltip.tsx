@@ -140,6 +140,7 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
             }}
             onFocus={() => {
               clearCloseTimer();
+              pointerTransition.cancel();
               setOpen(true);
             }}
             onBlur={() => {
@@ -165,6 +166,9 @@ export function InfoTooltip({ content, label, className }: InfoTooltipProps) {
         aria-hidden={open ? "false" : "true"}
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
+        onFocusOutside={(event) => {
+          if (isWithinTooltipCluster(event.target)) event.preventDefault();
+        }}
         side="top"
         sideOffset={4}
         avoidCollisions

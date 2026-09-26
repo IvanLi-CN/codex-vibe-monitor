@@ -265,6 +265,44 @@ describe("InfoTooltip", () => {
     expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
   });
 
+  it("keeps the tooltip open when keyboard focus enters during a pending pointer close", () => {
+    vi.useFakeTimers();
+
+    render(
+      <InfoTooltip
+        label="Explain notice"
+        content="Current results stay on the latest searched snapshot."
+      />,
+    );
+
+    const button = host?.querySelector("button");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    act(() => button?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+
+    const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      button?.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+      button?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+    });
+
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      button?.focus();
+    });
+
+    expect(document.activeElement).toBe(button);
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(tooltip?.getAttribute("aria-hidden")).toBe("false");
+  });
+
   it("keeps the tooltip open when a hovered trigger is clicked to pin it", () => {
     render(
       <InfoTooltip

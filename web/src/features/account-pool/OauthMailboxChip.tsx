@@ -207,9 +207,12 @@ export function OauthMailboxChip({
     }, LONG_PRESS_DELAY_MS);
   };
 
-  const handlePointerRelease = () => {
+  const handlePointerRelease = (event?: ReactPointerEvent<HTMLElement>) => {
     clearLongPressTimer();
     setLongPressOpen(false);
+    if (event?.pointerType === "touch" && !triggerRef.current?.contains(document.activeElement)) {
+      setHoverOpen(false);
+    }
   };
 
   if (editor) {
@@ -246,7 +249,7 @@ export function OauthMailboxChip({
           onMouseEnter={openHoverPopover}
           onPointerEnter={openHoverPopover}
           onPointerLeave={(event) => {
-            handlePointerRelease();
+            handlePointerRelease(event);
             if (!editor.editing) editorTransition.start("trigger", event);
           }}
           onPointerDown={handlePointerDown}
@@ -455,14 +458,14 @@ export function OauthMailboxChip({
         className={cn("min-w-0 max-w-full cursor-copy justify-start font-mono", className)}
         aria-label={copyAriaLabel}
         onBlur={() => setHoverOpen(false)}
-        onFocus={() => setHoverOpen(true)}
+        onFocus={openHoverPopover}
         onMouseEnter={() => setHoverOpen(true)}
         onPointerEnter={() => {
           tooltipTransition.cancel();
           setHoverOpen(true);
         }}
         onPointerLeave={(event) => {
-          handlePointerRelease();
+          handlePointerRelease(event);
           tooltipTransition.start("trigger", event);
         }}
         onPointerDown={handlePointerDown}
