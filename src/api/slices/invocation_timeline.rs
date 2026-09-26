@@ -568,6 +568,9 @@ async fn count_timeline_records(
         source_scope,
         Some(SnapshotConstraint::UpTo(snapshot_id)),
     );
+    query.push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+        .push_bind(snapshot_id)
+        .push(")");
     if let Some(upstream_account_id) = upstream_account_id {
         query
             .push(" AND ")
