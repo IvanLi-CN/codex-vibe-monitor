@@ -1,13 +1,18 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useEffect } from "react";
+import { act, type ReactNode, useEffect } from "react";
 import { expect, userEvent, within } from "storybook/test";
 import { Chip } from "./chip";
 import { InfoTooltip } from "./info-tooltip";
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-      <div className="mx-auto w-full max-w-xl">{children}</div>
+    <div
+      data-visual-evidence-surface
+      className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+    >
+      <div data-visual-evidence-target className="mx-auto w-full max-w-xl">
+        {children}
+      </div>
     </div>
   );
 }
@@ -52,6 +57,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Inline: Story = {
+  tags: ["test"],
   args: {
     label: "Help",
     content:
@@ -63,6 +69,29 @@ export const Inline: Story = {
       <InfoTooltip {...args} />
     </Chip>
   ),
+  play: async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: /help/i });
+    await userEvent.hover(trigger);
+    const tooltip = await within(document.body).findByRole("tooltip");
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+    await userEvent.hover(tooltip);
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+    await expect(within(document.body).getByRole("tooltip")).toHaveTextContent(
+      /latest search snapshot/i,
+    );
+  },
+};
+
+export const InlineNarrow: Story = {
+  ...Inline,
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
 };
 
 export const MatchTextColor: Story = {

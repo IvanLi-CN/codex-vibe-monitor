@@ -10,6 +10,7 @@ import { Chip } from "../../components/ui/chip";
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverAnchor, PopoverArrow, PopoverContent } from "../../components/ui/popover";
 import { Tooltip } from "../../components/ui/tooltip";
+import { usePointerTransitionGuard } from "../../hooks/usePointerTransitionGuard";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 
@@ -126,8 +127,26 @@ export function OauthMailboxChip({
   const longPressTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
   const manualCopyValueRef = useRef<HTMLInputElement | null>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const tooltipContentRef = useRef<HTMLDivElement | null>(null);
+  const editorContentRef = useRef<HTMLDivElement | null>(null);
   const [longPressOpen, setLongPressOpen] = useState(false);
   const [hoverOpen, setHoverOpen] = useState(false);
+  const mailboxPinned =
+    tone === "copied" || tone === "manual" || Boolean(editor?.editing) || longPressOpen;
+  const tooltipTransition = usePointerTransitionGuard({
+    triggerRef,
+    contentRef: tooltipContentRef,
+    onClose: () => setHoverOpen(false),
+    pinned: mailboxPinned,
+  });
+  const editorTransition = usePointerTransitionGuard({
+    triggerRef,
+    contentRef: editorContentRef,
+    onClose: () => setHoverOpen(false),
+    pinned: mailboxPinned,
+    enabled: Boolean(editor),
+  });
 
   useEffect(() => {
     return () => {
@@ -166,6 +185,8 @@ export function OauthMailboxChip({
 
   const openHoverPopover = () => {
     clearHoverCloseTimer();
+    tooltipTransition.cancel();
+    editorTransition.cancel();
     setHoverOpen(true);
   };
 
@@ -186,9 +207,12 @@ export function OauthMailboxChip({
     }, LONG_PRESS_DELAY_MS);
   };
 
-  const handlePointerRelease = () => {
+  const handlePointerRelease = (event?: ReactPointerEvent<HTMLElement>) => {
     clearLongPressTimer();
     setLongPressOpen(false);
+    if (event?.pointerType === "touch" && !triggerRef.current?.contains(document.activeElement)) {
+      setHoverOpen(false);
+    }
   };
 
   if (editor) {
@@ -203,6 +227,7 @@ export function OauthMailboxChip({
 
     const trigger = (
       <Chip
+        ref={triggerRef}
         asChild
         size="mailbox"
         tone={tone === "manual" ? "warning" : tone === "copied" ? "success" : "secondary"}
@@ -222,15 +247,14 @@ export function OauthMailboxChip({
           }}
           onFocus={openHoverPopover}
           onMouseEnter={openHoverPopover}
-          onMouseLeave={() => {
-            if (!editor.editing) {
-              scheduleHoverPopoverClose();
-            }
+          onPointerEnter={openHoverPopover}
+          onPointerLeave={(event) => {
+            handlePointerRelease(event);
+            if (!editor.editing) editorTransition.start("trigger", event);
           }}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerRelease}
           onPointerCancel={handlePointerRelease}
-          onPointerLeave={handlePointerRelease}
           onClick={() => {
             if (canCopy) {
               onCopy();
@@ -256,6 +280,8 @@ export function OauthMailboxChip({
         content={buildMailboxCopiedTooltip(copiedLabel)}
         contentClassName="w-fit max-w-none rounded-md border-transparent bg-base-content px-2 py-1 text-base-100 shadow-lg"
         arrowClassName="fill-base-content stroke-base-content"
+        contentRef={tooltipContentRef}
+        onContentPointerEnter={openHoverPopover}
         className="min-w-0 max-w-full shrink"
       >
         {trigger}
@@ -272,6 +298,7 @@ export function OauthMailboxChip({
       <Popover open={resolvedOpen}>
         <PopoverAnchor asChild>{trigger}</PopoverAnchor>
         <PopoverContent
+          ref={editorContentRef}
           align="end"
           side="top"
           sideOffset={8}
@@ -284,10 +311,9 @@ export function OauthMailboxChip({
                 : "w-fit min-w-[15rem] max-w-[min(30rem,calc(100vw-1rem))]",
           )}
           onMouseEnter={openHoverPopover}
-          onMouseLeave={() => {
-            if (!editor.editing) {
-              scheduleHoverPopoverClose();
-            }
+          onPointerEnter={openHoverPopover}
+          onPointerLeave={(event) => {
+            if (!editor.editing) editorTransition.start("content", event);
           }}
           onFocusCapture={openHoverPopover}
           onBlurCapture={(event) => {
@@ -417,22 +443,34 @@ export function OauthMailboxChip({
         tone === "manual" && "border-warning/35 bg-warning/8",
       )}
       arrowClassName={tone === "copied" ? "fill-base-content stroke-base-content" : undefined}
-      open={tone === "copied" || tone === "manual" || hoverOpen || longPressOpen}
+      open={mailboxPinned || hoverOpen}
+      contentRef={tooltipContentRef}
+      onContentPointerEnter={openHoverPopover}
+      onContentPointerLeave={(event) => {
+        tooltipTransition.start("content", event);
+      }}
     >
       <Chip
+        ref={triggerRef}
         asChild
         size="mailbox"
         tone={tone === "manual" ? "warning" : tone === "copied" ? "success" : "secondary"}
         className={cn("min-w-0 max-w-full cursor-copy justify-start font-mono", className)}
         aria-label={copyAriaLabel}
         onBlur={() => setHoverOpen(false)}
-        onFocus={() => setHoverOpen(true)}
+        onFocus={openHoverPopover}
         onMouseEnter={() => setHoverOpen(true)}
-        onMouseLeave={() => setHoverOpen(false)}
+        onPointerEnter={() => {
+          tooltipTransition.cancel();
+          setHoverOpen(true);
+        }}
+        onPointerLeave={(event) => {
+          handlePointerRelease(event);
+          tooltipTransition.start("trigger", event);
+        }}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerRelease}
         onPointerCancel={handlePointerRelease}
-        onPointerLeave={handlePointerRelease}
         onClick={onCopy}
       >
         <button

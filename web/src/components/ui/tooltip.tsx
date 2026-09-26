@@ -80,6 +80,9 @@ interface TooltipProps {
   clickToOpen?: boolean;
   triggerElement?: "span" | "div";
   triggerProps?: React.HTMLAttributes<HTMLElement> & Record<string, unknown>;
+  contentRef?: React.Ref<HTMLDivElement>;
+  onContentPointerEnter?: React.PointerEventHandler<HTMLDivElement>;
+  onContentPointerLeave?: React.PointerEventHandler<HTMLDivElement>;
 }
 
 export function Tooltip({
@@ -95,6 +98,9 @@ export function Tooltip({
   clickToOpen = false,
   triggerElement = "span",
   triggerProps,
+  contentRef: forwardedContentRef,
+  onContentPointerEnter,
+  onContentPointerLeave,
 }: TooltipProps) {
   const longPressTimerRef = React.useRef<number | null>(null);
   const [hoverOpen, setHoverOpen] = React.useState(false);
@@ -102,7 +108,8 @@ export function Tooltip({
   const [longPressOpen, setLongPressOpen] = React.useState(false);
   const [rootElement, setRootElement] = React.useState<HTMLElement | null>(null);
   const resolvedContainer = useResolvedOverlayContainer(container);
-  const { hostElement, ref: contentRef } = useOverlayHostElement<HTMLDivElement>(undefined);
+  const { hostElement, ref: contentRef } =
+    useOverlayHostElement<HTMLDivElement>(forwardedContentRef);
   const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container);
   const portalTheme = usePortaledTheme(rootElement);
   const contentStyle = React.useMemo(
@@ -168,7 +175,6 @@ export function Tooltip({
     },
     onMouseLeave: (event: React.MouseEvent<HTMLElement>) => {
       triggerProps?.onMouseLeave?.(event);
-      if (open === undefined) setHoverOpen(false);
     },
     onPointerDownCapture: handlePointerDown,
     onPointerDown: handlePointerDown,
@@ -181,7 +187,14 @@ export function Tooltip({
 
   return (
     <TooltipPrimitive.Provider delayDuration={120}>
-      <TooltipPrimitive.Root open={resolvedOpen}>
+      <TooltipPrimitive.Root
+        open={resolvedOpen}
+        onOpenChange={(nextOpen) => {
+          if (open !== undefined) return;
+          setHoverOpen(nextOpen);
+          if (!nextOpen) setLongPressOpen(false);
+        }}
+      >
         <TooltipPrimitive.Trigger asChild>
           {triggerElement === "div" ? (
             <div {...triggerEventProps}>{children}</div>
@@ -194,6 +207,20 @@ export function Tooltip({
             <TooltipPrimitive.Content
               data-theme={portalTheme}
               ref={contentRef}
+              onPointerEnter={onContentPointerEnter}
+              onPointerLeave={onContentPointerLeave}
+              onEscapeKeyDown={() => {
+                if (open === undefined) {
+                  setHoverOpen(false);
+                  setClickOpen(false);
+                }
+              }}
+              onPointerDownOutside={() => {
+                if (open === undefined) {
+                  setHoverOpen(false);
+                  setClickOpen(false);
+                }
+              }}
               side={side}
               sideOffset={sideOffset}
               style={contentStyle}

@@ -70,6 +70,12 @@ function getTooltip() {
   return document.body.querySelector('[role="tooltip"]') as HTMLElement | null;
 }
 
+function createTouchPointerEvent(type: string) {
+  const event = new PointerEvent(type, { bubbles: true, button: 0 });
+  Object.defineProperty(event, "pointerType", { value: "touch" });
+  return event;
+}
+
 describe("OauthMailboxChip", () => {
   it("shows the copy hint on hover", () => {
     render(
@@ -95,6 +101,50 @@ describe("OauthMailboxChip", () => {
     expect(getTooltip()?.textContent).toContain("hover-chip@mail-tw.707079.xyz");
   });
 
+  it("keeps the regular tooltip open during a slow pointer crossing into its content", () => {
+    render(
+      <OauthMailboxChip
+        emailAddress="hover-chip@mail-tw.707079.xyz"
+        emptyLabel="No mailbox yet"
+        copyAriaLabel="Copy mailbox"
+        copyHintLabel="Click to copy"
+        copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
+        onCopy={() => undefined}
+      />,
+    );
+
+    const button = getCopyButton();
+    act(() => button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    const tooltip = getTooltip();
+    expect(tooltip?.textContent).toContain("Click to copy");
+
+    act(() => {
+      button.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      button.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      button.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(300);
+    });
+    expect(getTooltip()).toBe(tooltip);
+
+    act(() => {
+      tooltip?.dispatchEvent(
+        new PointerEvent("pointerover", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      tooltip?.dispatchEvent(
+        new PointerEvent("pointerenter", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      tooltip?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(500);
+    });
+    expect(getTooltip()).toBe(tooltip);
+  });
+
   it("shows the copy hint after a long press and hides it when released", () => {
     render(
       <OauthMailboxChip
@@ -112,9 +162,13 @@ describe("OauthMailboxChip", () => {
     const button = getCopyButton();
 
     act(() => {
-      button.dispatchEvent(
-        new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", button: 0 }),
-      );
+      button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    expect(getTooltip()?.textContent).toContain("Click to copy");
+
+    act(() => {
+      button.dispatchEvent(createTouchPointerEvent("pointerdown"));
       vi.advanceTimersByTime(420);
     });
 
@@ -122,13 +176,40 @@ describe("OauthMailboxChip", () => {
     expect(getTooltip()?.textContent).toContain("press-chip@mail-tw.707079.xyz");
 
     act(() => {
-      button.dispatchEvent(
-        new PointerEvent("pointerup", { bubbles: true, pointerType: "touch", button: 0 }),
-      );
+      button.dispatchEvent(createTouchPointerEvent("pointerup"));
       vi.runOnlyPendingTimers();
     });
 
     expect(getTooltip()).toBeNull();
+  });
+
+  it("keeps the regular tooltip open when keyboard focus enters during a pending pointer close", () => {
+    render(
+      <OauthMailboxChip
+        emailAddress="focus-chip@mail-tw.707079.xyz"
+        emptyLabel="No mailbox yet"
+        copyAriaLabel="Copy mailbox"
+        copyHintLabel="Click to copy"
+        copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
+        onCopy={() => undefined}
+      />,
+    );
+
+    const button = getCopyButton();
+    act(() => button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    const tooltip = getTooltip();
+    expect(tooltip?.textContent).toContain("Click to copy");
+
+    act(() => {
+      button.dispatchEvent(new PointerEvent("pointerout", { bubbles: true }));
+      button.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+      button.focus();
+      vi.advanceTimersByTime(600);
+    });
+
+    expect(getTooltip()).toBe(tooltip);
   });
 
   it("renders a copied success badge when the chip is in copied tone", () => {
@@ -218,5 +299,72 @@ describe("OauthMailboxChip", () => {
     expect(getTooltip()?.textContent).toContain("Copied");
     expect(getTooltip()?.textContent).not.toContain("Edit mailbox");
     expect(getCopyButton().className).not.toContain("border-success/55");
+  });
+
+  it("keeps the editable mailbox preview open during a slow pointer crossing", () => {
+    render(
+      <OauthMailboxChip
+        emailAddress="editor-chip@mail-tw.707079.xyz"
+        emptyLabel="No mailbox yet"
+        copyAriaLabel="Copy mailbox"
+        copyHintLabel="Click to copy"
+        copiedLabel="Copied"
+        manualCopyLabel="Auto copy failed. Please copy the mailbox below manually."
+        manualBadgeLabel="Manual"
+        onCopy={() => undefined}
+        editor={{
+          draftValue: "editor-chip@mail-tw.707079.xyz",
+          inputAriaLabel: "Mailbox address",
+          inputPlaceholder: "mailbox@example.com",
+          editAriaLabel: "Edit mailbox",
+          editHintLabel: "Unused helper copy",
+          submitAriaLabel: "Submit mailbox",
+          cancelAriaLabel: "Cancel mailbox edit",
+          startEditing: () => undefined,
+          onDraftValueChange: () => undefined,
+          onSubmit: () => undefined,
+          onCancel: () => undefined,
+          editing: false,
+        }}
+      />,
+    );
+
+    const trigger = getCopyButton();
+    act(() => trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    const panel = Array.from(document.body.querySelectorAll("[data-side]")).find((node) =>
+      node.querySelector('button[aria-label="Edit mailbox"]'),
+    ) as HTMLElement | undefined;
+    expect(panel).toBeInstanceOf(HTMLElement);
+
+    act(() => {
+      trigger.dispatchEvent(
+        new PointerEvent("pointerout", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger.dispatchEvent(
+        new PointerEvent("pointerleave", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      trigger.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+      vi.advanceTimersByTime(300);
+    });
+    expect(
+      Array.from(document.body.querySelectorAll("[data-side]")).find((node) =>
+        node.querySelector('button[aria-label="Edit mailbox"]'),
+      ),
+    ).toBe(panel);
+
+    act(() => {
+      panel?.dispatchEvent(
+        new PointerEvent("pointerover", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      panel?.dispatchEvent(
+        new PointerEvent("pointerenter", { bubbles: true, clientX: 0, clientY: 0 }),
+      );
+      vi.advanceTimersByTime(500);
+    });
+    expect(
+      Array.from(document.body.querySelectorAll("[data-side]")).find((node) =>
+        node.querySelector('button[aria-label="Edit mailbox"]'),
+      ),
+    ).toBe(panel);
   });
 });
