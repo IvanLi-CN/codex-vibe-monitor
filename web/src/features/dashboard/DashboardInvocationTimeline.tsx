@@ -259,6 +259,7 @@ export function DashboardInvocationTimeline({
   const lastHoverUpdateMs = useRef(0);
   const laneScrollRef = useRef<HTMLDivElement | null>(null);
   const callsAxisScrollRef = useRef<HTMLDivElement | null>(null);
+  const autoScrollViewKeyRef = useRef<string | null>(null);
   const timeline = useInvocationTimeline({
     response,
     closedNaturalDay,
@@ -297,6 +298,8 @@ export function DashboardInvocationTimeline({
   const laneCount = getInvocationTimelineLaneCount(lanes);
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
   const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
+  const plotWindow = timeline.window;
+  const autoScrollViewKey = `${plotWindow?.startMs ?? "empty"}:${plotWindow?.endMs ?? "empty"}:${closedNaturalDay}:${upstreamAccountId ?? "all"}:${timelineDataOverride ? "override" : "remote"}`;
   useEffect(() => {
     if (closedNaturalDay || !liveConnected || !hasInFlightLanes) return;
     const timer = globalThis.setInterval(() => setNowMs(Date.now()), 1_000);
@@ -306,15 +309,17 @@ export function DashboardInvocationTimeline({
   useEffect(() => {
     const scrollElement = laneScrollRef.current;
     const callsAxisScrollElement = callsAxisScrollRef.current;
-    if (!scrollElement || !callsAxisScrollElement) return;
+    if (!scrollElement || !callsAxisScrollElement || !renderedData) return;
+    if (autoScrollViewKeyRef.current === autoScrollViewKey) return;
     const maxScrollTop = Math.max(0, laneLayout.lanePlotHeight - laneLayout.laneAreaHeightPx);
     if (maxScrollTop > 0 && scrollElement.scrollTop === 0) {
       scrollElement.scrollTop = maxScrollTop;
       callsAxisScrollElement.scrollTop = maxScrollTop;
+      setLaneScrollTop(maxScrollTop);
     }
-  }, [laneLayout.laneAreaHeightPx, laneLayout.lanePlotHeight]);
+    autoScrollViewKeyRef.current = autoScrollViewKey;
+  }, [autoScrollViewKey, laneLayout.laneAreaHeightPx, laneLayout.lanePlotHeight, renderedData]);
 
-  const plotWindow = timeline.window;
   const ttft = useMemo(
     () =>
       plotWindow && response

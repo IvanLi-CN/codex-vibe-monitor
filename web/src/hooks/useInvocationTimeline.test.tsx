@@ -27,11 +27,15 @@ function createTimeseries(rangeStart: string, rangeEnd: string): TimeseriesRespo
   };
 }
 
-function createTimeline(invokeId: string): InvocationTimelineResponse {
+function createTimeline(
+  invokeId: string,
+  rangeStart = "2026-07-16T10:00:00.000Z",
+  rangeEnd = "2026-07-16T10:30:00.000Z",
+): InvocationTimelineResponse {
   return {
-    rangeStart: "2026-07-16T10:00:00.000Z",
-    rangeEnd: "2026-07-16T10:30:00.000Z",
-    asOf: "2026-07-16T10:30:00.000Z",
+    rangeStart,
+    rangeEnd,
+    asOf: rangeEnd,
     total: 1,
     overLimit: false,
     records: [
@@ -72,13 +76,28 @@ function Probe({
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
 }) {
-  const { data } = useInvocationTimeline({
+  const { data, bounds, setWindow } = useInvocationTimeline({
     response,
     closedNaturalDay,
     liveRevision,
     liveRefreshAllowed,
   });
-  return <output data-testid="invoke-id">{data?.records[0]?.invokeId ?? ""}</output>;
+  return (
+    <>
+      <output data-testid="invoke-id">{data?.records[0]?.invokeId ?? ""}</output>
+      <button
+        type="button"
+        data-testid="zoom-window"
+        onClick={() => {
+          if (!bounds) return;
+          setWindow({
+            startMs: bounds.startMs + 60_000,
+            endMs: bounds.endMs,
+          });
+        }}
+      />
+    </>
+  );
 }
 
 describe("useInvocationTimeline", () => {
@@ -133,7 +152,11 @@ describe("useInvocationTimeline", () => {
     });
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("");
 
-    pending.at(-1)?.resolve(createTimeline("current-invoke"));
+    pending
+      .at(-1)
+      ?.resolve(
+        createTimeline("current-invoke", "2026-07-17T10:00:00.000Z", "2026-07-17T10:30:00.000Z"),
+      );
     await act(async () => {
       await Promise.resolve();
     });
@@ -254,6 +277,27 @@ describe("useInvocationTimeline", () => {
     });
 
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not expose the previous window data while a zoom request is pending", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} />);
+    pending[0]?.(createTimeline("old-window"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("old-window");
+
+    act(() => {
+      host?.querySelector<HTMLButtonElement>("[data-testid=zoom-window]")?.click();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("");
   });
 
   it("refreshes immediately after a reconnect when bounds advanced while disconnected", async () => {

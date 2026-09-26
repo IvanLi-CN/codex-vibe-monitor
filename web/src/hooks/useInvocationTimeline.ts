@@ -233,12 +233,17 @@ export function useInvocationTimeline({
   );
 
   const contextReady = committedBoundsContextKey === boundsContextKey;
+  const dataMatchesWindow =
+    data != null &&
+    viewportWindow != null &&
+    parseEpoch(data.rangeStart) === viewportWindow.startMs &&
+    parseEpoch(data.rangeEnd) === viewportWindow.endMs;
 
   return {
-    data: contextReady ? data : null,
+    data: contextReady && dataMatchesWindow ? data : null,
     error,
-    isLoading: contextReady ? isLoading : enabled,
-    isRefreshing: contextReady && isLoading && data != null,
+    isLoading: contextReady ? isLoading || (data != null && !dataMatchesWindow) : enabled,
+    isRefreshing: contextReady && isLoading && dataMatchesWindow,
     window: contextReady ? viewportWindow : null,
     bounds,
     setWindow: updateWindow,

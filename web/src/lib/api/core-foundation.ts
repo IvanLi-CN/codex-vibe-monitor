@@ -2748,38 +2748,68 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
 }
 
 function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineResponse {
-  const payload = (raw ?? {}) as Record<string, unknown>;
-  const records = Array.isArray(payload.records) ? payload.records : [];
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Invalid invocation timeline response");
+  }
+  const payload = raw as Record<string, unknown>;
+  const rangeStart = payload.rangeStart;
+  const rangeEnd = payload.rangeEnd;
+  const asOf = payload.asOf;
+  const total = payload.total;
+  const overLimit = payload.overLimit;
+  const records = payload.records;
+  if (
+    typeof rangeStart !== "string" ||
+    !Number.isFinite(Date.parse(rangeStart)) ||
+    typeof rangeEnd !== "string" ||
+    !Number.isFinite(Date.parse(rangeEnd)) ||
+    Date.parse(rangeEnd) <= Date.parse(rangeStart) ||
+    typeof asOf !== "string" ||
+    !Number.isFinite(Date.parse(asOf)) ||
+    typeof total !== "number" ||
+    !Number.isFinite(total) ||
+    total < 0 ||
+    !Number.isInteger(total) ||
+    typeof overLimit !== "boolean" ||
+    !Array.isArray(records) ||
+    (!overLimit && total !== records.length) ||
+    (overLimit && records.length !== 0)
+  ) {
+    throw new Error("Invalid invocation timeline response");
+  }
   return {
-    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
-    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
-    asOf: typeof payload.asOf === "string" ? payload.asOf : "",
-    total: normalizeFiniteNumber(payload.total) ?? records.length,
-    overLimit: payload.overLimit === true,
-    records: records
-      .map((rawRecord): InvocationTimelineRecord | null => {
-        const record = (rawRecord ?? {}) as Record<string, unknown>;
-        const invokeId = typeof record.invokeId === "string" ? record.invokeId : "";
-        const occurredAt = typeof record.occurredAt === "string" ? record.occurredAt : "";
-        if (!invokeId || !occurredAt) return null;
-        return {
-          id: normalizeFiniteNumber(record.id) ?? 0,
-          invokeId,
-          occurredAt,
-          endAt: typeof record.endAt === "string" ? record.endAt : null,
-          isInFlight: record.isInFlight === true,
-          status: typeof record.status === "string" ? record.status : null,
-          livePhase: typeof record.livePhase === "string" ? record.livePhase : null,
-          firstTokenMs: normalizeFiniteNumber(record.firstTokenMs) ?? null,
-          tTotalMs: normalizeFiniteNumber(record.tTotalMs) ?? null,
-          poolAttemptCount: normalizeFiniteNumber(record.poolAttemptCount) ?? null,
-          upstreamAccountId: normalizeFiniteNumber(record.upstreamAccountId) ?? null,
-          upstreamAccountName:
-            typeof record.upstreamAccountName === "string" ? record.upstreamAccountName : null,
-          failureClass: typeof record.failureClass === "string" ? record.failureClass : null,
-        };
-      })
-      .filter((record): record is InvocationTimelineRecord => record != null),
+    rangeStart,
+    rangeEnd,
+    asOf,
+    total,
+    overLimit,
+    records: records.map((rawRecord): InvocationTimelineRecord => {
+      if (rawRecord == null || typeof rawRecord !== "object" || Array.isArray(rawRecord)) {
+        throw new Error("Invalid invocation timeline record");
+      }
+      const record = rawRecord as Record<string, unknown>;
+      const invokeId = typeof record.invokeId === "string" ? record.invokeId : "";
+      const occurredAt = typeof record.occurredAt === "string" ? record.occurredAt : "";
+      if (!invokeId || !occurredAt || !Number.isFinite(Date.parse(occurredAt))) {
+        throw new Error("Invalid invocation timeline record");
+      }
+      return {
+        id: normalizeFiniteNumber(record.id) ?? 0,
+        invokeId,
+        occurredAt,
+        endAt: typeof record.endAt === "string" ? record.endAt : null,
+        isInFlight: record.isInFlight === true,
+        status: typeof record.status === "string" ? record.status : null,
+        livePhase: typeof record.livePhase === "string" ? record.livePhase : null,
+        firstTokenMs: normalizeFiniteNumber(record.firstTokenMs) ?? null,
+        tTotalMs: normalizeFiniteNumber(record.tTotalMs) ?? null,
+        poolAttemptCount: normalizeFiniteNumber(record.poolAttemptCount) ?? null,
+        upstreamAccountId: normalizeFiniteNumber(record.upstreamAccountId) ?? null,
+        upstreamAccountName:
+          typeof record.upstreamAccountName === "string" ? record.upstreamAccountName : null,
+        failureClass: typeof record.failureClass === "string" ? record.failureClass : null,
+      };
+    }),
   };
 }
 

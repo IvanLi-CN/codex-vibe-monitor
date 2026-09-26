@@ -898,6 +898,49 @@ describe("fetchInvocationTimeline", () => {
     });
     expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("upstreamAccountId=42");
   });
+
+  it("rejects incomplete timeline payloads so the dashboard can use its aggregate fallback", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ records: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchInvocationTimeline({
+        from: "2026-03-26T12:00:00Z",
+        to: "2026-03-26T12:30:00Z",
+      }),
+    ).rejects.toThrow("Invalid invocation timeline response");
+  });
+
+  it("rejects malformed timeline records instead of silently dropping them", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T12:30:00Z",
+            asOf: "2026-03-26T12:10:00Z",
+            total: 1,
+            overLimit: false,
+            records: [{ id: 1, invokeId: "missing-time" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await expect(
+      fetchInvocationTimeline({
+        from: "2026-03-26T12:00:00Z",
+        to: "2026-03-26T12:30:00Z",
+      }),
+    ).rejects.toThrow("Invalid invocation timeline record");
+  });
 });
 
 describe("fetchParallelWorkStats", () => {

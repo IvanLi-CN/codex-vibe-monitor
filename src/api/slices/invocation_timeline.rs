@@ -1,6 +1,7 @@
 use super::*;
 use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
+use chrono_tz::Asia::Shanghai;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, QueryBuilder, Sqlite};
 use std::collections::{BTreeMap, HashSet};
@@ -120,7 +121,12 @@ pub(crate) async fn fetch_timeline(
         hydrate_api_invocation_blocked_binding(record);
     }
 
-    let mut runtime_records = runtime_overlay_snapshot(state.as_ref());
+    let include_runtime_records = timeline_window_includes_current_day(range_start, range_end);
+    let mut runtime_records = if include_runtime_records {
+        runtime_overlay_snapshot(state.as_ref())
+    } else {
+        Vec::new()
+    };
     runtime_records.retain(|record| {
         if source_scope == InvocationSourceScope::ProxyOnly && record.source != SOURCE_PROXY {
             return false;
@@ -248,6 +254,24 @@ fn timeline_record_overlaps(
             .is_some_and(|end| end >= range_start),
         None => occurred_at >= range_start,
     }
+}
+
+fn timeline_window_includes_current_day(
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+) -> bool {
+    let now = Utc::now();
+    let current_day_start = now
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|midnight| Shanghai.from_local_datetime(&midnight).single())
+        .map(|value| value.with_timezone(&Utc));
+    let Some(current_day_start) = current_day_start else {
+        return false;
+    };
+    let next_day_start = current_day_start + chrono::Duration::days(1);
+    range_end > current_day_start && range_start < next_day_start
 }
 
 fn valid_timeline_duration_ms(value: Option<f64>) -> Option<f64> {
@@ -420,6 +444,31 @@ mod tests {
             Some(f64::NAN),
             range_start,
             range_end
+        ));
+    }
+
+    #[test]
+    fn runtime_overlay_is_limited_to_windows_that_intersect_the_current_day() {
+        let now = Utc::now();
+        let current_day_start = now
+            .with_timezone(&Shanghai)
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .and_then(|midnight| Shanghai.from_local_datetime(&midnight).single())
+            .map(|value| value.with_timezone(&Utc))
+            .expect("current day midnight");
+
+        assert!(!timeline_window_includes_current_day(
+            current_day_start - chrono::Duration::days(1),
+            current_day_start,
+        ));
+        assert!(timeline_window_includes_current_day(
+            current_day_start,
+            current_day_start + chrono::Duration::hours(1),
+        ));
+        assert!(timeline_window_includes_current_day(
+            current_day_start - chrono::Duration::minutes(5),
+            current_day_start + chrono::Duration::minutes(5),
         ));
     }
 
