@@ -193,13 +193,32 @@ fn load_timeline_snapshot(
     Ok(snapshot)
 }
 
-async fn resolve_invocation_attempt_snapshot_id(pool: &Pool<Sqlite>) -> Result<i64, ApiError> {
-    Ok(
-        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM pool_upstream_request_attempts")
-            .fetch_one(pool)
-            .await?
-            .unwrap_or(0),
-    )
+async fn resolve_timeline_snapshot_watermarks(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<(i64, i64), ApiError> {
+    #[derive(Debug, FromRow)]
+    struct WatermarkRow {
+        invocation_snapshot_id: Option<i64>,
+        attempt_snapshot_id: Option<i64>,
+    }
+
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT (SELECT MAX(id) FROM codex_invocations WHERE 1 = 1");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(
+        ") AS invocation_snapshot_id, (SELECT MAX(id) FROM pool_upstream_request_attempts) AS attempt_snapshot_id",
+    );
+    let row = query
+        .build_query_as::<WatermarkRow>()
+        .fetch_one(pool)
+        .await?;
+    Ok((
+        row.invocation_snapshot_id.unwrap_or(0),
+        row.attempt_snapshot_id.unwrap_or(0),
+    ))
 }
 
 #[derive(Debug, FromRow)]
@@ -309,9 +328,11 @@ pub(crate) async fn fetch_timeline(
             "asOf is required with an invocation timeline cursor"
         )));
     } else {
+        let (snapshot_id, attempt_snapshot_id) =
+            resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
         create_timeline_snapshot(
-            resolve_invocation_snapshot_id(&state.pool, source_scope).await?,
-            resolve_invocation_attempt_snapshot_id(&state.pool).await?,
+            snapshot_id,
+            attempt_snapshot_id,
             canonical_range_start.clone(),
             canonical_range_end.clone(),
             params.upstream_account_id,
