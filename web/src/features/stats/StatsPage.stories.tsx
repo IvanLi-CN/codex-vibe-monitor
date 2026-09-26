@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ErrorDistributionResponse,
+  FailureScope,
   FailureSummaryResponse,
   ParallelWorkConversation,
   ParallelWorkStatsResponse,
@@ -253,15 +254,132 @@ function buildStatsStoryFixtures() {
     }),
   };
 
-  const errorDistribution: ErrorDistributionResponse = {
-    rangeStart: new Date(todayStart).toISOString(),
-    rangeEnd: new Date(now).toISOString(),
-    items: [
-      { reason: "upstream_timeout", count: 482 },
-      { reason: "rate_limited", count: 316 },
-      { reason: "connection_reset", count: 211 },
-      { reason: "invalid_request", count: 97 },
-    ],
+  const errorDistributions: Record<FailureScope, ErrorDistributionResponse> = {
+    service: {
+      rangeStart: new Date(todayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      items: [
+        { reason: "Upstream request timed out before response headers were received", count: 212 },
+        {
+          reason: "The configured model is unavailable in every healthy upstream account pool",
+          count: 148,
+        },
+        {
+          reason: "Upstream closed the connection before the assistant response was complete",
+          count: 102,
+        },
+        {
+          reason: "No healthy account remained after retry and cooldown checks were exhausted",
+          count: 76,
+        },
+        {
+          reason: "The provider returned an invalid response while the stream was being decoded",
+          count: 64,
+        },
+        {
+          reason: "A temporary provider capacity limit prevented this request from being accepted",
+          count: 52,
+        },
+        {
+          reason: "The upstream response body ended before a complete message was received",
+          count: 42,
+        },
+        {
+          reason: "The configured route could not resolve this model to an available provider",
+          count: 46,
+        },
+      ],
+    },
+    client: {
+      rangeStart: new Date(todayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      items: [
+        {
+          reason: "The request did not include a model supported by the selected endpoint",
+          count: 58,
+        },
+        {
+          reason: "The supplied bearer token was rejected by the local authentication layer",
+          count: 43,
+        },
+        { reason: "The request body could not be parsed as a supported JSON document", count: 32 },
+        { reason: "The requested context length exceeds the configured request limit", count: 24 },
+        {
+          reason: "The response format is incompatible with the selected streaming mode",
+          count: 20,
+        },
+        {
+          reason: "The request contains a parameter that this API endpoint does not recognize",
+          count: 15,
+        },
+        {
+          reason: "The client requested a model that is disabled by the active configuration",
+          count: 12,
+        },
+        { reason: "The request is missing a required input field for this operation", count: 10 },
+      ],
+    },
+    abort: {
+      rangeStart: new Date(todayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      items: [
+        {
+          reason: "The client closed its connection while the response stream was still active",
+          count: 45,
+        },
+        {
+          reason: "The request was cancelled before an upstream provider returned a response",
+          count: 31,
+        },
+        {
+          reason: "The caller disconnected while the server was waiting for the first token",
+          count: 24,
+        },
+        {
+          reason: "The client ended the response stream before the final usage event arrived",
+          count: 18,
+        },
+        {
+          reason: "The request was cancelled while an upstream retry was being prepared",
+          count: 12,
+        },
+        { reason: "The caller closed the connection during response body delivery", count: 9 },
+        { reason: "The browser stopped reading the stream before completion", count: 6 },
+        { reason: "The request context was cancelled by the client runtime", count: 5 },
+      ],
+    },
+    all: {
+      rangeStart: new Date(todayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      items: [
+        { reason: "Upstream request timed out before response headers were received", count: 310 },
+        {
+          reason: "The supplied bearer token was rejected by the local authentication layer",
+          count: 220,
+        },
+        {
+          reason: "The client closed its connection while the response stream was still active",
+          count: 160,
+        },
+        {
+          reason: "The configured model is unavailable in every healthy upstream account pool",
+          count: 125,
+        },
+        {
+          reason: "The request did not include a model supported by the selected endpoint",
+          count: 95,
+        },
+        {
+          reason: "No healthy account remained after retry and cooldown checks were exhausted",
+          count: 80,
+        },
+        { reason: "The request body could not be parsed as a supported JSON document", count: 65 },
+        {
+          reason: "The provider returned an invalid response while the stream was being decoded",
+          count: 51,
+        },
+      ],
+    },
   };
 
   const failureSummary: FailureSummaryResponse = {
@@ -341,7 +459,7 @@ function buildStatsStoryFixtures() {
   return {
     now,
     summaryByWindow,
-    errorDistribution,
+    errorDistributions,
     failureSummary,
     buildTimeseriesForRange,
     buildParallelWorkForRange,
@@ -367,7 +485,8 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
     }
 
     if (url.pathname === "/api/stats/errors") {
-      return jsonResponse(fixtures.errorDistribution);
+      const scope = url.searchParams.get("scope") as FailureScope | null;
+      return jsonResponse(fixtures.errorDistributions[scope ?? "service"]);
     }
 
     if (url.pathname === "/api/stats/failures/summary") {
@@ -411,7 +530,6 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
     return undefined;
   };
 }
-
 function StatsPageSseBootstrap({ scenario }: { scenario: StatsScenario }) {
   useEffect(() => {
     const controller = getStorybookPageSseController();
@@ -515,6 +633,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
+  tags: ["test"],
   render: () => <StatsPage />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -522,9 +641,24 @@ export const Default: Story = {
     await expect(canvas.getByTestId("stats-range-select-trigger")).toBeVisible();
     await expect(canvas.getByTestId("stats-bucket-select-trigger")).toBeVisible();
     await expect(canvas.getByTestId("stats-bucket-select-trigger")).toHaveTextContent("每 15 分钟");
+    await expect(canvas.getAllByTestId("error-reason-row")).toHaveLength(8);
+    await expect(
+      canvas.getByText("Upstream request timed out before response headers were received"),
+    ).toBeVisible();
+
+    await userEvent.click(canvas.getByTestId("stats-error-scope-select-trigger"));
+    await userEvent.click(within(document.body).getByRole("option", { name: "调用方错误" }));
+    await expect(
+      canvas.getByText("The request did not include a model supported by the selected endpoint"),
+    ).toBeVisible();
+    await expect(
+      canvas.queryByText("Upstream request timed out before response headers were received"),
+    ).toBeNull();
+    await expect(canvas.getByText("742")).toBeVisible();
+    await expect(canvas.getByText("214")).toBeVisible();
 
     await userEvent.click(canvas.getByTestId("stats-range-select-trigger"));
-    await userEvent.click(within(document.body).getByText("最近 7 天"));
+    await userEvent.click(within(document.body).getByRole("option", { name: "最近 7 天" }));
     await expect(canvas.getByTestId("stats-range-select-trigger")).toHaveTextContent("最近 7 天");
     await expect(canvas.queryByTestId("parallel-work-conversation-gantt")).toBeNull();
   },
