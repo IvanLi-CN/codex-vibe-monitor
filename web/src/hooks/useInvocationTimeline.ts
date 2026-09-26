@@ -112,14 +112,20 @@ async function fetchInvocationTimelineSnapshot(options: {
   }
 
   if (!firstPage || !asOf) throw new Error("Invocation timeline returned no snapshot");
+  if (!Number.isSafeInteger(firstPage.total) || firstPage.total < 0) {
+    throw new Error("Invocation timeline returned an invalid total");
+  }
   const mergedRecords = [...records.values()].sort(
     (left, right) =>
       Date.parse(left.occurredAt) - Date.parse(right.occurredAt) || left.id - right.id,
   );
+  if (mergedRecords.length !== firstPage.total) {
+    throw new Error("Invocation timeline snapshot is incomplete");
+  }
   return {
     ...firstPage,
     asOf,
-    total: Math.max(firstPage.total, mergedRecords.length),
+    total: firstPage.total,
     hasMore: false,
     nextCursor: null,
     records: mergedRecords,

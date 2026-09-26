@@ -77,7 +77,7 @@ function Probe({
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
 }) {
-  const { data, bounds, setWindow } = useInvocationTimeline({
+  const { data, bounds, error, setWindow } = useInvocationTimeline({
     response,
     closedNaturalDay,
     liveRevision,
@@ -90,6 +90,7 @@ function Probe({
       <output data-testid="record-ids">
         {data?.records.map((record) => record.invokeId).join(",") ?? ""}
       </output>
+      <output data-testid="error">{error ?? ""}</output>
       <button
         type="button"
         data-testid="zoom-window"
@@ -329,6 +330,25 @@ describe("useInvocationTimeline", () => {
     expect(host?.querySelector("[data-testid=record-ids]")?.textContent).toBe("page-one,page-two");
   });
 
+  it("rejects a truncated final snapshot instead of committing incomplete data", async () => {
+    const truncated = createTimeline("only-record");
+    truncated.total = 2;
+    truncated.hasMore = false;
+    timelineMocks.fetch.mockResolvedValue(truncated);
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} closedNaturalDay />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=record-count]")?.textContent).toBe("0");
+    expect(host?.querySelector("[data-testid=error]")?.textContent).toBe(
+      "Invocation timeline snapshot is incomplete",
+    );
+  });
+
   it("keeps the last successful snapshot when a refresh fails", async () => {
     timelineMocks.fetch.mockResolvedValueOnce(createTimeline("last-good"));
     timelineMocks.fetch.mockRejectedValueOnce(new Error("snapshot unavailable"));
@@ -410,6 +430,9 @@ describe("useInvocationTimeline", () => {
     expect(pending).toHaveLength(1);
     act(() => {
       host?.querySelector<HTMLButtonElement>("[data-testid=zoom-window]")?.click();
+    });
+    await act(async () => {
+      await Promise.resolve();
     });
     expect(pending).toHaveLength(1);
 

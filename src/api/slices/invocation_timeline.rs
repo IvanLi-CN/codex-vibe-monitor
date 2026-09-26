@@ -467,11 +467,12 @@ pub(crate) async fn fetch_timeline(
     let active_runtime_keys = if all_runtime_records.is_empty() {
         HashSet::new()
     } else {
-        query_current_runtime_db_keys(
+        query_current_timeline_runtime_db_keys(
             &state.pool,
-            &filters,
+            &persisted_filters,
             source_scope,
-            Some(SnapshotConstraint::UpTo(snapshot_id)),
+            snapshot_id,
+            params.upstream_account_id,
         )
         .await?
     };
@@ -598,6 +599,46 @@ async fn count_timeline_records(
         .total)
 }
 
+async fn query_current_timeline_runtime_db_keys(
+    pool: &Pool<Sqlite>,
+    persisted_filters: &InvocationRecordsFilters,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: Option<i64>,
+) -> Result<HashSet<(String, String)>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct RuntimeKeyRow {
+        invoke_id: String,
+        occurred_at: String,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT invoke_id, occurred_at FROM codex_invocations WHERE 1 = 1",
+    );
+    apply_invocation_records_filters(
+        &mut query,
+        persisted_filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(timeline_upstream_account_id_sql("codex_invocations"))
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+
+    Ok(query
+        .build_query_as::<RuntimeKeyRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| (row.invoke_id, row.occurred_at))
+        .collect())
+}
+
 fn timeline_record_overlaps(
     occurred_at: DateTime<Utc>,
     total_ms: Option<f64>,
@@ -719,7 +760,7 @@ fn timeline_upstream_account_id_sql(invocation_ref: &str) -> String {
     let trimmed = format!("TRIM({value})");
     let normalized = format!("ltrim({trimmed}, '0')");
     let valid_payload_id = format!(
-        "({value} IS NOT NULL AND (({value_type} = 'integer' AND typeof({value}) = 'integer' AND {value} > 0) OR ({value_type} = 'real' AND {value} > 0 AND {value} < 9223372036854775807.0 AND CAST({value} AS REAL) = CAST({value} AS INTEGER)) OR ({value_type} = 'text' AND {trimmed} <> '' AND {trimmed} NOT GLOB '*[^0-9]*' AND {normalized} <> '' AND (length({normalized}) < 19 OR (length({normalized}) = 19 AND {normalized} <= '9223372036854775807')))))"
+        "({value} IS NOT NULL AND (({value_type} = 'integer' AND typeof({value}) = 'integer' AND {value} > 0 AND {value} < 9223372036854775807) OR ({value_type} = 'real' AND {value} > 0 AND {value} < 9223372036854775807.0 AND CAST({value} AS REAL) = CAST({value} AS INTEGER)) OR ({value_type} = 'text' AND {trimmed} <> '' AND {trimmed} NOT GLOB '*[^0-9]*' AND {normalized} <> '' AND {normalized} <> '9223372036854775807' AND (length({normalized}) < 19 OR (length({normalized}) = 19 AND {normalized} <= '9223372036854775807')))))"
     );
     format!(
         "COALESCE(CASE WHEN {payload_is_valid} AND {valid_payload_id} THEN CAST({value} AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
@@ -931,6 +972,47 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("insert malformed attempt fallback fixture");
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES ('exact-max', ?1, 'proxy', 'success', 100, ?2, '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_700)))
+        .bind(r#"{"upstreamAccountId":9223372036854775807}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert exact max timeline fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (4, 'exact-max', ?1, '/v1/responses', 'pool', 1, 1, 0, 'success', 45)",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_700)))
+        .execute(&state.pool)
+        .await
+        .expect("insert exact max attempt fallback fixture");
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('live-overflow', ?1, 'proxy', 'running', ?2, '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_800)))
+        .bind(r#"{"upstreamAccountId":"9223372036854775808"}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert live overflow timeline fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (5, 'live-overflow', ?1, '/v1/responses', 'pool', 1, 1, 0, 'requesting', 46)",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_800)))
+        .execute(&state.pool)
+        .await
+        .expect("insert live overflow attempt fallback fixture");
+        let mut live_overflow =
+            crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+        live_overflow.id = 99_002;
+        live_overflow.invoke_id = "live-overflow".to_string();
+        live_overflow.occurred_at = db_occurred_at_lower_bound(at(86_800));
+        live_overflow.source = SOURCE_PROXY.to_string();
+        live_overflow.status = Some("running".to_string());
+        live_overflow.live_phase = Some("requesting".to_string());
+        live_overflow.t_total_ms = None;
+        live_overflow.upstream_account_id = Some(46);
+        state.proxy_runtime_invocations.upsert(live_overflow);
 
         let Json(response) = fetch_timeline(
             State(state.clone()),
@@ -983,6 +1065,40 @@ mod tests {
         assert_eq!(malformed_response.total, 1);
         assert_eq!(malformed_response.records[0].invoke_id, "malformed");
         assert_eq!(malformed_response.records[0].upstream_account_id, Some(44));
+        let Json(exact_max_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(45),
+                include_live: None,
+                limit: None,
+                cursor: None,
+                as_of: None,
+            }),
+        )
+        .await
+        .expect("fetch exact max timeline fixture");
+        assert_eq!(exact_max_response.total, 1);
+        assert_eq!(exact_max_response.records[0].invoke_id, "exact-max");
+        assert_eq!(exact_max_response.records[0].upstream_account_id, Some(45));
+        let Json(live_overflow_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(46),
+                include_live: None,
+                limit: None,
+                cursor: None,
+                as_of: None,
+            }),
+        )
+        .await
+        .expect("fetch live overflow timeline fixture");
+        assert_eq!(live_overflow_response.total, 1);
+        assert_eq!(live_overflow_response.records.len(), 1);
+        assert_eq!(live_overflow_response.records[0].invoke_id, "live-overflow");
         state.pool.close().await;
     }
 
