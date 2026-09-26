@@ -841,7 +841,10 @@ async fn stale_poorer_websocket_refresh_cannot_overwrite_a_richer_commit() {
         reasoning_tokens: Some(10),
         total_tokens: Some(1_240),
     };
-    richer.cost = Some(0.02);
+    richer.cost = None;
+    richer.cost_breakdown = None;
+    richer.cost_estimated = false;
+    richer.price_version = None;
     richer.payload = Some(
         mark_websocket_payload_transport(
             r#"{"endpoint":"/v1/responses","streamTerminalEvent":"response.done"}"#.to_string(),
@@ -904,7 +907,7 @@ async fn stale_poorer_websocket_refresh_cannot_overwrite_a_richer_commit() {
     assert_eq!(persisted.0, Some(325));
     assert_eq!(persisted.1, Some(50));
     assert_eq!(persisted.2, Some(10));
-    assert_eq!(persisted.3, Some(0.02));
+    assert_eq!(persisted.3, Some(0.01));
 }
 
 #[tokio::test]

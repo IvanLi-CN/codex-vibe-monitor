@@ -158,12 +158,26 @@ pub(crate) fn websocket_terminal_payload(payload: Option<&str>) -> bool {
         })
 }
 
+fn websocket_refresh_has_unsupported_actual_tier(payload: Option<&str>) -> bool {
+    let Some(value) = payload.and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+    else {
+        return false;
+    };
+    let tier = ["billingServiceTier", "serviceTier"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .and_then(normalize_service_tier);
+    tier.is_some_and(|tier| !matches!(tier.as_str(), "standard" | "default" | "fast" | "priority"))
+}
+
 pub(crate) async fn refresh_websocket_terminal_usage_tx(
     tx: &mut SqliteConnection,
     id: i64,
     existing: &PersistedInvocationIdentityRow,
     incoming: &ProxyCaptureRecord,
 ) -> Result<bool> {
+    let preserve_existing_cost = incoming.cost.is_none()
+        && !websocket_refresh_has_unsupported_actual_tier(incoming.payload.as_deref());
     let result = sqlx::query(
         r#"
         UPDATE codex_invocations
@@ -175,19 +189,19 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
             reported_cache_write_tokens = COALESCE(?6, reported_cache_write_tokens),
             reasoning_tokens = COALESCE(?7, reasoning_tokens),
             total_tokens = COALESCE(?8, total_tokens),
-            cost = ?9,
-            cost_input = ?10,
-            cost_cache_write = ?11,
-            cost_cache_read = ?12,
-            cost_output = ?13,
-            cost_reasoning = ?14,
-            cost_estimated = ?15,
-            price_version = ?16
+            cost = CASE WHEN ?17 = 1 THEN COALESCE(?9, cost) ELSE ?9 END,
+            cost_input = CASE WHEN ?17 = 1 THEN COALESCE(?10, cost_input) ELSE ?10 END,
+            cost_cache_write = CASE WHEN ?17 = 1 THEN COALESCE(?11, cost_cache_write) ELSE ?11 END,
+            cost_cache_read = CASE WHEN ?17 = 1 THEN COALESCE(?12, cost_cache_read) ELSE ?12 END,
+            cost_output = CASE WHEN ?17 = 1 THEN COALESCE(?13, cost_output) ELSE ?13 END,
+            cost_reasoning = CASE WHEN ?17 = 1 THEN COALESCE(?14, cost_reasoning) ELSE ?14 END,
+            cost_estimated = CASE WHEN ?17 = 1 THEN cost_estimated ELSE ?15 END,
+            price_version = CASE WHEN ?17 = 1 THEN COALESCE(?16, price_version) ELSE ?16 END
         WHERE id = ?1
-          AND source = ?17
-          AND LOWER(TRIM(COALESCE(status, ''))) = LOWER(?18)
-          AND failure_kind IS ?19
-          AND error_message IS ?20
+          AND source = ?18
+          AND LOWER(TRIM(COALESCE(status, ''))) = LOWER(?19)
+          AND failure_kind IS ?20
+          AND error_message IS ?21
           AND json_valid(payload)
           AND LOWER(TRIM(COALESCE(json_extract(payload, '$.transport'), ''))) = 'websocket'
           AND json_extract(payload, '$.streamTerminalEvent') IS NOT NULL
@@ -223,6 +237,7 @@ pub(crate) async fn refresh_websocket_terminal_usage_tx(
     .bind(incoming.cost_breakdown.map(|cost| cost.reasoning))
     .bind(incoming.cost_estimated as i64)
     .bind(incoming.price_version.as_deref())
+    .bind(preserve_existing_cost as i64)
     .bind(SOURCE_PROXY)
     .bind(existing.status.as_deref())
     .bind(existing.failure_kind.as_deref())
