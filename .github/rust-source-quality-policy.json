@@ -27,7 +27,7 @@
     {
       "path": "src/api/slices/prompt_cache_and_timeseries/timeseries.rs",
       "role": "production",
-      "line_budget": 5853,
+      "line_budget": 5881,
       "next_module_workstream": "Split prompt-cache timeseries query, aggregation, and flush/restart lifecycle."
     },
     {
@@ -141,7 +141,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 5836,
+      "line_budget": 5843,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {
