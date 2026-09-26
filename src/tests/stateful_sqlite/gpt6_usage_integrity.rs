@@ -870,7 +870,6 @@ async fn stale_poorer_websocket_refresh_cannot_overwrite_a_richer_commit() {
         reported_cache_write_tokens: Some(60),
         reasoning_tokens: Some(11),
         total_tokens: Some(1_240),
-        ..ParsedUsage::default()
     };
     poorer.cost = Some(0.99);
     poorer.payload = Some(
