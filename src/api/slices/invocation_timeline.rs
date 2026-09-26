@@ -108,7 +108,9 @@ pub(crate) async fn fetch_timeline(
         .push(" AND julianday(occurred_at) + t_total_ms / 86400000.0 >= julianday(")
         .push_bind(start_bound.clone())
         .push(")")
-        .push(")) ORDER BY occurred_at ASC, id ASC LIMIT ")
+        .push(")")
+        .push(" OR LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')")
+        .push(") ORDER BY occurred_at ASC, id ASC LIMIT ")
         .push_bind(INVOCATION_TIMELINE_MAX_RECORDS + 1);
     let mut records = query
         .build_query_as::<ApiInvocation>()
@@ -439,6 +441,14 @@ mod tests {
             .await
             .expect("insert timeline fixture");
         }
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('live-cross', ?1, 'proxy', 'running', ?2, '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_399)))
+        .bind(r#"{"upstreamAccountId":42}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert live timeline fixture");
         let Json(response) = fetch_timeline(
             State(state.clone()),
             Query(InvocationTimelineQuery {
@@ -450,10 +460,13 @@ mod tests {
         .await
         .expect("fetch timeline fixture");
         assert!(!response.over_limit);
-        assert_eq!(response.total, 1);
-        assert_eq!(response.records.len(), 1);
+        assert_eq!(response.total, 2);
+        assert_eq!(response.records.len(), 2);
         assert_eq!(response.records[0].invoke_id, "cross");
         assert_eq!(response.records[0].t_total_ms, Some(2_000.0));
+        assert_eq!(response.records[1].invoke_id, "live-cross");
+        assert!(response.records[1].is_in_flight);
+        assert_eq!(response.records[1].end_at, None);
         state.pool.close().await;
     }
 

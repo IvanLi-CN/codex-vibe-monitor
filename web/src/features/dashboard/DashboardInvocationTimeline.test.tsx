@@ -3,6 +3,7 @@ import type { InvocationTimelineRecord, InvocationTimelineResponse } from "../..
 import {
   assignInvocationTimelineLanes,
   getInvocationTimelineLaneCount,
+  resolveInvocationTimelineLayout,
   shouldFallbackForInvalidTimelineBounds,
 } from "./DashboardInvocationTimeline";
 
@@ -59,18 +60,34 @@ describe("assignInvocationTimelineLanes", () => {
     expect(lanes[0].endMs).toBe(Date.parse("2026-03-26T12:00:01.000Z"));
   });
 
-  it("keeps unknown terminal duration from freeing the lane", () => {
+  it("shows unknown terminal duration without treating it as still running", () => {
+    const unknown = {
+      ...record("invoke-6", "2026-03-26T12:00:00.000Z", null),
+      endAt: "2026-03-26T12:00:04.000Z",
+    };
     const lanes = assignInvocationTimelineLanes(
-      [
-        record("invoke-6", "2026-03-26T12:00:00.000Z", null),
-        record("invoke-7", "2026-03-26T12:00:01.000Z", 1_000),
-      ],
+      [unknown, record("invoke-7", "2026-03-26T12:00:01.000Z", 1_000)],
       "2026-03-26T12:00:05.000Z",
       Date.parse("2026-03-26T12:00:05.000Z"),
     );
 
-    expect(lanes.map((item) => item.lane)).toEqual([0, 1]);
+    expect(lanes.map((item) => item.lane)).toEqual([0, 0]);
     expect(lanes[0].endMs).toBeGreaterThan(lanes[0].startMs);
+  });
+
+  it("uses valid total duration when the terminal timestamp is absent", () => {
+    const item = {
+      ...record("invoke-8", "2026-03-26T12:00:00.000Z", 90_000),
+      endAt: null,
+    };
+
+    const lanes = assignInvocationTimelineLanes(
+      [item],
+      "2026-03-26T12:05:00.000Z",
+      Date.parse("2026-03-26T12:05:00.000Z"),
+    );
+
+    expect(lanes[0].endMs).toBe(Date.parse("2026-03-26T12:01:30.000Z"));
   });
 
   it("keeps the full height after an early concurrency spike", () => {
@@ -105,5 +122,36 @@ describe("shouldFallbackForInvalidTimelineBounds", () => {
     expect(
       shouldFallbackForInvalidTimelineBounds(response, null, {} as InvocationTimelineResponse),
     ).toBe(false);
+  });
+});
+
+describe("resolveInvocationTimelineLayout", () => {
+  it("keeps four visual lanes and the original chart height for sparse data", () => {
+    const layout = resolveInvocationTimelineLayout(1, false);
+
+    expect(layout.visibleLaneCount).toBe(4);
+    expect(layout.chartHeightPx).toBe(320);
+    expect(layout.laneHeight).toBe(16);
+    expect(layout.laneStep - layout.laneHeight).toBe(1);
+    expect(layout.lanePlotHeight).toBe(292);
+  });
+
+  it("adapts lane height while respecting the 8px and 16px bounds", () => {
+    expect(resolveInvocationTimelineLayout(20, false).laneHeight).toBe(13);
+    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(8);
+    expect(resolveInvocationTimelineLayout(2, true).laneHeight).toBe(16);
+    expect(resolveInvocationTimelineLayout(2, true).chartHeightPx).toBe(336);
+  });
+
+  it("keeps a 190-lane workload inside the fixed chart viewport", () => {
+    const layout = resolveInvocationTimelineLayout(190, false);
+
+    expect(layout.visibleLaneCount).toBe(190);
+    expect(layout.chartHeightPx).toBe(320);
+    expect(layout.laneAreaHeightPx).toBe(292);
+    expect(layout.laneHeight).toBe(8);
+    expect(layout.laneStep).toBe(9);
+    expect(layout.lanePlotHeight).toBe(1_733);
+    expect(layout.lanePlotHeight).toBeGreaterThan(layout.laneAreaHeightPx);
   });
 });

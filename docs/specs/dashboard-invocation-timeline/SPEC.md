@@ -11,7 +11,7 @@
 ## Terms and Interfaces
 
 - `Invocation`: 一次对外调用，以 `invokeId` 和 `occurredAt` 标识；同一次调用的上游重试不产生新的时间线横条。
-- `Virtual lane`: 按开始时间分配给调用的最低空闲轨道，用来表达并发关系。
+- `Virtual row`: 按开始时间分配给调用的最低空闲并发行，用来表达并发关系。
 - Interface: `GET /api/stats/invocation-timeline` accepts UTC `from`, `to`, and optional `upstreamAccountId`.
 
 ## Requirements
@@ -24,11 +24,16 @@
 
 ### REQ-DIT-002
 
-- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time and MUST expose parallel, running, and queued counts at the hovered time.
+- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, adapt each lane height between 8px and 16px within the original chart height strategy (`21rem` compact, `20rem` desktop), keep adjacent lanes separated by exactly 1 CSS pixel, and MUST expose parallel, running, and queued counts at the hovered time.
+- The calls axis MUST be a linear numeric axis with evenly spaced ticks from the maximum call count represented by the selected window to `0`; the `0` tick MUST share the coordinate origin at the X-axis baseline.
+- Each rendered invocation MUST map its assigned virtual row `n` to the positive Y value `n + 1`, with value `1` closest to the zero baseline and larger values above it.
+- The chart frame MUST retain the original fixed height while the lane body scrolls internally for high concurrency (including 190 simultaneous lanes); the X-axis and TTFT scale remain pinned to the frame.
 
 ### REQ-DIT-003
 
-- The system MUST show valid per-invocation TTFT markers and the existing minute-level average TTFT curve in a separate aligned region sharing the invocation time axis.
+- The system MUST show the existing minute-level average TTFT curve overlaid in the same plot region as the invocation lanes, sharing the invocation time axis. Per-invocation TTFT values remain available through hover and accessible labels without adding an extra visual marker.
+- Implementation-only coordinate names MUST NOT appear in the interface; the rendered surface uses the product axis labels `调用` / `Calls` and `TTFT`.
+- Invocation bars MUST contain no visible text. Calls shorter than the display resolution, including unknown-duration terminal calls, MUST retain their real timing in the accessible label while receiving an 8px minimum click width so they remain visibly horizontal.
 
 ### REQ-DIT-004
 
@@ -40,7 +45,7 @@
 
 ### REQ-DIT-006
 
-- The system MUST default natural-day views to a 30-minute detail window, support zoom and pan within the full-day overview, and fall back visibly to the existing aggregate chart when offline or over the detail limit.
+- The system MUST default natural-day views to a 30-minute detail window, support zoom and pan across the full-day bounds, and fall back visibly to the existing aggregate chart when offline or over the detail limit.
 
 ## Verification
 
@@ -68,7 +73,37 @@ None
 
 ## Visual Evidence
 
-- None
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/Live Traffic
+  state: live traffic with success, responding, queued, failed, and unknown calls
+  evidence_note: verifies virtual invocation lanes, state colors, duration bars, overlaid TTFT curve, and the bottom X-axis.
+  image: ![Invocation timeline desktop](./assets/invocation-timeline-desktop.jpg)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/Mobile Traffic
+  state: responsive live traffic at the project-defined mobile393 viewport
+  evidence_note: verifies mobile readability, controls, the overlaid timeline/TTFT plot, and the bottom X-axis.
+  image: ![Invocation timeline mobile](./assets/invocation-timeline-mobile.png)
 
 ## References
 

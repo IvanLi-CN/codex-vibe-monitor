@@ -23,7 +23,11 @@
 ## Remaining Gaps
 
 - Full CI and formal review convergence are delivery gates after the topic branch is published.
-- The local Storybook review covered the representative dense state at desktop and the source-managed mobile viewport configuration; production traffic remains subject to the 2,000-record fallback.
+- The local Storybook review covered the representative dense state at desktop and the source-managed mobile viewport configuration, with TTFT overlaid in the invocation plot, the X-axis at the bottom, at least 4 visual lanes, adaptive 8–16px lane heights, and a 1 CSS pixel gap between adjacent lanes; production traffic remains subject to the 2,000-record fallback.
+- User-facing axis labels are `调用` / `Calls` and `TTFT`; internal coordinate labels are excluded from the rendered surface.
+- Invocation bars render without embedded text; per-invocation TTFT remains available in the bar title/ARIA label without an extra visual marker. Short and unknown-duration calls use an 8px minimum click width so the invocation remains a horizontal bar.
+- High-concurrency layout keeps the 320px desktop / 336px compact frame fixed, scrolls only the lane body, and pins the X-axis and TTFT scale so 190 lanes do not enlarge the chart.
+- Normal concurrency maps each invocation row to its numeric call-count value (`lane + 1`) on the linear Y axis; the first assigned row is closest to the zero baseline, with the existing 1px row gap preserved rather than stretched.
 
 ## Related Changes
 
