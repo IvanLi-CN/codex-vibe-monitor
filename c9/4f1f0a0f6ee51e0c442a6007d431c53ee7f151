@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.74.1",
+  "base_stable_version": "2.74.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-27T05:47:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.74.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "13b9f5cfebbaad31451825572f9002714d779670",
+  "pr_number": 1034,
+  "pr_title": "refactor(proxy): extract metadata backfills",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.74.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.74.1",
+  "target_sha": "c94f1f0a0f6ee51e0c442a6007d431c53ee7f151",
+  "type_label": "type:patch"
+}
