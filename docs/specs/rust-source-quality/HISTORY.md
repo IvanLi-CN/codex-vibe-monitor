@@ -281,3 +281,16 @@ policy inventory, leaving 23 production and 20 test/helper candidates (43
 total); the immutable preparation baseline remains 32 and 23 and the
 suppression baseline remains 117. The crate-visible re-export preserves call
 paths, names, signatures, SQL, timing, logging, cache and circuit behavior.
+
+The pricing catalog/settings extraction moves the complete 17-test block from
+physical lines 24 through 996 of
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs` into
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough/pricing_catalog.rs`
+on verified main base `97ccccc6bd2e0e2f5dac0def8fa59d91203b2f6d`.
+The parent retains the large-stack helper and later model/proxy/routing tests.
+After rustfmt, the parent is 2,424 physical lines and the child is 974 lines,
+both below the 3,000-line test/helper target. The parent is removed from the
+policy inventory, leaving 23 production and 19 test/helper candidates (42
+total); the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 117. Test names, assertions, fixtures, timing,
+and stateful SQLite resource classification remain unchanged.

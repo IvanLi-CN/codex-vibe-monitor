@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 43 current explicit file
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 42 current explicit file
   budgets, and 117 standalone suppression declarations. The immutable
   preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -255,12 +255,27 @@ both below the production target. The parent is removed from the policy
 inventory. Its crate-visible re-export preserves existing call paths and the
 raw-payload inventory/circuit runtime behavior.
 
+The pricing catalog/settings extraction moves the complete 17-test block from
+physical lines 24 through 996 of
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs` into
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough/pricing_catalog.rs`.
+The parent retains `run_pricing_future_with_large_stack` and later
+model/proxy/routing tests. The nested module stays in the stateful SQLite
+resource bucket. After rustfmt, the parent is 2,424 physical lines and the
+child is 974 lines, both below the 3,000-line target. The parent is removed
+from the policy inventory; test names, assertions, fixtures, and timing remain
+unchanged.
+
+Validation for this extraction is all 17 moved tests, the stateful SQLite
+backend profile, rustfmt, the source-quality checker and fixture harness,
+all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
 ## Inventory Contract
 
 The policy has 23 `production` entries above the 2,500-line destination target
-and 20 `test_helper` entries above the 3,000-line destination target. Each
+and 19 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 43 paths; a long path absent from the inventory is
+The checker only reads those 42 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
