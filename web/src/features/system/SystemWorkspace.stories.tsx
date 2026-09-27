@@ -125,8 +125,23 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
       referencedSkipped: 19,
       quarantined: 4,
       removed: 2,
+      removedBytes: 131_072,
       lastProgressAt: "2026-06-22T08:01:00Z",
       nextRetryAt: "2026-06-22T08:01:01Z",
+      lastSettledPass: {
+        settledAt: "2026-06-22T08:01:00Z",
+        complete: true,
+        inspectedEntries: 128,
+        referencedSkipped: 19,
+        quarantined: 4,
+        removed: 2,
+        removedBytes: 131_072,
+      },
+      lastNonzeroRemoval: {
+        removedAt: "2026-06-22T08:00:58Z",
+        removed: 2,
+        removedBytes: 131_072,
+      },
     },
     rawCapture: {
       state: "capturing",
@@ -676,6 +691,15 @@ function rawOrphanSweepStatus(
               referencedSkipped: state === "scanning" ? 0 : 12,
               quarantined: state === "scanning" ? 0 : state === "degraded" ? 3 : 2,
               removed: state === "scanning" || state === "degraded" ? 0 : 1,
+              removedBytes: state === "scanning" || state === "degraded" ? 0 : 65_536,
+              lastSettledPass: {
+                ...base.rawOrphanSweep!.lastSettledPass!,
+                complete: state !== "degraded",
+                inspectedEntries: state === "degraded" ? 96 : 128,
+                quarantined: state === "degraded" ? 3 : 4,
+                removed: state === "degraded" ? 0 : 2,
+                removedBytes: state === "degraded" ? 0 : 131_072,
+              },
               nextRetryAt: state === "deferred" ? "2026-06-22T08:05:00Z" : undefined,
               deferReason:
                 state === "deferred"
@@ -683,6 +707,8 @@ function rawOrphanSweepStatus(
                   : state === "degraded"
                     ? "retry_backoff"
                     : undefined,
+              admissionStage: state === "deferred" ? "background_slot" : undefined,
+              admissionCause: state === "deferred" ? "background_busy" : undefined,
               failureFingerprint: state === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
             },
     },
@@ -940,6 +966,7 @@ export const StatusRawOrphanSweepScanning: Story = {
     const sweep = canvas.getByTestId("system-status-raw-orphan-sweep");
     await expect(sweep).toHaveTextContent("扫描中");
     await expect(within(sweep).getAllByText("0", { exact: true })).toHaveLength(4);
+    await expect(sweep).toHaveTextContent("0 B");
   },
 };
 
@@ -954,6 +981,9 @@ export const StatusRawOrphanSweepDeferred: Story = {
     await expect(sweep).toHaveTextContent("已延后");
     await expect(sweep).toHaveTextContent("SQLite 压力");
     await expect(sweep).toHaveTextContent("下次重试");
+    await expect(sweep).toHaveTextContent("后台任务繁忙");
+    await expect(sweep).toHaveTextContent("最近一次已结算轮次");
+    await expect(sweep).toHaveTextContent("完整");
   },
 };
 
@@ -968,6 +998,8 @@ export const StatusRawOrphanSweepDegraded: Story = {
     await expect(sweep).toHaveTextContent("异常");
     await expect(sweep).toHaveTextContent("重试退避");
     await expect(sweep).toHaveTextContent("7d38a1c0b4c8e2f1");
+    await expect(sweep).toHaveTextContent("最近一次已结算轮次");
+    await expect(sweep).toHaveTextContent("部分完成");
   },
 };
 

@@ -2371,10 +2371,31 @@ export interface RuntimePressureRawOrphanSweepHealth {
   referencedSkipped?: number;
   quarantined?: number;
   removed?: number;
+  removedBytes?: number;
   lastProgressAt?: string;
   nextRetryAt?: string;
   deferReason?: string;
   failureFingerprint?: string;
+  admissionStage?: string;
+  admissionCause?: string;
+  lastSettledPass?: RuntimePressureRawOrphanSweepSettledPass;
+  lastNonzeroRemoval?: RuntimePressureRawOrphanSweepRemoval;
+}
+
+export interface RuntimePressureRawOrphanSweepSettledPass {
+  settledAt?: string;
+  complete?: boolean;
+  inspectedEntries?: number;
+  referencedSkipped?: number;
+  quarantined?: number;
+  removed?: number;
+  removedBytes?: number;
+}
+
+export interface RuntimePressureRawOrphanSweepRemoval {
+  removedAt?: string;
+  removed?: number;
+  removedBytes?: number;
 }
 
 export interface RuntimePressureRawCaptureHealth {
@@ -4698,6 +4719,43 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
     const normalized = normalizeFiniteNumber(value);
     return normalized != null && normalized >= 0 ? Math.trunc(normalized) : undefined;
   };
+  const optionalEnum = (value: unknown, allowed: readonly string[]) =>
+    typeof value === "string" && allowed.includes(value) ? value : undefined;
+  const rawOrphanSweepAdmissionStages = ["background_slot", "maintenance_write"] as const;
+  const rawOrphanSweepAdmissionCauses = [
+    "pressure_cooldown",
+    "background_busy",
+    "coordinator_wait",
+    "shutdown",
+  ] as const;
+  const normalizeSettledPass = (
+    raw: unknown,
+  ): RuntimePressureRawOrphanSweepSettledPass | undefined => {
+    if (raw == null || typeof raw !== "object") {
+      return undefined;
+    }
+    const pass = raw as Record<string, unknown>;
+    return {
+      settledAt: optionalString(pass.settledAt),
+      complete: typeof pass.complete === "boolean" ? pass.complete : undefined,
+      inspectedEntries: optionalCount(pass.inspectedEntries),
+      referencedSkipped: optionalCount(pass.referencedSkipped),
+      quarantined: optionalCount(pass.quarantined),
+      removed: optionalCount(pass.removed),
+      removedBytes: optionalCount(pass.removedBytes),
+    };
+  };
+  const normalizeRemoval = (raw: unknown): RuntimePressureRawOrphanSweepRemoval | undefined => {
+    if (raw == null || typeof raw !== "object") {
+      return undefined;
+    }
+    const removal = raw as Record<string, unknown>;
+    return {
+      removedAt: optionalString(removal.removedAt),
+      removed: optionalCount(removal.removed),
+      removedBytes: optionalCount(removal.removedBytes),
+    };
+  };
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
     const slice = (raw ?? {}) as Record<string, unknown>;
     return {
@@ -4832,6 +4890,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       referencedSkipped: optionalCount(rawOrphanSweep?.referencedSkipped),
       quarantined: optionalCount(rawOrphanSweep?.quarantined),
       removed: optionalCount(rawOrphanSweep?.removed),
+      removedBytes: optionalCount(rawOrphanSweep?.removedBytes),
       lastProgressAt: optionalString(rawOrphanSweep?.lastProgressAt),
       nextRetryAt: optionalString(rawOrphanSweep?.nextRetryAt),
       deferReason: optionalString(rawOrphanSweep?.deferReason),
@@ -4840,6 +4899,10 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
         /^[0-9a-f]{16}$/.test(rawOrphanSweep.failureFingerprint)
           ? rawOrphanSweep.failureFingerprint
           : undefined,
+      admissionStage: optionalEnum(rawOrphanSweep?.admissionStage, rawOrphanSweepAdmissionStages),
+      admissionCause: optionalEnum(rawOrphanSweep?.admissionCause, rawOrphanSweepAdmissionCauses),
+      lastSettledPass: normalizeSettledPass(rawOrphanSweep?.lastSettledPass),
+      lastNonzeroRemoval: normalizeRemoval(rawOrphanSweep?.lastNonzeroRemoval),
     },
     rawCapture: {
       state: optionalString(rawCapture?.state) ?? "unknown",

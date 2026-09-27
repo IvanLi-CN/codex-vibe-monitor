@@ -69,7 +69,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 9597,
+      "line_budget": 11201,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -105,7 +105,7 @@
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 6920,
+      "line_budget": 6947,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
@@ -117,7 +117,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6447,
+      "line_budget": 6521,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -141,13 +141,13 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 9211,
+      "line_budget": 9750,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
       "role": "test_helper",
-      "line_budget": 4141,
+      "line_budget": 4143,
       "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
     },
     {
@@ -201,7 +201,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6171,
+      "line_budget": 6172,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {

@@ -87,7 +87,14 @@ describe("demo MSW handlers", () => {
       runtimePressureHealth: {
         state: string;
         dashboardProjection: { livePathDbReadCount: number };
-        rawOrphanSweep: { state: string };
+        rawOrphanSweep: {
+          state: string;
+          removedBytes: number;
+          admissionStage?: string;
+          admissionCause?: string;
+          lastSettledPass: { complete: boolean; removedBytes: number };
+          lastNonzeroRemoval: { removed: number; removedBytes: number };
+        };
       };
     };
     expect(payload.runtimePressureHealth.state).toBe(expectedState);
@@ -95,6 +102,20 @@ describe("demo MSW handlers", () => {
     expect(payload.runtimePressureHealth.rawOrphanSweep.state).toBe(
       expectedState === "deferred" || expectedState === "degraded" ? expectedState : "idle",
     );
+    expect(payload.runtimePressureHealth.rawOrphanSweep.lastSettledPass).toMatchObject({
+      complete: expectedState !== "degraded",
+      removedBytes: expectedState === "degraded" ? 0 : 65_536,
+    });
+    expect(payload.runtimePressureHealth.rawOrphanSweep.lastNonzeroRemoval).toMatchObject({
+      removed: 1,
+      removedBytes: 65_536,
+    });
+    if (expectedState === "deferred") {
+      expect(payload.runtimePressureHealth.rawOrphanSweep).toMatchObject({
+        admissionStage: "background_slot",
+        admissionCause: "background_busy",
+      });
+    }
   });
 
   it("serves deterministic dashboard activity in the shape used by the production normalizer", async () => {
