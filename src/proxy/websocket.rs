@@ -2205,22 +2205,8 @@ pub(crate) async fn record_ws_pre_upstream_failure(
     failure_kind: &'static str,
     message: &str,
 ) -> Result<()> {
-    let result = persist_websocket_pre_upstream_failure(
-        state,
-        trace,
-        prompt_cache_key,
-        failure_kind,
-        message,
-    )
-    .await;
-    if let Some(prompt_cache_key) = prompt_cache_key {
-        release_active_prompt_cache_conversation(
-            &state.prompt_cache_conversation_cache,
-            prompt_cache_key,
-        )
-        .await;
-    }
-    result
+    persist_websocket_pre_upstream_failure(state, trace, prompt_cache_key, failure_kind, message)
+        .await
 }
 
 pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
@@ -2400,6 +2386,7 @@ pub(crate) struct WsUsageTracker {
     turn_stream_started_at: Option<Instant>,
     turn_occurred_at: Option<String>,
     active_turn_invoke_id: Option<String>,
+    turn_prompt_cache_key: Option<String>,
     response_id: Option<String>,
     service_tier: Option<String>,
     runtime_snapshot_published: bool,
@@ -2429,6 +2416,7 @@ impl WsUsageTracker {
             turn_stream_started_at: None,
             turn_occurred_at: None,
             active_turn_invoke_id: None,
+            turn_prompt_cache_key: None,
             response_id: None,
             service_tier: None,
             runtime_snapshot_published: false,
@@ -2446,6 +2434,7 @@ impl WsUsageTracker {
         self.turn_stream_started_at = None;
         self.turn_occurred_at = Some(shanghai_now_string());
         self.active_turn_invoke_id = None;
+        self.turn_prompt_cache_key = None;
         self.response_id = None;
         self.service_tier = None;
         self.runtime_snapshot_published = false;
@@ -2462,6 +2451,12 @@ impl WsUsageTracker {
         self.active_turn_invoke_id
             .clone()
             .unwrap_or_else(|| self.trace.invoke_id.clone())
+    }
+
+    fn current_turn_prompt_cache_key(&self) -> Option<&str> {
+        self.turn_prompt_cache_key
+            .as_deref()
+            .or(self.prompt_cache_key.as_deref())
     }
 
     async fn retain_prompt_cache_key(&mut self, state: &AppState, prompt_cache_key: &str) {
@@ -2523,7 +2518,7 @@ impl WsUsageTracker {
 
     fn mark_terminal_prompt_cache_key(&mut self) {
         if let Some(prompt_cache_key) =
-            websocket_effective_prompt_cache_key(self.prompt_cache_key.as_deref())
+            websocket_effective_prompt_cache_key(self.current_turn_prompt_cache_key())
         {
             self.terminal_prompt_cache_keys
                 .insert(prompt_cache_key.to_string());
@@ -2550,8 +2545,9 @@ impl WsUsageTracker {
         if self.active_turn_invoke_id.is_some() {
             return Ok(());
         }
+        let turn_prompt_cache_key = self.prompt_cache_key.clone();
         let invoke_id =
-            match allocate_proxy_invoke_id(state, self.prompt_cache_key.as_deref()).await {
+            match allocate_proxy_invoke_id(state, turn_prompt_cache_key.as_deref()).await {
                 Ok(invoke_id) => invoke_id,
                 Err(err) => {
                     warn!(
@@ -2567,7 +2563,8 @@ impl WsUsageTracker {
                 }
             };
         self.active_turn_invoke_id = Some(invoke_id);
-        if let Some(prompt_cache_key) = self.prompt_cache_key.clone() {
+        self.turn_prompt_cache_key = turn_prompt_cache_key.clone();
+        if let Some(prompt_cache_key) = turn_prompt_cache_key {
             if self.terminal_prompt_cache_keys.remove(&prompt_cache_key) {
                 retain_active_prompt_cache_conversation(
                     &state.prompt_cache_conversation_cache,
@@ -2662,7 +2659,7 @@ impl WsUsageTracker {
             state,
             &self.account,
             &self.trace,
-            self.prompt_cache_key.as_deref(),
+            self.current_turn_prompt_cache_key(),
             event,
             self.request_contains_encrypted_content,
             text,
@@ -2707,10 +2704,9 @@ impl WsUsageTracker {
             is_stream: true,
             ..RequestCaptureInfo::default()
         };
-        request_info.prompt_cache_key = self.prompt_cache_key.clone();
+        request_info.prompt_cache_key = self.current_turn_prompt_cache_key().map(ToOwned::to_owned);
         request_info.prompt_cache_key_attribution_source = self
-            .prompt_cache_key
-            .as_ref()
+            .current_turn_prompt_cache_key()
             .map(|_| "websocket_trace".to_string());
         let invoke_id = self.turn_invoke_id();
         let mut record = build_running_proxy_capture_record(
@@ -2720,7 +2716,7 @@ impl WsUsageTracker {
             &request_info,
             self.trace.requester_ip.as_deref(),
             self.trace.sticky_key.as_deref(),
-            self.prompt_cache_key.as_deref(),
+            self.current_turn_prompt_cache_key(),
             true,
             Some(self.account.account_id),
             Some(self.account.display_name.as_str()),
@@ -2774,7 +2770,7 @@ impl WsUsageTracker {
             state,
             &self.account,
             &self.trace,
-            self.prompt_cache_key.as_deref(),
+            self.current_turn_prompt_cache_key(),
             event,
             self.request_contains_encrypted_content,
             &raw_event,
@@ -4946,6 +4942,13 @@ mod websocket_tests {
             .ensure_turn_invoke_id(&state)
             .await
             .expect("websocket turn invoke id allocation");
+        tracker
+            .set_prompt_cache_key(&state, Some("websocket-next-turn".to_string()))
+            .await;
+        assert_eq!(
+            tracker.current_turn_prompt_cache_key(),
+            Some("websocket-bound-allocator")
+        );
 
         let invoke_id = tracker.turn_invoke_id();
         let conversation_id: String = sqlx::query_scalar(
@@ -4971,6 +4974,10 @@ mod websocket_tests {
         let invoke_id = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
             .await
             .expect("allocate websocket pre-upstream failure invoke id");
+        let _second_invoke_id =
+            allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
+                .await
+                .expect("allocate second websocket pre-upstream failure invoke id");
         let trace = PoolUpstreamAttemptTraceContext {
             invoke_id: invoke_id.clone(),
             occurred_at: shanghai_now_string(),
@@ -4991,19 +4998,19 @@ mod websocket_tests {
         .await
         .expect("persist websocket pre-upstream failure");
 
-        let cache = state.prompt_cache_conversation_cache.lock().await;
-        assert!(
-            !cache
-                .identity_cache
-                .active_prompt_cache_keys
-                .contains_key(prompt_cache_key)
-        );
-        drop(cache);
-
         state
             .sqlite_batch_writer
             .flush_buffered_for_test(&state.pool)
             .await;
+        let cache = state.prompt_cache_conversation_cache.lock().await;
+        assert_eq!(
+            cache
+                .identity_cache
+                .active_prompt_cache_keys
+                .get(prompt_cache_key),
+            Some(&1)
+        );
+        drop(cache);
         let persisted_status: String =
             sqlx::query_scalar("SELECT status FROM codex_invocations WHERE invoke_id = ?1")
                 .bind(invoke_id)

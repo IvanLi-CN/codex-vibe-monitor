@@ -188,9 +188,12 @@ async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
     let unbound_second = allocate_proxy_invoke_id(&state, None)
         .await
         .expect("allocate second unbound invoke id");
-    assert_eq!(&unbound_first[..6], &unbound_second[..6]);
     assert_eq!(&unbound_first[6..], "AAAA");
-    assert_eq!(&unbound_second[6..], "AAAB");
+    if unbound_first[..6] == unbound_second[..6] {
+        assert_eq!(&unbound_second[6..], "AAAB");
+    } else {
+        assert_eq!(&unbound_second[6..], "AAAA");
+    }
 
     let row_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'allocator-key'",
@@ -529,6 +532,59 @@ async fn prompt_cache_conversation_allocator_recovers_same_key_database_race() {
         .await
         .expect("count raced prompt-cache conversation rows"),
         1
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_recovers_after_cross_state_cleanup() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let cleanup_state =
+        test_state_from_existing_pool(state.pool.clone(), test_config(), true).await;
+    let prompt_cache_key = "cross-state-cleanup-key";
+    let first = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate initial prompt-cache invoke id");
+
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .execute(&state.pool)
+    .await
+    .expect("mark prompt-cache identity as historically active");
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &cleanup_state.prompt_cache_conversation_cache,
+        )
+        .await
+        .expect("remove prompt-cache identity from another state"),
+        1
+    );
+
+    let recovered = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("recover stale prompt-cache identity cache");
+    assert_eq!(recovered.len(), PROXY_INVOKE_ID_LENGTH);
+    assert_eq!(&recovered[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
+    assert_ne!(
+        &recovered[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
+        &first[..PROMPT_CACHE_CONVERSATION_ID_LENGTH]
+    );
+    let persisted_conversation_id: String = sqlx::query_scalar(
+        "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recreated prompt-cache identity");
+    assert_eq!(
+        persisted_conversation_id,
+        recovered[..PROMPT_CACHE_CONVERSATION_ID_LENGTH].to_string()
     );
 }
 

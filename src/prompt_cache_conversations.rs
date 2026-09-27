@@ -185,10 +185,10 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
         SELECT EXISTS(
             SELECT 1
             FROM (
-                SELECT DISTINCT TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) AS prompt_cache_key
+                SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key
                 FROM codex_invocations
                 WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL
-                  AND TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) <> ''
+                  AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''
             ) AS candidates
             LEFT JOIN prompt_cache_conversations
                 ON prompt_cache_conversations.prompt_cache_key = candidates.prompt_cache_key
@@ -210,10 +210,10 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     }
 
     let prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT DISTINCT TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) AS prompt_cache_key \
+        "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
          FROM codex_invocations \
          WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
-           AND TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) <> '' \
+           AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> '' \
          ORDER BY prompt_cache_key"
     ))
     .fetch_all(pool)
@@ -285,15 +285,16 @@ async fn conversation_prefix_conflicts_with_live_invocation(
     pool: &Pool<Sqlite>,
     conversation_id: &str,
 ) -> Result<bool> {
+    let upper_bound = format!("{conversation_id}:");
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(\
             SELECT 1 FROM codex_invocations \
-            WHERE length(invoke_id) = ?1 AND substr(invoke_id, 1, ?2) = ?3
+            WHERE invoke_id >= ?1 AND invoke_id < ?2 AND length(invoke_id) = ?3
         )",
     )
-    .bind(PROXY_INVOKE_ID_LENGTH as i64)
-    .bind(PROMPT_CACHE_CONVERSATION_ID_LENGTH as i64)
     .bind(conversation_id)
+    .bind(upper_bound)
+    .bind(PROXY_INVOKE_ID_LENGTH as i64)
     .fetch_one(pool)
     .await?
         != 0)
@@ -431,9 +432,8 @@ async fn recover_prompt_cache_conversation_identity(
 async fn reserve_prompt_cache_conversation_sequence(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
-    conversation_id: &str,
     next_sequence: u32,
-) -> Result<(String, u32)> {
+) -> Result<Option<(String, u32)>> {
     let reservation_floor = i64::from(next_sequence) - 1;
     let maximum_sequence = i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY - 1);
     let mut transaction = pool
@@ -446,13 +446,11 @@ async fn reserve_prompt_cache_conversation_sequence(
         SET last_invoke_sequence = MAX(last_invoke_sequence, ?1) + 1,
             updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE prompt_cache_key = ?2
-          AND conversation_id = ?3
-          AND MAX(last_invoke_sequence, ?1) < ?4
+          AND MAX(last_invoke_sequence, ?1) < ?3
         "#,
     )
     .bind(reservation_floor)
     .bind(prompt_cache_key)
-    .bind(conversation_id)
     .bind(maximum_sequence)
     .execute(&mut *transaction)
     .await
@@ -471,10 +469,7 @@ async fn reserve_prompt_cache_conversation_sequence(
         .context("failed to commit prompt-cache conversation sequence reservation")?;
 
     let Some((reserved_conversation_id, reserved_sequence)) = row else {
-        bail!(
-            "prompt-cache conversation identity disappeared during sequence reservation: key fingerprint {}",
-            prompt_cache_key_fingerprint(prompt_cache_key)
-        );
+        return Ok(None);
     };
     if update_result.rows_affected() == 0 {
         if reserved_sequence >= maximum_sequence {
@@ -498,7 +493,7 @@ async fn reserve_prompt_cache_conversation_sequence(
             PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY
         );
     }
-    Ok((reserved_conversation_id, reserved_sequence))
+    Ok(Some((reserved_conversation_id, reserved_sequence)))
 }
 
 async fn max_live_sequence_for_conversation(
@@ -571,69 +566,84 @@ async fn allocate_proxy_invoke_id_locked(
     prompt_cache_key: Option<&str>,
 ) -> Result<String> {
     if let Some(prompt_cache_key) = normalize_prompt_cache_key(prompt_cache_key) {
-        let (conversation_id, next_sequence) = {
-            let identity = if let Some(identity) =
-                cache.identity_cache.conversations.get(prompt_cache_key)
-            {
-                debug!(
-                    prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                    conversation_id = %identity.conversation_id,
-                    "prompt-cache conversation identity cache hit"
-                );
-                identity.clone()
-            } else {
-                debug!(
-                    prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                    "prompt-cache conversation identity cache miss; loading from database"
-                );
-                let identity = match load_or_create_prompt_cache_conversation_identity(
+        let (conversation_id, sequence) = 'reserve: {
+            for recovery_attempt in 0..=1 {
+                let (conversation_id, next_sequence) = {
+                    let identity = if let Some(identity) =
+                        cache.identity_cache.conversations.get(prompt_cache_key)
+                    {
+                        debug!(
+                            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                            conversation_id = %identity.conversation_id,
+                            "prompt-cache conversation identity cache hit"
+                        );
+                        identity.clone()
+                    } else {
+                        debug!(
+                            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                            "prompt-cache conversation identity cache miss; loading from database"
+                        );
+                        let identity = match load_or_create_prompt_cache_conversation_identity(
+                            &state.pool,
+                            prompt_cache_key,
+                        )
+                        .await
+                        {
+                            Ok(identity) => identity,
+                            Err(err) => {
+                                error!(
+                                    prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                                    error = %err,
+                                    "failed to recover or create prompt-cache conversation identity"
+                                );
+                                return Err(err);
+                            }
+                        };
+                        debug!(
+                            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                            conversation_id = %identity.conversation_id,
+                            "prompt-cache conversation identity recovered from database"
+                        );
+                        cache
+                            .identity_cache
+                            .conversations
+                            .entry(prompt_cache_key.to_string())
+                            .or_insert(identity)
+                            .clone()
+                    };
+                    (identity.conversation_id, identity.next_sequence)
+                };
+                if next_sequence >= PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY {
+                    let err = encode_prompt_cache_conversation_sequence(next_sequence)
+                        .expect_err("sequence capacity check should reject exhausted identity");
+                    error!(
+                        conversation_id = %conversation_id,
+                        sequence = next_sequence,
+                        error = %err,
+                        "prompt-cache conversation invoke sequence exhausted"
+                    );
+                    return Err(err);
+                }
+                if let Some(reservation) = reserve_prompt_cache_conversation_sequence(
                     &state.pool,
                     prompt_cache_key,
+                    next_sequence,
                 )
-                .await
+                .await?
                 {
-                    Ok(identity) => identity,
-                    Err(err) => {
-                        error!(
-                            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                            error = %err,
-                            "failed to recover or create prompt-cache conversation identity"
-                        );
-                        return Err(err);
-                    }
-                };
-                debug!(
-                    prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                    conversation_id = %identity.conversation_id,
-                    "prompt-cache conversation identity recovered from database"
+                    break 'reserve reservation;
+                }
+                if recovery_attempt == 0 {
+                    cache.identity_cache.conversations.remove(prompt_cache_key);
+                    continue;
+                }
+                bail!(
+                    "prompt-cache conversation identity disappeared during sequence reservation: key fingerprint {}",
+                    prompt_cache_key_fingerprint(prompt_cache_key)
                 );
-                cache
-                    .identity_cache
-                    .conversations
-                    .entry(prompt_cache_key.to_string())
-                    .or_insert(identity)
-                    .clone()
-            };
-            (identity.conversation_id, identity.next_sequence)
+            }
+            unreachable!("prompt-cache conversation reservation loop should return or retry")
         };
-        if next_sequence >= PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY {
-            let err = encode_prompt_cache_conversation_sequence(next_sequence)
-                .expect_err("sequence capacity check should reject exhausted identity");
-            error!(
-                conversation_id = %conversation_id,
-                sequence = next_sequence,
-                error = %err,
-                "prompt-cache conversation invoke sequence exhausted"
-            );
-            return Err(err);
-        }
-        let (conversation_id, sequence) = reserve_prompt_cache_conversation_sequence(
-            &state.pool,
-            prompt_cache_key,
-            &conversation_id,
-            next_sequence,
-        )
-        .await?;
         let suffix = encode_prompt_cache_conversation_sequence(sequence)?;
         let identity = cache
             .identity_cache
@@ -702,7 +712,32 @@ async fn allocate_proxy_invoke_id_locked(
     Ok(invoke_id)
 }
 
+const PROMPT_CACHE_CONVERSATION_STATS_REFRESH_ATTEMPTS: usize = 3;
+
 pub(crate) async fn refresh_prompt_cache_conversation_stats(
+    pool: &Pool<Sqlite>,
+    prompt_cache_keys: &HashSet<String>,
+) -> Result<usize> {
+    let mut last_error = None;
+    for attempt in 1..=PROMPT_CACHE_CONVERSATION_STATS_REFRESH_ATTEMPTS {
+        match refresh_prompt_cache_conversation_stats_once(pool, prompt_cache_keys).await {
+            Ok(refreshed) => return Ok(refreshed),
+            Err(error) => {
+                warn!(
+                    attempt,
+                    max_attempts = PROMPT_CACHE_CONVERSATION_STATS_REFRESH_ATTEMPTS,
+                    error = %error,
+                    "prompt-cache conversation statistics refresh attempt failed"
+                );
+                last_error = Some(error);
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+    Err(last_error.expect("prompt-cache statistics refresh should record its last error"))
+}
+
+async fn refresh_prompt_cache_conversation_stats_once(
     pool: &Pool<Sqlite>,
     prompt_cache_keys: &HashSet<String>,
 ) -> Result<usize> {
@@ -734,7 +769,7 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats(
                 MIN(occurred_at) AS first_invocation_at,
                 MAX(occurred_at) AS last_invocation_at
             FROM codex_invocations
-            WHERE TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) = ?1
+            WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = ?1
             "#,
         ))
         .bind(prompt_cache_key)
@@ -750,7 +785,7 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats(
             continue;
         };
         let max_sequence = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT invoke_id FROM codex_invocations WHERE TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) = ?1"
+            "SELECT invoke_id FROM codex_invocations WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = ?1"
         ))
         .bind(prompt_cache_key)
         .fetch_all(&mut *tx)
@@ -853,7 +888,7 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
     active_prompt_cache_keys: &HashSet<String>,
 ) -> Result<usize> {
     let predicate = format!(
-        "TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) = prompt_cache_conversations.prompt_cache_key"
+        "{INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = prompt_cache_conversations.prompt_cache_key"
     );
     let orphan_predicate = format!(
         "(last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
