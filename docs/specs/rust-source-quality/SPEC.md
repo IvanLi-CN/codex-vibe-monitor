@@ -60,7 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 46 explicit file entries: 25
+The policy MUST keep the current inventory as 45 explicit file entries: 24
 production candidates above 2,500 lines and 21 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
 counts for checker compatibility. Each current entry MUST record its exact
@@ -94,7 +94,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 46 entries have
+The current inventory retains no cohesive-module exceptions: all 45 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
@@ -121,6 +121,19 @@ the child module declaration, and a crate-visible re-export; names, signatures,
 conditional compilation, SQL, timing, tests, and runtime behavior remain
 unchanged. The suppression inventory remains at 117 entries, with the moved
 allow recorded under the child path.
+
+The upstream route-binding penalty and live-candidate evaluation extraction
+moves the complete contiguous region from physical lines 390 through 819
+inclusive (430 moved lines) of
+`src/upstream_accounts/routing/selection.rs` into
+`src/upstream_accounts/routing/selection/live_candidate.rs`, on the verified
+main merge base `c94f1f0a0f6ee51e0c442a6007d431c53ee7f151`. The parent retains
+`LivePoolCandidateEvaluation`, scoring helpers, and resolver logic. After
+rustfmt, the parent is 2,449 physical lines and the child is 432 physical
+lines, both below the 2,500-line production target, so the parent is removed
+from the policy inventory. The parent re-export and routing module export keep
+the existing crate-visible call paths; function signatures, visibility, SQL,
+routing behavior, and test semantics remain unchanged.
 
 ## Later Module Rollout
 
@@ -159,7 +172,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 25 production and 21 test/helper entries, with
+Pass condition: the policy has 24 production and 21 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004

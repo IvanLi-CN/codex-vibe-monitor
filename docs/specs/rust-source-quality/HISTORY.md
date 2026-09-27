@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 46 large-file entries explicit.
+  its 45 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -235,3 +235,24 @@ Validation for this extraction is the focused existing proxy cost/backfill and
 prompt-cache stateful SQLite tests, the stateful SQLite backend profile,
 rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
 checking, all-target Clippy, and `git diff --check`.
+
+The upstream route-binding penalty and live-candidate evaluation extraction
+moves the complete contiguous region from physical lines 390 through 819
+inclusive (430 moved lines) of
+`src/upstream_accounts/routing/selection.rs` into
+`src/upstream_accounts/routing/selection/live_candidate.rs`, on the verified
+main merge base `c94f1f0a0f6ee51e0c442a6007d431c53ee7f151`. The parent retains
+`LivePoolCandidateEvaluation`, scoring helpers, and resolver logic. After
+rustfmt, the parent is 2,449 physical lines and the child is 432 physical
+lines, both below the 2,500-line production target, so the parent is removed
+from the quality policy inventory. The parent and routing module re-exports
+preserve existing crate-visible call paths; function signatures, visibility,
+SQL, routing behavior, and test semantics remain unchanged. The current
+inventory is 24 production and 21 test/helper candidates (45 entries total),
+while the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 117.
+
+Validation for this extraction is the focused route-binding penalty and
+candidate-resolution tests, rustfmt, the Rust source-quality checker and
+fixture harness, all-target Cargo checking, all-target Clippy, and the
+stateful SQLite backend profile.
