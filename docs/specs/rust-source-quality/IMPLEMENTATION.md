@@ -8,14 +8,25 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 42 current explicit file
-  budgets, and 117 standalone suppression declarations. The immutable
-  preparation production/test-helper counts remain 32 and 23.
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 41 current explicit file
+  budgets (23 production and 18 test/helper), and 117 standalone suppression
+  declarations. The immutable preparation production/test-helper counts remain
+  32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
   `.github/workflows/ci-main.yml` delegate Rust source quality to the same
   runner while retaining the existing lint job name and check topology.
+
+The provisioning-scope extraction moves six contiguous stateful SQLite tests
+from physical lines 768 through 1,400 of
+`src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt.rs`
+into
+`src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt/provisioning_scope.rs`.
+The parent is 2,919 physical lines and the child is 634 lines, both below the
+3,000-line test/helper target. The parent is removed from the current policy
+inventory; test names, bodies, assertions, fixtures, timing, and resource
+classification remain unchanged.
 
 The first source-quality extraction keeps
 `src/api/slices/invocations_and_summary.rs` as the parent module and moves the

@@ -294,3 +294,17 @@ policy inventory, leaving 23 production and 19 test/helper candidates (42
 total); the immutable preparation baseline remains 32 and 23 and the
 suppression baseline remains 117. Test names, assertions, fixtures, timing,
 and stateful SQLite resource classification remain unchanged.
+
+The provisioning-scope extraction moves the six complete contiguous tests from
+physical lines 768 through 1,400 of
+`src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt.rs`
+into
+`src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt/provisioning_scope.rs`
+on verified main base `81163d7ff2a3b4c00e5a5193d44e08e05ed61b3f`. Both modules
+remain under the stateful SQLite test prefix. The parent is removed from the
+source-quality inventory, reducing the current inventory to 23 production and
+18 test/helper entries (41 total); the immutable preparation baseline remains
+32 and 23 and the suppression baseline remains 117. Test names, bodies,
+assertions, fixtures, timing, and resource classification remain unchanged.
+The parent is 2,919 physical lines and the child is 634 lines, both below the
+3,000-line test/helper target.

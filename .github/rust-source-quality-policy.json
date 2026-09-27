@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 42,
+    "inventory_entries": 41,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -251,12 +251,6 @@
       "role": "test_helper",
       "line_budget": 4729,
       "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
-    },
-    {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt.rs",
-      "role": "test_helper",
-      "line_budget": 3550,
-      "next_module_workstream": "Split upstream resolver concurrency/node-shunt fixtures by core, provisioning, and failures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
