@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.75.1",
+  "base_stable_version": "2.75.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-27T18:57:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.75.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4033b52128e79572b05ad247fadb5521a8c2b469",
+  "pr_number": 1042,
+  "pr_title": "refactor(tests): extract pricing catalog stateful cases",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.75.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.75.1",
+  "target_sha": "c8807d020ddba5ecba70ee379ad8bcc832666147",
+  "type_label": "type:patch"
+}
