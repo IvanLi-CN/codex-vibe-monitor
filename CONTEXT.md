@@ -16,6 +16,18 @@ _Avoid_: 对外调用, 调用次数
 The target Dashboard read model for the natural-day count view. It renders one horizontal bar for each logical Invocation and keeps time, concurrency, duration, terminal state, and TTFT in one shared chart surface.
 _Avoid_: 旧聚合图, 调用次数柱状图
 
+**自然日数据域（Natural-day Data Scope）**:
+The selected browser-local today or yesterday interval represented by UTC start and end bounds. It limits which timeline data may be displayed to one natural day; it is not the same as the shorter visible viewport.
+_Avoid_: 滚动三十天, 默认视窗, 历史全量
+
+**时间线视窗（Timeline Viewport）**:
+The visible `from`/`to` interval inside the natural-day data domain. It defaults to 30 minutes and may move or zoom within that domain without changing the selected day.
+_Avoid_: 数据域, 查询历史范围, 自由时间范围
+
+**边界重叠（Boundary Overlap）**:
+The bounded preceding-day read used to include an Invocation that began before the selected natural day and ended inside it. It is limited to one day and never expands the displayed data domain.
+_Avoid_: 三十天回溯, 第二天图表, 上游重试
+
 **时间线明细不可用（Timeline Detail Unavailable）**:
 A visible state of the Invocation Timeline when detailed records cannot currently be read or completed. It is not zero calls, not an aggregate substitute, and not permission to mount the legacy chart.
 _Avoid_: 空数据, 聚合回退, 数据转换中

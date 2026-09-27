@@ -8,6 +8,8 @@ The screenshot's Dashboard activity chart is replaced only for the natural-day â
 
 The timeline endpoint uses opaque cursor pagination with one immutable `asOf` snapshot across a traversal. The client merges pages by logical Invocation identity, keeps one bar per Invocation, and coalesces live revisions while a request is in flight. A failed refresh retains and freezes the last successful timeline, while an initial failure stays inside the new chart surface as an explicit unavailable state.
 
+The endpoint also receives the selected natural-day UTC bounds separately from the shorter viewport. It rejects scopes and viewports wider than 24 hours and uses at most the preceding 24 hours for a cross-midnight boundary overlap. The duration safety limit for malformed records is not a query lookback.
+
 ## Considered Options
 
 - Keep the legacy chart as a generic fallback: rejected because it violates the replacement requirement and hides whether the new detail model is unavailable.

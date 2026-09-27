@@ -163,6 +163,16 @@ test.describe("Dashboard render performance", () => {
         await todayTab.click();
         await expect(todayTab).toHaveAttribute("aria-selected", "true");
         await expect(runPage.getByTestId("dashboard-today-activity-chart")).toBeVisible();
+        await expect(runPage.getByTestId("dashboard-invocation-timeline")).toBeVisible();
+        await expect(
+          runPage
+            .getByTestId("dashboard-invocation-timeline-lanes")
+            .locator("[data-call-value]")
+            .first(),
+        ).toBeVisible();
+        await expect(
+          runPage.locator('[data-testid="dashboard-today-activity-chart"] .recharts-wrapper'),
+        ).toHaveCount(0);
         await expect(
           runPage.getByTestId("dashboard-working-conversation-card").first(),
         ).toBeVisible();

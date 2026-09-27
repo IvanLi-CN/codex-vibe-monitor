@@ -12,7 +12,10 @@
 
 - `Invocation`: 一次对外调用，以 `invokeId` 和 `occurredAt` 标识；同一次调用的上游重试不产生新的时间线横条。
 - `Virtual row`: 按开始时间分配给调用的最低空闲并发行，用来表达并发关系。
-- Interface: `GET /api/stats/invocation-timeline` accepts UTC `from`, `to`, optional `upstreamAccountId`, optional `includeLive`, `limit`, an opaque cursor, and (after the first page) `asOf`. The response returns `asOf`, `records`, `total`, `hasMore`, and `nextCursor`. The dashboard sends `includeLive=false` for closed natural days so browser-local yesterday views stay HTTP-only. Every page in one read uses the same `asOf` snapshot.
+- `Natural-day data scope`: The selected browser-local today or yesterday interval, sent as UTC `naturalDayStart` and `naturalDayEnd`. It is the hard data boundary for the chart and is at most one day.
+- `Timeline viewport`: The visible `from`/`to` interval inside the natural-day data scope. It defaults to 30 minutes and can move or zoom only within that scope.
+- `Boundary overlap`: The bounded preceding-day read used only to include an invocation that started before the selected day and ended inside it. It is limited to one day and never expands the displayed scope.
+- Interface: `GET /api/stats/invocation-timeline` accepts UTC `naturalDayStart`, `naturalDayEnd`, `from`, `to`, optional `upstreamAccountId`, optional `includeLive`, `limit`, an opaque cursor, and (after the first page) `asOf`. The current dashboard always sends the natural-day fields; older internal callers that omit them are bounded to their viewport. The response returns `asOf`, `records`, `total`, `hasMore`, and `nextCursor`. The dashboard sends `includeLive=false` for closed natural days so browser-local yesterday views stay HTTP-only. Every page in one read uses the same `asOf` snapshot.
 
 ## Requirements
 
@@ -39,6 +42,7 @@
 ### REQ-DIT-004
 
 - The system MUST provide a bounded overlap query for global and account scopes, return `asOf`, and return stable pages that can cover every overlapping invocation without returning an incomplete page as a successful complete result.
+- The server MUST reject a natural-day scope or viewport wider than 24 hours, and MUST reject a viewport that leaves the selected natural-day scope. Boundary overlap MAY read at most the preceding 24 hours to preserve cross-midnight calls; it MUST NOT use the duration safety limit as a query lookback.
 - The server MUST preserve one `asOf` snapshot across pages. The client MUST merge pages by `(invokeId, occurredAt)` and MUST retain at most one bar per invocation.
 - A page-size limit MUST bound each response, but the limit MUST NOT cause the target chart to switch to the old aggregate chart or silently omit calls.
 - The snapshot MUST bind both invocation rows and upstream-attempt fallback rows to watermarks captured on the first page. The server MUST keep unexpired cursors valid; when the bounded snapshot cache is full, a new first-page request MUST fail explicitly rather than evicting an existing cursor.
@@ -53,6 +57,7 @@
 ### REQ-DIT-006
 
 - The system MUST default the in-scope natural-day count views to a 30-minute detail window and support zoom and pan across the full-day bounds.
+- The chart MUST display records only inside the selected natural-day data scope. A call that crosses the boundary may be clipped at the visible day edge, but the chart MUST NOT display a second day's data.
 - Once the timeline data is available, the invocation timeline MUST be the only chart rendered in the target activity-overview area for the in-scope views. The existing aggregate chart MUST NOT be rendered there as an error, offline, invalid-bounds, disconnected, or over-limit fallback.
 - Error, offline, invalid-bounds, disconnected, and over-limit states MUST remain inside the new chart surface and explain that invocation detail is unavailable; they MUST NOT silently replace the new chart with the old aggregate chart.
 - There is no data-conversion exception in this design. Generic request failure, transport state, and high volume MUST remain explicit states of the new chart surface.
@@ -64,7 +69,7 @@
 
 - Method: Rust timeline overlap tests and the timeline endpoint contract test fixture.
 - covers: `REQ-DIT-001`, `REQ-DIT-004`
-- Pass condition: cross-midnight records overlap correctly, retries are represented once, page traversal covers the full result at one `asOf`, and no page silently truncates the result.
+- Pass condition: cross-midnight records overlap correctly for a short viewport inside a distinct natural-day scope, persisted and live records older than the preceding-day bound are excluded, retries are represented once, page traversal covers the full result at one `asOf`, and no page silently truncates the result.
 
 ### VER-DIT-002
 
@@ -74,9 +79,9 @@
 
 ### VER-DIT-003
 
-- Method: responsive Storybook and dashboard render evidence.
+- Method: responsive Storybook evidence and production-build dashboard E2E rendering checks.
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
-- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the new timeline remains the only chart in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
+- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
 
 ## Related ADRs
 
