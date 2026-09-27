@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.74.0",
+  "base_stable_version": "2.73.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-27T03:24:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.74.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c98339032bc302119c7e3e07ee23a9bead83933a",
+  "pr_number": 1033,
+  "pr_title": "feat: replace dashboard count chart with invocation timeline",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.74.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.74.0",
+  "target_sha": "abd4f3ebc8360b7aa56ea745848ab2312367e204",
+  "type_label": "type:minor"
+}
