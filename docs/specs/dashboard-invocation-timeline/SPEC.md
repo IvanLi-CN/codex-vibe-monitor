@@ -69,7 +69,7 @@
 
 - Method: Rust timeline overlap tests and the timeline endpoint contract test fixture.
 - covers: `REQ-DIT-001`, `REQ-DIT-004`
-- Pass condition: cross-midnight records overlap correctly, retries are represented once, page traversal covers the full result at one `asOf`, and no page silently truncates the result.
+- Pass condition: cross-midnight records overlap correctly for a short viewport inside a distinct natural-day scope, persisted and live records older than the preceding-day bound are excluded, retries are represented once, page traversal covers the full result at one `asOf`, and no page silently truncates the result.
 
 ### VER-DIT-002
 
@@ -81,7 +81,7 @@
 
 - Method: responsive Storybook evidence and production-build dashboard E2E rendering checks.
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
-- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads the timeline without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
+- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
 
 ## Related ADRs
 

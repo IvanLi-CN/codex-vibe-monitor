@@ -694,6 +694,7 @@ async fn materialize_timeline_snapshot(
     filters: &InvocationRecordsFilters,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    overlap_start: DateTime<Utc>,
     start_bound: &str,
     overlap_start_bound: &str,
     end_bound: &str,
@@ -800,7 +801,8 @@ async fn materialize_timeline_snapshot(
         let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
             return false;
         };
-        occurred_at < range_end
+        occurred_at >= overlap_start
+            && occurred_at < range_end
             && (runtime_record_is_in_flight(record)
                 || timeline_record_overlaps(occurred_at, record.t_total_ms, range_start, range_end))
             && runtime_record_matches_filters(record, &runtime_filters, source_scope)
@@ -1041,6 +1043,7 @@ pub(crate) async fn fetch_timeline(
             &filters,
             range_start,
             range_end,
+            overlap_start,
             &start_bound,
             &overlap_start_bound,
             &end_bound,
@@ -1948,6 +1951,69 @@ mod tests {
         )
         .await;
         assert!(viewport_outside.is_err());
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn short_viewport_uses_natural_day_overlap_bound_for_persisted_and_live_records() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        for (invoke_id, occurred_at, total_ms) in [
+            ("boundary", at(0), 90_001_000_i64),
+            ("too-old", at(-1), 90_002_000_i64),
+            ("early-day", at(86_401), 3_600_000_i64),
+        ] {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', ?3, '{}', '', 'full')",
+            )
+            .bind(invoke_id)
+            .bind(db_occurred_at_lower_bound(occurred_at))
+            .bind(total_ms)
+            .execute(&state.pool)
+            .await
+            .expect("insert bounded overlap fixture");
+        }
+        for (index, (invoke_id, occurred_at)) in
+            [("live-boundary", at(0)), ("live-too-old", at(-1))]
+                .into_iter()
+                .enumerate()
+        {
+            let mut record =
+                crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+            record.id = 99_300 + index as i64;
+            record.invoke_id = invoke_id.to_string();
+            record.occurred_at = db_occurred_at_lower_bound(occurred_at);
+            record.source = SOURCE_PROXY.to_string();
+            record.status = Some("running".to_string());
+            record.live_phase = Some("requesting".to_string());
+            record.t_total_ms = None;
+            state.proxy_runtime_invocations.upsert(record);
+        }
+
+        let Json(response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                natural_day_start: Some(format_utc_iso(at(86_400))),
+                natural_day_end: Some(format_utc_iso(at(172_800))),
+                from: format_utc_iso(at(90_000)),
+                to: format_utc_iso(at(90_600)),
+                include_live: Some(true),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("fetch short viewport");
+        assert_eq!(response.total, 3);
+        assert_eq!(
+            response
+                .records
+                .iter()
+                .map(|record| record.invoke_id.as_str())
+                .collect::<Vec<_>>(),
+            ["boundary", "live-boundary", "early-day"]
+        );
         state.pool.close().await;
     }
 
