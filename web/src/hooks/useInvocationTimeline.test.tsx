@@ -563,10 +563,8 @@ describe("useInvocationTimeline", () => {
 
     pending[0]?.resolve(createTimeline("old-viewport"));
     await act(async () => {
-      await Promise.resolve();
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
     });
-    expect(pending).toHaveLength(2);
     expect(pending[1]?.options).toMatchObject({
       from: "2026-07-16T10:01:00.000Z",
       to: "2026-07-16T10:30:00.000Z",
