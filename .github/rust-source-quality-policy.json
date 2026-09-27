@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 43,
+    "inventory_entries": 42,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -167,12 +167,6 @@
       "role": "test_helper",
       "line_budget": 23829,
       "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
-      "role": "test_helper",
-      "line_budget": 3395,
-      "next_module_workstream": "Split pricing catalog/model passthrough fixtures by catalog, fallback, and accounting cases."
     },
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
