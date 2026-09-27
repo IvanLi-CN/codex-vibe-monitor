@@ -144,14 +144,22 @@ vi.mock("./DashboardTodayActivityChart", () => ({
 }));
 
 vi.mock("./DashboardInvocationTimeline", () => ({
-  DashboardInvocationTimeline: () => {
+  DashboardInvocationTimeline: ({
+    loading,
+    error,
+    closedNaturalDay,
+  }: {
+    loading?: boolean;
+    error?: string | null;
+    closedNaturalDay?: boolean;
+  }) => {
     componentState.chartRenderCount += 1;
     return (
       <div
-        data-testid="dashboard-today-activity-chart-mock"
+        data-testid="dashboard-invocation-timeline-mock"
         data-render-count={String(componentState.chartRenderCount)}
       >
-        metric:totalCount
+        {`timeline;loading:${String(Boolean(loading))};error:${error ?? "null"};closed:${String(Boolean(closedNaturalDay))}`}
       </div>
     );
   },
@@ -804,8 +812,8 @@ describe("DashboardActivityOverview", () => {
       "total:12;cacheWrite:null;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:null;spendRate:null;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true",
     );
     expect(
-      host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
-    ).toBe("metric:totalCount");
+      host?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')?.textContent,
+    ).toBe("timeline;loading:false;error:null;closed:false");
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
 
     const mobileSelects = host?.querySelector('[data-testid="dashboard-activity-mobile-selects"]');
@@ -831,8 +839,8 @@ describe("DashboardActivityOverview", () => {
         ?.getAttribute("data-active"),
     ).toBe("true");
     expect(
-      host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
-    ).toBe("metric:totalCount");
+      host?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')?.textContent,
+    ).toBe("timeline;loading:false;error:null;closed:true");
     clickTab("Tokens");
     expect(
       host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent,
@@ -906,6 +914,37 @@ describe("DashboardActivityOverview", () => {
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe(
       "metric:totalTokens;account:global;points:0",
     );
+  });
+
+  it("keeps unavailable today and offline yesterday count views on the new timeline", () => {
+    installSummaryMocks();
+    hookMocks.useTimeseries.mockReturnValue({
+      data: null,
+      isLoading: true,
+      error: null,
+    });
+
+    render(<DashboardActivityOverview />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')?.textContent,
+    ).toBe("timeline;loading:true;error:null;closed:false");
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')).toBeNull();
+
+    hookMocks.useTimeseries.mockReturnValue({
+      data: null,
+      isLoading: false,
+      error: "offline",
+    });
+    act(() => {
+      root?.render(<DashboardActivityOverview />);
+    });
+    clickTab("Yesterday");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')?.textContent,
+    ).toBe("timeline;loading:false;error:offline;closed:true");
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')).toBeNull();
   });
 
   it("shows the network metric only on today, yesterday, and 24 hours, and switches those ranges to the network chart", async () => {
@@ -1172,7 +1211,7 @@ describe("DashboardActivityOverview", () => {
     expect(componentState.chartRenderCount).toBe(1);
     expect(
       host
-        ?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')
+        ?.querySelector('[data-testid="dashboard-invocation-timeline-mock"]')
         ?.getAttribute("data-render-count"),
     ).toBe("1");
   });
