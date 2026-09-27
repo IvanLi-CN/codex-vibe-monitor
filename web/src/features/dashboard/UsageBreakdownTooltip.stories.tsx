@@ -202,9 +202,68 @@ export const Mobile390: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByTestId("usage-breakdown-mobile-list")).toBeInTheDocument();
-    await expect(canvas.getByTestId("usage-breakdown-mobile-controls")).toBeInTheDocument();
-    await expect(canvas.getByTestId("dashboard-model-breakdown-sort-total")).toBeInTheDocument();
+    const mobileList = canvas.getByTestId("usage-breakdown-mobile-list");
+    const mobileCanvas = within(mobileList);
+    await expect(mobileList).toBeInTheDocument();
+    await expect(mobileCanvas.getByTestId("usage-breakdown-mobile-controls")).toBeInTheDocument();
+    await expect(
+      mobileCanvas.getByTestId("dashboard-model-breakdown-sort-total"),
+    ).toBeInTheDocument();
+    const modelSort = mobileCanvas.getByTestId("dashboard-model-breakdown-model-sort");
+    const totalSort = mobileCanvas.getByTestId("dashboard-model-breakdown-sort-total");
+    const modelLabel = modelSort.querySelector("span");
+    if (!(modelLabel instanceof HTMLElement)) {
+      throw new Error("missing mobile model sort label");
+    }
+    await expect(getComputedStyle(modelLabel).lineHeight).toBe("16px");
+    for (const element of mobileList.querySelectorAll("button, section > div, dt, dd")) {
+      await expect(Number.parseFloat(getComputedStyle(element).fontSize)).toBeGreaterThanOrEqual(
+        12,
+      );
+    }
+    for (const label of mobileList.querySelectorAll("section:not(:first-child) > div > span")) {
+      await expect(getComputedStyle(label).flexDirection).toBe("row");
+    }
+    await expect(
+      Math.abs(modelSort.getBoundingClientRect().top - totalSort.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(1);
     await expect(canvas.getByTestId("usage-breakdown-table-scroll-region")).toHaveClass("hidden");
+  },
+};
+
+export const ConstrainedOverlay: Story = {
+  ...ExactCosts,
+  render: (args) => (
+    <div
+      data-visual-evidence-surface="dashboard-usage-breakdown-constrained-overlay"
+      className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6"
+    >
+      <div
+        data-visual-evidence-target="dashboard-usage-breakdown-constrained-table"
+        data-testid="usage-breakdown-constrained-overlay"
+        className="w-[644px] max-w-full px-3.5 py-3"
+      >
+        <UsageBreakdownTooltip {...args} />
+      </div>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const overlay = canvasElement.querySelector(
+      '[data-testid="usage-breakdown-constrained-overlay"]',
+    );
+    if (!(overlay instanceof HTMLElement)) {
+      throw new Error("missing constrained usage breakdown overlay");
+    }
+    await expect(overlay.scrollWidth).toBeLessThanOrEqual(overlay.clientWidth);
+    const tableRegion = canvasElement.querySelector(
+      '[data-testid="usage-breakdown-table-scroll-region"]',
+    );
+    if (!(tableRegion instanceof HTMLElement)) {
+      throw new Error("missing usage breakdown table region");
+    }
+    await expect(
+      Number.parseFloat(getComputedStyle(tableRegion.querySelector("table")!).fontSize),
+    ).toBeGreaterThanOrEqual(12);
+    await expect(tableRegion.scrollWidth).toBeLessThanOrEqual(tableRegion.clientWidth);
   },
 };

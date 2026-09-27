@@ -3,7 +3,6 @@ import { useTranslation } from "../../i18n";
 import type { UsageBreakdown, UsageBreakdownModel } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { ModelIdentity } from "../shared/ModelIdentity";
-import { formatReasoningEffort } from "../shared/reasoningEffort";
 import {
   ModelBreakdownMetricHeader,
   ModelBreakdownMetricSortButton,
@@ -19,6 +18,7 @@ import {
   useDashboardModelBreakdownMode,
   useDashboardModelBreakdownSort,
 } from "./dashboardModelBreakdown";
+import { ModelPerformanceModelIdentity } from "./ModelPerformanceModelIdentity";
 
 type UsageCostBreakdown = NonNullable<UsageBreakdown["costs"]>;
 
@@ -76,27 +76,29 @@ function groupLabel(
   compact = false,
 ) {
   const modelName = modelLabel(model.model, labels.unknownModel);
+
+  if (detailed) {
+    return (
+      <ModelPerformanceModelIdentity
+        model={modelName}
+        effortValue={model.reasoningEffort}
+        className="max-w-full"
+        modelClassName="text-[12px] leading-4"
+      />
+    );
+  }
+
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
       {model.model === "unknown" ? (
         <span
           className={cn(
             "truncate font-normal text-base-content/80",
-            compact && "text-[10px] leading-4",
+            compact && "text-[12px] leading-4",
           )}
         >
           {modelName}
         </span>
-      ) : detailed ? (
-        <ModelIdentity
-          model={modelName}
-          className="max-w-full justify-start"
-          textClassName={cn(
-            "break-all font-normal text-base-content/80",
-            compact && "text-[10px] leading-4",
-          )}
-          iconClassName={compact ? "h-3.5 w-3.5" : "h-4 w-4"}
-        />
       ) : (
         <span
           className={cn("flex min-w-0 max-w-full items-center gap-1.5", compact && "gap-1")}
@@ -112,23 +114,13 @@ function groupLabel(
           <span
             className={cn(
               "min-w-0 truncate font-mono font-normal text-base-content/80",
-              compact && "text-[10px] leading-4",
+              compact && "text-[12px] leading-4",
             )}
           >
             {modelName}
           </span>
         </span>
       )}
-      {detailed ? (
-        <span
-          className={cn(
-            "break-words font-normal leading-3 text-base-content/58",
-            compact ? "text-[9px]" : "text-[8px] sm:text-[10px]",
-          )}
-        >
-          {labels.reasoningEffort}: {formatReasoningEffort(model.reasoningEffort)}
-        </span>
-      ) : null}
     </span>
   );
 }
@@ -153,25 +145,25 @@ function BreakdownTable({
   return (
     <>
       <div
-        className="hidden overflow-x-auto overscroll-x-contain md:block"
+        className="hidden overflow-x-hidden desktop:block"
         data-testid="usage-breakdown-table-scroll-region"
       >
-        <table className="w-full min-w-[720px] table-fixed border-collapse text-[8px] leading-3 sm:text-[10px] sm:leading-4">
+        <table className="w-full table-fixed border-collapse text-[12px] leading-4">
           <caption className="sr-only">{title}</caption>
           <colgroup>
-            <col className="w-[210px]" />
+            <col className="w-[32%]" />
             {columns.map((column) => (
-              <col key={column.key} className="w-[102px]" />
+              <col key={column.key} className="w-[13.6%]" />
             ))}
           </colgroup>
-          <thead className="border-y border-base-300/50 bg-base-200/45 text-[8px] font-semibold text-base-content/58 sm:text-[9px]">
+          <thead className="border-y border-base-300/50 bg-base-200/45 text-[12px] font-semibold text-base-content/58">
             <tr>
               <ModelBreakdownModelHeader
                 label={modelColumnLabel}
                 sort={sort}
                 onSort={onSort}
                 simple={simple}
-                className="w-[210px] px-2 py-1.5 text-[8px] sm:text-[9px]"
+                className="px-1 py-1.5 text-[12px] leading-4"
               />
               {columns.map((column) =>
                 column.sortable ? (
@@ -181,13 +173,13 @@ function BreakdownTable({
                     column={column.key}
                     sort={sort}
                     onSort={onSort}
-                    className="min-w-[102px] px-2 py-1.5 text-[8px] sm:text-[9px]"
+                    className="px-1 py-1.5 text-[12px] leading-4"
                   />
                 ) : (
                   <th
                     key={column.key}
                     scope="col"
-                    className="min-w-[102px] border-l border-base-300/30 whitespace-nowrap px-2 py-1.5 text-right font-semibold"
+                    className="min-w-0 border-l border-base-300/30 whitespace-nowrap px-1 py-1.5 text-right font-semibold"
                   >
                     {column.label}
                   </th>
@@ -207,14 +199,14 @@ function BreakdownTable({
               >
                 <th
                   scope="row"
-                  className="w-[210px] max-w-[210px] overflow-hidden px-2 py-1 text-left font-normal text-base-content/76 whitespace-nowrap"
+                  className="min-w-0 max-w-full overflow-hidden px-2 py-1 text-left font-normal text-base-content/76 whitespace-nowrap"
                 >
                   {row.label}
                 </th>
                 {row.values.map((value) => (
                   <td
                     key={`${row.key}:${value.key}`}
-                    className="min-w-[102px] border-l border-base-300/30 px-2 py-1 text-right font-mono font-normal tabular-nums whitespace-nowrap"
+                    className="min-w-0 border-l border-base-300/30 px-1 py-1 text-right font-mono font-normal tabular-nums whitespace-nowrap"
                   >
                     {value.content}
                   </td>
@@ -224,31 +216,36 @@ function BreakdownTable({
           </tbody>
         </table>
       </div>
-      <div className="min-w-0 max-w-full md:hidden" data-testid="usage-breakdown-mobile-list">
+      <div className="min-w-0 max-w-full desktop:hidden" data-testid="usage-breakdown-mobile-list">
         <div
-          className="space-y-1 border-y border-base-300/50 bg-base-200/45 px-2 py-1.5"
+          className="border-y border-base-300/50 bg-base-200/45 px-2 py-1.5"
           data-testid="usage-breakdown-mobile-controls"
         >
-          <ModelBreakdownModelSortButton
-            label={modelColumnLabel}
-            sort={sort}
-            onSort={onSort}
-            simple={simple}
-            className="w-full text-[9px] font-semibold text-base-content/58"
-          />
-          <div className="flex min-w-0 flex-wrap justify-end gap-x-3 gap-y-1">
-            {columns.map((column) =>
-              column.sortable ? (
-                <ModelBreakdownMetricSortButton
-                  key={column.key}
-                  label={column.label}
-                  column={column.key}
-                  sort={sort}
-                  onSort={onSort}
-                  className="text-[9px] font-semibold text-base-content/58"
-                />
-              ) : null,
-            )}
+          <div
+            className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1"
+            data-testid="usage-breakdown-mobile-sort-row"
+          >
+            <ModelBreakdownModelSortButton
+              label={modelColumnLabel}
+              sort={sort}
+              onSort={onSort}
+              simple={simple}
+              className="min-w-0 flex-1 text-[12px] font-semibold text-base-content/58"
+            />
+            <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+              {columns.map((column) =>
+                column.sortable ? (
+                  <ModelBreakdownMetricSortButton
+                    key={column.key}
+                    label={column.label}
+                    column={column.key}
+                    sort={sort}
+                    onSort={onSort}
+                    className="text-[12px] font-semibold text-base-content/58"
+                  />
+                ) : null,
+              )}
+            </div>
           </div>
         </div>
         <div className="divide-y divide-base-300/35">
@@ -257,7 +254,7 @@ function BreakdownTable({
               key={row.key}
               className={rowIndex === 0 ? "bg-base-100/45 px-2 py-1.5" : "px-2 py-1.5"}
             >
-              <div className="min-w-0 max-w-full text-left font-normal text-[10px] leading-4 text-base-content/76">
+              <div className="min-w-0 max-w-full text-left font-normal text-[12px] leading-4 text-base-content/76">
                 {row.compactLabel ?? row.label}
               </div>
               <dl className="mt-1 grid min-w-0 grid-cols-3 gap-x-2 gap-y-1.5">
@@ -268,10 +265,10 @@ function BreakdownTable({
                       key={`${row.key}:${column.key}`}
                       className="min-w-0 border-t border-base-300/30 pt-1"
                     >
-                      <dt className="min-w-0 truncate text-[9px] leading-3 text-base-content/58">
+                      <dt className="min-w-0 truncate text-[12px] leading-4 text-base-content/58">
                         {column.label}
                       </dt>
-                      <dd className="mt-0 min-w-0 text-right font-mono text-[10px] leading-3 font-normal tabular-nums">
+                      <dd className="mt-0 min-w-0 text-right font-mono text-[12px] leading-4 font-normal tabular-nums">
                         {value?.content ?? "—"}
                       </dd>
                     </div>
@@ -514,7 +511,7 @@ export function UsageBreakdownTooltip({
   return (
     <div data-testid="usage-breakdown-tooltip" className="min-w-0 max-w-full space-y-1.5">
       <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
-        <div className="min-w-0 text-[11px] font-semibold leading-4 text-base-content/72">
+        <div className="min-w-0 text-[12px] font-semibold leading-4 text-base-content/72">
           {title}
         </div>
         <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
