@@ -24,6 +24,8 @@ const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
 const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE: usize = 100;
+const INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE: i64 = 64;
+const INVOCATION_TIMELINE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
@@ -56,23 +58,82 @@ static INVOCATION_TIMELINE_SNAPSHOTS: once_cell::sync::Lazy<
 > = once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
 static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+static INVOCATION_TIMELINE_CLEANUP_CURSOR: once_cell::sync::Lazy<StdMutex<Option<String>>> =
+    once_cell::sync::Lazy::new(|| StdMutex::new(None));
 
 #[cfg(test)]
 #[derive(Clone)]
-struct TimelineMaterializationPause {
-    range_start: String,
-    range_end: String,
-    upstream_account_id: Option<i64>,
-    include_live: bool,
-    entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-    token: Arc<StdMutex<Option<String>>>,
+pub(crate) struct TimelineMaterializationPause {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) include_live: bool,
+    pub(crate) entered: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+    pub(crate) token: Arc<StdMutex<Option<String>>>,
 }
 
 #[cfg(test)]
-static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
+pub(crate) static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
     StdMutex<Option<TimelineMaterializationPause>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TimelineCleanupPause {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static INVOCATION_TIMELINE_TEST_CLEANUP_PAUSE: once_cell::sync::Lazy<
+    StdMutex<Option<TimelineCleanupPause>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+static INVOCATION_TIMELINE_TEST_CLEANUP_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
+#[cfg(test)]
+pub(crate) async fn lock_timeline_snapshot_cleanup_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    INVOCATION_TIMELINE_TEST_CLEANUP_LOCK.lock().await
+}
+
+#[cfg(test)]
+pub(crate) fn reset_timeline_snapshot_cleanup_cursor_for_test() {
+    *INVOCATION_TIMELINE_CLEANUP_CURSOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn install_timeline_snapshot_cleanup_pause_for_test()
+-> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let pause = TimelineCleanupPause {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let handles = (pause.entered.clone(), pause.release.clone());
+    *INVOCATION_TIMELINE_TEST_CLEANUP_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause);
+    handles
+}
+
+#[cfg(test)]
+async fn pause_before_timeline_cleanup_active_tokens() {
+    let pause = INVOCATION_TIMELINE_TEST_CLEANUP_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(pause) = pause {
+        pause.entered.notify_one();
+        pause.release.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_before_timeline_cleanup_active_tokens() {}
 
 #[cfg(test)]
 async fn pause_after_timeline_materialization(
@@ -563,34 +624,154 @@ async fn delete_timeline_snapshot_rows(
     Ok(())
 }
 
-async fn prune_timeline_snapshot_rows(pool: &Pool<Sqlite>) -> Result<(), ApiError> {
-    ensure_timeline_snapshot_table(pool).await?;
+#[derive(Debug, Default)]
+pub(crate) struct TimelineSnapshotCleanupResult {
+    pub(crate) scanned_tokens: usize,
+    pub(crate) deleted_tokens: usize,
+    pub(crate) deleted_rows: u64,
+    pub(crate) skipped: Option<String>,
+}
+
+pub(crate) async fn cleanup_timeline_snapshot_rows_once(
+    pool: &Pool<Sqlite>,
+) -> Result<TimelineSnapshotCleanupResult, ApiError> {
+    let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+    let _pressure_permit = match pressure_gate.try_begin_background("invocation_timeline_cleanup") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            return Ok(TimelineSnapshotCleanupResult {
+                skipped: Some(format!("db_pressure:{reason}")),
+                ..Default::default()
+            });
+        }
+    };
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let Some(_write_permit) = coordinator
+        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+    else {
+        return Ok(TimelineSnapshotCleanupResult {
+            skipped: Some("sqlite_writer_busy".to_string()),
+            ..Default::default()
+        });
+    };
+    let materialization_guard = match INVOCATION_TIMELINE_MATERIALIZATION_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Ok(TimelineSnapshotCleanupResult {
+                skipped: Some("snapshot_materialization_busy".to_string()),
+                ..Default::default()
+            });
+        }
+    };
+    drop(materialization_guard);
+
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind(INVOCATION_TIMELINE_SNAPSHOT_TABLE)
+    .fetch_one(pool)
+    .await?;
+    if !table_exists {
+        return Ok(TimelineSnapshotCleanupResult::default());
+    }
+    let cursor = INVOCATION_TIMELINE_CLEANUP_CURSOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let tokens = if let Some(cursor) = cursor {
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT snapshot_token FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} \
+             WHERE snapshot_token > ?1 GROUP BY snapshot_token ORDER BY snapshot_token LIMIT ?2"
+        ))
+        .bind(cursor)
+        .bind(INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT snapshot_token FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} \
+             GROUP BY snapshot_token ORDER BY snapshot_token LIMIT ?1"
+        ))
+        .bind(INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?
+    };
+    if tokens.is_empty() {
+        *INVOCATION_TIMELINE_CLEANUP_CURSOR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        return Ok(TimelineSnapshotCleanupResult::default());
+    }
+    *INVOCATION_TIMELINE_CLEANUP_CURSOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = tokens.last().cloned();
+    pause_before_timeline_cleanup_active_tokens().await;
+    let now = Instant::now();
     let active_tokens = {
-        let now = Instant::now();
         let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         snapshots.retain(|_, snapshot| snapshot.expires_at > now);
-        snapshots.keys().cloned().collect::<Vec<_>>()
+        snapshots.keys().cloned().collect::<HashSet<_>>()
     };
-    if active_tokens.is_empty() {
-        sqlx::query(&format!("DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE}"))
-            .execute(pool)
-            .await?;
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new(&format!(
-        "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token NOT IN ("
-    ));
-    for (index, token) in active_tokens.iter().enumerate() {
-        if index > 0 {
-            query.push(", ");
+    let mut result = TimelineSnapshotCleanupResult {
+        scanned_tokens: tokens.len(),
+        ..Default::default()
+    };
+    for token in tokens {
+        if active_tokens.contains(&token) {
+            continue;
         }
-        query.push_bind(token);
+        let delete_result = sqlx::query(&format!(
+            "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+        ))
+        .bind(token)
+        .execute(pool)
+        .await?;
+        if delete_result.rows_affected() > 0 {
+            result.deleted_tokens += 1;
+            result.deleted_rows = result
+                .deleted_rows
+                .saturating_add(delete_result.rows_affected());
+        }
     }
-    query.push(")");
-    query.build().execute(pool).await?;
-    Ok(())
+    Ok(result)
+}
+
+pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut cadence = tokio::time::interval_at(
+            tokio::time::Instant::now() + INVOCATION_TIMELINE_CLEANUP_INTERVAL,
+            INVOCATION_TIMELINE_CLEANUP_INTERVAL,
+        );
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => {}
+            }
+            let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool);
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                result = cleanup => match result {
+                    Ok(result) if result.skipped.is_some() => {
+                        tracing::debug!(reason = %result.skipped.as_deref().unwrap_or("unknown"), "invocation timeline cleanup skipped");
+                    }
+                    Ok(result) => {
+                        tracing::info!(
+                            scanned_tokens = result.scanned_tokens,
+                            deleted_tokens = result.deleted_tokens,
+                            deleted_rows = result.deleted_rows,
+                            "invocation timeline background snapshot cleanup completed"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(?error, "invocation timeline background snapshot cleanup failed");
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -1022,7 +1203,6 @@ pub(crate) async fn fetch_timeline(
         let source_scope = resolve_default_source_scope(&state.pool).await?;
         let (snapshot_id, attempt_snapshot_id) =
             resolve_timeline_snapshot_watermarks(&state.pool, source_scope).await?;
-        prune_timeline_snapshot_rows(&state.pool).await?;
         let as_of = create_timeline_snapshot_for_scope(
             snapshot_id,
             attempt_snapshot_id,

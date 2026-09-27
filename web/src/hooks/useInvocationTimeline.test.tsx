@@ -77,12 +77,13 @@ function Probe({
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
 }) {
-  const { data, bounds, error, setWindow } = useInvocationTimeline({
-    response,
-    closedNaturalDay,
-    liveRevision,
-    liveRefreshAllowed,
-  });
+  const { data, bounds, error, isLoading, isRefreshing, isStale, window, setWindow } =
+    useInvocationTimeline({
+      response,
+      closedNaturalDay,
+      liveRevision,
+      liveRefreshAllowed,
+    });
   return (
     <>
       <output data-testid="invoke-id">{data?.records[0]?.invokeId ?? ""}</output>
@@ -91,6 +92,14 @@ function Probe({
         {data?.records.map((record) => record.invokeId).join(",") ?? ""}
       </output>
       <output data-testid="error">{error ?? ""}</output>
+      <output data-testid="loading">{String(isLoading)}</output>
+      <output data-testid="refreshing">{String(isRefreshing)}</output>
+      <output data-testid="stale">{String(isStale)}</output>
+      <output data-testid="window">
+        {window
+          ? `${new Date(window.startMs).toISOString()}|${new Date(window.endMs).toISOString()}`
+          : ""}
+      </output>
       <button
         type="button"
         data-testid="zoom-window"
@@ -419,7 +428,11 @@ describe("useInvocationTimeline", () => {
   });
 
   it("uses one request when the live time bounds advance", async () => {
-    timelineMocks.fetch.mockResolvedValue(createTimeline("advancing-window"));
+    timelineMocks.fetch
+      .mockResolvedValueOnce(createTimeline("initial-window"))
+      .mockResolvedValueOnce(
+        createTimeline("advancing-window", "2026-07-16T10:01:00.000Z", "2026-07-16T10:31:00.000Z"),
+      );
     const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
     const nextResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
 
@@ -438,6 +451,71 @@ describe("useInvocationTimeline", () => {
     });
 
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the committed snapshot and its window visible during a delayed live refresh", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const nextResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+
+    render(<Probe response={firstResponse} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+    pending[0]?.(createTimeline("committed-window"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      root?.render(<Probe response={nextResponse} liveRevision={2} />);
+    });
+    expect(pending).toHaveLength(2);
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("committed-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:00:00.000Z|2026-07-16T10:30:00.000Z",
+    );
+    expect(host?.querySelector("[data-testid=loading]")?.textContent).toBe("false");
+    expect(host?.querySelector("[data-testid=refreshing]")?.textContent).toBe("true");
+
+    pending[1]?.(
+      createTimeline("replacement-window", "2026-07-16T10:01:00.000Z", "2026-07-16T10:31:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("replacement-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:01:00.000Z|2026-07-16T10:31:00.000Z",
+    );
+    expect(host?.querySelector("[data-testid=refreshing]")?.textContent).toBe("false");
+  });
+
+  it("keeps the committed live window visible and stale when its replacement fails", async () => {
+    timelineMocks.fetch.mockResolvedValueOnce(createTimeline("last-good"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    render(<Probe response={response} liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    timelineMocks.fetch.mockRejectedValueOnce(new Error("snapshot unavailable"));
+    const advanced = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+    act(() => {
+      root?.render(<Probe response={advanced} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("last-good");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:00:00.000Z|2026-07-16T10:30:00.000Z",
+    );
+    expect(host?.querySelector("[data-testid=loading]")?.textContent).toBe("false");
+    expect(host?.querySelector("[data-testid=stale]")?.textContent).toBe("true");
   });
 
   it("does not expose the previous window data while a zoom request is pending", async () => {
@@ -485,10 +563,8 @@ describe("useInvocationTimeline", () => {
 
     pending[0]?.resolve(createTimeline("old-viewport"));
     await act(async () => {
-      await Promise.resolve();
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
     });
-    expect(pending).toHaveLength(2);
     expect(pending[1]?.options).toMatchObject({
       from: "2026-07-16T10:01:00.000Z",
       to: "2026-07-16T10:30:00.000Z",

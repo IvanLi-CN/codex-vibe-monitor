@@ -53,6 +53,8 @@
 - The system MUST update today's live bars from the authoritative activity revision or a refresh after reconnect, pause local live extension while disconnected, and use HTTP-only data for yesterday.
 - Live revisions MUST be coalesced while a snapshot request is in flight. A completed request MUST be followed by at most one refresh for the newest revision observed during that request.
 - A page traversal MUST use one immutable `asOf` snapshot. New records observed after that point MUST appear in the next refresh, not be mixed into later pages of the current traversal.
+- When a live update advances the followed viewport, the system MUST keep rendering the last committed timeline snapshot together with the viewport for which it was fetched until the replacement snapshot succeeds. This refresh MUST NOT present the initial-loading state or temporarily remove the chart.
+- If that live refresh fails, the last committed snapshot and its matching viewport MUST remain visible, frozen, and marked stale or unavailable. A user-requested zoom/pan or a natural-day/account context change MUST clear the prior snapshot and show loading until data for the requested window is committed.
 
 ### REQ-DIT-006
 
@@ -81,7 +83,7 @@
 
 - Method: responsive Storybook evidence and production-build dashboard E2E rendering checks.
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
-- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
+- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a delayed live-window refresh keeps the last committed bars and matching viewport visible until replacement; a failed refresh freezes that last good timeline, while a user-requested window change shows loading for the new window.
 
 ## Related ADRs
 
@@ -136,6 +138,86 @@
   state: responsive live traffic at the project-defined mobile393 viewport
   evidence_note: verifies mobile readability, complete Y-axis ticks, zero-origin alignment, centered status legend, controls, the overlaid timeline/TTFT plot, and the bottom X-axis.
   image: ![Invocation timeline mobile](./assets/invocation-timeline-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/LiveRefreshPending
+  state: live revision refresh in progress while the committed snapshot remains visible
+  evidence_note: verifies the timeline remains mounted and retains the matching committed viewport while a live refresh is delayed.
+  image: ![Timeline refreshing on desktop](./assets/dashboard-timeline-refreshing-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileLiveRefreshPending
+  state: responsive live refresh in progress with the committed snapshot visible
+  evidence_note: verifies mobile timeline visibility and stable layout during a delayed refresh.
+  image: ![Timeline refreshing on mobile](./assets/dashboard-timeline-refreshing-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/LiveRefreshStale
+  state: failed live refresh with the last committed snapshot retained and marked stale
+  evidence_note: verifies a failed refresh freezes the last successful data and does not replace the timeline with initial loading.
+  image: ![Stale timeline after refresh failure](./assets/dashboard-timeline-stale-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/DenseConcurrency190
+  state: dense 190-call sample
+  evidence_note: verifies dense invocation rendering remains inside the fixed chart frame.
+  image: ![Dense invocation timeline on desktop](./assets/dashboard-timeline-dense-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileDenseConcurrency190
+  state: responsive dense 190-call sample
+  evidence_note: verifies dense invocation rendering and chart controls remain readable on mobile.
+  image: ![Dense invocation timeline on mobile](./assets/dashboard-timeline-dense-mobile.png)
 
 ## References
 
