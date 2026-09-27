@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 47 large-file entries explicit.
+  its 46 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -204,8 +204,8 @@ physical lines 2,043 through 2,501 of
 `update_upstream_account_group` and `delete_upstream_account_group`; the parent
 re-exports both handlers with their existing crate-visible paths. After rustfmt,
 the parent is 2,261 physical lines and the child is 460 physical lines, both
-below the 2,500-line production target. The current inventory is 26 production
-and 21 test/helper candidates (47 entries total), while the immutable
+below the 2,500-line production target. The current inventory is 25 production
+and 21 test/helper candidates (46 entries total), while the immutable
 preparation baseline remains 32 and 23 and the suppression baseline remains
 117. SQL, validation, response behavior, tests, and runtime behavior remain
 unchanged.
@@ -213,3 +213,25 @@ unchanged.
 Validation for this extraction is the focused group-update tests, rustfmt, the
 Rust source-quality checker and fixture harness, all-target Cargo checking,
 all-target Clippy, and `git diff --check`.
+
+The proxy metadata backfill extraction moves the complete contiguous region from
+the leading `#[cfg(test)]` attribute for `backfill_proxy_missing_costs` through
+`backfill_proxy_reasoning_efforts` in `src/proxy/payload_utils.rs` into
+`src/proxy/payload_utils/backfill_metadata.rs`. On the verified main baseline
+`61c8b2e0b0ec8ddd1f295d03d89aba1e05f14f6a`, the moved region is physical lines
+3 through 513 inclusive (511 lines). It contains cost backfill and retry
+helpers plus prompt-cache-key, requested-service-tier, and reasoning-effort
+backfills and their test-only items. After rustfmt, the parent is 2,427 lines
+and the child is 513 lines, both below the 2,500-line production target, so the
+parent is removed from the policy inventory. The parent retains `use super::*`,
+the child module declaration, and a crate-visible re-export; names, signatures,
+conditional compilation, SQL, timing, tests, and runtime behavior remain
+unchanged. The suppression inventory remains at 117 entries, with the moved
+allow recorded under the child path. The current inventory is 25 production and
+21 test/helper candidates (46 entries total), while the immutable preparation
+remains 32 and 23 and the suppression baseline remains 117.
+
+Validation for this extraction is the focused existing proxy cost/backfill and
+prompt-cache stateful SQLite tests, the stateful SQLite backend profile,
+rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
+checking, all-target Clippy, and `git diff --check`.

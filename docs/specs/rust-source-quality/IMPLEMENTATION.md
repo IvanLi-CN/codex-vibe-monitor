@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 47 current explicit file
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 46 current explicit file
   budgets, and 117 standalone suppression declarations. The immutable
   preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -201,12 +201,32 @@ Validation for this extraction is the focused group-update tests, rustfmt, the
 Rust source-quality checker and fixture harness, all-target Cargo checking,
 all-target Clippy, and `git diff --check`.
 
+The proxy metadata backfill extraction moves the complete contiguous region from
+the leading `#[cfg(test)]` attribute for `backfill_proxy_missing_costs` through
+`backfill_proxy_reasoning_efforts` in `src/proxy/payload_utils.rs` into
+`src/proxy/payload_utils/backfill_metadata.rs`. On the verified main baseline
+`61c8b2e0b0ec8ddd1f295d03d89aba1e05f14f6a`, the moved region is physical lines
+3 through 513 inclusive (511 lines). It contains cost backfill and retry
+helpers plus prompt-cache-key, requested-service-tier, and reasoning-effort
+backfills and their test-only items. After rustfmt, the parent is 2,427 lines
+and the child is 513 lines, both below the 2,500-line production target, so the
+parent is removed from the policy inventory. The parent retains `use super::*`,
+the child module declaration, and a crate-visible re-export; names, signatures,
+conditional compilation, SQL, timing, tests, and runtime behavior remain
+unchanged. The suppression inventory remains at 117 entries, with the moved
+allow recorded under the child path.
+
+Validation for this extraction is the focused existing proxy cost/backfill and
+prompt-cache stateful SQLite tests, the stateful SQLite backend profile,
+rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
+checking, all-target Clippy, and `git diff --check`.
+
 ## Inventory Contract
 
-The policy has 26 `production` entries above the 2,500-line destination target
+The policy has 25 `production` entries above the 2,500-line destination target
 and 21 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 47 paths; a long path absent from the inventory is
+The checker only reads those 46 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
