@@ -63,20 +63,77 @@ static INVOCATION_TIMELINE_CLEANUP_CURSOR: once_cell::sync::Lazy<StdMutex<Option
 
 #[cfg(test)]
 #[derive(Clone)]
-struct TimelineMaterializationPause {
-    range_start: String,
-    range_end: String,
-    upstream_account_id: Option<i64>,
-    include_live: bool,
-    entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-    token: Arc<StdMutex<Option<String>>>,
+pub(crate) struct TimelineMaterializationPause {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) include_live: bool,
+    pub(crate) entered: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+    pub(crate) token: Arc<StdMutex<Option<String>>>,
 }
 
 #[cfg(test)]
-static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
+pub(crate) static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
     StdMutex<Option<TimelineMaterializationPause>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TimelineCleanupPause {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+static INVOCATION_TIMELINE_TEST_CLEANUP_PAUSE: once_cell::sync::Lazy<
+    StdMutex<Option<TimelineCleanupPause>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+static INVOCATION_TIMELINE_TEST_CLEANUP_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
+#[cfg(test)]
+pub(crate) async fn lock_timeline_snapshot_cleanup_tests() -> tokio::sync::MutexGuard<'static, ()> {
+    INVOCATION_TIMELINE_TEST_CLEANUP_LOCK.lock().await
+}
+
+#[cfg(test)]
+pub(crate) fn reset_timeline_snapshot_cleanup_cursor_for_test() {
+    *INVOCATION_TIMELINE_CLEANUP_CURSOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn install_timeline_snapshot_cleanup_pause_for_test()
+-> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let pause = TimelineCleanupPause {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let handles = (pause.entered.clone(), pause.release.clone());
+    *INVOCATION_TIMELINE_TEST_CLEANUP_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause);
+    handles
+}
+
+#[cfg(test)]
+async fn pause_before_timeline_cleanup_active_tokens() {
+    let pause = INVOCATION_TIMELINE_TEST_CLEANUP_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(pause) = pause {
+        pause.entered.notify_one();
+        pause.release.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_before_timeline_cleanup_active_tokens() {}
 
 #[cfg(test)]
 async fn pause_after_timeline_materialization(
@@ -617,14 +674,6 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
     if !table_exists {
         return Ok(TimelineSnapshotCleanupResult::default());
     }
-    let now = Instant::now();
-    let active_tokens = {
-        let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        snapshots.retain(|_, snapshot| snapshot.expires_at > now);
-        snapshots.keys().cloned().collect::<HashSet<_>>()
-    };
     let cursor = INVOCATION_TIMELINE_CLEANUP_CURSOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -656,6 +705,15 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
     *INVOCATION_TIMELINE_CLEANUP_CURSOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = tokens.last().cloned();
+    pause_before_timeline_cleanup_active_tokens().await;
+    let now = Instant::now();
+    let active_tokens = {
+        let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshots.retain(|_, snapshot| snapshot.expires_at > now);
+        snapshots.keys().cloned().collect::<HashSet<_>>()
+    };
     let mut result = TimelineSnapshotCleanupResult {
         scanned_tokens: tokens.len(),
         ..Default::default()
