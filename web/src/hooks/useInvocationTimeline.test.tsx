@@ -192,6 +192,24 @@ describe("useInvocationTimeline", () => {
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("loads the initial snapshot even when live refresh is unavailable", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("offline-initial"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRefreshAllowed={false} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+    expect(timelineMocks.fetch.mock.calls[0]?.[0]).toMatchObject({
+      naturalDayStart: "2026-07-16T10:00:00.000Z",
+      naturalDayEnd: "2026-07-16T10:30:00.000Z",
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("offline-initial");
+  });
+
   it("aborts and invalidates a request when timeseries bounds disappear", async () => {
     const pending: Array<{
       resolve: (value: InvocationTimelineResponse) => void;
@@ -279,10 +297,8 @@ describe("useInvocationTimeline", () => {
 
     pending.shift()?.(createTimeline("revision-1"));
     await act(async () => {
-      await Promise.resolve();
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await vi.waitFor(() => expect(timelineMocks.fetch).toHaveBeenCalledTimes(2));
     });
-    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
     pending.shift()?.(createTimeline("revision-2"));
     await act(async () => {
       await Promise.resolve();

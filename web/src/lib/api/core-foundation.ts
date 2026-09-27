@@ -5514,6 +5514,8 @@ export async function fetchTimeseries(
 }
 
 export async function fetchInvocationTimeline(options: {
+  naturalDayStart?: string;
+  naturalDayEnd?: string;
   from: string;
   to: string;
   upstreamAccountId?: number;
@@ -5524,6 +5526,8 @@ export async function fetchInvocationTimeline(options: {
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams({ from: options.from, to: options.to });
+  if (options.naturalDayStart) search.set("naturalDayStart", options.naturalDayStart);
+  if (options.naturalDayEnd) search.set("naturalDayEnd", options.naturalDayEnd);
   if (options.upstreamAccountId != null) {
     search.set("upstreamAccountId", String(options.upstreamAccountId));
   }
