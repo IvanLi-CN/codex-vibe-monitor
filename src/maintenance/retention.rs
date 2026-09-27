@@ -40,6 +40,7 @@ const SYSTEM_TASK_RUN_RETENTION_PASS_INTERVAL: Duration = Duration::from_secs(15
 const SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
 const RETENTION_RECOVERY_LEGACY_SCAN_BATCH: usize = 32;
 const RETENTION_RAW_RECONCILIATION_SCAN_BATCH: usize = 32;
+const RETENTION_RAW_RECONCILIATION_PENDING_BATCH: usize = 8;
 const RETENTION_RAW_RECONCILIATION_DIRECTORY_ENTRY_BATCH: usize = 128;
 const RETENTION_RAW_RECONCILIATION_SCOPE: &str = "raw_payload_files";
 const RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS: i64 = 1;
@@ -4093,6 +4094,8 @@ struct RetentionRawReconciliationRow {
     byte_size: i64,
     quarantined_at: String,
     release_pending: i64,
+    release_pending_at: Option<String>,
+    removal_evidence_persisted: i64,
 }
 
 #[derive(Debug, Default)]
@@ -4525,7 +4528,8 @@ async fn load_retention_raw_reconciliation_row(
 ) -> Result<Option<RetentionRawReconciliationRow>> {
     Ok(sqlx::query_as::<_, RetentionRawReconciliationRow>(
         r#"
-        SELECT raw_path, file_identity, byte_size, quarantined_at, release_pending
+        SELECT raw_path, file_identity, byte_size, quarantined_at, release_pending,
+               release_pending_at, removal_evidence_persisted
         FROM retention_raw_reconciliation
         WHERE raw_path = ?1
         "#,
@@ -4548,9 +4552,10 @@ async fn record_retention_raw_reconciliation_observation(
             sqlx::query(
                 r#"
                 INSERT INTO retention_raw_reconciliation (
-                    raw_path, file_identity, byte_size, quarantined_at, release_pending
+                    raw_path, file_identity, byte_size, quarantined_at, release_pending,
+                    release_pending_at, removal_evidence_persisted
                 )
-                VALUES (?1, ?2, ?3, ?4, 0)
+                VALUES (?1, ?2, ?3, ?4, 0, NULL, 0)
                 ON CONFLICT(raw_path) DO UPDATE SET
                     file_identity = excluded.file_identity,
                     byte_size = excluded.byte_size,
@@ -4564,6 +4569,18 @@ async fn record_retention_raw_reconciliation_observation(
                         WHEN retention_raw_reconciliation.file_identity = excluded.file_identity
                             AND retention_raw_reconciliation.byte_size = excluded.byte_size
                             THEN retention_raw_reconciliation.release_pending
+                        ELSE 0
+                    END,
+                    release_pending_at = CASE
+                        WHEN retention_raw_reconciliation.file_identity = excluded.file_identity
+                            AND retention_raw_reconciliation.byte_size = excluded.byte_size
+                            THEN retention_raw_reconciliation.release_pending_at
+                        ELSE NULL
+                    END,
+                    removal_evidence_persisted = CASE
+                        WHEN retention_raw_reconciliation.file_identity = excluded.file_identity
+                            AND retention_raw_reconciliation.byte_size = excluded.byte_size
+                            THEN retention_raw_reconciliation.removal_evidence_persisted
                         ELSE 0
                     END,
                     updated_at = datetime('now')
@@ -4588,17 +4605,26 @@ async fn mark_retention_raw_reconciliation_release_pending(
     raw_path: &str,
     file_identity: &str,
     byte_size: i64,
+    release_pending_at: &str,
 ) -> Result<()> {
     context
         .run_with_candidate_budget(async {
             let result = sqlx::query(
                 "UPDATE retention_raw_reconciliation
-                 SET release_pending = 1, updated_at = datetime('now')
+                 SET release_pending = 1,
+                     release_pending_at = CASE
+                         WHEN release_pending = 0 OR removal_evidence_persisted != 0
+                             THEN ?4
+                         ELSE COALESCE(release_pending_at, ?4)
+                     END,
+                     removal_evidence_persisted = 0,
+                     updated_at = datetime('now')
                  WHERE raw_path = ?1 AND file_identity = ?2 AND byte_size = ?3",
             )
             .bind(raw_path)
             .bind(file_identity)
             .bind(byte_size)
+            .bind(release_pending_at)
             .execute(pool)
             .await?;
             if result.rows_affected() != 1 {
@@ -4666,23 +4692,56 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
             .unwrap_or_default())
         })
         .await?;
-    let rows = context
-        .run_with_candidate_budget(async {
-            Ok(sqlx::query_as::<_, RetentionRawReconciliationRow>(
-                r#"
-                SELECT raw_path, file_identity, byte_size, quarantined_at, release_pending
-                FROM retention_raw_reconciliation
-                WHERE release_pending != 0 OR raw_path > ?1
-                ORDER BY release_pending DESC, raw_path
-                LIMIT ?2
-                "#,
-            )
-            .bind(&cursor)
-            .bind(limit as i64)
-            .fetch_all(pool)
-            .await?)
-        })
-        .await?;
+    let pending_limit = RETENTION_RAW_RECONCILIATION_PENDING_BATCH.min(limit);
+    let regular_limit = limit.saturating_sub(pending_limit);
+    let pending_rows = if pending_limit == 0 {
+        Vec::new()
+    } else {
+        context
+            .run_with_candidate_budget(async {
+                Ok(sqlx::query_as::<_, RetentionRawReconciliationRow>(
+                    r#"
+                    SELECT raw_path, file_identity, byte_size, quarantined_at, release_pending,
+                           release_pending_at, removal_evidence_persisted
+                    FROM retention_raw_reconciliation
+                    WHERE release_pending != 0
+                    ORDER BY updated_at, raw_path
+                    LIMIT ?1
+                    "#,
+                )
+                .bind(pending_limit as i64)
+                .fetch_all(pool)
+                .await?)
+            })
+            .await?
+    };
+    let regular_rows = if regular_limit == 0 {
+        Vec::new()
+    } else {
+        context
+            .run_with_candidate_budget(async {
+                Ok(sqlx::query_as::<_, RetentionRawReconciliationRow>(
+                    r#"
+                    SELECT raw_path, file_identity, byte_size, quarantined_at, release_pending,
+                           release_pending_at, removal_evidence_persisted
+                    FROM retention_raw_reconciliation
+                    WHERE release_pending = 0 AND raw_path > ?1
+                    ORDER BY raw_path
+                    LIMIT ?2
+                    "#,
+                )
+                .bind(&cursor)
+                .bind(regular_limit as i64)
+                .fetch_all(pool)
+                .await?)
+            })
+            .await?
+    };
+    let pending_has_more = pending_rows.len() == pending_limit;
+    let regular_has_more = regular_rows.len() == regular_limit;
+    let regular_rows_empty = regular_rows.is_empty();
+    let mut rows = pending_rows;
+    rows.extend(regular_rows);
     let mut failures = 0;
     let mut processed_rows = 0;
     let mut progressed = None;
@@ -4718,7 +4777,9 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
                 Some(&row.file_identity),
             )
             .await?;
-            progressed = Some(row.raw_path.as_str());
+            if row.release_pending == 0 {
+                progressed = Some(row.raw_path.as_str());
+            }
             continue;
         }
         if metadata_missing_or_non_file {
@@ -4733,7 +4794,9 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
             )
             .await?;
         }
-        progressed = Some(row.raw_path.as_str());
+        if row.release_pending == 0 {
+            progressed = Some(row.raw_path.as_str());
+        }
     }
 
     if let Some(progress) = progressed {
@@ -4769,7 +4832,7 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
             .await;
         drop(admission);
         result?;
-    } else if rows.is_empty() && !cursor.is_empty() {
+    } else if regular_rows_empty && !cursor.is_empty() {
         let admission = context.try_write("retention_recovery_cursor").await?;
         let result = context
             .run_with_candidate_budget(async {
@@ -4788,13 +4851,16 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
         result?;
     }
 
-    let has_more = budget_exhausted || rows.len() == limit;
+    let has_more = budget_exhausted || pending_has_more || regular_has_more;
     Ok((processed_rows, failures, has_more))
 }
 
 async fn persist_raw_orphan_sweep_removal_evidence_after_admission(
     pool: &Pool<Sqlite>,
     context: &RawOrphanSweepPassContext,
+    raw_path: &str,
+    file_identity: &str,
+    release_pending_at: Option<&str>,
     removed: usize,
     removed_bytes: u64,
 ) -> Result<()> {
@@ -4804,30 +4870,117 @@ async fn persist_raw_orphan_sweep_removal_evidence_after_admission(
             "simulated raw removal evidence persistence failure"
         ));
     }
+    let removal_at = release_pending_at
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format_utc_iso(Utc::now()));
     context
         .run_with_candidate_budget(async {
+            let mut transaction = pool.begin().await?;
+            let persisted: Option<i64> = sqlx::query_scalar(
+                "SELECT removal_evidence_persisted
+                 FROM retention_raw_reconciliation
+                 WHERE raw_path = ?1 AND file_identity = ?2 AND release_pending != 0",
+            )
+            .bind(raw_path)
+            .bind(file_identity)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some(persisted) = persisted else {
+                return Err(anyhow!(
+                    "raw reconciliation release evidence did not match the current ledger row"
+                ));
+            };
+            if persisted != 0 {
+                transaction.commit().await?;
+                return Ok(());
+            }
+
             sqlx::query(
                 "INSERT OR IGNORE INTO retention_recovery_cursors (scope, cursor) VALUES (?1, '')",
             )
             .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
-            .execute(pool)
+            .execute(&mut *transaction)
             .await?;
             sqlx::query(
                 "UPDATE retention_recovery_cursors
-                 SET last_nonzero_removal_at = datetime('now'),
-                     last_nonzero_removal = ?2,
-                     last_nonzero_removal_bytes = ?3,
+                 SET last_nonzero_removal_at = CASE
+                         WHEN last_nonzero_removal_at IS NULL
+                              OR last_nonzero_removal_at <= ?4
+                             THEN ?4
+                         ELSE last_nonzero_removal_at
+                     END,
+                     last_nonzero_removal = CASE
+                         WHEN last_nonzero_removal_at IS NULL
+                              OR last_nonzero_removal_at <= ?4
+                             THEN ?2
+                         ELSE last_nonzero_removal
+                     END,
+                     last_nonzero_removal_bytes = CASE
+                         WHEN last_nonzero_removal_at IS NULL
+                              OR last_nonzero_removal_at <= ?4
+                             THEN ?3
+                         ELSE last_nonzero_removal_bytes
+                     END,
                      updated_at = datetime('now')
                  WHERE scope = ?1",
             )
             .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
             .bind(removed as i64)
             .bind(removed_bytes.min(i64::MAX as u64) as i64)
-            .execute(pool)
+            .bind(&removal_at)
+            .execute(&mut *transaction)
             .await?;
+            let result = sqlx::query(
+                "UPDATE retention_raw_reconciliation
+                 SET removal_evidence_persisted = 1, updated_at = datetime('now')
+                 WHERE raw_path = ?1 AND file_identity = ?2 AND release_pending != 0
+                   AND removal_evidence_persisted = 0",
+            )
+            .bind(raw_path)
+            .bind(file_identity)
+            .execute(&mut *transaction)
+            .await?;
+            if result.rows_affected() != 1 {
+                return Err(anyhow!(
+                    "raw reconciliation release evidence marker did not match the current ledger row"
+                ));
+            }
+            transaction.commit().await?;
             Ok(())
         })
         .await
+}
+
+async fn persist_pending_raw_reconciliation_release_evidence_after_admission(
+    pool: &Pool<Sqlite>,
+    context: &RawOrphanSweepPassContext,
+    row: &RetentionRawReconciliationRow,
+) -> Result<()> {
+    if row.removal_evidence_persisted != 0 {
+        return Ok(());
+    }
+    let removed_bytes = u64::try_from(row.byte_size)
+        .map_err(|_| anyhow!("raw reconciliation byte size is negative"))?;
+    if context.candidate_budget_expired() {
+        return Err(raw_orphan_sweep_candidate_budget_expired());
+    }
+    match sync_retention_raw_parent(Path::new(&row.raw_path)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(anyhow!(error).context("failed to sync raw reconciliation parent"));
+        }
+    }
+    persist_raw_orphan_sweep_removal_evidence_after_admission(
+        pool,
+        context,
+        &row.raw_path,
+        &row.file_identity,
+        row.release_pending_at.as_deref(),
+        1,
+        removed_bytes,
+    )
+    .await
 }
 
 async fn persist_missing_raw_reconciliation_release_evidence(
@@ -4835,13 +4988,11 @@ async fn persist_missing_raw_reconciliation_release_evidence(
     context: &RawOrphanSweepPassContext,
     row: &RetentionRawReconciliationRow,
 ) -> Result<()> {
-    let removed_bytes = u64::try_from(row.byte_size)
-        .map_err(|_| anyhow!("raw reconciliation byte size is negative"))?;
     let admission = context
         .try_write("raw_reconciliation_release_evidence")
         .await?;
     let result =
-        persist_raw_orphan_sweep_removal_evidence_after_admission(pool, context, 1, removed_bytes)
+        persist_pending_raw_reconciliation_release_evidence_after_admission(pool, context, row)
             .await;
     drop(admission);
     result
@@ -5045,6 +5196,41 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
+        if !dry_run
+            && existing.as_ref().is_some_and(|row| {
+                row.release_pending != 0
+                    && (row.file_identity != file_identity || row.byte_size != byte_size)
+            })
+        {
+            let pending_row = existing
+                .as_ref()
+                .expect("pending raw reconciliation row should be present");
+            if let Err(error) =
+                persist_missing_raw_reconciliation_release_evidence(pool, &context, pending_row)
+                    .await
+            {
+                result.complete = false;
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
+                if is_retention_write_deferred(&error) {
+                    result.deferred = true;
+                    if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
+                        result.admission_stage = Some(stage.to_string());
+                        result.admission_cause = Some(cause.to_string());
+                    }
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
+                result.failures += 1;
+                continue;
+            }
+        }
         if referenced_candidates.contains(&path) {
             if !dry_run
                 && existing.is_some()
@@ -5382,12 +5568,14 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .push_back(candidate_entries[candidate_index].clone());
             continue;
         }
+        let release_pending_started_at = format_utc_iso(Utc::now());
         if let Err(error) = mark_retention_raw_reconciliation_release_pending(
             pool,
             &context,
             &raw_path,
             &unlink_identity,
             unlink_size,
+            &release_pending_started_at,
         )
         .await
         {
@@ -5405,6 +5593,68 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .pending_candidates
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
+        }
+        let release_pending_at =
+            if current.release_pending != 0 && current.removal_evidence_persisted == 0 {
+                current
+                    .release_pending_at
+                    .clone()
+                    .unwrap_or_else(|| release_pending_started_at.clone())
+            } else {
+                release_pending_started_at
+            };
+        if context.candidate_budget_expired() {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        }
+        let final_unlink_metadata = match retention_raw_file_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata,
+            Ok(_) | Err(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .push_back(candidate_entries[candidate_index].clone());
+                continue;
+            }
+        };
+        let final_unlink_identity = retention_raw_file_identity(&final_unlink_metadata);
+        let final_unlink_size = match i64::try_from(final_unlink_metadata.len()) {
+            Ok(size) => size,
+            Err(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                traversal
+                    .pending_candidates
+                    .push_back(candidate_entries[candidate_index].clone());
+                continue;
+            }
+        };
+        if final_unlink_identity != unlink_identity
+            || final_unlink_size != unlink_size
+            || context.candidate_budget_expired()
+        {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            if final_unlink_identity != unlink_identity || final_unlink_size != unlink_size {
+                result.failures += 1;
+            }
+            traversal
+                .pending_candidates
+                .push_back(candidate_entries[candidate_index].clone());
+            if context.candidate_budget_expired() {
+                break;
+            }
+            continue;
         }
         #[cfg(test)]
         if retention_test_raw_unlink_should_fail() {
@@ -5432,17 +5682,22 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             break;
         }
         result.removed += 1;
-        result.removed_bytes = result.removed_bytes.saturating_add(unlink_metadata.len());
+        result.removed_bytes = result
+            .removed_bytes
+            .saturating_add(final_unlink_metadata.len());
         RETENTION_RAW_CAPTURE_CIRCUIT
             .try_with(|circuit| {
                 if let Some(circuit) = circuit.borrow().as_ref() {
-                    circuit.record_deleted_bytes(unlink_metadata.len());
+                    circuit.record_deleted_bytes(final_unlink_metadata.len());
                 }
             })
             .ok();
         if let Err(error) = persist_raw_orphan_sweep_removal_evidence_after_admission(
             pool,
             &context,
+            &raw_path,
+            &final_unlink_identity,
+            Some(&release_pending_at),
             result.removed,
             result.removed_bytes,
         )
@@ -5465,7 +5720,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             pool,
             &context,
             &raw_path,
-            Some(&unlink_identity),
+            Some(&final_unlink_identity),
         )
         .await
         {

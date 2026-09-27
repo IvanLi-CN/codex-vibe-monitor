@@ -44,8 +44,10 @@
   adds nullable admission, settled-pass, and nonzero-removal evidence columns to the existing
   `raw_payload_files` cursor; old values remain unknown, and defer no longer erases settled or
   removal evidence. Raw writers hold the shared directory fence through owner-link persistence;
-  release records a durable pending marker, rechecks identity and size immediately before unlink,
-  synchronizes the raw parent, and keeps the marker until removal evidence is durable. The System
+  release records a durable pending marker and timestamp, rechecks identity and size immediately
+  before unlink, synchronizes the raw parent, and atomically marks removal evidence as persisted
+  before ledger cleanup. Pending recovery has an independent bounded share and recovers older
+  evidence before a replaced identity resets the ledger row. The System
   Status API, Web normalizer, Runtime Pressure UI, translations, and Storybook states expose the
   new diagnostics additively.
 

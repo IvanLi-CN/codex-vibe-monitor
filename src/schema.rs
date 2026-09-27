@@ -2553,6 +2553,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
             quarantined_at TEXT NOT NULL,
             release_pending INTEGER NOT NULL DEFAULT 0,
+            release_pending_at TEXT,
+            removal_evidence_persisted INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2569,6 +2571,22 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .await
     .context("failed to ensure retention_raw_reconciliation.release_pending")?;
+    ensure_column_with_definition(
+        pool,
+        "retention_raw_reconciliation",
+        "release_pending_at",
+        "TEXT",
+    )
+    .await
+    .context("failed to ensure retention_raw_reconciliation.release_pending_at")?;
+    ensure_column_with_definition(
+        pool,
+        "retention_raw_reconciliation",
+        "removal_evidence_persisted",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await
+    .context("failed to ensure retention_raw_reconciliation.removal_evidence_persisted")?;
 
     sqlx::query(
         r#"

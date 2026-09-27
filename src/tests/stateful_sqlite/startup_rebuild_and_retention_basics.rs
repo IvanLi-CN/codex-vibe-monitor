@@ -4666,10 +4666,16 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
             .into_iter()
             .map(|row| row.get::<String, _>("name"))
             .collect();
-    assert!(
-        raw_reconciliation_columns.contains("release_pending"),
-        "missing raw reconciliation release intent column"
-    );
+    for column in [
+        "release_pending",
+        "release_pending_at",
+        "removal_evidence_persisted",
+    ] {
+        assert!(
+            raw_reconciliation_columns.contains(column),
+            "missing raw reconciliation migration column {column}"
+        );
+    }
     let raw_cursor = sqlx::query(
         r#"
         SELECT cursor,
