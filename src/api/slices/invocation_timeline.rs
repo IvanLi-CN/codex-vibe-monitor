@@ -1204,7 +1204,7 @@ async fn hydrate_timeline_accounts_on_connection(
             && record.upstream_account_id.is_none()
         {
             record.upstream_account_id = sqlx::query_scalar(
-                "SELECT upstream_account_id FROM pool_upstream_request_attempts WHERE invoke_id = ?1 AND occurred_at = ?2 AND id <= ?3 AND upstream_account_id IS NOT NULL AND upstream_account_id > 0 AND upstream_account_id < 9007199254740992 ORDER BY attempt_index DESC, id DESC LIMIT 1",
+                "SELECT upstream_account_id FROM pool_upstream_request_attempts WHERE invoke_id = ?1 AND occurred_at = ?2 AND id > 0 AND id <= ?3 AND typeof(upstream_account_id) = 'integer' AND upstream_account_id IS NOT NULL AND upstream_account_id > 0 AND upstream_account_id < 9007199254740992 ORDER BY attempt_index DESC, id DESC LIMIT 1",
             )
             .bind(&record.invoke_id)
             .bind(&record.occurred_at)
@@ -1225,7 +1225,7 @@ fn timeline_upstream_account_id_sql(
         .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
         .unwrap_or_default();
     format!(
-        "COALESCE({payload_id}, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.id > 0{attempt_snapshot_predicate} AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < 9007199254740992 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))",
+        "COALESCE({payload_id}, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.id > 0{attempt_snapshot_predicate} AND typeof(attempt.upstream_account_id) = 'integer' AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < 9007199254740992 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))",
         payload_id = format!(
             "CASE WHEN {payload_is_valid} THEN {} END",
             timeline_payload_account_id_sql(invocation_ref)
@@ -1935,6 +1935,20 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("insert runtime account fallback fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (0, 'runtime-nonpositive-fallback', ?1, '/v1/responses', 'pool', 1, 1, 0, 'requesting', 49)",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_870)))
+        .execute(&state.pool)
+        .await
+        .expect("insert non-positive runtime account fallback fixture");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, attempt_index, distinct_account_index, same_account_retry_index, status, upstream_account_id) VALUES (8, 'runtime-fractional-fallback', ?1, '/v1/responses', 'pool', 1, 1, 0, 'requesting', 49.5)",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_871)))
+        .execute(&state.pool)
+        .await
+        .expect("insert fractional runtime account fallback fixture");
         let mut live_overflow =
             crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
         live_overflow.id = 99_002;
@@ -1972,6 +1986,24 @@ mod tests {
         state
             .proxy_runtime_invocations
             .upsert(runtime_missing_account);
+        for (invoke_id, occurred_at, id) in [
+            ("runtime-nonpositive-fallback", at(86_870), 99_006),
+            ("runtime-fractional-fallback", at(86_871), 99_007),
+        ] {
+            let mut runtime_malformed_fallback =
+                crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+            runtime_malformed_fallback.id = id;
+            runtime_malformed_fallback.invoke_id = invoke_id.to_string();
+            runtime_malformed_fallback.occurred_at = db_occurred_at_lower_bound(occurred_at);
+            runtime_malformed_fallback.source = SOURCE_PROXY.to_string();
+            runtime_malformed_fallback.status = Some("running".to_string());
+            runtime_malformed_fallback.live_phase = Some("requesting".to_string());
+            runtime_malformed_fallback.t_total_ms = None;
+            runtime_malformed_fallback.upstream_account_id = None;
+            state
+                .proxy_runtime_invocations
+                .upsert(runtime_malformed_fallback);
+        }
         sqlx::query(
             "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('runtime-valid-account', ?1, 'proxy', 'running', '{bad-json', '', 'full')",
         )
@@ -2179,6 +2211,31 @@ mod tests {
             .expect("fractional account record is present");
         assert_eq!(fractional_account.upstream_account_id, None);
         assert_eq!(fractional_account.upstream_account_name, None);
+        let Json(malformed_attempt_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: None,
+                include_live: Some(true),
+                limit: None,
+                cursor: None,
+                as_of: None,
+            }),
+        )
+        .await
+        .expect("fetch malformed attempt fallback fixtures");
+        for invoke_id in [
+            "runtime-nonpositive-fallback",
+            "runtime-fractional-fallback",
+        ] {
+            let record = malformed_attempt_response
+                .records
+                .iter()
+                .find(|record| record.invoke_id == invoke_id)
+                .expect("malformed attempt runtime record is present");
+            assert_eq!(record.upstream_account_id, None);
+        }
         state.pool.close().await;
     }
 
