@@ -16,22 +16,22 @@
       "major"
     ],
     "planned": {
-      "impact": "patch",
-      "reasoning": "The system-status fields are optional/additive; new counters may be unknown until measured. New SQLite tables, raw-capture columns, and nullable raw_payload_files evidence columns are additive and earlier binaries may ignore them. No existing field or archive format is changed.",
-      "assessed_at": "2026-09-25T00:00:00+08:00",
+      "impact": "minor",
+      "reasoning": "The system-status fields are optional/additive, but the durable release-pending evidence lifecycle is a persistent-state behavior whose recovery guarantee is forward-only across rollback to legacy cleanup. The release unit therefore needs the persistent-state minor impact even though public consumers remain compatible.",
+      "assessed_at": "2026-09-27T23:06:48+08:00",
       "evidence": [
         "docs/specs/autonomous-retention-recovery/SPEC.md",
         "docs/adr/0018-bounded-raw-orphan-sweep-worker.md"
       ]
     },
     "current": {
-      "impact": "patch",
+      "impact": "minor",
       "scope_drift": {
         "detected": false,
         "description": "No public API or durable-state compatibility scope drift."
       },
-      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics and additive raw reconciliation release-pending timestamp/evidence-persisted columns alongside nullable admission/settled-pass/removal evidence on the existing raw_payload_files cursor. Earlier binaries remain safe because their bounded filename cursor wraps through the tail and ignore unknown columns; archive wire/file formats and existing response fields remain unchanged. Every bounded raw filesystem inspection uses FIFO background-slot and bounded maintenance-write admission, with the background pressure slot retained only for the inspection while the SQLite write-coordinator permit is released; mid-pass candidates remain pending, pending recovery has a bounded share, and unlink counts/bytes are transactionally recorded before ledger cleanup.",
-      "reassessed_at": "2026-09-27T19:25:19+08:00",
+      "reasoning": "The candidate adds optional runtimePressureHealth.rawOrphanSweep diagnostics and additive raw reconciliation release-pending timestamp/evidence-persisted columns alongside nullable admission/settled-pass/removal evidence on the existing raw_payload_files cursor. Earlier binaries remain schema-compatible and archive wire/file formats and existing response fields remain unchanged, but legacy missing-row cleanup cannot preserve a newer release-pending evidence marker during rollback; pending evidence recovery is therefore a forward-only guarantee. Public API impact remains patch, while persistent-state impact is minor because older same-Minor cleanup cannot preserve the new release evidence. Every bounded raw filesystem inspection uses FIFO background-slot and bounded maintenance-write admission, with the background pressure slot retained only for the inspection while the SQLite write-coordinator permit is released; mid-pass candidates remain pending, pending recovery has a bounded share, and unlink counts/bytes are transactionally recorded before ledger cleanup.",
+      "reassessed_at": "2026-09-27T23:06:48+08:00",
       "evidence": [
         "docs/adr/0018-bounded-raw-orphan-sweep-worker.md",
         "docs/specs/autonomous-retention-recovery/SPEC.md",
@@ -44,13 +44,13 @@
       ]
     },
     "verified": {
-      "impact": "patch",
-      "reasoning": "Working-tree delivery validation covers Linux Rust checks, the archive-file-io and stateful-sqlite profiles, Web tests and type checking, additive old-schema migration, bounded admission/no-I/O behavior, mid-pass pending retention, idempotent release evidence after cleanup retry, durable settled/removal evidence, and Storybook UI interactions. The raw orphan evidence migration is additive and idempotent; System Status diagnostics remain optional and additive. Each unrelated timing-sensitive failure observed in a full shared-testbox profile passed in an independent run of the same profile.",
-      "verified_at": "2026-09-27T19:25:19+08:00",
+      "impact": "minor",
+      "reasoning": "Validation covers the additive public API, old-schema migration, bounded admission/no-I/O behavior, mid-pass pending retention, pending-row rotation, conservative identity replacement handling, atomic raw-writer and cold-compression fencing, idempotent release evidence after cleanup retry, durable settled/removal evidence, and Storybook UI interactions. The raw orphan evidence migration is additive and idempotent, but its durable recovery guarantee is explicitly forward-only across rollback to legacy retention cleanup; the release unit therefore takes persistent-state minor impact.",
+      "verified_at": "2026-09-27T23:06:48+08:00",
       "evidence": [
-        "Shared-testbox archive-file-io profile: 295/296 passed in the full run; the sole unrelated stale-temp assertion passed on an independent same-profile rerun. Stateful-sqlite profile: 1340/1341 passed in each full run; the unrelated route-timeout assertions passed on independent same-profile reruns.",
-        "Linux cargo fmt check, cargo check --locked --all-targets --all-features, and Clippy with -D warnings passed",
-        "Focused Rust checks passed: raw_orphan_sweep 11, retention_raw_reconciliation 4, and the idempotent retention-schema migration test 1",
+        "Final current-tree shared-testbox archive-file-io profile: 298/298 passed. Stateful-sqlite profile: 1341/1341 passed (two slow tests, 1499 skipped).",
+        "Final current-tree local cargo check --locked --all-targets --all-features, Clippy with -D warnings, cargo fmt check, source-quality, JSON, and diff checks passed.",
+        "Current-tree focused Rust checks passed: raw_orphan_sweep 13, cold_compression 6, retention_raw_reconciliation 4, the idempotent retention-schema migration test 1, and direct raw payload storage tests 3",
         "Web units: 1647 passed, 6 skipped; Storybook interactions: 127 passed, 51 skipped; typecheck, targeted Biome checks, full lint, and production build passed",
         "The legacy raw_payload_files cursor migration preserved the cursor with NULL evidence, pressure/cause denial performed no raw filesystem I/O, mid-pass candidates were retained, and unlink count/bytes were recorded before ledger cleanup",
         "System Status mock-only Storybook evidence covers deferred admission, complete settled evidence, degraded partial evidence, and additive missing-field compatibility; the owner-confirmed 1440x1100 Web Demo screenshot is recorded as canonical evidence"
@@ -82,9 +82,11 @@
       "historical-raw-file-reconciliation-pr3",
       "raw-orphan-sweep-throughput"
     ],
-    "maximum_verified_impact": "patch",
+    "maximum_verified_impact": "minor",
     "calculation_evidence": [
-      "Public API and persistent-state contracts are independently additive and nonbreaking."
+      "public_api=patch",
+      "persistent_state=minor because rollback to legacy cleanup is not evidence-preserving for an active release-pending row",
+      "release unit=max(public_api,persistent_state)=minor"
     ]
   }
 }

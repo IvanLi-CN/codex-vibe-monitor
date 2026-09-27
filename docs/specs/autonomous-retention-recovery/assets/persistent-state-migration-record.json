@@ -4,14 +4,14 @@
   "migration": {
     "description": "Add durable prepared-archive recovery state, publication-kind recovery metadata, resumable archive/raw reconciliation cursors and ledgers, additive raw-capture circuit state, and bounded raw orphan admission liveness and progress evidence over the existing raw_payload_files cursor, including release-pending timestamp and idempotent evidence recovery.",
     "release_unit_description": "Autonomous retention recovery, raw capture circuit breaker, and raw orphan sweep throughput.",
-    "version_impact": "patch"
+    "version_impact": "minor"
   },
   "durable_state": {
     "description": "Prepared archive identity, source IDs and digest over all archive-covered columns, publication kind, artifact digest/size, bounded retry/quarantine state, prepared/legacy/raw reconciliation cursors, raw candidate identity/size/quarantine ledger with release-pending intent/timestamp and evidence-persisted marker, startup raw-path revalidation cursor, recovery-pending hysteresis marker, additive raw-capture circuit measurements including overflow-spool bytes, and raw orphan admission, settled-pass, and nonzero-removal evidence.",
     "storage_implementation": "SQLite tables retention_prepared_archives, retention_recovery_cursors, and retention_raw_reconciliation plus additive circuit and overflow-spool columns on system_raw_payload_metrics and nullable admission/progress evidence columns on retention_recovery_cursors for the raw_payload_files scope.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier v2.71.x database schemas without retention recovery tables.",
-      "to_program_version": "Candidate based on mainline v2.71.42 at base commit 92dc13a688f5567ee1dc53a7c07cf3f5b697f586.",
+      "to_program_version": "Candidate based on mainline v2.74.6 at base commit 97ccccc6bd2e0e2f5dac0def8fa59d91203b2f6d.",
       "direct_major_skips_supported": false
     }
   },
@@ -96,26 +96,21 @@
   },
   "recovery": {
     "deployed_migrations_immutable": true,
-    "program_rollback_state_behavior": "Earlier binaries ignore the additive recovery tables and raw-capture columns; they do not reverse or delete their state. The reused raw_payload_files cursor remains a filename key that older scanners can safely tail-wrap past.",
-    "faulty_release_recovery": "A newer program version resumes or forward-repairs retained journal rows and quarantined artifacts; NULL raw orphan evidence is treated as unknown and is populated only by later observations, while a release-pending raw ledger row remains eligible for evidence recovery even after the directory cursor advances.",
+    "program_rollback_state_behavior": "Earlier binaries can open the additive recovery schema and ignore the new columns, but a rollback while a release-pending raw row is active is not evidence-preserving: legacy missing-row cleanup may clear that row before a newer binary can recover its evidence. The reused raw_payload_files cursor remains a filename key that older scanners can safely tail-wrap past.",
+    "faulty_release_recovery": "A newer program version resumes or forward-repairs retained journal rows and quarantined artifacts when the release-pending row survives; NULL raw orphan evidence is treated as unknown and is populated only by later observations, while a release-pending raw ledger row remains eligible for evidence recovery even after the directory cursor advances. Present pending rows rotate their due-work timestamp, and a present identity replacement resets observation without claiming removal evidence for the older object. Pending evidence recovery is forward-only across a rollback to legacy retention cleanup.",
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
     "patch": {
-      "required_test_evidence": [
-        "Public system-status API change is additive and optional for older clients.",
-        "Raw-capture circuit hydration, hysteresis, fail-closed unknown states, bounded reservations, and inventory reset pass stateful SQLite and focused raw-capture regression tests.",
-        "Candidate creates and reuses recovery schema over an earlier v2.71.x database; the legacy raw_payload_files cursor row retains its cursor and receives NULL evidence.",
-        "Schema creation is idempotent and a failed archive publication is retried without losing live rows or raw ownership.",
-        "Older raw_payload_files cursor rows migrate with NULL evidence, raw reconciliation rows migrate with release_pending=0, pressure/cause refusal performs no raw filesystem I/O, mid-pass pending candidates are retried before new entries, unlink count/bytes survive ledger-cleanup or evidence-write failure, and settled/removal evidence survives defer and reopen; shared-testbox archive-file-io and stateful-sqlite profiles pass 292/292 and 1340/1340 respectively."
-      ]
+      "required_test_evidence": []
     },
     "minor": {
       "required_test_evidence": [
-        "Public API remains compatible within the Major.",
-        "Candidate reads and writes supported earlier-Minor state, including cursor and raw reconciliation rows without the new nullable evidence columns.",
-        "Earlier-Minor programs are not required to read newly migrated state.",
-        "A forward-repair version handles state left by a stopped faulty release."
+        "Public system-status API additions remain compatible within the current Major, while persistent-state impact is minor because legacy rollback cleanup cannot preserve an active release-pending removal-evidence row.",
+        "Candidate reads and writes supported earlier-Minor state, including cursor and raw reconciliation rows without the new nullable evidence columns; NULL evidence remains unknown until a newer binary observes it.",
+        "Earlier-Minor programs are not required to read newly migrated state, and pending-evidence recovery is explicitly forward-only across rollback to legacy retention cleanup.",
+        "A forward-repair version handles state left by a stopped faulty release, including idempotent evidence persistence after physical unlink and ledger-cleanup failure.",
+        "The final current-tree shared-testbox profiles recorded archive-file-io 298/298 and stateful-sqlite 1341/1341 (two slow tests, 1499 skipped). Focused checks recorded raw_orphan_sweep 13, cold_compression 6, retention_raw_reconciliation 4, the idempotent schema migration test 1, and direct raw payload storage tests 3."
       ]
     },
     "major": {

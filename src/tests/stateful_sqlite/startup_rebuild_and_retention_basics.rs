@@ -4676,6 +4676,22 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
             "missing raw reconciliation migration column {column}"
         );
     }
+    let raw_reconciliation_indexes: HashSet<String> =
+        sqlx::query("PRAGMA index_list('retention_raw_reconciliation')")
+            .fetch_all(&pool)
+            .await
+            .expect("inspect raw reconciliation indexes")
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+    assert!(
+        raw_reconciliation_indexes.contains("idx_retention_raw_reconciliation_pending"),
+        "missing raw reconciliation pending index"
+    );
+    assert!(
+        raw_reconciliation_indexes.contains("idx_retention_raw_reconciliation_active"),
+        "missing raw reconciliation active index"
+    );
     let raw_cursor = sqlx::query(
         r#"
         SELECT cursor,

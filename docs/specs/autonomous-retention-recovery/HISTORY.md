@@ -46,8 +46,9 @@
   removal evidence. Raw writers hold the shared directory fence through owner-link persistence;
   release records a durable pending marker and timestamp, rechecks identity and size immediately
   before unlink, synchronizes the raw parent, and atomically marks removal evidence as persisted
-  before ledger cleanup. Pending recovery has an independent bounded share and recovers older
-  evidence before a replaced identity resets the ledger row. The System
+  before ledger cleanup. Pending recovery has an independent bounded share and rotates present
+  rows so missing evidence cannot be starved. A present identity replacement resets observation
+  without claiming removal evidence for the older object. The System
   Status API, Web normalizer, Runtime Pressure UI, translations, and Storybook states expose the
   new diagnostics additively.
 

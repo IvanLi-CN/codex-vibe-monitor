@@ -1698,7 +1698,7 @@ async fn raw_orphan_sweep_recovers_when_removal_evidence_write_fails() {
 }
 
 #[tokio::test]
-async fn raw_orphan_sweep_recovers_pending_evidence_before_identity_replacement() {
+async fn raw_orphan_sweep_does_not_claim_pending_removal_after_identity_replacement() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-pending-replacement").await;
     let raw_path = config
@@ -1741,7 +1741,7 @@ async fn raw_orphan_sweep_recovers_pending_evidence_before_identity_replacement(
     let replacement =
         sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut replacement_traversal)
             .await
-            .expect("recover pending evidence before replacing ledger identity");
+            .expect("reset pending ledger after replacing identity");
     assert_eq!(replacement.quarantined, 1);
     let (last_removed, last_removed_bytes): (Option<i64>, Option<i64>) = sqlx::query_as(
         "SELECT last_nonzero_removal, last_nonzero_removal_bytes \
@@ -1749,9 +1749,9 @@ async fn raw_orphan_sweep_recovers_pending_evidence_before_identity_replacement(
     )
     .fetch_one(&pool)
     .await
-    .expect("load recovered replacement evidence");
-    assert_eq!(last_removed, Some(1));
-    assert_eq!(last_removed_bytes, Some(old_payload.len() as i64));
+    .expect("load replacement removal evidence");
+    assert_eq!(last_removed, None);
+    assert_eq!(last_removed_bytes, None);
     let (release_pending, evidence_persisted, byte_size): (i64, i64, i64) = sqlx::query_as(
         "SELECT release_pending, removal_evidence_persisted, byte_size \
          FROM retention_raw_reconciliation WHERE raw_path = ?1",
@@ -1763,6 +1763,154 @@ async fn raw_orphan_sweep_recovers_pending_evidence_before_identity_replacement(
     assert_eq!(release_pending, 0);
     assert_eq!(evidence_persisted, 0);
     assert_eq!(byte_size, new_payload.len() as i64);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn raw_orphan_sweep_does_not_claim_pending_removal_for_non_regular_replacement() {
+    use std::os::unix::fs::symlink;
+
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-pending-symlink").await;
+    let raw_path = config
+        .proxy_raw_dir
+        .join("pending-non-regular-replacement.bin");
+    let target_path = temp_dir.join("pending-symlink-target.bin");
+    fs::write(&target_path, b"replacement-target").expect("write symlink target");
+    symlink(&target_path, &raw_path).expect("replace pending raw file with symlink");
+    sqlx::query(
+        "INSERT INTO retention_raw_reconciliation
+         (raw_path, file_identity, byte_size, quarantined_at, release_pending,
+          release_pending_at, removal_evidence_persisted, updated_at)
+         VALUES (?1, 'old-identity', 17, ?2, 1, ?2, 0, '2026-01-01 00:00:00')",
+    )
+    .bind(raw_path.to_string_lossy().as_ref())
+    .bind(format_utc_iso(Utc::now() - ChronoDuration::days(2)))
+    .execute(&pool)
+    .await
+    .expect("insert pending non-regular row");
+
+    let mut traversal = RetentionRawDirectoryTraversal::default();
+    let pass = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal)
+        .await
+        .expect("clear non-regular pending row");
+    assert_eq!(pass.failures, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1",
+        )
+        .bind(raw_path.to_string_lossy().as_ref())
+        .fetch_one(&pool)
+        .await
+        .expect("count cleared non-regular row"),
+        0
+    );
+    let last_removed: Option<i64> = sqlx::query_scalar(
+        "SELECT last_nonzero_removal FROM retention_recovery_cursors WHERE scope = 'raw_payload_files'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load non-regular removal evidence");
+    assert_eq!(last_removed, None);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn raw_orphan_sweep_rotates_present_pending_rows_before_missing_rows() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-pending-rotation").await;
+    let old_quarantine = format_utc_iso(Utc::now() - ChronoDuration::days(2));
+    let outside_root = (0..8)
+        .map(|index| temp_dir.join(format!("pending-present-{index}.bin")))
+        .collect::<Vec<_>>();
+    for path in &outside_root {
+        fs::write(path, b"pending-present").expect("write present pending raw file");
+    }
+    let missing_path = temp_dir.join("pending-missing.bin");
+    for (index, path) in outside_root.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO retention_raw_reconciliation
+             (raw_path, file_identity, byte_size, quarantined_at, release_pending,
+              release_pending_at, removal_evidence_persisted, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, 0, ?6)",
+        )
+        .bind(path.to_string_lossy().as_ref())
+        .bind(format!("present-identity-{index}"))
+        .bind(15_i64)
+        .bind(&old_quarantine)
+        .bind(&old_quarantine)
+        .bind("2026-01-01 00:00:00")
+        .execute(&pool)
+        .await
+        .expect("insert present pending raw row");
+    }
+    sqlx::query(
+        "INSERT INTO retention_raw_reconciliation
+         (raw_path, file_identity, byte_size, quarantined_at, release_pending,
+          release_pending_at, removal_evidence_persisted, updated_at)
+         VALUES (?1, 'missing-identity', 17, ?2, 1, ?2, 0, '2026-01-02 00:00:00')",
+    )
+    .bind(missing_path.to_string_lossy().as_ref())
+    .bind(&old_quarantine)
+    .execute(&pool)
+    .await
+    .expect("insert missing pending raw row");
+
+    let mut first_traversal = RetentionRawDirectoryTraversal::default();
+    let first =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut first_traversal)
+            .await
+            .expect("rotate first pending batch");
+    assert_eq!(first.reconciliation_rows_checked, 8);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1",
+        )
+        .bind(missing_path.to_string_lossy().as_ref())
+        .fetch_one(&pool)
+        .await
+        .expect("keep missing pending row for next batch"),
+        1
+    );
+    let rotated_present: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_raw_reconciliation
+         WHERE release_pending != 0 AND updated_at > '2026-01-02 00:00:00'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count rotated pending rows");
+    assert_eq!(rotated_present, 8);
+
+    let mut second_traversal = RetentionRawDirectoryTraversal::default();
+    let second =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut second_traversal)
+            .await
+            .expect("service missing pending row after rotation");
+    assert_eq!(second.reconciliation_rows_checked, 8);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1",
+        )
+        .bind(missing_path.to_string_lossy().as_ref())
+        .fetch_one(&pool)
+        .await
+        .expect("clear missing pending row"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM retention_raw_reconciliation WHERE release_pending != 0",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("retain present pending rows"),
+        8
+    );
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

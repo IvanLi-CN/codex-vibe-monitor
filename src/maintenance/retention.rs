@@ -392,6 +392,24 @@ pub(crate) fn acquire_retention_raw_write_fence(
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
+pub(crate) fn acquire_retention_raw_exclusive_fence(
+    path: &Path,
+) -> io::Result<std::sync::Arc<RetentionArchiveFileLock>> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("raw payload path has no parent: {}", path.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    let lock = retention_file_lock(path, libc::LOCK_EX, false);
+    #[cfg(not(unix))]
+    let lock = retention_archive_file_lock(path);
+    lock.map(std::sync::Arc::new)
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+
 #[cfg(unix)]
 fn sync_retention_raw_parent(path: &Path) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -4223,6 +4241,35 @@ impl RawOrphanSweepPassContext {
     }
 }
 
+async fn read_retention_raw_directory_slice_with_budget(
+    root: &Path,
+    directory: Option<ReadDir>,
+) -> Result<RetentionRawDirectorySlice> {
+    let root = root.to_owned();
+    #[cfg(test)]
+    retention_test_raw_directory_entry_event();
+    // A ReadDir cannot be cancelled safely once moved into a blocking worker. Await the
+    // single worker to preserve its position and avoid accumulating detached scans after a
+    // slow filesystem call; the caller checks the budget again before admitting its results.
+    tokio::task::spawn_blocking(move || read_retention_raw_directory_slice(&root, directory))
+        .await
+        .map_err(|error| anyhow!("raw directory scan worker failed: {error}"))?
+}
+
+async fn retention_raw_file_metadata_with_budget(
+    context: &RawOrphanSweepPassContext,
+    path: &Path,
+) -> Result<io::Result<fs::Metadata>> {
+    let path = path.to_owned();
+    context
+        .run_with_candidate_budget(async move {
+            tokio::task::spawn_blocking(move || retention_raw_file_metadata(&path))
+                .await
+                .map_err(|error| anyhow!("raw metadata worker failed: {error}"))
+        })
+        .await
+}
+
 async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanSweepPassContext> {
     #[cfg(test)]
     let test_pressure_gate = RETENTION_TEST_DB_PRESSURE_GATE
@@ -4504,21 +4551,53 @@ fn retention_raw_candidates_with_links(
     referenced
 }
 
+async fn retention_raw_candidates_with_links_with_budget(
+    context: &RawOrphanSweepPassContext,
+    config: &AppConfig,
+    candidates: &[PathBuf],
+    link_paths: &std::collections::HashSet<String>,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<std::collections::HashSet<PathBuf>> {
+    let config = config.clone();
+    let candidates = candidates.to_vec();
+    let link_paths = link_paths.clone();
+    let raw_path_fallback_root = raw_path_fallback_root.map(Path::to_owned);
+    context
+        .run_with_candidate_budget(async move {
+            tokio::task::spawn_blocking(move || {
+                Ok(retention_raw_candidates_with_links(
+                    &config,
+                    &candidates,
+                    &link_paths,
+                    raw_path_fallback_root.as_deref(),
+                ))
+            })
+            .await
+            .map_err(|error| anyhow!("raw reference fallback worker failed: {error}"))?
+        })
+        .await
+}
+
 async fn retention_raw_candidate_is_referenced(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
     candidate: &Path,
     raw_path_fallback_root: Option<&Path>,
+    context: &RawOrphanSweepPassContext,
 ) -> Result<bool> {
     let candidate = normalize_path_for_compare(candidate);
     let candidates = [candidate.clone()];
-    let linked_paths = retention_raw_link_paths(pool, config, &candidates).await?;
-    Ok(retention_raw_candidates_with_links(
+    let linked_paths = context
+        .run_with_candidate_budget(retention_raw_link_paths(pool, config, &candidates))
+        .await?;
+    Ok(retention_raw_candidates_with_links_with_budget(
+        context,
         config,
         &candidates,
         &linked_paths,
         raw_path_fallback_root,
     )
+    .await?
     .contains(&candidate))
 }
 
@@ -4675,6 +4754,32 @@ async fn clear_retention_raw_reconciliation_row(
     result
 }
 
+async fn rotate_retention_raw_reconciliation_pending_row(
+    pool: &Pool<Sqlite>,
+    context: &RawOrphanSweepPassContext,
+    row: &RetentionRawReconciliationRow,
+) -> Result<()> {
+    let admission = context
+        .try_write("raw_reconciliation_pending_rotation")
+        .await?;
+    let result = context
+        .run_with_candidate_budget(async {
+            sqlx::query(
+                "UPDATE retention_raw_reconciliation
+                 SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+                 WHERE raw_path = ?1 AND file_identity = ?2 AND release_pending != 0",
+            )
+            .bind(&row.raw_path)
+            .bind(&row.file_identity)
+            .execute(pool)
+            .await?;
+            Ok(())
+        })
+        .await;
+    drop(admission);
+    result
+}
+
 async fn cleanup_missing_retention_raw_reconciliation_rows(
     pool: &Pool<Sqlite>,
     context: &RawOrphanSweepPassContext,
@@ -4694,7 +4799,7 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
         .await?;
     let pending_limit = RETENTION_RAW_RECONCILIATION_PENDING_BATCH.min(limit);
     let regular_limit = limit.saturating_sub(pending_limit);
-    let pending_rows = if pending_limit == 0 {
+    let mut pending_rows = if pending_limit == 0 {
         Vec::new()
     } else {
         context
@@ -4709,13 +4814,17 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
                     LIMIT ?1
                     "#,
                 )
-                .bind(pending_limit as i64)
+                .bind((pending_limit + 1) as i64)
                 .fetch_all(pool)
                 .await?)
             })
             .await?
     };
-    let regular_rows = if regular_limit == 0 {
+    let pending_has_more = pending_rows.len() > pending_limit;
+    if pending_has_more {
+        pending_rows.truncate(pending_limit);
+    }
+    let mut regular_rows = if regular_limit == 0 {
         Vec::new()
     } else {
         context
@@ -4731,14 +4840,16 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
                     "#,
                 )
                 .bind(&cursor)
-                .bind(regular_limit as i64)
+                .bind((regular_limit + 1) as i64)
                 .fetch_all(pool)
                 .await?)
             })
             .await?
     };
-    let pending_has_more = pending_rows.len() == pending_limit;
-    let regular_has_more = regular_rows.len() == regular_limit;
+    let regular_has_more = regular_rows.len() > regular_limit;
+    if regular_has_more {
+        regular_rows.truncate(regular_limit);
+    }
     let regular_rows_empty = regular_rows.is_empty();
     let mut rows = pending_rows;
     rows.extend(regular_rows);
@@ -4753,46 +4864,122 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
         }
         processed_rows += 1;
         let candidate = normalize_path_for_compare(Path::new(&row.raw_path));
-        let metadata_missing_or_non_file =
-            match retention_raw_file_metadata(Path::new(&row.raw_path)) {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-                Ok(metadata) if !metadata.file_type().is_file() => true,
-                Err(_) => {
-                    failures += 1;
-                    false
-                }
-                Ok(_) => false,
-            };
+        let metadata =
+            retention_raw_file_metadata_with_budget(context, Path::new(&row.raw_path)).await?;
+        let (metadata_missing, metadata_non_file, metadata_failed) = match metadata {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (true, false, false),
+            Ok(metadata) if !metadata.file_type().is_file() => (false, true, false),
+            Err(_) => {
+                failures += 1;
+                (false, false, true)
+            }
+            Ok(_) => (false, false, false),
+        };
+        if metadata_failed {
+            continue;
+        }
+        let metadata_missing_or_non_file = metadata_missing || metadata_non_file;
         if !candidate.starts_with(raw_root) {
             if row.release_pending != 0 && !metadata_missing_or_non_file {
+                if let Err(error) =
+                    rotate_retention_raw_reconciliation_pending_row(pool, context, row).await
+                {
+                    if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                        budget_exhausted = true;
+                        break;
+                    }
+                    if is_retention_write_deferred(&error) {
+                        return Err(error);
+                    }
+                    failures += 1;
+                }
                 continue;
             }
-            if row.release_pending != 0 {
-                persist_missing_raw_reconciliation_release_evidence(pool, context, row).await?;
+            if row.release_pending != 0
+                && metadata_missing
+                && let Err(error) =
+                    persist_missing_raw_reconciliation_release_evidence(pool, context, row).await
+            {
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    budget_exhausted = true;
+                    break;
+                }
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+                failures += 1;
+                continue;
             }
-            clear_retention_raw_reconciliation_row(
+            if let Err(error) = clear_retention_raw_reconciliation_row(
                 pool,
                 context,
                 &row.raw_path,
                 Some(&row.file_identity),
             )
-            .await?;
+            .await
+            {
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    budget_exhausted = true;
+                    break;
+                }
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+                failures += 1;
+                continue;
+            }
             if row.release_pending == 0 {
                 progressed = Some(row.raw_path.as_str());
             }
             continue;
         }
         if metadata_missing_or_non_file {
-            if row.release_pending != 0 {
-                persist_missing_raw_reconciliation_release_evidence(pool, context, row).await?;
+            if row.release_pending != 0
+                && metadata_missing
+                && let Err(error) =
+                    persist_missing_raw_reconciliation_release_evidence(pool, context, row).await
+            {
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    budget_exhausted = true;
+                    break;
+                }
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+                failures += 1;
+                continue;
             }
-            clear_retention_raw_reconciliation_row(
+            if let Err(error) = clear_retention_raw_reconciliation_row(
                 pool,
                 context,
                 &row.raw_path,
                 Some(&row.file_identity),
             )
-            .await?;
+            .await
+            {
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    budget_exhausted = true;
+                    break;
+                }
+                if is_retention_write_deferred(&error) {
+                    return Err(error);
+                }
+                failures += 1;
+                continue;
+            }
+        } else if row.release_pending != 0
+            && let Err(error) =
+                rotate_retention_raw_reconciliation_pending_row(pool, context, row).await
+        {
+            if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                budget_exhausted = true;
+                break;
+            }
+            if is_retention_write_deferred(&error) {
+                return Err(error);
+            }
+            failures += 1;
+            continue;
         }
         if row.release_pending == 0 {
             progressed = Some(row.raw_path.as_str());
@@ -4860,7 +5047,6 @@ async fn persist_raw_orphan_sweep_removal_evidence_after_admission(
     context: &RawOrphanSweepPassContext,
     raw_path: &str,
     file_identity: &str,
-    release_pending_at: Option<&str>,
     removed: usize,
     removed_bytes: u64,
 ) -> Result<()> {
@@ -4870,11 +5056,9 @@ async fn persist_raw_orphan_sweep_removal_evidence_after_admission(
             "simulated raw removal evidence persistence failure"
         ));
     }
-    let removal_at = release_pending_at
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format_utc_iso(Utc::now()));
     context
         .run_with_candidate_budget(async {
+            let removal_at = format_utc_iso(Utc::now());
             let mut transaction = pool.begin().await?;
             let persisted: Option<i64> = sqlx::query_scalar(
                 "SELECT removal_evidence_persisted
@@ -4976,7 +5160,6 @@ async fn persist_pending_raw_reconciliation_release_evidence_after_admission(
         context,
         &row.raw_path,
         &row.file_identity,
-        row.release_pending_at.as_deref(),
         1,
         removed_bytes,
     )
@@ -5074,6 +5257,9 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 result.reconciliation_rows_checked = examined;
                 result.reconciliation_has_more = has_more;
                 result.failures += failures;
+                if failures != 0 {
+                    result.complete = false;
+                }
             }
             Err(error) if is_retention_write_deferred(&error) => {
                 result.complete = false;
@@ -5099,10 +5285,27 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
     }
 
     let candidate_entries = if traversal.pending_candidates.is_empty() {
-        let scan = read_retention_raw_directory_slice(&raw_root, traversal.directory.take())?;
+        let scan = match read_retention_raw_directory_slice_with_budget(
+            &raw_root,
+            traversal.directory.take(),
+        )
+        .await
+        {
+            Ok(scan) => scan,
+            Err(error) => return Err(error),
+        };
         result.inspected_entries += scan.inspected_entries;
         result.failures += scan.failures;
+        if scan.failures != 0 {
+            result.complete = false;
+        }
         traversal.directory = scan.directory;
+        if context.candidate_budget_expired() && !scan.candidates.is_empty() {
+            result.complete = false;
+            traversal.pending_candidates.extend(scan.candidates);
+            result.reached_end = false;
+            return Ok(result);
+        }
         scan.candidates
     } else {
         std::mem::take(&mut traversal.pending_candidates)
@@ -5110,7 +5313,11 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             .collect()
     };
     if candidate_entries.is_empty() {
-        result.reached_end = traversal.directory.is_none();
+        result.reached_end =
+            traversal.directory.is_none() && traversal.pending_candidates.is_empty();
+        if result.reconciliation_has_more || !result.reached_end {
+            result.complete = false;
+        }
         return Ok(result);
     }
 
@@ -5135,12 +5342,28 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             return Ok(result);
         }
     };
-    let referenced_candidates = retention_raw_candidates_with_links(
+    let referenced_candidates = match retention_raw_candidates_with_links_with_budget(
+        &context,
         config,
         &candidate_paths,
         &linked_paths,
         effective_fallback_root,
-    );
+    )
+    .await
+    {
+        Ok(paths) => paths,
+        Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+            result.complete = false;
+            traversal.pending_candidates.extend(candidate_entries);
+            return Ok(result);
+        }
+        Err(_) => {
+            result.complete = false;
+            result.failures += 1;
+            traversal.pending_candidates.extend(candidate_entries);
+            return Ok(result);
+        }
+    };
 
     for (candidate_index, path) in candidate_paths.iter().enumerate() {
         if context.candidate_budget_expired() {
@@ -5151,10 +5374,22 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             break;
         }
         let path = normalize_path_for_compare(path);
-        let metadata = match retention_raw_file_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => metadata,
-            Ok(_) => continue,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+        let metadata = match retention_raw_file_metadata_with_budget(&context, &path).await {
+            Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => continue,
+            Ok(Err(_)) => {
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
             Err(_) => {
                 result.complete = false;
                 result.failures += 1;
@@ -5196,41 +5431,9 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
-        if !dry_run
-            && existing.as_ref().is_some_and(|row| {
-                row.release_pending != 0
-                    && (row.file_identity != file_identity || row.byte_size != byte_size)
-            })
-        {
-            let pending_row = existing
-                .as_ref()
-                .expect("pending raw reconciliation row should be present");
-            if let Err(error) =
-                persist_missing_raw_reconciliation_release_evidence(pool, &context, pending_row)
-                    .await
-            {
-                result.complete = false;
-                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
-                    traversal
-                        .pending_candidates
-                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
-                    break;
-                }
-                if is_retention_write_deferred(&error) {
-                    result.deferred = true;
-                    if let Some((stage, cause)) = raw_orphan_sweep_admission_details(&error) {
-                        result.admission_stage = Some(stage.to_string());
-                        result.admission_cause = Some(cause.to_string());
-                    }
-                    traversal
-                        .pending_candidates
-                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
-                    break;
-                }
-                result.failures += 1;
-                continue;
-            }
-        }
+        // A replacement identity proves only that the old object is no longer at this
+        // pathname; it does not prove that the failed unlink removed the old object.
+        // Let observation reset the ledger without manufacturing removal evidence.
         if referenced_candidates.contains(&path) {
             if !dry_run
                 && existing.is_some()
@@ -5319,10 +5522,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
         }
-        let final_metadata = match retention_raw_file_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => metadata,
-            Ok(_) => continue,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        let final_metadata = match retention_raw_file_metadata_with_budget(&context, &path).await {
+            Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
                 if let Err(error) = clear_retention_raw_reconciliation_row(
                     pool,
                     &context,
@@ -5354,6 +5557,18 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     }
                 }
                 continue;
+            }
+            Ok(Err(_)) => {
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
             }
             Err(_) => {
                 result.complete = false;
@@ -5467,14 +5682,14 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                     continue;
                 }
             };
-        match context
-            .run_with_candidate_budget(retention_raw_candidate_is_referenced(
-                pool,
-                config,
-                &path,
-                effective_fallback_root,
-            ))
-            .await
+        match retention_raw_candidate_is_referenced(
+            pool,
+            config,
+            &path,
+            effective_fallback_root,
+            &context,
+        )
+        .await
         {
             Ok(true) => {
                 drop(directory_lock);
@@ -5514,17 +5729,33 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             result.failures += 1;
             continue;
         }
-        let unlink_metadata = match retention_raw_file_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => metadata,
-            Ok(_) => {
+        let unlink_metadata = match retention_raw_file_metadata_with_budget(&context, &path).await {
+            Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
+            Ok(Ok(_)) => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 continue;
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
                 drop(directory_lock);
                 drop(inventory_admission);
                 continue;
+            }
+            Ok(Err(_)) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
             }
             Err(_) => {
                 drop(directory_lock);
@@ -5594,15 +5825,6 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
         }
-        let release_pending_at =
-            if current.release_pending != 0 && current.removal_evidence_persisted == 0 {
-                current
-                    .release_pending_at
-                    .clone()
-                    .unwrap_or_else(|| release_pending_started_at.clone())
-            } else {
-                release_pending_started_at
-            };
         if context.candidate_budget_expired() {
             drop(directory_lock);
             drop(inventory_admission);
@@ -5612,18 +5834,38 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
         }
-        let final_unlink_metadata = match retention_raw_file_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_file() => metadata,
-            Ok(_) | Err(_) => {
-                drop(directory_lock);
-                drop(inventory_admission);
-                result.complete = false;
-                traversal
-                    .pending_candidates
-                    .push_back(candidate_entries[candidate_index].clone());
-                continue;
-            }
-        };
+        let final_unlink_metadata =
+            match retention_raw_file_metadata_with_budget(&context, &path).await {
+                Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
+                Ok(Ok(_)) | Ok(Err(_)) => {
+                    drop(directory_lock);
+                    drop(inventory_admission);
+                    result.complete = false;
+                    traversal
+                        .pending_candidates
+                        .push_back(candidate_entries[candidate_index].clone());
+                    continue;
+                }
+                Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                    drop(directory_lock);
+                    drop(inventory_admission);
+                    result.complete = false;
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
+                Err(_) => {
+                    drop(directory_lock);
+                    drop(inventory_admission);
+                    result.complete = false;
+                    result.failures += 1;
+                    traversal
+                        .pending_candidates
+                        .push_back(candidate_entries[candidate_index].clone());
+                    continue;
+                }
+            };
         let final_unlink_identity = retention_raw_file_identity(&final_unlink_metadata);
         let final_unlink_size = match i64::try_from(final_unlink_metadata.len()) {
             Ok(size) => size,
@@ -5664,14 +5906,49 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             result.failures += 1;
             continue;
         }
-        if fs::remove_file(&path).is_err() {
+        // Keep the directory fence alive while the blocking filesystem operation runs. If the
+        // candidate budget expires, the blocking task may finish after this slice returns, but the
+        // durable release-pending row and held fence let the next slice recover without a second
+        // unlink attempt.
+        let unlink_path = path.clone();
+        let unlink_operation = context
+            .run_with_candidate_budget(async move {
+                tokio::task::spawn_blocking(move || {
+                    let file_result = match fs::remove_file(&unlink_path) {
+                        Ok(()) => (true, sync_retention_raw_parent(&unlink_path)),
+                        Err(error) => (false, Err(error)),
+                    };
+                    (directory_lock, file_result)
+                })
+                .await
+                .map_err(|error| anyhow!("raw orphan unlink worker failed: {error}"))
+            })
+            .await;
+        let (directory_lock, (removed_file, sync_result)) = match unlink_operation {
+            Ok(outcome) => outcome,
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                drop(inventory_admission);
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            Err(_) => {
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+        };
+        if !removed_file {
             drop(directory_lock);
             drop(inventory_admission);
             result.complete = false;
             result.failures += 1;
             continue;
         }
-        if sync_retention_raw_parent(&path).is_err() {
+        if sync_result.is_err() {
             drop(directory_lock);
             drop(inventory_admission);
             result.complete = false;
@@ -5697,7 +5974,6 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             &context,
             &raw_path,
             &final_unlink_identity,
-            Some(&release_pending_at),
             result.removed,
             result.removed_bytes,
         )
@@ -5749,6 +6025,9 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
     }
 
     result.reached_end = traversal.directory.is_none() && traversal.pending_candidates.is_empty();
+    if result.reconciliation_has_more || !result.reached_end {
+        result.complete = false;
+    }
     Ok(result)
 }
 
@@ -5939,8 +6218,13 @@ fn raw_orphan_sweep_set_health(state: &str, update: RawOrphanSweepHealthUpdate<'
         if health.last_settled_pass.is_none() {
             health.last_settled_pass = schedule.last_settled_pass.clone();
         }
-        if health.last_nonzero_removal.is_none() {
-            health.last_nonzero_removal = schedule.last_nonzero_removal.clone();
+        if let Some(schedule_removal) = schedule.last_nonzero_removal.as_ref()
+            && health
+                .last_nonzero_removal
+                .as_ref()
+                .is_none_or(|current| schedule_removal.removed_at > current.removed_at)
+        {
+            health.last_nonzero_removal = Some(schedule_removal.clone());
         }
         if state != "scanning" && health.admission_stage.is_none() {
             health.admission_stage = schedule.admission_stage.clone();
@@ -8428,6 +8712,26 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             if !dry_run && !prepare_raw_compression_inventory_reset(pool).await? {
                 continue;
             }
+            // Cold compression and orphan removal both mutate this raw directory. Keep the
+            // shared fence through compression, reference replacement, and source cleanup so an
+            // exclusive orphan sweep cannot observe or remove a half-published replacement.
+            let _compression_fence = match acquire_raw_compression_fence(
+                &candidate.raw_path,
+                raw_path_fallback_root,
+            )
+            .await
+            {
+                Ok(fence) => fence,
+                Err(error) => {
+                    warn!(
+                        invocation_id = candidate.id,
+                        field = "attempt_response",
+                        error = %error,
+                        "failed to acquire raw compression directory fence; continuing retention"
+                    );
+                    continue;
+                }
+            };
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
                 candidate.id,
@@ -8585,6 +8889,26 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
                 continue;
             }
 
+            // Keep the shared raw-directory fence until the DB references and old source path
+            // have been updated, matching the orphan sweep's exclusive deletion window.
+            let _compression_fence = match acquire_raw_compression_fence(
+                &candidate.raw_path,
+                raw_path_fallback_root,
+            )
+            .await
+            {
+                Ok(fence) => fence,
+                Err(error) => {
+                    warn!(
+                        invocation_id = candidate.id,
+                        field = field.label(),
+                        error = %error,
+                        "failed to acquire raw compression directory fence; continuing retention"
+                    );
+                    continue;
+                }
+            };
+
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
                 candidate.id,
@@ -8655,6 +8979,34 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
 
     let hit_batch_limit = rows_processed >= batch_limit;
     Ok((summary, hit_batch_limit))
+}
+
+async fn acquire_raw_compression_fence(
+    raw_path: &str,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<Option<Arc<RetentionArchiveFileLock>>> {
+    let lock_path = locate_existing_proxy_raw_path(raw_path, raw_path_fallback_root)
+        .or_else(|| locate_existing_proxy_raw_compressed_path(raw_path, raw_path_fallback_root))
+        .or_else(|| {
+            resolved_raw_path_candidates(raw_path, raw_path_fallback_root)
+                .into_iter()
+                .next()
+        });
+    let Some(lock_path) = lock_path else {
+        return Ok(None);
+    };
+    let lock_description = lock_path.display().to_string();
+    let fence =
+        tokio::task::spawn_blocking(move || acquire_retention_raw_exclusive_fence(&lock_path))
+            .await
+            .map_err(|error| anyhow!("raw compression fence worker failed: {error}"))?
+            .with_context(|| {
+                format!(
+                    "failed to acquire raw compression directory fence: {}",
+                    lock_description
+                )
+            })?;
+    Ok(Some(fence))
 }
 
 pub(crate) async fn maybe_compress_proxy_raw_path(

@@ -2598,6 +2598,28 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure retention raw reconciliation quarantine index")?;
 
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_retention_raw_reconciliation_pending
+        ON retention_raw_reconciliation (updated_at, raw_path)
+        WHERE release_pending != 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention raw reconciliation pending index")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_retention_raw_reconciliation_active
+        ON retention_raw_reconciliation (raw_path)
+        WHERE release_pending = 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention raw reconciliation active index")?;
+
     // A detail-prune archive duplicates records still retained in the live table. Segment keys
     // encode the exact inclusive ID bounds in hexadecimal; only a contiguous live range proves
     // that every archived record remains live. Unknown legacy manifests stay fail-closed.
