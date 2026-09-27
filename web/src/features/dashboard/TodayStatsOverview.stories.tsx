@@ -489,7 +489,11 @@ export const UsageBreakdownDetails: Story = {
           .map((header) => header.textContent),
       ).toEqual(["模型", "缓存写入", "缓存读取", "缓存命中率", "输出", "总计"]);
       expect(tooltip).toHaveTextContent("23.3%");
-      expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/);
+      expect(
+        tooltip.querySelectorAll('[data-model-context-display="model-badge"]').length,
+      ).toBeGreaterThan(0);
+      expect(tooltip.querySelectorAll("[data-reasoning-effort-tone]").length).toBeGreaterThan(0);
+      expect(tooltip).not.toHaveTextContent(/Reasoning effort|思考等级/);
       expect(tooltip).toHaveTextContent(/Unspecified|未指定|—/);
       expect(tooltip).toHaveTextContent(/Output|输出/);
       const panel = within(tooltip).getByTestId("usage-breakdown-tooltip");
