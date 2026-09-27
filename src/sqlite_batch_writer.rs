@@ -3785,6 +3785,7 @@ pub(crate) async fn flush_pending_batch_inner(
 ) -> Result<PendingBatch> {
     let mut deferred_batch = PendingBatch::default();
     let mut prompt_cache_keys_to_refresh = HashSet::new();
+    let mut active_prompt_cache_key_releases = Vec::new();
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
@@ -3969,6 +3970,7 @@ pub(crate) async fn flush_pending_batch_inner(
             .filter(|key| !key.is_empty())
         {
             prompt_cache_keys_to_refresh.insert(prompt_cache_key.to_string());
+            active_prompt_cache_key_releases.push(prompt_cache_key.to_string());
         }
         deferred_batch.push(SqliteBatchWrite::InvocationDerived(
             BatchedInvocationDerivedWrites {
@@ -4033,6 +4035,8 @@ pub(crate) async fn flush_pending_batch_inner(
             && let Some(cache) = prompt_cache_conversation_cache
         {
             invalidate_prompt_cache_conversations_cache(cache).await;
+            release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases)
+                .await;
         }
         return Ok(deferred_batch);
     }
@@ -4166,6 +4170,10 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     tx.commit().await?;
+
+    if let Some(cache) = prompt_cache_conversation_cache {
+        release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
+    }
 
     if !prompt_cache_keys_to_refresh.is_empty()
         && let Err(error) =

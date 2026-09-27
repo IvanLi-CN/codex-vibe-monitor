@@ -1211,6 +1211,13 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
+        if let Some(prompt_cache_key) = inserted_record.prompt_cache_key.as_deref() {
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                prompt_cache_key,
+            )
+            .await;
+        }
         rollback_terminal_projection_before_enqueue(state, &inserted_record, &projection).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations
@@ -1226,6 +1233,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             record_flush_deferred_or_failed = "raw_terminal_invocation_enqueue_failed",
             "raw proxy capture record dropped by sqlite write controller"
         );
+        return Err(anyhow!(
+            "raw proxy capture terminal record could not be queued"
+        ));
     } else {
         debug!(
             invoke_id = %invoke_id,

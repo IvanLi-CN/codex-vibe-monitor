@@ -702,20 +702,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     {
         Ok(bytes) => bytes,
         Err(read_err) => {
-            let invoke_id =
-                match allocate_proxy_invoke_id(state.as_ref(), header_prompt_cache_key.as_deref())
-                    .await
-                {
-                    Ok(invoke_id) => invoke_id,
-                    Err(err) => {
-                        warn!(
-                            proxy_request_id,
-                            error = %err,
-                            "failed to allocate proxy invoke id after request body read failure"
-                        );
-                        generate_proxy_invoke_id()
-                    }
-                };
+            let invoke_id = match allocate_proxy_invoke_id_with_active_lease(
+                state.as_ref(),
+                header_prompt_cache_key.as_deref(),
+            )
+            .await
+            {
+                Ok(invoke_id) => invoke_id,
+                Err(err) => {
+                    warn!(
+                        proxy_request_id,
+                        error = %err,
+                        "failed to allocate proxy invoke id after request body read failure"
+                    );
+                    drop(proxy_request_permit);
+                    return Ok(build_proxy_invoke_id_allocation_error_response(err));
+                }
+            };
             let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
                 PoolInvocationCleanupGuard::new(
@@ -995,24 +998,26 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Instant::now(),
         );
     }
-    let invoke_id = match allocate_proxy_invoke_id(&state, prompt_cache_key.as_deref()).await {
-        Ok(invoke_id) => invoke_id,
-        Err(err) => {
-            warn!(
-                proxy_request_id,
-                prompt_cache_key_fingerprint = prompt_cache_key
-                    .as_deref()
-                    .map(prompt_cache_key_fingerprint),
-                error = %err,
-                "failed to allocate proxy invoke id after request semantic projection"
-            );
-            return Err(ProxyCaptureDispatchError {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: format!("failed to allocate proxy invoke id: {err}"),
-                invoke_id: None,
-            });
-        }
-    };
+    let invoke_id =
+        match allocate_proxy_invoke_id_with_active_lease(&state, prompt_cache_key.as_deref()).await
+        {
+            Ok(invoke_id) => invoke_id,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    prompt_cache_key_fingerprint = prompt_cache_key
+                        .as_deref()
+                        .map(prompt_cache_key_fingerprint),
+                    error = %err,
+                    "failed to allocate proxy invoke id after request semantic projection"
+                );
+                return Err(ProxyCaptureDispatchError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: format!("failed to allocate proxy invoke id: {err}"),
+                    invoke_id: None,
+                });
+            }
+        };
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
         PoolInvocationCleanupGuard::new(

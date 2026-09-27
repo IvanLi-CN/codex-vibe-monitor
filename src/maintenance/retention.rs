@@ -95,10 +95,30 @@ pub(crate) async fn run_data_retention_maintenance_with_circuit(
     shutdown: Option<&CancellationToken>,
     circuit: Arc<RawCaptureCircuitBreaker>,
 ) -> Result<RetentionRunSummary> {
+    run_data_retention_maintenance_with_circuit_and_prompt_cache(
+        pool, config, dry_run, shutdown, circuit, None,
+    )
+    .await
+}
+
+pub(crate) async fn run_data_retention_maintenance_with_circuit_and_prompt_cache(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+    circuit: Arc<RawCaptureCircuitBreaker>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+) -> Result<RetentionRunSummary> {
     RETENTION_RAW_CAPTURE_CIRCUIT
         .scope(
             RefCell::new(Some(circuit)),
-            run_data_retention_maintenance(pool, config, dry_run, shutdown),
+            run_data_retention_maintenance_with_prompt_cache(
+                pool,
+                config,
+                dry_run,
+                shutdown,
+                prompt_cache_conversation_cache,
+            ),
         )
         .await
 }
@@ -7980,12 +8000,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
-    match run_data_retention_maintenance_with_circuit(
+    match run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &state.pool,
         &state.config,
         None,
         Some(cancel),
         state.raw_capture_circuit.clone(),
+        Some(&state.prompt_cache_conversation_cache),
     )
     .await
     {
@@ -7997,17 +8018,6 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 );
                 invalidate_system_status_cache(state.as_ref()).await;
                 return false;
-            }
-            if !summary.dry_run && summary.prompt_cache_conversations_released > 0 {
-                clear_prompt_cache_conversation_identity_cache(
-                    &state.prompt_cache_conversation_cache,
-                )
-                .await;
-                info!(
-                    trigger,
-                    released = summary.prompt_cache_conversations_released,
-                    "cleared released prompt-cache conversation identities from memory"
-                );
             }
             // Commit the bounded inventory reset before task bookkeeping or cancellation can
             // return. Raw path mutations must never leave the monotonic inventory stale.
@@ -8039,11 +8049,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                             trigger,
                             "system raw metrics inventory reset deferred; preserving retry schedule"
                         );
-                        invalidate_system_status_cache(state.as_ref()).await;
                     }
                     Err(error) => {
-                        warn!(error = %error, "failed to reset system raw metrics inventory after retention");
-                        invalidate_system_status_cache(state.as_ref()).await;
+                        warn!(
+                            trigger,
+                            error = %error,
+                            "failed to reset system raw metrics inventory"
+                        );
                     }
                 }
             }
@@ -8076,10 +8088,10 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             invalidate_system_status_cache(state.as_ref()).await;
             touched_anything
         }
-        Err(err) => {
+        Err(error) => {
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
-                .record_error("data_retention_maintenance", &err);
-            retention_record_error("data_retention_maintenance", &err);
+                .record_error("data_retention_maintenance", &error);
+            retention_record_error("data_retention_maintenance", &error);
             if !state.config.retention_dry_run {
                 let task_run = tokio::select! {
                     biased;
@@ -8101,7 +8113,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         Some("retention maintenance failed".to_string()),
                         Some(format!(
                             "failure_fingerprint:{}",
-                            retention_error_fingerprint(&err)
+                            retention_error_fingerprint(&error)
                         )),
                     )
                     .await;
@@ -8109,19 +8121,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             warn!(
                 trigger,
-                error_fingerprint = %retention_error_fingerprint(&err),
+                error_fingerprint = %retention_error_fingerprint(&error),
                 retry_soon = pressure_error,
                 "failed to run retention maintenance"
             );
-            return !pressure_error;
+            !pressure_error
         }
-    };
-
-    // Hourly rollups run through their own P2 scheduler. Retention used to invoke a
-    // full refresh here after every committed batch, creating an uncoordinated long
-    // write immediately after the maintenance micro-transaction released its permit.
-    // Archive materialization already wakes the targeted repair path above.
-    true
+    }
 }
 
 pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
@@ -8140,6 +8146,17 @@ pub(crate) async fn run_data_retention_maintenance(
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
+    run_data_retention_maintenance_with_prompt_cache(pool, config, dry_run_override, shutdown, None)
+        .await
+}
+
+async fn run_data_retention_maintenance_with_prompt_cache(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+) -> Result<RetentionRunSummary> {
     let defer_generation = retention_defer_generation();
     let run = async {
         if let Some(shutdown) = shutdown {
@@ -8151,12 +8168,19 @@ pub(crate) async fn run_data_retention_maintenance(
                         config,
                         dry_run_override,
                         Some(shutdown),
+                        prompt_cache_conversation_cache,
                     ),
                 )
                 .await
         } else {
-            run_data_retention_maintenance_with_task_run_prune(pool, config, dry_run_override, None)
-                .await
+            run_data_retention_maintenance_with_task_run_prune(
+                pool,
+                config,
+                dry_run_override,
+                None,
+                prompt_cache_conversation_cache,
+            )
+            .await
         }
     };
     let result = RETENTION_CURRENT_PREPARED_KEY
@@ -8173,10 +8197,17 @@ async fn run_data_retention_maintenance_with_task_run_prune(
     config: &AppConfig,
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
-    let result =
-        run_data_retention_maintenance_inner(pool, config, dry_run_override, shutdown).await;
+    let result = run_data_retention_maintenance_inner(
+        pool,
+        config,
+        dry_run_override,
+        shutdown,
+        prompt_cache_conversation_cache,
+    )
+    .await;
     // This janitor must run even when an earlier archive stage fails. Otherwise every
     // failed pass adds a task-run record while the retention policy that bounds those
     // records is unreachable until the unrelated failure clears.
@@ -8205,6 +8236,7 @@ async fn run_data_retention_maintenance_inner(
     config: &AppConfig,
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
@@ -8423,10 +8455,39 @@ async fn run_data_retention_maintenance_inner(
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
-    summary.prompt_cache_conversations_released =
-        cleanup_orphan_prompt_cache_conversations(pool, dry_run)
+    if !dry_run {
+        match refresh_all_prompt_cache_conversation_stats(pool).await {
+            Ok(refreshed) => {
+                if refreshed > 0 {
+                    info!(
+                        refreshed,
+                        "refreshed prompt-cache conversation statistics during retention"
+                    );
+                }
+            }
+            Err(error) => {
+                retention_record_error("prompt_cache_conversation_stats_refresh", &error);
+                warn!(
+                    error = %error,
+                    "failed to refresh prompt-cache conversation statistics during retention"
+                );
+            }
+        }
+    }
+    summary.prompt_cache_conversations_released = match prompt_cache_conversation_cache {
+        Some(cache) => cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache)
             .await
-            .context("failed to release orphan prompt-cache conversation identities")?;
+            .inspect_err(|error| {
+                retention_record_error("prompt_cache_conversation_cleanup", error);
+            })
+            .context("failed to release orphan prompt-cache conversation identities")?,
+        None => cleanup_orphan_prompt_cache_conversations(pool, dry_run)
+            .await
+            .inspect_err(|error| {
+                retention_record_error("prompt_cache_conversation_cleanup", error);
+            })
+            .context("failed to release orphan prompt-cache conversation identities")?,
+    };
     if summary.prompt_cache_conversations_released > 0 {
         info!(
             dry_run,

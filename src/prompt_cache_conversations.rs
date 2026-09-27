@@ -18,6 +18,7 @@ pub(crate) struct PromptCacheConversationIdentity {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptCacheConversationIdentityCache {
     pub(crate) conversations: HashMap<String, PromptCacheConversationIdentity>,
+    pub(crate) active_prompt_cache_keys: HashMap<String, usize>,
     pub(crate) unbound_prefix: Option<UnboundInvokePrefix>,
 }
 
@@ -177,6 +178,12 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     .await?
         != 0;
     if migration_already_completed {
+        if let Err(error) = refresh_all_prompt_cache_conversation_stats(pool).await {
+            warn!(
+                error = %error,
+                "failed to reconcile prompt-cache conversation statistics during startup"
+            );
+        }
         return Ok(0);
     }
 
@@ -409,6 +416,31 @@ pub(crate) async fn allocate_proxy_invoke_id(
     prompt_cache_key: Option<&str>,
 ) -> Result<String> {
     let mut cache = state.prompt_cache_conversation_cache.lock().await;
+    allocate_proxy_invoke_id_locked(state, &mut cache, prompt_cache_key).await
+}
+
+pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+) -> Result<String> {
+    let mut cache = state.prompt_cache_conversation_cache.lock().await;
+    let invoke_id = allocate_proxy_invoke_id_locked(state, &mut cache, prompt_cache_key).await?;
+    if let Some(prompt_cache_key) = normalize_prompt_cache_key(prompt_cache_key) {
+        let leases = cache
+            .identity_cache
+            .active_prompt_cache_keys
+            .entry(prompt_cache_key.to_string())
+            .or_default();
+        *leases = leases.saturating_add(1);
+    }
+    Ok(invoke_id)
+}
+
+async fn allocate_proxy_invoke_id_locked(
+    state: &AppState,
+    cache: &mut PromptCacheConversationsCacheState,
+    prompt_cache_key: Option<&str>,
+) -> Result<String> {
     if let Some(prompt_cache_key) = normalize_prompt_cache_key(prompt_cache_key) {
         let identity = if let Some(identity) =
             cache.identity_cache.conversations.get_mut(prompt_cache_key)
@@ -591,7 +623,7 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats(
         sqlx::query(
             r#"
             UPDATE prompt_cache_conversations
-            SET last_invoke_sequence = COALESCE(?1, last_invoke_sequence),
+            SET last_invoke_sequence = MAX(last_invoke_sequence, COALESCE(?1, -1)),
                 request_count = ?2,
                 success_count = ?3,
                 failure_count = ?4,
@@ -644,6 +676,20 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats(
     Ok(refreshed)
 }
 
+pub(crate) async fn refresh_all_prompt_cache_conversation_stats(
+    pool: &Pool<Sqlite>,
+) -> Result<usize> {
+    let prompt_cache_keys = sqlx::query_scalar::<_, String>(
+        "SELECT prompt_cache_key FROM prompt_cache_conversations ORDER BY prompt_cache_key",
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to enumerate prompt-cache conversation statistics refresh keys")?
+    .into_iter()
+    .collect::<HashSet<_>>();
+    refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys).await
+}
+
 fn invoke_id_suffix<'a>(invoke_id: &'a str, conversation_id: &str) -> Option<&'a str> {
     let suffix = invoke_id.strip_prefix(conversation_id)?;
     (suffix.len() == PROMPT_CACHE_CONVERSATION_SEQUENCE_LENGTH).then_some(suffix)
@@ -653,25 +699,166 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations(
     pool: &Pool<Sqlite>,
     dry_run: bool,
 ) -> Result<usize> {
+    cleanup_orphan_prompt_cache_conversations_with_active_keys(pool, dry_run, &HashSet::new()).await
+}
+
+async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+    active_prompt_cache_keys: &HashSet<String>,
+) -> Result<usize> {
     let predicate = format!(
         "TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) = prompt_cache_conversations.prompt_cache_key"
     );
     let orphan_predicate = format!(
         "(last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
     );
-    let count = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE {orphan_predicate}"
-    ))
-    .fetch_one(pool)
-    .await? as usize;
+    let active_exclusion = if active_prompt_cache_keys.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " AND prompt_cache_key NOT IN ({})",
+            std::iter::repeat_n("?", active_prompt_cache_keys.len())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE {orphan_predicate}{active_exclusion}"
+    );
+    let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+    for prompt_cache_key in active_prompt_cache_keys {
+        count_query = count_query.bind(prompt_cache_key);
+    }
+    let count = count_query.fetch_one(pool).await? as usize;
     if !dry_run && count > 0 {
-        sqlx::query(&format!(
-            "DELETE FROM prompt_cache_conversations WHERE {orphan_predicate}"
-        ))
-        .execute(pool)
-        .await?;
+        let delete_sql = format!(
+            "DELETE FROM prompt_cache_conversations WHERE {orphan_predicate}{active_exclusion}"
+        );
+        let mut delete_query = sqlx::query(&delete_sql);
+        for prompt_cache_key in active_prompt_cache_keys {
+            delete_query = delete_query.bind(prompt_cache_key);
+        }
+        delete_query.execute(pool).await?;
     }
     Ok(count)
+}
+
+pub(crate) async fn cleanup_orphan_prompt_cache_conversations_with_cache(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+) -> Result<usize> {
+    let mut cache_state = cache.lock().await;
+    let active_prompt_cache_keys = cache_state
+        .identity_cache
+        .active_prompt_cache_keys
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let released = cleanup_orphan_prompt_cache_conversations_with_active_keys(
+        pool,
+        dry_run,
+        &active_prompt_cache_keys,
+    )
+    .await?;
+    if !dry_run && released > 0 {
+        let existing_prompt_cache_keys = sqlx::query_scalar::<_, String>(
+            "SELECT prompt_cache_key FROM prompt_cache_conversations",
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        cache_state
+            .identity_cache
+            .conversations
+            .retain(|prompt_cache_key, _| existing_prompt_cache_keys.contains(prompt_cache_key));
+        info!(
+            released,
+            active = active_prompt_cache_keys.len(),
+            cached = cache_state.identity_cache.conversations.len(),
+            "cleared released prompt-cache conversation identities while holding allocator lock"
+        );
+    }
+    Ok(released)
+}
+
+pub(crate) async fn retain_active_prompt_cache_conversation(
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+    prompt_cache_key: &str,
+) {
+    let mut cache_state = cache.lock().await;
+    let prompt_cache_key = prompt_cache_key.trim();
+    if prompt_cache_key.is_empty() {
+        return;
+    }
+    cache_state
+        .identity_cache
+        .active_prompt_cache_keys
+        .entry(prompt_cache_key.to_string())
+        .and_modify(|count| *count = count.saturating_add(1))
+        .or_insert(1);
+}
+
+pub(crate) async fn release_active_prompt_cache_conversation(
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+    prompt_cache_key: &str,
+) {
+    let mut cache_state = cache.lock().await;
+    let prompt_cache_key = prompt_cache_key.trim();
+    let Some(count) = cache_state
+        .identity_cache
+        .active_prompt_cache_keys
+        .get_mut(prompt_cache_key)
+    else {
+        return;
+    };
+    if *count <= 1 {
+        cache_state
+            .identity_cache
+            .active_prompt_cache_keys
+            .remove(prompt_cache_key);
+    } else {
+        *count -= 1;
+    }
+}
+
+pub(crate) async fn release_active_prompt_cache_conversations(
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+    prompt_cache_keys: &[String],
+) {
+    if prompt_cache_keys.is_empty() {
+        return;
+    }
+    let mut cache_state = cache.lock().await;
+    let mut released = 0_usize;
+    for prompt_cache_key in prompt_cache_keys {
+        let prompt_cache_key = prompt_cache_key.trim();
+        let Some(count) = cache_state
+            .identity_cache
+            .active_prompt_cache_keys
+            .get_mut(prompt_cache_key)
+        else {
+            continue;
+        };
+        if *count <= 1 {
+            cache_state
+                .identity_cache
+                .active_prompt_cache_keys
+                .remove(prompt_cache_key);
+        } else {
+            *count -= 1;
+        }
+        released += 1;
+    }
+    if released > 0 {
+        debug!(
+            released,
+            candidates = prompt_cache_keys.len(),
+            "released active prompt-cache conversation leases after terminal commit"
+        );
+    }
 }
 
 pub(crate) async fn clear_prompt_cache_conversation_identity_cache(

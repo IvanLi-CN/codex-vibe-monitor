@@ -1370,7 +1370,7 @@ async fn allocate_via_pool_invoke_id(
     proxy_request_id: u64,
     prompt_cache_key: Option<&str>,
 ) -> Result<String, ProxyErrorResponse> {
-    match allocate_proxy_invoke_id(state, prompt_cache_key).await {
+    match allocate_proxy_invoke_id_with_active_lease(state, prompt_cache_key).await {
         Ok(invoke_id) => Ok(invoke_id),
         Err(err) => {
             warn!(
@@ -1844,6 +1844,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
             state.clone(),
             via_pool_invoke_id.clone(),
         ));
+        runtime_snapshot_cleanup_guard
+            .as_mut()
+            .expect("via-pool runtime cleanup guard should exist")
+            .adopt_prompt_cache_key(header_prompt_cache_key.as_deref())
+            .await;
         let body_limit = state.config.openai_proxy_max_request_body_bytes;
         let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
         let capture_target = capture_target_for_request(original_uri.path(), &method);
@@ -1949,6 +1954,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .as_mut()
                             .expect("via-pool runtime cleanup guard should exist")
                             .set_invoke_id(via_pool_invoke_id.clone());
+                        runtime_snapshot_cleanup_guard
+                            .as_mut()
+                            .expect("via-pool runtime cleanup guard should exist")
+                            .adopt_prompt_cache_key(effective_prompt_cache_key.as_deref())
+                            .await;
                     }
                     let (
                         prompt_cache_binding_constraint,
@@ -2557,6 +2567,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 .as_mut()
                                 .expect("via-pool runtime cleanup guard should exist")
                                 .set_invoke_id(via_pool_invoke_id.clone());
+                            runtime_snapshot_cleanup_guard
+                                .as_mut()
+                                .expect("via-pool runtime cleanup guard should exist")
+                                .adopt_prompt_cache_key(effective_prompt_cache_key)
+                                .await;
                         }
                         let request_contains_encrypted_content =
                             request_analysis.contains_encrypted_content;
@@ -2763,6 +2778,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 .as_mut()
                                 .expect("via-pool runtime cleanup guard should exist")
                                 .set_invoke_id(via_pool_invoke_id.clone());
+                            runtime_snapshot_cleanup_guard
+                                .as_mut()
+                                .expect("via-pool runtime cleanup guard should exist")
+                                .adopt_prompt_cache_key(effective_prompt_cache_key)
+                                .await;
                         }
                         let requested_model = request_analysis.requested_model.clone();
                         let request_contains_encrypted_content =

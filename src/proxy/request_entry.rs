@@ -43,29 +43,16 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     {
         let websocket_enabled = state.proxy_model_settings.read().await.websocket_enabled;
         if !websocket_enabled {
-            let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
-                Ok(invoke_id) => invoke_id,
-                Err(err) => {
-                    warn!(
-                        error = %err,
-                        "failed to allocate disabled-websocket proxy invoke id; using generated fallback"
-                    );
-                    generate_proxy_invoke_id()
-                }
-            };
-            return build_proxy_error_response(
-                ProxyErrorResponse {
-                    status: StatusCode::SERVICE_UNAVAILABLE,
-                    message: format!(
-                        "OpenAI proxy WebSocket support is disabled; enable it in Settings or set {ENV_OPENAI_PROXY_WEBSOCKET_ENABLED}=true before first startup"
-                    ),
-                    cvm_id: None,
-                    retry_after_secs: None,
-                    code: None,
-                    blocked_binding: None,
-                },
-                &invoke_id,
-            );
+            return build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: format!(
+                    "OpenAI proxy WebSocket support is disabled; enable it in Settings or set {ENV_OPENAI_PROXY_WEBSOCKET_ENABLED}=true before first startup"
+                ),
+                cvm_id: None,
+                retry_after_secs: None,
+                code: None,
+                blocked_binding: None,
+            });
         }
         return proxy_openai_v1_ws_common(
             state,
@@ -107,6 +94,7 @@ pub(crate) async fn proxy_openai_v1_common(
     let request_may_have_body = request_may_have_body(&method, &headers);
     let method_for_log = method.clone();
     let uri_for_log = original_uri.clone();
+    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
 
     info!(
         proxy_request_id,
@@ -119,36 +107,54 @@ pub(crate) async fn proxy_openai_v1_common(
         "openai proxy request started"
     );
 
-    let target_url =
-        match build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri) {
-            Ok(url) => url,
-            Err(err) => {
-                let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
-                    || err.to_string().contains(PROXY_INVALID_REQUEST_TARGET)
-                    || err
-                        .to_string()
-                        .contains("failed to parse proxy upstream url")
-                {
-                    StatusCode::BAD_REQUEST
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
-                let invoke_id = allocate_proxy_invoke_id(&state, None)
-                    .await
-                    .unwrap_or_else(|_| generate_proxy_invoke_id());
-                return build_proxy_error_response(
-                    ProxyErrorResponse {
-                        status,
-                        message: format!("failed to build upstream url: {err}"),
-                        cvm_id: None,
-                        retry_after_secs: None,
-                        code: None,
-                        blocked_binding: None,
-                    },
-                    &invoke_id,
-                );
-            }
-        };
+    let target_url = match build_proxy_upstream_url(
+        &state.config.openai_upstream_base_url,
+        &original_uri,
+    ) {
+        Ok(url) => url,
+        Err(err) => {
+            let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
+                || err.to_string().contains(PROXY_INVALID_REQUEST_TARGET)
+                || err
+                    .to_string()
+                    .contains("failed to parse proxy upstream url")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            let invoke_id = match allocate_proxy_invoke_id(
+                &state,
+                header_prompt_cache_key.as_deref(),
+            )
+            .await
+            {
+                Ok(invoke_id) => invoke_id,
+                Err(error) => {
+                    warn!(
+                        proxy_request_id,
+                        prompt_cache_key_fingerprint = header_prompt_cache_key
+                            .as_deref()
+                            .map(prompt_cache_key_fingerprint),
+                        error = %error,
+                        "failed to allocate proxy invoke id after upstream URL validation failure"
+                    );
+                    return build_proxy_invoke_id_allocation_error_response(error);
+                }
+            };
+            return build_proxy_error_response(
+                ProxyErrorResponse {
+                    status,
+                    message: format!("failed to build upstream url: {err}"),
+                    cvm_id: None,
+                    retry_after_secs: None,
+                    code: None,
+                    blocked_binding: None,
+                },
+                &invoke_id,
+            );
+        }
+    };
 
     let proxy_request_permit = Some(
         acquire_proxy_request_concurrency_permit(
@@ -177,14 +183,25 @@ pub(crate) async fn proxy_openai_v1_common(
             code: None,
             blocked_binding: None,
         };
-        let invoke_id = allocate_proxy_invoke_id(&state, None)
-            .await
-            .unwrap_or_else(|_| generate_proxy_invoke_id());
+        let invoke_id =
+            match allocate_proxy_invoke_id(&state, header_prompt_cache_key.as_deref()).await {
+                Ok(invoke_id) => invoke_id,
+                Err(error) => {
+                    warn!(
+                        proxy_request_id,
+                        prompt_cache_key_fingerprint = header_prompt_cache_key
+                            .as_deref()
+                            .map(prompt_cache_key_fingerprint),
+                        error = %error,
+                        "failed to allocate proxy invoke id for missing bearer token"
+                    );
+                    return build_proxy_invoke_id_allocation_error_response(error);
+                }
+            };
         if let Some(target) = capture_target {
             let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let requester_ip = extract_requester_ip(&headers, peer_ip);
             let header_sticky_key = extract_sticky_key_from_headers(&headers);
-            let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
             emit_admitted_proxy_capture_runtime_snapshot(
                 state.as_ref(),
                 &invoke_id,
@@ -231,14 +248,25 @@ pub(crate) async fn proxy_openai_v1_common(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed during route validation"
             );
-            let invoke_id = allocate_proxy_invoke_id(&state, None)
-                .await
-                .unwrap_or_else(|_| generate_proxy_invoke_id());
+            let invoke_id =
+                match allocate_proxy_invoke_id(&state, header_prompt_cache_key.as_deref()).await {
+                    Ok(invoke_id) => invoke_id,
+                    Err(error) => {
+                        warn!(
+                            proxy_request_id,
+                            prompt_cache_key_fingerprint = header_prompt_cache_key
+                                .as_deref()
+                                .map(prompt_cache_key_fingerprint),
+                            error = %error,
+                            "failed to allocate proxy invoke id for route validation failure"
+                        );
+                        return build_proxy_invoke_id_allocation_error_response(error);
+                    }
+                };
             if let Some(target) = capture_target {
                 let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
                 let requester_ip = extract_requester_ip(&headers, peer_ip);
                 let header_sticky_key = extract_sticky_key_from_headers(&headers);
-                let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
                 emit_admitted_proxy_capture_runtime_snapshot(
                     state.as_ref(),
                     &invoke_id,
@@ -311,9 +339,22 @@ pub(crate) async fn proxy_openai_v1_common(
             );
             let invoke_id = match err.cvm_id.clone() {
                 Some(invoke_id) => invoke_id,
-                None => allocate_proxy_invoke_id(&state, None)
+                None => match allocate_proxy_invoke_id(&state, header_prompt_cache_key.as_deref())
                     .await
-                    .unwrap_or_else(|_| generate_proxy_invoke_id()),
+                {
+                    Ok(invoke_id) => invoke_id,
+                    Err(error) => {
+                        warn!(
+                            proxy_request_id,
+                            prompt_cache_key_fingerprint = header_prompt_cache_key
+                                .as_deref()
+                                .map(prompt_cache_key_fingerprint),
+                            error = %error,
+                            "failed to allocate proxy invoke id for proxy error response"
+                        );
+                        return build_proxy_invoke_id_allocation_error_response(error);
+                    }
+                },
             };
             build_proxy_error_response(err, &invoke_id)
         }
@@ -397,6 +438,23 @@ pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str =
     "pool route key missing or invalid";
 pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     build_proxy_error_response_envelope(&err, invoke_id).into_response()
+}
+
+pub(crate) fn build_proxy_error_response_without_invoke_id(err: ProxyErrorResponse) -> Response {
+    build_proxy_error_response_envelope(&err, "").into_response()
+}
+
+pub(crate) fn build_proxy_invoke_id_allocation_error_response(
+    error: impl std::fmt::Display,
+) -> Response {
+    build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: format!("failed to allocate proxy invoke id: {error}"),
+        cvm_id: None,
+        retry_after_secs: None,
+        code: None,
+        blocked_binding: None,
+    })
 }
 
 pub(crate) fn build_blocked_binding_diagnostic(
@@ -1354,6 +1412,7 @@ pub(crate) struct PoolEarlyPhaseOrphanCleanupGuard {
 pub(crate) struct PoolViaRuntimeSnapshotCleanupGuard {
     state: Arc<AppState>,
     invoke_id: String,
+    prompt_cache_key: Option<String>,
 }
 
 impl PoolViaRuntimeSnapshotCleanupGuard {
@@ -1361,16 +1420,43 @@ impl PoolViaRuntimeSnapshotCleanupGuard {
         Self {
             state,
             invoke_id: invoke_id.into(),
+            prompt_cache_key: None,
         }
     }
 
     pub(crate) fn set_invoke_id(&mut self, invoke_id: impl Into<String>) {
         self.invoke_id = invoke_id.into();
     }
+
+    pub(crate) async fn adopt_prompt_cache_key(&mut self, prompt_cache_key: Option<&str>) {
+        let next_prompt_cache_key = prompt_cache_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if self.prompt_cache_key == next_prompt_cache_key {
+            return;
+        }
+        if let Some(previous_prompt_cache_key) = self.prompt_cache_key.take() {
+            release_active_prompt_cache_conversation(
+                &self.state.prompt_cache_conversation_cache,
+                &previous_prompt_cache_key,
+            )
+            .await;
+        }
+        self.prompt_cache_key = next_prompt_cache_key;
+    }
 }
 
 impl Drop for PoolViaRuntimeSnapshotCleanupGuard {
     fn drop(&mut self) {
+        if let Some(prompt_cache_key) = self.prompt_cache_key.take() {
+            let cache = self.state.prompt_cache_conversation_cache.clone();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    release_active_prompt_cache_conversation(&cache, &prompt_cache_key).await;
+                });
+            }
+        }
         let removed_records = self
             .state
             .proxy_runtime_invocations

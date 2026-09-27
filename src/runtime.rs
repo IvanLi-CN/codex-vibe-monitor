@@ -571,6 +571,33 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
     .await
 }
 
+async fn flush_terminal_journal_replay_before_startup(state: &AppState) -> Result<()> {
+    let mut remaining = state
+        .sqlite_batch_writer
+        .terminal_journal_stats()
+        .replay_count;
+    while remaining > 0 {
+        info!(
+            replay_count = remaining,
+            "flushing terminal journal replay before retention startup"
+        );
+        state
+            .sqlite_batch_writer
+            .flush_now(&state.pool)
+            .await
+            .context("failed to flush terminal journal replay before retention startup")?;
+        let next_remaining = state
+            .sqlite_batch_writer
+            .terminal_journal_stats()
+            .replay_count;
+        if next_remaining >= remaining {
+            bail!("terminal journal replay made no progress: remaining={remaining}");
+        }
+        remaining = next_remaining;
+    }
+    Ok(())
+}
+
 pub(crate) async fn run_runtime_until_shutdown<F>(
     state: Arc<AppState>,
     startup_started_at: Instant,
@@ -741,6 +768,8 @@ where
         )
         .await;
     }
+
+    flush_terminal_journal_replay_before_startup(state.as_ref()).await?;
 
     let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
         Some(spawn_data_retention_maintenance(
