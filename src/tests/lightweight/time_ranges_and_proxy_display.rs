@@ -400,6 +400,10 @@ fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_fin
                         http_header::CONTENT_TYPE,
                         HeaderValue::from_static("application/json"),
                     ),
+                    (
+                        http_header::HeaderName::from_static("x-prompt-cache-key"),
+                        HeaderValue::from_static("prompt-cache-runtime-stream"),
+                    ),
                 ]),
                 Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
                 runtime_timeouts,
@@ -428,6 +432,20 @@ fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_fin
                     .chars()
                     .all(|character| PROXY_INVOKE_ID_ALPHABET.contains(&character)),
                 "via-pool runtime invoke id must use the compact invoke-id alphabet"
+            );
+            let conversation_id: String = sqlx::query_scalar(
+                "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = 'prompt-cache-runtime-stream'",
+            )
+            .fetch_one(&state.pool)
+            .await
+            .expect("load runtime prompt-cache conversation identity");
+            assert_eq!(
+                &via_pool_invoke_id[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
+                conversation_id
+            );
+            assert_eq!(
+                &via_pool_invoke_id[PROMPT_CACHE_CONVERSATION_ID_LENGTH..],
+                "AAAA"
             );
             assert!(
                 state

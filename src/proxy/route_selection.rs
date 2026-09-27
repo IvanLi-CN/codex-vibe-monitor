@@ -1369,17 +1369,20 @@ async fn allocate_via_pool_invoke_id(
     state: &AppState,
     proxy_request_id: u64,
     prompt_cache_key: Option<&str>,
-) -> String {
+) -> Result<String, ProxyErrorResponse> {
     match allocate_proxy_invoke_id(state, prompt_cache_key).await {
-        Ok(invoke_id) => invoke_id,
+        Ok(invoke_id) => Ok(invoke_id),
         Err(err) => {
             warn!(
                 proxy_request_id,
                 prompt_cache_key_fingerprint = prompt_cache_key.map(prompt_cache_key_fingerprint),
                 error = %err,
-                "failed to allocate via-pool proxy invoke id; using generated fallback"
+                "failed to allocate via-pool proxy invoke id; rejecting request"
             );
-            generate_proxy_invoke_id()
+            Err(plain_proxy_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("failed to allocate proxy invoke id: {err}"),
+            ))
         }
     }
 }
@@ -1836,7 +1839,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             proxy_request_id,
             header_prompt_cache_key.as_deref(),
         )
-        .await;
+        .await?;
         let mut runtime_snapshot_cleanup_guard = Some(PoolViaRuntimeSnapshotCleanupGuard::new(
             state.clone(),
             via_pool_invoke_id.clone(),
@@ -1941,7 +1944,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             proxy_request_id,
                             effective_prompt_cache_key.as_deref(),
                         )
-                        .await;
+                        .await?;
                         runtime_snapshot_cleanup_guard
                             .as_mut()
                             .expect("via-pool runtime cleanup guard should exist")
@@ -2549,7 +2552,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 proxy_request_id,
                                 effective_prompt_cache_key,
                             )
-                            .await;
+                            .await?;
                             runtime_snapshot_cleanup_guard
                                 .as_mut()
                                 .expect("via-pool runtime cleanup guard should exist")
@@ -2755,7 +2758,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 proxy_request_id,
                                 effective_prompt_cache_key,
                             )
-                            .await;
+                            .await?;
                             runtime_snapshot_cleanup_guard
                                 .as_mut()
                                 .expect("via-pool runtime cleanup guard should exist")

@@ -7,6 +7,7 @@ pub(crate) const PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY: u32 =
     PROMPT_CACHE_CONVERSATION_SEQUENCE_RADIX.pow(PROMPT_CACHE_CONVERSATION_SEQUENCE_LENGTH as u32);
 const PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS: usize = 5;
 const PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME: &str = "prompt_cache_conversations_v1";
+const PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES: i64 = 5;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCacheConversationIdentity {
@@ -655,14 +656,17 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations(
     let predicate = format!(
         "TRIM({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL}) = prompt_cache_conversations.prompt_cache_key"
     );
+    let orphan_predicate = format!(
+        "(last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
+    );
     let count = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE last_invocation_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE {orphan_predicate}"
     ))
     .fetch_one(pool)
     .await? as usize;
     if !dry_run && count > 0 {
         sqlx::query(&format!(
-            "DELETE FROM prompt_cache_conversations WHERE last_invocation_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
+            "DELETE FROM prompt_cache_conversations WHERE {orphan_predicate}"
         ))
         .execute(pool)
         .await?;

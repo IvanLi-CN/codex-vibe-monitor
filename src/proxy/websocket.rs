@@ -121,9 +121,17 @@ pub(crate) async fn proxy_openai_v1_ws_common(
             warn!(
                 proxy_request_id,
                 error = %err,
-                "failed to allocate websocket proxy invoke id; using generated fallback"
+                "failed to allocate websocket proxy invoke id; rejecting request"
             );
-            generate_proxy_invoke_id()
+            let error_response = ProxyErrorResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: format!("failed to allocate proxy invoke id: {err}"),
+                cvm_id: None,
+                retry_after_secs: None,
+                code: None,
+                blocked_binding: None,
+            };
+            return build_proxy_error_response(error_response, &generate_proxy_invoke_id());
         }
     };
     info!(
@@ -193,9 +201,19 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                 warn!(
                     proxy_request_id,
                     error = %err,
-                    "failed to allocate websocket prompt-cache invoke id; using connection id"
+                    "failed to allocate websocket prompt-cache invoke id; rejecting request"
                 );
-                invoke_id.clone()
+                return build_proxy_error_response(
+                    ProxyErrorResponse {
+                        status: StatusCode::SERVICE_UNAVAILABLE,
+                        message: format!("failed to allocate proxy invoke id: {err}"),
+                        cvm_id: None,
+                        retry_after_secs: None,
+                        code: None,
+                        blocked_binding: None,
+                    },
+                    &invoke_id,
+                );
             }
         }
     } else {
@@ -1354,7 +1372,18 @@ pub(crate) async fn proxy_websocket_tunnel(
                 {
                     usage_tracker.prompt_cache_key = Some(prompt_cache_key);
                 }
-                usage_tracker.ensure_turn_invoke_id(state.as_ref()).await;
+                if let Err(err) = usage_tracker.ensure_turn_invoke_id(state.as_ref()).await {
+                    failure = Some(format!(
+                        "failed to allocate websocket turn invoke id: {err}"
+                    ));
+                    let _ = downstream_tx
+                        .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                            code: axum::extract::ws::close_code::ERROR,
+                            reason: "proxy invoke id allocation failed".into(),
+                        })))
+                        .await;
+                    break;
+                }
             }
             if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                 match apply_ws_downstream_payload_guard(
@@ -1484,7 +1513,22 @@ pub(crate) async fn proxy_websocket_tunnel(
                             {
                                 usage_tracker.prompt_cache_key = Some(prompt_cache_key);
                             }
-                            usage_tracker.ensure_turn_invoke_id(state.as_ref()).await;
+                            if let Err(err) =
+                                usage_tracker.ensure_turn_invoke_id(state.as_ref()).await
+                            {
+                                failure = Some(format!(
+                                    "failed to allocate websocket turn invoke id: {err}"
+                                ));
+                                let _ = downstream_tx
+                                    .send(AxumWsMessage::Close(Some(
+                                        axum::extract::ws::CloseFrame {
+                                            code: axum::extract::ws::close_code::ERROR,
+                                            reason: "proxy invoke id allocation failed".into(),
+                                        },
+                                    )))
+                                    .await;
+                                break;
+                            }
                         }
                         if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                             match apply_ws_downstream_payload_guard(
@@ -1990,9 +2034,23 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 warn!(
                     proxy_request_id,
                     error = %err,
-                    "failed to allocate deferred websocket prompt-cache invoke id; using connection id"
+                    "failed to allocate deferred websocket prompt-cache invoke id; closing tunnel"
                 );
-                trace.invoke_id.clone()
+                let reason = "proxy invoke id allocation failed";
+                record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    reason,
+                )
+                .await;
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return;
             }
         };
     }
@@ -2122,9 +2180,23 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
                 warn!(
                     proxy_request_id,
                     error = %err,
-                    "failed to allocate immediate websocket prompt-cache invoke id; using connection id"
+                    "failed to allocate immediate websocket prompt-cache invoke id; closing tunnel"
                 );
-                trace.invoke_id.clone()
+                let reason = "proxy invoke id allocation failed";
+                record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    reason,
+                )
+                .await;
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return;
             }
         };
     }
@@ -2275,9 +2347,9 @@ impl WsUsageTracker {
             .unwrap_or_else(|| self.trace.invoke_id.clone())
     }
 
-    async fn ensure_turn_invoke_id(&mut self, state: &AppState) {
+    async fn ensure_turn_invoke_id(&mut self, state: &AppState) -> Result<()> {
         if self.active_turn_invoke_id.is_some() {
-            return;
+            return Ok(());
         }
         let invoke_id =
             match allocate_proxy_invoke_id(state, self.prompt_cache_key.as_deref()).await {
@@ -2286,12 +2358,17 @@ impl WsUsageTracker {
                     warn!(
                         error = %err,
                         trace_invoke_id = %self.trace.invoke_id,
-                        "failed to allocate websocket turn invoke id; using connection id"
+                        prompt_cache_key_fingerprint = self
+                            .prompt_cache_key
+                            .as_deref()
+                            .map(prompt_cache_key_fingerprint),
+                        "failed to allocate websocket turn invoke id"
                     );
-                    self.trace.invoke_id.clone()
+                    return Err(err);
                 }
             };
         self.active_turn_invoke_id = Some(invoke_id);
+        Ok(())
     }
 
     fn observe_first_token_text(&mut self, text: &str) -> bool {
@@ -4620,6 +4697,48 @@ mod websocket_tests {
             r#"{"type":"response.function_call_arguments.delta","delta":"{"}"#,
         ));
         assert!(tracker.first_token_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn websocket_turn_allocator_uses_prompt_cache_conversation_identity() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: "ABCDEFABCD".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+            upstream_base_url_host: None,
+            request_model: Some("gpt-5.6".to_string()),
+        };
+        let mut tracker = WsUsageTracker::new(
+            api_key_account(Url::parse("https://api.example.test").expect("valid base")),
+            trace,
+            Some("websocket-bound-allocator".to_string()),
+            None,
+            None,
+        );
+        tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
+        tracker
+            .ensure_turn_invoke_id(&state)
+            .await
+            .expect("websocket turn invoke id allocation");
+
+        let invoke_id = tracker.turn_invoke_id();
+        let conversation_id: String = sqlx::query_scalar(
+            "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = 'websocket-bound-allocator'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load websocket prompt-cache conversation identity");
+        assert_eq!(
+            &invoke_id[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
+            conversation_id.as_str()
+        );
+        assert_eq!(&invoke_id[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
     }
 
     #[test]
