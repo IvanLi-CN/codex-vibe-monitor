@@ -268,3 +268,16 @@ The current inventory is 24 production and 20 test/helper candidates (44 total),
 while the immutable preparation baseline remains 32 and 23 and the suppression
 baseline remains 117. Test names, assertions, fixtures, timing, and behavior
 remain unchanged.
+
+The system raw-payload metrics inventory/circuit lifecycle moves as one
+contiguous 630-line block from physical lines 1,049 through 1,678 of
+`src/api/slices/system_routes_and_tasks.rs` into
+`src/api/slices/system_routes_and_tasks/raw_payload_inventory.rs`, on verified
+main base `8d0d2d1197f61776807f2e90e022776f6401e39b`. The parent retains
+the preceding filesystem scanner and following status snapshot/task lifecycle.
+After rustfmt, the parent is 2,364 physical lines and the child is 632 lines,
+both below the 2,500-line production target. The parent is removed from the
+policy inventory, leaving 23 production and 20 test/helper candidates (43
+total); the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 117. The crate-visible re-export preserves call
+paths, names, signatures, SQL, timing, logging, cache and circuit behavior.

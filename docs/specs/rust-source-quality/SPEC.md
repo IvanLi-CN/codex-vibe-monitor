@@ -60,7 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 44 explicit file entries: 24
+The policy MUST keep the current inventory as 43 explicit file entries: 23
 production candidates above 2,500 lines and 20 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
 counts for checker compatibility. Each current entry MUST record its exact
@@ -94,7 +94,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 44 entries have
+The current inventory retains no cohesive-module exceptions: all 43 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
@@ -135,6 +135,18 @@ from the policy inventory. The parent re-export and routing module export keep
 the existing crate-visible call paths; function signatures, visibility, SQL,
 routing behavior, and test semantics remain unchanged.
 
+The system raw-payload metrics inventory and capture-circuit lifecycle moves
+as one contiguous region from physical lines 1,049 through 1,678 inclusive
+(630 moved lines) of `src/api/slices/system_routes_and_tasks.rs` into
+`src/api/slices/system_routes_and_tasks/raw_payload_inventory.rs`, on the
+verified main base `8d0d2d1197f61776807f2e90e022776f6401e39b`. The parent
+retains the preceding filesystem scanner and following status snapshot/task
+lifecycle. After rustfmt, the parent is 2,364 physical lines and the child is
+632 lines, both below the 2,500-line production target. The parent is removed
+from the policy inventory. Its crate-visible re-export preserves existing call
+paths; names, signatures, SQL, timing, logging, cache and circuit behavior
+remain unchanged.
+
 ## Later Module Rollout
 
 Refactor PRs may split one production or test/helper candidate at a time. Such
@@ -172,7 +184,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 24 production and 20 test/helper entries, with
+Pass condition: the policy has 23 production and 20 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
