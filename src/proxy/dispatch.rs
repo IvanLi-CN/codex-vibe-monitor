@@ -725,6 +725,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     state.clone(),
                     InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
                     "request_drop_guard",
+                    header_prompt_cache_key.as_deref(),
                 )
             });
             emit_admitted_proxy_capture_runtime_snapshot(
@@ -1024,6 +1025,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             state.clone(),
             InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
             "request_drop_guard",
+            prompt_cache_key.as_deref(),
         )
     });
     emit_admitted_proxy_capture_runtime_snapshot(
@@ -2141,6 +2143,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     occurred_at_for_task.clone(),
                 ),
                 "stream_invocation_drop_guard",
+                prompt_cache_key_for_task.as_deref(),
             )
         });
         let upstream_response_content_length = upstream_response.content_length();

@@ -1103,12 +1103,16 @@ async fn capture_targets_reject_non_pool_requests_before_proxying() {
         Url::parse("https://example.invalid").expect("valid upstream base url"),
     )
     .await;
+    let prompt_cache_key = "unauthorized-prompt-cache-key";
 
     let response = proxy_openai_v1(
-        State(state),
+        State(state.clone()),
         OriginalUri("/v1/responses".parse().expect("valid uri")),
         Method::POST,
-        HeaderMap::new(),
+        HeaderMap::from_iter([(
+            HeaderName::from_static("x-prompt-cache-key"),
+            HeaderValue::from_static("unauthorized-prompt-cache-key"),
+        )]),
         Body::from(
             serde_json::to_vec(&json!({
                 "model": "gpt-5.4",
@@ -1129,6 +1133,14 @@ async fn capture_targets_reject_non_pool_requests_before_proxying() {
         payload["error"].as_str(),
         Some("pool route key missing or invalid")
     );
+    let persisted_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count unauthorized prompt-cache identities");
+    assert_eq!(persisted_count, 0);
 }
 
 #[tokio::test]

@@ -2290,41 +2290,69 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
 ) -> Result<()> {
-    state.sqlite_batch_writer.flush_now(&state.pool).await?;
+    recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
+        state,
+        selector,
+        recovery_trigger,
+        None,
+    )
+    .await
+}
 
-    let recovered_invocations = {
-        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-            .await;
-        let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
-        let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-        recover_proxy_invocations_with_scope(
-            &state.pool,
-            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-        )
-        .await?
-    };
+pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
+    state: &AppState,
+    selector: InvocationRecoverySelector,
+    recovery_trigger: &'static str,
+    prompt_cache_key: Option<String>,
+) -> Result<()> {
+    let result = async {
+        state.sqlite_batch_writer.flush_now(&state.pool).await?;
 
-    if recovered_invocations.is_empty() {
-        terminalize_proxy_runtime_snapshot_by_key(
-            state,
-            &selector.invoke_id,
-            &selector.occurred_at,
+        let recovered_invocations = {
+            let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+                .await;
+            let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+            let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+            recover_proxy_invocations_with_scope(
+                &state.pool,
+                ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+            )
+            .await?
+        };
+
+        if recovered_invocations.is_empty() {
+            terminalize_proxy_runtime_snapshot_by_key(
+                state,
+                &selector.invoke_id,
+                &selector.occurred_at,
+                recovery_trigger,
+            );
+            schedule_dashboard_activity_live_snapshot(state);
+            return Ok(());
+        }
+
+        info!(
+            invoke_id = %selector.invoke_id,
+            occurred_at = %selector.occurred_at,
+            recovered_invocations = recovered_invocations.len(),
             recovery_trigger,
+            "recovered pool invocation orphan after request future dropped"
         );
-        schedule_dashboard_activity_live_snapshot(state);
-        return Ok(());
+
+        broadcast_recovered_proxy_invocations(state, &recovered_invocations).await
+    }
+    .await;
+
+    if let Some(prompt_cache_key) = prompt_cache_key {
+        release_active_prompt_cache_conversation(
+            &state.prompt_cache_conversation_cache,
+            &prompt_cache_key,
+        )
+        .await;
     }
 
-    info!(
-        invoke_id = %selector.invoke_id,
-        occurred_at = %selector.occurred_at,
-        recovered_invocations = recovered_invocations.len(),
-        recovery_trigger,
-        "recovered pool invocation orphan after request future dropped"
-    );
-
-    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await
+    result
 }
 
 pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(

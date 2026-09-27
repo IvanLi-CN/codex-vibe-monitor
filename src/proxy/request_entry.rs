@@ -94,7 +94,6 @@ pub(crate) async fn proxy_openai_v1_common(
     let request_may_have_body = request_may_have_body(&method, &headers);
     let method_for_log = method.clone();
     let uri_for_log = original_uri.clone();
-    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
 
     info!(
         proxy_request_id,
@@ -123,19 +122,11 @@ pub(crate) async fn proxy_openai_v1_common(
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            let invoke_id = match allocate_proxy_invoke_id(
-                &state,
-                header_prompt_cache_key.as_deref(),
-            )
-            .await
-            {
+            let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
                 Ok(invoke_id) => invoke_id,
                 Err(error) => {
                     warn!(
                         proxy_request_id,
-                        prompt_cache_key_fingerprint = header_prompt_cache_key
-                            .as_deref()
-                            .map(prompt_cache_key_fingerprint),
                         error = %error,
                         "failed to allocate proxy invoke id after upstream URL validation failure"
                     );
@@ -183,21 +174,17 @@ pub(crate) async fn proxy_openai_v1_common(
             code: None,
             blocked_binding: None,
         };
-        let invoke_id =
-            match allocate_proxy_invoke_id(&state, header_prompt_cache_key.as_deref()).await {
-                Ok(invoke_id) => invoke_id,
-                Err(error) => {
-                    warn!(
-                        proxy_request_id,
-                        prompt_cache_key_fingerprint = header_prompt_cache_key
-                            .as_deref()
-                            .map(prompt_cache_key_fingerprint),
-                        error = %error,
-                        "failed to allocate proxy invoke id for missing bearer token"
-                    );
-                    return build_proxy_invoke_id_allocation_error_response(error);
-                }
-            };
+        let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
+            Ok(invoke_id) => invoke_id,
+            Err(error) => {
+                warn!(
+                    proxy_request_id,
+                    error = %error,
+                    "failed to allocate proxy invoke id for missing bearer token"
+                );
+                return build_proxy_invoke_id_allocation_error_response(error);
+            }
+        };
         if let Some(target) = capture_target {
             let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let requester_ip = extract_requester_ip(&headers, peer_ip);
@@ -209,7 +196,7 @@ pub(crate) async fn proxy_openai_v1_common(
                 target,
                 requester_ip.as_deref(),
                 header_sticky_key.as_deref(),
-                header_prompt_cache_key.as_deref(),
+                None,
             )
             .await;
             terminalize_proxy_runtime_snapshot_with_error(
@@ -226,6 +213,7 @@ pub(crate) async fn proxy_openai_v1_common(
         return build_proxy_error_response(err, &invoke_id);
     }
 
+    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let route_context_started = Instant::now();
     let runtime_timeouts = match resolve_proxy_route_context_for_request(
         state.as_ref(),
@@ -1549,6 +1537,7 @@ pub(crate) struct PoolInvocationCleanupGuard {
     state: Arc<AppState>,
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
+    prompt_cache_key: Option<String>,
     armed: bool,
 }
 
@@ -1557,6 +1546,10 @@ impl std::fmt::Debug for PoolInvocationCleanupGuard {
         f.debug_struct("PoolInvocationCleanupGuard")
             .field("selector", &self.selector)
             .field("recovery_trigger", &self.recovery_trigger)
+            .field(
+                "prompt_cache_key",
+                &self.prompt_cache_key.as_ref().map(|_| "<redacted>"),
+            )
             .field("armed", &self.armed)
             .finish()
     }
@@ -1567,11 +1560,16 @@ impl PoolInvocationCleanupGuard {
         state: Arc<AppState>,
         selector: InvocationRecoverySelector,
         recovery_trigger: &'static str,
+        prompt_cache_key: Option<&str>,
     ) -> Self {
         Self {
             state,
             selector,
             recovery_trigger,
+            prompt_cache_key: prompt_cache_key
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
             armed: true,
         }
     }
@@ -1590,11 +1588,13 @@ impl Drop for PoolInvocationCleanupGuard {
         let state = self.state.clone();
         let selector = self.selector.clone();
         let recovery_trigger = self.recovery_trigger;
+        let prompt_cache_key = self.prompt_cache_key.take();
         tokio::spawn(async move {
-            if let Err(err) = recover_guard_dropped_pool_invocation_orphan(
+            if let Err(err) = recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
                 state.as_ref(),
                 selector,
                 recovery_trigger,
+                prompt_cache_key,
             )
             .await
             {

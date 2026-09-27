@@ -699,6 +699,7 @@ async fn admitted_proxy_capture_snapshot_is_cleared_when_cleanup_guard_drops_bef
         state.clone(),
         InvocationRecoverySelector::new(invoke_id.to_string(), occurred_at.to_string()),
         "test_admitted_drop_guard",
+        None,
     );
 
     let admitted_record = build_admitted_proxy_capture_runtime_snapshot(

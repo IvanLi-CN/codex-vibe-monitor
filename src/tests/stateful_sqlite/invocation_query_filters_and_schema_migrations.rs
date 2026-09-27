@@ -111,6 +111,17 @@ async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats(
     assert_eq!(row.5, 20);
     assert!((row.6 - 0.4).abs() < 1e-9);
 
+    let invalid_conversation_id = sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (
+            conversation_id, prompt_cache_key
+        ) VALUES ('ABC!2A', 'invalid-conversation-id-key')
+        "#,
+    )
+    .execute(&pool)
+    .await;
+    assert!(invalid_conversation_id.is_err());
+
     ensure_schema(&pool)
         .await
         .expect("rerun prompt-cache conversation migration");
@@ -202,7 +213,7 @@ async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
         r#"
         INSERT INTO prompt_cache_conversations (
             conversation_id, prompt_cache_key, created_at, updated_at
-        ) VALUES ('ORPHAN', 'orphan-without-refreshed-stats', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')
+        ) VALUES ('ABCD23', 'orphan-without-refreshed-stats', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')
         "#,
     )
     .execute(&state.pool)
@@ -251,7 +262,7 @@ async fn prompt_cache_conversation_retention_preserves_active_and_live_identitie
         r#"
         INSERT INTO prompt_cache_conversations (
             conversation_id, prompt_cache_key, created_at, updated_at
-        ) VALUES ('LIVE01', ?1, '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')
+        ) VALUES ('ABCD23', ?1, '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')
         "#,
     )
     .bind(live_key)
@@ -262,7 +273,7 @@ async fn prompt_cache_conversation_retention_preserves_active_and_live_identitie
         r#"
         INSERT INTO codex_invocations (
             invoke_id, occurred_at, source, status, payload, raw_response
-        ) VALUES ('LIVE01AAAA', '2026-09-01 00:00:00', ?1, 'running', ?2, '{}')
+        ) VALUES ('ABCD23AAAA', '2026-09-01 00:00:00', ?1, 'running', ?2, '{}')
         "#,
     )
     .bind(SOURCE_PROXY)
@@ -328,7 +339,7 @@ async fn prompt_cache_conversation_retention_preserves_active_and_live_identitie
     .expect("count released active prompt-cache identity");
     assert_eq!(active_count, 0);
 
-    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = 'LIVE01AAAA'")
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = 'ABCD23AAAA'")
         .execute(&state.pool)
         .await
         .expect("remove live invocation");
@@ -534,6 +545,89 @@ async fn prompt_cache_conversation_allocator_rejects_sequence_exhaustion() {
         .await
         .expect_err("exhausted prompt-cache sequence should fail explicitly");
     assert!(error.to_string().contains("sequence overflow"));
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_retries_colliding_candidates() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key)
+        VALUES ('ABCDEF', 'existing-collision-key')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert colliding prompt-cache conversation");
+
+    let identity = create_prompt_cache_conversation_row_with_test_candidates(
+        &state.pool,
+        "collision-retry-key",
+        &["ABCDEF", "ABCDEF", "ZZZZZZ"],
+    )
+    .await
+    .expect("allocator should retry a colliding candidate");
+    assert_eq!(identity.conversation_id, "ZZZZZZ");
+    assert_eq!(identity.next_sequence, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_bounds_colliding_candidate_retries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key)
+        VALUES ('ABCDEF', 'existing-exhaustion-key')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert exhausted prompt-cache conversation");
+
+    let error = create_prompt_cache_conversation_row_with_test_candidates(
+        &state.pool,
+        "collision-exhaustion-key",
+        &["ABCDEF", "ABCDEF", "ABCDEF", "ABCDEF", "ABCDEF"],
+    )
+    .await
+    .expect_err("allocator should stop after bounded collision retries");
+    assert!(error.to_string().contains("after 5 attempts"));
+}
+
+#[tokio::test]
+async fn dropped_pool_invocation_recovery_releases_prompt_cache_lease() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let prompt_cache_key = "dropped-recovery-lease-key";
+    let invoke_id = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate active prompt-cache invoke id");
+
+    recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
+        &state,
+        InvocationRecoverySelector::new(invoke_id, "2026-09-28 00:00:00".to_string()),
+        "test_recovery",
+        Some(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("recover dropped invocation without a persisted row");
+
+    let cache = state.prompt_cache_conversation_cache.lock().await;
+    assert_eq!(
+        cache
+            .identity_cache
+            .active_prompt_cache_keys
+            .get(prompt_cache_key),
+        None
+    );
 }
 
 #[tokio::test]

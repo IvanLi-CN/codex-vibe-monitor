@@ -114,7 +114,8 @@ pub(crate) fn prompt_cache_key_fingerprint(prompt_cache_key: &str) -> String {
 }
 
 pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>) -> Result<usize> {
-    sqlx::query(
+    let conversation_id_alphabet = PROXY_INVOKE_ID_ALPHABET.iter().collect::<String>();
+    let schema_sql = format!(
         r#"
         CREATE TABLE IF NOT EXISTS prompt_cache_conversations (
             conversation_id TEXT PRIMARY KEY,
@@ -140,13 +141,15 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
             created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
             CHECK (length(conversation_id) = 6),
+            CHECK (conversation_id NOT GLOB '*[^{conversation_id_alphabet}]*'),
             CHECK (length(trim(prompt_cache_key)) > 0)
         )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure prompt_cache_conversations table existence")?;
+        "#
+    );
+    sqlx::query(&schema_sql)
+        .execute(pool)
+        .await
+        .context("failed to ensure prompt_cache_conversations table existence")?;
 
     for (name, expression) in [
         (
@@ -281,8 +284,24 @@ async fn create_prompt_cache_conversation_row(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
 ) -> Result<PromptCacheConversationIdentity> {
+    create_prompt_cache_conversation_row_with_generator(
+        pool,
+        prompt_cache_key,
+        generate_prompt_cache_conversation_id,
+    )
+    .await
+}
+
+async fn create_prompt_cache_conversation_row_with_generator<F>(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    mut generate: F,
+) -> Result<PromptCacheConversationIdentity>
+where
+    F: FnMut() -> String,
+{
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
-        let conversation_id = generate_prompt_cache_conversation_id();
+        let conversation_id = generate();
         if conversation_id_exists(pool, &conversation_id).await?
             || conversation_prefix_conflicts_with_live_invocation(pool, &conversation_id).await?
         {
@@ -353,6 +372,24 @@ async fn create_prompt_cache_conversation_row(
     bail!(
         "failed to allocate prompt-cache conversation id after {PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS} attempts"
     )
+}
+
+#[cfg(test)]
+pub(crate) async fn create_prompt_cache_conversation_row_with_test_candidates(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    candidates: &[&str],
+) -> Result<PromptCacheConversationIdentity> {
+    let mut candidates = candidates
+        .iter()
+        .map(|candidate| (*candidate).to_string())
+        .collect::<std::collections::VecDeque<_>>();
+    create_prompt_cache_conversation_row_with_generator(pool, prompt_cache_key, move || {
+        candidates
+            .pop_front()
+            .expect("test prompt-cache conversation candidate queue should not be exhausted")
+    })
+    .await
 }
 
 async fn recover_prompt_cache_conversation_identity(

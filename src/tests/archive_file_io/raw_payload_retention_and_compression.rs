@@ -6915,6 +6915,7 @@ async fn pool_invocation_cleanup_guard_recovers_running_invocation_during_retry_
             state.clone(),
             InvocationRecoverySelector::from(&pending),
             "request_drop_guard",
+            None,
         );
     }
 
