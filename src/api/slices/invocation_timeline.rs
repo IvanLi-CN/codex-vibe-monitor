@@ -1949,6 +1949,19 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("insert fractional runtime account fallback fixture");
+        for (invoke_id, occurred_at) in [
+            ("persisted-nonpositive-fallback", at(86_870)),
+            ("persisted-fractional-fallback", at(86_871)),
+        ] {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{bad-json', '', 'full')",
+            )
+            .bind(invoke_id)
+            .bind(db_occurred_at_lower_bound(occurred_at))
+            .execute(&state.pool)
+            .await
+            .expect("insert malformed persisted account fallback fixture");
+        }
         let mut live_overflow =
             crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
         live_overflow.id = 99_002;
@@ -2236,6 +2249,40 @@ mod tests {
                 .expect("malformed attempt runtime record is present");
             assert_eq!(record.upstream_account_id, None);
         }
+        for invoke_id in [
+            "persisted-nonpositive-fallback",
+            "persisted-fractional-fallback",
+        ] {
+            let record = unfiltered_response
+                .records
+                .iter()
+                .find(|record| record.invoke_id == invoke_id)
+                .expect("malformed persisted account record is present");
+            assert_eq!(record.upstream_account_id, None);
+        }
+        let Json(malformed_persisted_filtered_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(49),
+                include_live: Some(false),
+                limit: None,
+                cursor: None,
+                as_of: None,
+            }),
+        )
+        .await
+        .expect("fetch filtered malformed persisted account fixtures");
+        assert!(
+            malformed_persisted_filtered_response
+                .records
+                .iter()
+                .all(|record| {
+                    record.invoke_id != "persisted-nonpositive-fallback"
+                        && record.invoke_id != "persisted-fractional-fallback"
+                })
+        );
         state.pool.close().await;
     }
 
