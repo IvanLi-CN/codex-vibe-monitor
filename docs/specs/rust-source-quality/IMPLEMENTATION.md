@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 44 current explicit file
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 43 current explicit file
   budgets, and 117 standalone suppression declarations. The immutable
   preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -244,12 +244,23 @@ below the 3,000-line test/helper target. The parent is removed from the
 policy inventory; test names, assertions, fixtures, timing, and behavior
 remain unchanged.
 
+The system raw-payload metrics inventory and capture-circuit lifecycle moves
+as the complete contiguous physical lines 1,049 through 1,678 (630 lines) of
+`src/api/slices/system_routes_and_tasks.rs` into
+`src/api/slices/system_routes_and_tasks/raw_payload_inventory.rs` on main base
+`8d0d2d1197f61776807f2e90e022776f6401e39b`. The parent retains the
+filesystem scanner before it and the status snapshot/task lifecycle after it.
+After rustfmt, the parent is 2,364 physical lines and the child is 632 lines,
+both below the production target. The parent is removed from the policy
+inventory. Its crate-visible re-export preserves existing call paths and the
+raw-payload inventory/circuit runtime behavior.
+
 ## Inventory Contract
 
-The policy has 24 `production` entries above the 2,500-line destination target
+The policy has 23 `production` entries above the 2,500-line destination target
 and 20 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 44 paths; a long path absent from the inventory is
+The checker only reads those 43 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
