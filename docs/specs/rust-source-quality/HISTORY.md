@@ -256,3 +256,15 @@ Validation for this extraction is the focused route-binding penalty and
 candidate-resolution tests, rustfmt, the Rust source-quality checker and
 fixture harness, all-target Cargo checking, all-target Clippy, and the
 stateful SQLite backend profile.
+
+The routing OAuth route cases move as one contiguous five-test block from
+physical lines 2,374 through 3,025 of
+`src/tests/stateful_sqlite/routing_timeout_and_overload_failover.rs` into
+`src/tests/stateful_sqlite/routing_timeout_and_overload_failover/oauth_route_cases.rs`.
+The nested module remains under the stateful SQLite test prefix. After rustfmt,
+the parent is 2,487 physical lines and the child is 653 lines, both below the
+3,000-line test/helper target. The parent is removed from the policy inventory.
+The current inventory is 24 production and 20 test/helper candidates (44 total),
+while the immutable preparation baseline remains 32 and 23 and the suppression
+baseline remains 117. Test names, assertions, fixtures, timing, and behavior
+remain unchanged.

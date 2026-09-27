@@ -8,7 +8,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 45 current explicit file
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 44 current explicit file
   budgets, and 117 standalone suppression declarations. The immutable
   preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -234,12 +234,22 @@ prompt-cache stateful SQLite tests, the stateful SQLite backend profile,
 rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
 checking, all-target Clippy, and `git diff --check`.
 
+The routing OAuth route-case extraction moves the five contiguous tests from
+physical lines 2,374 through 3,025 of
+`src/tests/stateful_sqlite/routing_timeout_and_overload_failover.rs` into
+`src/tests/stateful_sqlite/routing_timeout_and_overload_failover/oauth_route_cases.rs`.
+The nested module remains in the stateful SQLite resource bucket. After
+rustfmt, the parent is 2,487 physical lines and the child is 653 lines, both
+below the 3,000-line test/helper target. The parent is removed from the
+policy inventory; test names, assertions, fixtures, timing, and behavior
+remain unchanged.
+
 ## Inventory Contract
 
 The policy has 24 `production` entries above the 2,500-line destination target
-and 21 `test_helper` entries above the 3,000-line destination target. Each
+and 20 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 45 paths; a long path absent from the inventory is
+The checker only reads those 44 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no

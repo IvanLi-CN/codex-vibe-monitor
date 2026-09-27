@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 45,
+    "inventory_entries": 44,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -209,12 +209,6 @@
       "role": "test_helper",
       "line_budget": 3671,
       "next_module_workstream": "Split routing failover terminal-reasoning fixtures by capture route, overload, and timeout."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/routing_timeout_and_overload_failover.rs",
-      "role": "test_helper",
-      "line_budget": 3137,
-      "next_module_workstream": "Split routing timeout/overload fixtures by timeout paths, overload streams, and account rules."
     },
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
