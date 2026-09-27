@@ -409,12 +409,32 @@ fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_fin
             .expect("streaming via-pool request should succeed");
 
             assert_eq!(response.status(), StatusCode::OK);
+            let via_pool_invoke_id = state
+                .proxy_runtime_invocations
+                .snapshot()
+                .into_iter()
+                .find(|record| {
+                    record.invoke_id.len() == PROXY_INVOKE_ID_LENGTH
+                        && record
+                            .invoke_id
+                            .chars()
+                            .all(|character| PROXY_INVOKE_ID_ALPHABET.contains(&character))
+                })
+                .map(|record| record.invoke_id)
+                .expect("via-pool runtime snapshot should be visible");
+            assert_eq!(via_pool_invoke_id.len(), PROXY_INVOKE_ID_LENGTH);
+            assert!(
+                via_pool_invoke_id
+                    .chars()
+                    .all(|character| PROXY_INVOKE_ID_ALPHABET.contains(&character)),
+                "via-pool runtime invoke id must use the compact invoke-id alphabet"
+            );
             assert!(
                 state
                     .proxy_runtime_invocations
                     .snapshot()
                     .iter()
-                    .any(|record| record.invoke_id == "pool-via-1003"),
+                    .any(|record| record.invoke_id == via_pool_invoke_id),
                 "via-pool runtime snapshot should remain visible while the response is streaming"
             );
             assert_eq!(
@@ -438,7 +458,7 @@ fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_fin
                         .proxy_runtime_invocations
                         .snapshot()
                         .iter()
-                        .all(|record| record.invoke_id != "pool-via-1003");
+                        .all(|record| record.invoke_id != via_pool_invoke_id);
                     if synthetic_runtime_removed {
                         break;
                     }
@@ -459,7 +479,7 @@ fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_fin
                     .proxy_runtime_invocations
                     .snapshot()
                     .iter()
-                    .all(|record| record.invoke_id != "pool-via-1003"),
+                    .all(|record| record.invoke_id != via_pool_invoke_id),
                 "completed via-pool requests must remove synthetic runtime snapshots"
             );
 

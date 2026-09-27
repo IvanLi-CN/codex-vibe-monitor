@@ -3784,7 +3784,7 @@ pub(crate) async fn flush_pending_batch_inner(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Result<PendingBatch> {
     let mut deferred_batch = PendingBatch::default();
-    let mut should_invalidate_prompt_cache_conversations = false;
+    let mut prompt_cache_keys_to_refresh = HashSet::new();
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
@@ -3810,13 +3810,6 @@ pub(crate) async fn flush_pending_batch_inner(
                 .with_context(|| "flush terminal runtime proxy invocation")?
             };
             let derived_identity = if let Some(persisted) = persisted.as_ref() {
-                if persisted
-                    .prompt_cache_key
-                    .as_deref()
-                    .is_some_and(|key| !key.trim().is_empty())
-                {
-                    should_invalidate_prompt_cache_conversations = true;
-                }
                 Some((persisted.id, persisted.occurred_at.clone()))
             } else {
                 let identity = load_persisted_invocation_identity_tx(
@@ -3842,6 +3835,14 @@ pub(crate) async fn flush_pending_batch_inner(
                         upstream_account_id: record.upstream_account_id,
                         request_model: None,
                     });
+            if let Some(prompt_cache_key) = payload_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.prompt_cache_key.as_deref())
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+            {
+                prompt_cache_keys_to_refresh.insert(prompt_cache_key.to_string());
+            }
             let summary_delta = terminal.dashboard_terminal_sequence.and_then(|sequence| {
                 persisted.as_ref().map(|record| {
                     let mut delta = crate::persisted_dashboard_activity_terminal_delta(record);
@@ -3961,12 +3962,13 @@ pub(crate) async fn flush_pending_batch_inner(
         let payload_metadata = payload_metadata.unwrap_or_else(|| {
             crate::terminal_payload_metadata(terminal.record.payload.as_deref())
         });
-        if payload_metadata
+        if let Some(prompt_cache_key) = payload_metadata
             .prompt_cache_key
             .as_deref()
-            .is_some_and(|key| !key.trim().is_empty())
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
         {
-            should_invalidate_prompt_cache_conversations = true;
+            prompt_cache_keys_to_refresh.insert(prompt_cache_key.to_string());
         }
         deferred_batch.push(SqliteBatchWrite::InvocationDerived(
             BatchedInvocationDerivedWrites {
@@ -4017,7 +4019,17 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        if should_invalidate_prompt_cache_conversations
+        if !prompt_cache_keys_to_refresh.is_empty()
+            && let Err(error) =
+                refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
+        {
+            warn!(
+                error = %error,
+                keys = prompt_cache_keys_to_refresh.len(),
+                "failed to refresh prompt-cache conversation statistics after terminal batch"
+            );
+        }
+        if !prompt_cache_keys_to_refresh.is_empty()
             && let Some(cache) = prompt_cache_conversation_cache
         {
             invalidate_prompt_cache_conversations_cache(cache).await;
@@ -4155,6 +4167,17 @@ pub(crate) async fn flush_pending_batch_inner(
 
     tx.commit().await?;
 
+    if !prompt_cache_keys_to_refresh.is_empty()
+        && let Err(error) =
+            refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
+    {
+        warn!(
+            error = %error,
+            keys = prompt_cache_keys_to_refresh.len(),
+            "failed to refresh prompt-cache conversation statistics after derived batch"
+        );
+    }
+
     if !terminal_overlay_keys.is_empty()
         && let Some(runtime_store) = terminal_runtime_store
             .lock()
@@ -4172,7 +4195,7 @@ pub(crate) async fn flush_pending_batch_inner(
         }
     }
 
-    if should_invalidate_prompt_cache_conversations
+    if !prompt_cache_keys_to_refresh.is_empty()
         && let Some(cache) = prompt_cache_conversation_cache
     {
         invalidate_prompt_cache_conversations_cache(cache).await;

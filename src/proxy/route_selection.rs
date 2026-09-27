@@ -1350,18 +1350,37 @@ pub(crate) fn should_prebuffer_for_body_sticky_probe(
 }
 
 pub(crate) fn build_via_pool_attempt_trace_context(
-    proxy_request_id: u64,
+    invoke_id: &str,
     endpoint: &str,
     sticky_key: Option<String>,
 ) -> PoolUpstreamAttemptTraceContext {
     PoolUpstreamAttemptTraceContext {
-        invoke_id: format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"),
+        invoke_id: invoke_id.to_string(),
         occurred_at: shanghai_now_string(),
         endpoint: endpoint.to_string(),
         sticky_key,
         requester_ip: None,
         upstream_base_url_host: None,
         request_model: None,
+    }
+}
+
+async fn allocate_via_pool_invoke_id(
+    state: &AppState,
+    proxy_request_id: u64,
+    prompt_cache_key: Option<&str>,
+) -> String {
+    match allocate_proxy_invoke_id(state, prompt_cache_key).await {
+        Ok(invoke_id) => invoke_id,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                prompt_cache_key_fingerprint = prompt_cache_key.map(prompt_cache_key_fingerprint),
+                error = %err,
+                "failed to allocate via-pool proxy invoke id; using generated fallback"
+            );
+            generate_proxy_invoke_id()
+        }
     }
 }
 
@@ -1811,9 +1830,16 @@ pub(crate) fn proxy_openai_v1_via_pool(
 ) -> ViaPoolResponseFuture<'_> {
     Box::pin(async move {
         let request_started_at = Instant::now();
+        let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
+        let mut via_pool_invoke_id = allocate_via_pool_invoke_id(
+            &state,
+            proxy_request_id,
+            header_prompt_cache_key.as_deref(),
+        )
+        .await;
         let mut runtime_snapshot_cleanup_guard = Some(PoolViaRuntimeSnapshotCleanupGuard::new(
             state.clone(),
-            proxy_request_id,
+            via_pool_invoke_id.clone(),
         ));
         let body_limit = state.config.openai_proxy_max_request_body_bytes;
         let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
@@ -1849,7 +1875,6 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let mut request_image_intent = infer_request_image_intent(capture_target, None);
         let mut request_compaction_kind = infer_request_compaction_kind(capture_target, None);
         let header_sticky_key = extract_sticky_key_from_headers(&headers);
-        let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
         let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
             &mut proxy_request_permit,
             state.as_ref(),
@@ -1910,6 +1935,18 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     let effective_prompt_cache_key = body_prompt_cache_key
                         .clone()
                         .or(header_prompt_cache_key.clone());
+                    if effective_prompt_cache_key.as_deref() != header_prompt_cache_key.as_deref() {
+                        via_pool_invoke_id = allocate_via_pool_invoke_id(
+                            &state,
+                            proxy_request_id,
+                            effective_prompt_cache_key.as_deref(),
+                        )
+                        .await;
+                        runtime_snapshot_cleanup_guard
+                            .as_mut()
+                            .expect("via-pool runtime cleanup guard should exist")
+                            .set_invoke_id(via_pool_invoke_id.clone());
+                    }
                     let (
                         prompt_cache_binding_constraint,
                         owner_auto_guard_active,
@@ -1922,7 +1959,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     .await
                     .map_err(|(status, message)| plain_proxy_error(status, message))?;
                     let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
-                        proxy_request_id,
+                        &via_pool_invoke_id,
                         original_uri.path(),
                         body_sticky_key.clone(),
                     );
@@ -2304,7 +2341,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             && conversation_override.is_none()
                                         {
                                             let trace_context = build_via_pool_attempt_trace_context(
-                                                proxy_request_id,
+                                                &via_pool_invoke_id,
                                                 original_uri.path(),
                                                 Some(sticky_key.clone()),
                                             );
@@ -2408,7 +2445,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             && conversation_override.is_none()
                                         {
                                             let trace_context = build_via_pool_attempt_trace_context(
-                                                proxy_request_id,
+                                                &via_pool_invoke_id,
                                                 original_uri.path(),
                                                 Some(sticky_key.clone()),
                                             );
@@ -2503,6 +2540,21 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             }
                         }
                         let body_prompt_cache_key = request_analysis.prompt_cache_key;
+                        let effective_prompt_cache_key = body_prompt_cache_key
+                            .as_deref()
+                            .or(header_prompt_cache_key.as_deref());
+                        if effective_prompt_cache_key != header_prompt_cache_key.as_deref() {
+                            via_pool_invoke_id = allocate_via_pool_invoke_id(
+                                &state,
+                                proxy_request_id,
+                                effective_prompt_cache_key,
+                            )
+                            .await;
+                            runtime_snapshot_cleanup_guard
+                                .as_mut()
+                                .expect("via-pool runtime cleanup guard should exist")
+                                .set_invoke_id(via_pool_invoke_id.clone());
+                        }
                         let request_contains_encrypted_content =
                             request_analysis.contains_encrypted_content;
                         let request_image_intent = request_analysis.image_intent;
@@ -2527,7 +2579,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             && let Some(terminal_error) = pending_header_sticky_terminal_error
                         {
                             let trace_context = build_via_pool_attempt_trace_context(
-                                proxy_request_id,
+                                &via_pool_invoke_id,
                                 original_uri.path(),
                                 Some(sticky_key.clone()),
                             );
@@ -2568,7 +2620,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 unwrap_via_pool_initial_account(
                                     state.as_ref(),
                                     Some(&build_via_pool_attempt_trace_context(
-                                        proxy_request_id,
+                                        &via_pool_invoke_id,
                                         original_uri.path(),
                                         body_sticky_key.clone(),
                                     )),
@@ -2607,7 +2659,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 unwrap_via_pool_initial_account(
                                     state.as_ref(),
                                     Some(&build_via_pool_attempt_trace_context(
-                                        proxy_request_id,
+                                        &via_pool_invoke_id,
                                         original_uri.path(),
                                         body_sticky_key.clone(),
                                     )),
@@ -2643,7 +2695,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 unwrap_via_pool_initial_account(
                                     state.as_ref(),
                                     Some(&build_via_pool_attempt_trace_context(
-                                        proxy_request_id,
+                                        &via_pool_invoke_id,
                                         original_uri.path(),
                                         body_sticky_key.clone(),
                                     )),
@@ -2694,6 +2746,21 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         .await;
                         let body_sticky_key = request_analysis.sticky_key;
                         let body_prompt_cache_key = request_analysis.prompt_cache_key;
+                        let effective_prompt_cache_key = body_prompt_cache_key
+                            .as_deref()
+                            .or(header_prompt_cache_key.as_deref());
+                        if effective_prompt_cache_key != header_prompt_cache_key.as_deref() {
+                            via_pool_invoke_id = allocate_via_pool_invoke_id(
+                                &state,
+                                proxy_request_id,
+                                effective_prompt_cache_key,
+                            )
+                            .await;
+                            runtime_snapshot_cleanup_guard
+                                .as_mut()
+                                .expect("via-pool runtime cleanup guard should exist")
+                                .set_invoke_id(via_pool_invoke_id.clone());
+                        }
                         let requested_model = request_analysis.requested_model.clone();
                         let request_contains_encrypted_content =
                             request_analysis.contains_encrypted_content;
@@ -2734,7 +2801,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             unwrap_via_pool_initial_account(
                                 state.as_ref(),
                                 Some(&build_via_pool_attempt_trace_context(
-                                    proxy_request_id,
+                                    &via_pool_invoke_id,
                                     original_uri.path(),
                                     body_sticky_key.clone(),
                                 )),
@@ -2775,7 +2842,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             Some(request_body_snapshot),
                             handshake_timeout,
                             Some(build_via_pool_attempt_trace_context(
-                                proxy_request_id,
+                                &via_pool_invoke_id,
                                 original_uri.path(),
                                 body_sticky_key.clone(),
                             )),
@@ -2846,7 +2913,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         None,
                         handshake_timeout,
                         Some(build_via_pool_attempt_trace_context(
-                            proxy_request_id,
+                            &via_pool_invoke_id,
                             original_uri.path(),
                             header_sticky_key.clone(),
                         )),

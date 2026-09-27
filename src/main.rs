@@ -117,6 +117,7 @@ mod memory_diagnostics;
 )]
 mod oauth_bridge;
 mod pricing;
+mod prompt_cache_conversations;
 mod proxy;
 mod proxy_sqlite_write_coordinator;
 #[expect(
@@ -155,6 +156,7 @@ pub(crate) use long_term_stats::*;
 pub(crate) use maintenance::*;
 pub(crate) use memory_diagnostics::*;
 pub(crate) use pricing::*;
+pub(crate) use prompt_cache_conversations::*;
 use proxy::*;
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use runtime::*;

@@ -51,6 +51,175 @@ async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invoc
 }
 
 #[tokio::test]
+async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    for (invoke_id, status, tokens, cost) in [
+        ("LEGACY0001", "success", 12_i64, 0.25_f64),
+        ("LEGACY0002", "failed", 8_i64, 0.15_f64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-09-01 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(tokens)
+        .bind(cost)
+        .bind(json!({"promptCacheKey": "conversation-backfill-key"}).to_string())
+        .bind("{}")
+        .execute(&pool)
+        .await
+        .expect("insert legacy invocation");
+    }
+
+    ensure_schema(&pool)
+        .await
+        .expect("backfill prompt-cache conversation identities");
+
+    let row = sqlx::query_as::<_, (String, String, i64, i64, i64, i64, f64)>(
+        r#"
+        SELECT conversation_id, prompt_cache_key, request_count, success_count,
+               failure_count, total_tokens, cost
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = 'conversation-backfill-key'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled prompt-cache conversation");
+    assert_eq!(row.0.len(), PROMPT_CACHE_CONVERSATION_ID_LENGTH);
+    assert!(
+        row.0
+            .chars()
+            .all(|character| PROXY_INVOKE_ID_ALPHABET.contains(&character))
+    );
+    assert_eq!(row.1, "conversation-backfill-key");
+    assert_eq!(row.2, 2);
+    assert_eq!(row.3, 1);
+    assert_eq!(row.4, 1);
+    assert_eq!(row.5, 20);
+    assert!((row.6 - 0.4).abs() < 1e-9);
+
+    ensure_schema(&pool)
+        .await
+        .expect("rerun prompt-cache conversation migration");
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'conversation-backfill-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count backfilled prompt-cache conversations");
+    assert_eq!(row_count, 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let first = allocate_proxy_invoke_id(&state, Some("allocator-key"))
+        .await
+        .expect("allocate first conversation invoke id");
+    let second = allocate_proxy_invoke_id(&state, Some("allocator-key"))
+        .await
+        .expect("allocate second conversation invoke id");
+    assert_eq!(first.len(), PROXY_INVOKE_ID_LENGTH);
+    assert_eq!(&first[..6], &second[..6]);
+    assert_eq!(&first[6..], "AAAA");
+    assert_eq!(&second[6..], "AAAB");
+
+    for invoke_id in [&first, &second] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response
+            ) VALUES (?1, ?2, ?3, 'success', ?4, '{}')
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-09-01 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": "allocator-key"}).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist allocated conversation invocation");
+    }
+    {
+        let mut cache = state.prompt_cache_conversation_cache.lock().await;
+        cache.identity_cache.conversations.clear();
+    }
+    let recovered = allocate_proxy_invoke_id(&state, Some("allocator-key"))
+        .await
+        .expect("recover conversation invoke sequence from database");
+    assert_eq!(&recovered[..6], &first[..6]);
+    assert_eq!(&recovered[6..], "AAAC");
+
+    let unbound_first = allocate_proxy_invoke_id(&state, None)
+        .await
+        .expect("allocate first unbound invoke id");
+    let unbound_second = allocate_proxy_invoke_id(&state, None)
+        .await
+        .expect("allocate second unbound invoke id");
+    assert_eq!(&unbound_first[..6], &unbound_second[..6]);
+    assert_eq!(&unbound_first[6..], "AAAA");
+    assert_eq!(&unbound_second[6..], "AAAB");
+
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'allocator-key'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count allocated conversation identity");
+    assert_eq!(row_count, 1);
+
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = 'allocator-key'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark conversation as having historical activity");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id IN (?1, ?2, ?3)")
+        .bind(&first)
+        .bind(&second)
+        .bind(&recovered)
+        .execute(&state.pool)
+        .await
+        .expect("remove live allocator invocations");
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations(&state.pool, true)
+            .await
+            .expect("count releasable prompt-cache conversation"),
+        1
+    );
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations(&state.pool, false)
+            .await
+            .expect("release orphan prompt-cache conversation"),
+        1
+    );
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'allocator-key'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count released conversation identity");
+    assert_eq!(row_count, 0);
+}
+
+#[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
     #[derive(sqlx::FromRow)]

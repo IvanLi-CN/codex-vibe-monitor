@@ -1969,6 +1969,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_prompt_cache_recent_lookup")?;
 
+    ensure_prompt_cache_conversations_schema(pool).await?;
+
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_model_occurred_at

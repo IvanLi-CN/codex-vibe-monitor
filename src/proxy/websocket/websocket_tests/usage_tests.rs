@@ -7,7 +7,7 @@ async fn websocket_terminal_usage_retains_unsupported_actual_tier_from_intermedi
     )
     .await;
     let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: "pool-ws-unsupported-tier-retained".to_string(),
+        invoke_id: "ABCDEFABCD".to_string(),
         occurred_at: shanghai_now_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: None,
@@ -47,7 +47,7 @@ async fn websocket_terminal_usage_retains_unsupported_actual_tier_from_intermedi
     let persisted = sqlx::query_as::<_, (Option<f64>, String)>(
         "SELECT cost, payload FROM codex_invocations WHERE invoke_id = ?1",
     )
-    .bind("pool-ws-unsupported-tier-retained-resp_unsupported_tier")
+    .bind("ABCDEFABCD")
     .fetch_one(&state.pool)
     .await
     .expect("load completed websocket invocation");
@@ -67,7 +67,7 @@ async fn interrupted_websocket_turn_retains_unsupported_actual_tier() {
     )
     .await;
     let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: "pool-ws-interrupted-unsupported-tier".to_string(),
+        invoke_id: "EFGHJKEFGH".to_string(),
         occurred_at: shanghai_now_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: None,
@@ -142,7 +142,7 @@ async fn interrupted_websocket_turn_persists_partial_cache_usage_from_upstream_e
     )
     .await;
     let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: "pool-ws-partial-interrupted".to_string(),
+        invoke_id: "JKMNPQJKMN".to_string(),
         occurred_at: shanghai_now_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: None,
@@ -222,7 +222,7 @@ async fn interrupted_websocket_turn_persists_cache_write_only_usage_to_api_and_r
     )
     .await;
     let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: "pool-ws-cache-write-only-interrupted".to_string(),
+        invoke_id: "RSTUVWQRST".to_string(),
         occurred_at: shanghai_now_string(),
         endpoint: "/v1/responses".to_string(),
         sticky_key: None,

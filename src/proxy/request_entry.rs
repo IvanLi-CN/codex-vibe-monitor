@@ -43,7 +43,16 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     {
         let websocket_enabled = state.proxy_model_settings.read().await.websocket_enabled;
         if !websocket_enabled {
-            let invoke_id = format!("proxy-ws-disabled-{}", Utc::now().timestamp_millis());
+            let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
+                Ok(invoke_id) => invoke_id,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to allocate disabled-websocket proxy invoke id; using generated fallback"
+                    );
+                    generate_proxy_invoke_id()
+                }
+            };
             return build_proxy_error_response(
                 ProxyErrorResponse {
                     status: StatusCode::SERVICE_UNAVAILABLE,
@@ -91,7 +100,6 @@ pub(crate) async fn proxy_openai_v1_common(
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
     let started_at = Instant::now();
-    let invoke_id = generate_unique_proxy_invoke_id(&state.pool).await;
     let request_content_length = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
@@ -125,6 +133,9 @@ pub(crate) async fn proxy_openai_v1_common(
                 } else {
                     StatusCode::INTERNAL_SERVER_ERROR
                 };
+                let invoke_id = allocate_proxy_invoke_id(&state, None)
+                    .await
+                    .unwrap_or_else(|_| generate_proxy_invoke_id());
                 return build_proxy_error_response(
                     ProxyErrorResponse {
                         status,
@@ -156,47 +167,6 @@ pub(crate) async fn proxy_openai_v1_common(
         .is_some()
         .then_some(transport_request_observer)
         .flatten();
-    let admitted_runtime_snapshot = match capture_target {
-        Some(target) => {
-            let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
-            let requester_ip = extract_requester_ip(&headers, peer_ip);
-            let header_sticky_key = extract_sticky_key_from_headers(&headers);
-            let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
-            let shell_started = Instant::now();
-            let admitted_record = build_admitted_proxy_capture_runtime_snapshot(
-                &invoke_id,
-                &occurred_at,
-                target,
-                requester_ip.as_deref(),
-                header_sticky_key.as_deref(),
-                header_prompt_cache_key.as_deref(),
-            );
-            if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
-                state.as_ref(),
-                admitted_record,
-            )
-            .await
-            {
-                warn!(
-                    ?err,
-                    proxy_request_id,
-                    invoke_id = %invoke_id,
-                    "failed to broadcast admitted running proxy capture snapshot"
-                );
-            } else {
-                debug!(
-                    proxy_request_id,
-                    invoke_id = %invoke_id,
-                    occurred_at = %occurred_at,
-                    running_shell_emitted = true,
-                    running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
-                    "admitted proxy request emitted running shell before route context"
-                );
-            }
-            Some(AdmittedProxyRuntimeSnapshot { occurred_at })
-        }
-        None => None,
-    };
 
     if extract_bearer_token(&headers).is_none() {
         let err = ProxyErrorResponse {
@@ -207,11 +177,28 @@ pub(crate) async fn proxy_openai_v1_common(
             code: None,
             blocked_binding: None,
         };
-        if let Some(runtime_snapshot) = admitted_runtime_snapshot.as_ref() {
+        let invoke_id = allocate_proxy_invoke_id(&state, None)
+            .await
+            .unwrap_or_else(|_| generate_proxy_invoke_id());
+        if let Some(target) = capture_target {
+            let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let requester_ip = extract_requester_ip(&headers, peer_ip);
+            let header_sticky_key = extract_sticky_key_from_headers(&headers);
+            let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
+            emit_admitted_proxy_capture_runtime_snapshot(
+                state.as_ref(),
+                &invoke_id,
+                &occurred_at,
+                target,
+                requester_ip.as_deref(),
+                header_sticky_key.as_deref(),
+                header_prompt_cache_key.as_deref(),
+            )
+            .await;
             terminalize_proxy_runtime_snapshot_with_error(
                 state.as_ref(),
                 &invoke_id,
-                &runtime_snapshot.occurred_at,
+                &occurred_at,
                 err.status,
                 PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                 &err.message,
@@ -244,11 +231,28 @@ pub(crate) async fn proxy_openai_v1_common(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed during route validation"
             );
-            if let Some(runtime_snapshot) = admitted_runtime_snapshot.as_ref() {
+            let invoke_id = allocate_proxy_invoke_id(&state, None)
+                .await
+                .unwrap_or_else(|_| generate_proxy_invoke_id());
+            if let Some(target) = capture_target {
+                let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+                let requester_ip = extract_requester_ip(&headers, peer_ip);
+                let header_sticky_key = extract_sticky_key_from_headers(&headers);
+                let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
+                emit_admitted_proxy_capture_runtime_snapshot(
+                    state.as_ref(),
+                    &invoke_id,
+                    &occurred_at,
+                    target,
+                    requester_ip.as_deref(),
+                    header_sticky_key.as_deref(),
+                    header_prompt_cache_key.as_deref(),
+                )
+                .await;
                 terminalize_proxy_runtime_snapshot_with_error(
                     state.as_ref(),
                     &invoke_id,
-                    &runtime_snapshot.occurred_at,
+                    &occurred_at,
                     err.status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &err.message,
@@ -267,9 +271,8 @@ pub(crate) async fn proxy_openai_v1_common(
     let pool_route_active = true;
 
     match Box::pin(proxy_openai_v1_inner(
-        state,
+        state.clone(),
         proxy_request_id,
-        invoke_id.clone(),
         original_uri,
         method,
         headers,
@@ -279,7 +282,6 @@ pub(crate) async fn proxy_openai_v1_common(
         pool_route_active,
         runtime_timeouts,
         proxy_request_permit,
-        admitted_runtime_snapshot,
         downstream_request_observer,
         started_at,
     ))
@@ -307,6 +309,12 @@ pub(crate) async fn proxy_openai_v1_common(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed"
             );
+            let invoke_id = match err.cvm_id.clone() {
+                Some(invoke_id) => invoke_id,
+                None => allocate_proxy_invoke_id(&state, None)
+                    .await
+                    .unwrap_or_else(|_| generate_proxy_invoke_id()),
+            };
             build_proxy_error_response(err, &invoke_id)
         }
     }
@@ -519,11 +527,6 @@ pub(crate) fn proxy_error_response_from_pool_upstream_error(
 #[derive(Debug)]
 pub(crate) struct ProxyRequestConcurrencyPermit {
     in_flight: Arc<AtomicUsize>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AdmittedProxyRuntimeSnapshot {
-    pub(crate) occurred_at: String,
 }
 
 impl Drop for ProxyRequestConcurrencyPermit {
@@ -1336,7 +1339,6 @@ pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str =
     "streaming_response";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
-pub(crate) const POOL_VIA_INVOKE_ID_PREFIX: &str = "pool-via-";
 pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
 pub(crate) const POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
 pub(crate) const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
@@ -1355,11 +1357,15 @@ pub(crate) struct PoolViaRuntimeSnapshotCleanupGuard {
 }
 
 impl PoolViaRuntimeSnapshotCleanupGuard {
-    pub(crate) fn new(state: Arc<AppState>, proxy_request_id: u64) -> Self {
+    pub(crate) fn new(state: Arc<AppState>, invoke_id: impl Into<String>) -> Self {
         Self {
             state,
-            invoke_id: format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"),
+            invoke_id: invoke_id.into(),
         }
+    }
+
+    pub(crate) fn set_invoke_id(&mut self, invoke_id: impl Into<String>) {
+        self.invoke_id = invoke_id.into();
     }
 }
 

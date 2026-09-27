@@ -4173,6 +4173,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
             entries: HashMap::new(),
             in_flight: HashMap::new(),
             generation: 0,
+            identity_cache: PromptCacheConversationIdentityCache::default(),
         })),
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),

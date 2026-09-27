@@ -1285,6 +1285,7 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) raw_bytes_after_estimated: u64,
     pub(crate) invocation_details_pruned: usize,
     pub(crate) invocation_rows_archived: usize,
+    pub(crate) prompt_cache_conversations_released: usize,
     pub(crate) forward_proxy_attempt_rows_archived: usize,
     pub(crate) pool_upstream_request_attempt_rows_archived: usize,
     pub(crate) quota_snapshot_rows_archived: usize,
@@ -1302,6 +1303,7 @@ impl RetentionRunSummary {
             || self.raw_files_compressed > 0
             || self.invocation_details_pruned > 0
             || self.invocation_rows_archived > 0
+            || self.prompt_cache_conversations_released > 0
             || self.forward_proxy_attempt_rows_archived > 0
             || self.pool_upstream_request_attempt_rows_archived > 0
             || self.quota_snapshot_rows_archived > 0
@@ -7996,6 +7998,17 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 invalidate_system_status_cache(state.as_ref()).await;
                 return false;
             }
+            if !summary.dry_run && summary.prompt_cache_conversations_released > 0 {
+                clear_prompt_cache_conversation_identity_cache(
+                    &state.prompt_cache_conversation_cache,
+                )
+                .await;
+                info!(
+                    trigger,
+                    released = summary.prompt_cache_conversations_released,
+                    "cleared released prompt-cache conversation identities from memory"
+                );
+            }
             // Commit the bounded inventory reset before task bookkeeping or cancellation can
             // return. Raw path mutations must never leave the monotonic inventory stale.
             let reset_pending = match crate::system_raw_payload_metrics_inventory_reset_pending(
@@ -8410,6 +8423,17 @@ async fn run_data_retention_maintenance_inner(
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+    summary.prompt_cache_conversations_released =
+        cleanup_orphan_prompt_cache_conversations(pool, dry_run)
+            .await
+            .context("failed to release orphan prompt-cache conversation identities")?;
+    if summary.prompt_cache_conversations_released > 0 {
+        info!(
+            dry_run,
+            released = summary.prompt_cache_conversations_released,
+            "prompt-cache conversation identity retention completed"
+        );
+    }
     if !dry_run {
         let preserve_recovery_stage = matches!(
             retention_recovery_health_snapshot().stage.as_deref(),

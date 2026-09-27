@@ -831,7 +831,6 @@ pub(crate) fn next_proxy_request_id() -> u64 {
 }
 
 pub(crate) const PROXY_INVOKE_ID_LENGTH: usize = 10;
-pub(crate) const PROXY_INVOKE_ID_GENERATION_ATTEMPTS: usize = 5;
 pub(crate) const PROXY_INVOKE_ID_ALPHABET: [char; 31] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
     'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7', '8', '9',
@@ -847,48 +846,6 @@ pub(crate) fn proxy_invoke_id_has_short_format(value: &str) -> bool {
         && value
             .chars()
             .all(|ch| PROXY_INVOKE_ID_ALPHABET.contains(&ch))
-}
-
-pub(crate) async fn proxy_invoke_id_exists(pool: &Pool<Sqlite>, invoke_id: &str) -> Result<bool> {
-    let exists = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT EXISTS(
-            SELECT 1
-            FROM codex_invocations
-            WHERE invoke_id = ?1
-            LIMIT 1
-        )
-        "#,
-    )
-    .bind(invoke_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(exists != 0)
-}
-
-pub(crate) async fn generate_unique_proxy_invoke_id(pool: &Pool<Sqlite>) -> String {
-    for _ in 0..PROXY_INVOKE_ID_GENERATION_ATTEMPTS {
-        let candidate = generate_proxy_invoke_id();
-        match proxy_invoke_id_exists(pool, &candidate).await {
-            Ok(false) => return candidate,
-            Ok(true) => continue,
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "failed to check generated proxy invoke id uniqueness; using generated id"
-                );
-                return candidate;
-            }
-        }
-    }
-
-    let fallback = generate_proxy_invoke_id();
-    warn!(
-        attempts = PROXY_INVOKE_ID_GENERATION_ATTEMPTS,
-        fallback_invoke_id = %fallback,
-        "generated proxy invoke id collided repeatedly; using final fallback id"
-    );
-    fallback
 }
 
 #[derive(Debug, Clone)]

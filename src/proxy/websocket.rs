@@ -115,10 +115,17 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     headers: HeaderMap,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
-    let invoke_id = format!(
-        "proxy-ws-{proxy_request_id}-{}",
-        Utc::now().timestamp_millis()
-    );
+    let invoke_id = match allocate_proxy_invoke_id(state.as_ref(), None).await {
+        Ok(invoke_id) => invoke_id,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                error = %err,
+                "failed to allocate websocket proxy invoke id; using generated fallback"
+            );
+            generate_proxy_invoke_id()
+        }
+    };
     info!(
         proxy_request_id,
         method = %method,
@@ -179,8 +186,23 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     let (sticky_key, header_prompt_cache_key) = websocket_routing_keys_from_headers(&headers);
     let requested_model = extract_requested_model_from_websocket_uri(&original_uri);
     let requester_ip = extract_requester_ip(&headers, peer_ip);
+    let trace_invoke_id = if header_prompt_cache_key.is_some() {
+        match allocate_proxy_invoke_id(state.as_ref(), header_prompt_cache_key.as_deref()).await {
+            Ok(invoke_id) => invoke_id,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "failed to allocate websocket prompt-cache invoke id; using connection id"
+                );
+                invoke_id.clone()
+            }
+        }
+    } else {
+        invoke_id.clone()
+    };
     let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: format!("pool-ws-{proxy_request_id}"),
+        invoke_id: trace_invoke_id,
         occurred_at: shanghai_now_string(),
         endpoint: original_uri.path().to_string(),
         sticky_key: sticky_key.clone(),
@@ -1313,7 +1335,8 @@ pub(crate) async fn proxy_websocket_tunnel(
                 received_at_rfc3339,
             } = timestamped_message;
             let close_seen = matches!(message, AxumWsMessage::Close(_));
-            if ws_message_starts_response_create_turn(&message) {
+            let starts_new_turn = ws_message_starts_response_create_turn(&message);
+            if starts_new_turn {
                 if active_turn_waiting_terminal {
                     usage_tracker
                         .persist_interrupted_turn(
@@ -1325,6 +1348,13 @@ pub(crate) async fn proxy_websocket_tunnel(
                 active_turn_waiting_terminal = true;
                 saw_terminal_upstream_event = false;
                 usage_tracker.start_turn_at(received_at, received_at_rfc3339);
+                if let Some(prompt_cache_key) = ws_message_payload_bytes(&message)
+                    .and_then(inspect_ws_request_payload)
+                    .and_then(|inspection| inspection.prompt_cache_key)
+                {
+                    usage_tracker.prompt_cache_key = Some(prompt_cache_key);
+                }
+                usage_tracker.ensure_turn_invoke_id(state.as_ref()).await;
             }
             if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                 match apply_ws_downstream_payload_guard(
@@ -1432,7 +1462,8 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let timestamped_message = TimestampedWsDownstreamMessage::now(message);
                         let mut message = timestamped_message.message;
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
-                        if ws_message_starts_response_create_turn(&message) {
+                        let starts_new_turn = ws_message_starts_response_create_turn(&message);
+                        if starts_new_turn {
                             if active_turn_waiting_terminal {
                                 usage_tracker
                                     .persist_interrupted_turn(
@@ -1447,6 +1478,13 @@ pub(crate) async fn proxy_websocket_tunnel(
                                 timestamped_message.received_at,
                                 timestamped_message.received_at_rfc3339,
                             );
+                            if let Some(prompt_cache_key) = ws_message_payload_bytes(&message)
+                                .and_then(inspect_ws_request_payload)
+                                .and_then(|inspection| inspection.prompt_cache_key)
+                            {
+                                usage_tracker.prompt_cache_key = Some(prompt_cache_key);
+                            }
+                            usage_tracker.ensure_turn_invoke_id(state.as_ref()).await;
                         }
                         if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                             match apply_ws_downstream_payload_guard(
@@ -1937,7 +1975,27 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     let prompt_cache_key = payload_inspection
         .prompt_cache_key
         .clone()
-        .or(header_prompt_cache_key);
+        .or_else(|| header_prompt_cache_key.clone());
+    if websocket_effective_prompt_cache_key(prompt_cache_key.as_deref())
+        != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+    {
+        trace.invoke_id = match allocate_proxy_invoke_id(
+            state.as_ref(),
+            prompt_cache_key.as_deref(),
+        )
+        .await
+        {
+            Ok(invoke_id) => invoke_id,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "failed to allocate deferred websocket prompt-cache invoke id; using connection id"
+                );
+                trace.invoke_id.clone()
+            }
+        };
+    }
     let request_contains_encrypted_content = payload_inspection.contains_encrypted_content;
     debug!(
         proxy_request_id,
@@ -2049,7 +2107,27 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     let prompt_cache_key = initial_inspection
         .as_ref()
         .and_then(|inspection| inspection.prompt_cache_key.clone())
-        .or(header_prompt_cache_key);
+        .or_else(|| header_prompt_cache_key.clone());
+    if websocket_effective_prompt_cache_key(prompt_cache_key.as_deref())
+        != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+    {
+        trace.invoke_id = match allocate_proxy_invoke_id(
+            state.as_ref(),
+            prompt_cache_key.as_deref(),
+        )
+        .await
+        {
+            Ok(invoke_id) => invoke_id,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "failed to allocate immediate websocket prompt-cache invoke id; using connection id"
+                );
+                trace.invoke_id.clone()
+            }
+        };
+    }
     let request_contains_encrypted_content = initial_inspection
         .as_ref()
         .is_some_and(|inspection| inspection.contains_encrypted_content);
@@ -2130,14 +2208,13 @@ pub(crate) struct WsUsageTracker {
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<String>,
-    ordinal: u64,
     request_contains_encrypted_content: bool,
     attempt_id: Option<i64>,
     request_started_at: Option<String>,
     turn_started_at: Option<Instant>,
     turn_stream_started_at: Option<Instant>,
     turn_occurred_at: Option<String>,
-    turn_index: u64,
+    active_turn_invoke_id: Option<String>,
     response_id: Option<String>,
     service_tier: Option<String>,
     runtime_snapshot_published: bool,
@@ -2158,14 +2235,13 @@ impl WsUsageTracker {
             account,
             trace,
             prompt_cache_key,
-            ordinal: 0,
             request_contains_encrypted_content: false,
             attempt_id,
             request_started_at,
             turn_started_at: None,
             turn_stream_started_at: None,
             turn_occurred_at: None,
-            turn_index: 0,
+            active_turn_invoke_id: None,
             response_id: None,
             service_tier: None,
             runtime_snapshot_published: false,
@@ -2180,7 +2256,7 @@ impl WsUsageTracker {
         self.turn_started_at = Some(received_at);
         self.turn_stream_started_at = None;
         self.turn_occurred_at = Some(shanghai_now_string());
-        self.turn_index = self.ordinal.saturating_add(1);
+        self.active_turn_invoke_id = None;
         self.response_id = None;
         self.service_tier = None;
         self.runtime_snapshot_published = false;
@@ -2194,10 +2270,28 @@ impl WsUsageTracker {
     }
 
     fn turn_invoke_id(&self) -> String {
-        self.response_id
-            .as_deref()
-            .map(|response_id| format!("{}-{response_id}", self.trace.invoke_id))
-            .unwrap_or_else(|| format!("{}-turn-{}", self.trace.invoke_id, self.turn_index))
+        self.active_turn_invoke_id
+            .clone()
+            .unwrap_or_else(|| self.trace.invoke_id.clone())
+    }
+
+    async fn ensure_turn_invoke_id(&mut self, state: &AppState) {
+        if self.active_turn_invoke_id.is_some() {
+            return;
+        }
+        let invoke_id =
+            match allocate_proxy_invoke_id(state, self.prompt_cache_key.as_deref()).await {
+                Ok(invoke_id) => invoke_id,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        trace_invoke_id = %self.trace.invoke_id,
+                        "failed to allocate websocket turn invoke id; using connection id"
+                    );
+                    self.trace.invoke_id.clone()
+                }
+            };
+        self.active_turn_invoke_id = Some(invoke_id);
     }
 
     fn observe_first_token_text(&mut self, text: &str) -> bool {
@@ -2272,9 +2366,9 @@ impl WsUsageTracker {
         if !websocket_event_is_terminal(event.event_type.as_str()) {
             return;
         }
-        self.ordinal = self.ordinal.saturating_add(1);
         let response_id_override = self.response_id.clone();
         let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
+        let turn_invoke_id = self.turn_invoke_id();
         let stream_duration_ms = websocket_event_is_terminal(event.event_type.as_str())
             .then(|| self.stream_duration_ms())
             .flatten();
@@ -2283,14 +2377,15 @@ impl WsUsageTracker {
             &self.account,
             &self.trace,
             self.prompt_cache_key.as_deref(),
-            self.ordinal,
             event,
             self.request_contains_encrypted_content,
             text,
             self.attempt_id,
             self.request_started_at.as_deref(),
             self.turn_occurred_at.as_deref(),
-            invoke_id_override.as_deref(),
+            invoke_id_override
+                .as_deref()
+                .or(Some(turn_invoke_id.as_str())),
             response_id_override.as_deref(),
             self.first_token_ms,
             stream_duration_ms,
@@ -2384,13 +2479,11 @@ impl WsUsageTracker {
             "error": reason,
         })
         .to_string();
-        let ordinal = self.ordinal.saturating_add(1);
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
             &self.trace,
             self.prompt_cache_key.as_deref(),
-            ordinal,
             event,
             self.request_contains_encrypted_content,
             &raw_event,
@@ -2919,7 +3012,6 @@ pub(crate) async fn persist_ws_usage_event(
     account: &PoolResolvedAccount,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
-    ordinal: u64,
     event: WsUsageEvent,
     request_contains_encrypted_content: bool,
     raw_event: &str,
@@ -2955,11 +3047,9 @@ pub(crate) async fn persist_ws_usage_event(
         .map(str::to_string)
         .unwrap_or_else(shanghai_now_string);
     let response_id = event.response_id.as_deref().or(response_id_override);
-    let invoke_id = invoke_id_override.map(str::to_string).unwrap_or_else(|| {
-        response_id
-            .map(|id| format!("{}-{id}", trace.invoke_id))
-            .unwrap_or_else(|| format!("{}-turn-{ordinal}", trace.invoke_id))
-    });
+    let invoke_id = invoke_id_override
+        .map(str::to_string)
+        .unwrap_or_else(|| trace.invoke_id.clone());
     let payload = build_proxy_payload_summary(ProxyPayloadSummary {
         target: ProxyCaptureTarget::Responses,
         status: StatusCode::OK,
@@ -4485,7 +4575,7 @@ mod websocket_tests {
     #[test]
     fn websocket_ttft_resets_for_each_response_create_turn() {
         let trace = PoolUpstreamAttemptTraceContext {
-            invoke_id: "pool-ws-ttft".to_string(),
+            invoke_id: "ABCDEFABCD".to_string(),
             occurred_at: shanghai_now_string(),
             endpoint: "/v1/responses".to_string(),
             sticky_key: None,
@@ -4551,7 +4641,7 @@ mod websocket_tests {
     #[test]
     fn websocket_effective_prompt_cache_key_ignores_sticky_only_context() {
         let trace = PoolUpstreamAttemptTraceContext {
-            invoke_id: "pool-ws-sticky-only".to_string(),
+            invoke_id: "GHIJKLGHIJ".to_string(),
             occurred_at: shanghai_now_string(),
             endpoint: "/v1/realtime".to_string(),
             sticky_key: Some("sticky-only-key".to_string()),

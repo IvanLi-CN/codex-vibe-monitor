@@ -7482,7 +7482,7 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let invoke_id = "pool-via-4201";
+    let invoke_id = "ABCDEFABCD";
     let occurred_at = "2026-03-23 21:10:11";
     let running_record = build_admitted_proxy_capture_runtime_snapshot(
         invoke_id,
@@ -7495,7 +7495,7 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
     persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), running_record)
         .await
         .expect("store synthetic pool runtime snapshot");
-    let ordinary_invoke_id = "ordinary-4201";
+    let ordinary_invoke_id = "EFGHJKEFGH";
     let ordinary_record = build_admitted_proxy_capture_runtime_snapshot(
         ordinary_invoke_id,
         occurred_at,
@@ -7549,7 +7549,7 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         state.clone(),
         pending,
     ));
-    let request_guard = PoolViaRuntimeSnapshotCleanupGuard::new(state.clone(), 4201);
+    let request_guard = PoolViaRuntimeSnapshotCleanupGuard::new(state.clone(), invoke_id);
 
     complete_deferred_pool_early_phase_cleanup_guard(&mut attempt_guard);
 
