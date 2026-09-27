@@ -4583,6 +4583,24 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
         .execute(&pool)
         .await
         .expect("remove journal table to emulate an earlier schema");
+    sqlx::query("DROP TABLE retention_raw_reconciliation")
+        .execute(&pool)
+        .await
+        .expect("remove raw reconciliation table to emulate an earlier schema");
+    sqlx::query(
+        r#"
+        CREATE TABLE retention_raw_reconciliation (
+            raw_path TEXT PRIMARY KEY,
+            file_identity TEXT NOT NULL,
+            byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
+            quarantined_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy raw reconciliation table shape");
 
     ensure_schema(&pool)
         .await
@@ -4640,6 +4658,18 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
             "missing cursor migration column {column}"
         );
     }
+    let raw_reconciliation_columns: HashSet<String> =
+        sqlx::query("PRAGMA table_info('retention_raw_reconciliation')")
+            .fetch_all(&pool)
+            .await
+            .expect("inspect raw reconciliation columns")
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+    assert!(
+        raw_reconciliation_columns.contains("release_pending"),
+        "missing raw reconciliation release intent column"
+    );
     let raw_cursor = sqlx::query(
         r#"
         SELECT cursor,

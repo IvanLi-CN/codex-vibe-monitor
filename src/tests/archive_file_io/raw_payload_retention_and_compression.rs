@@ -1597,6 +1597,79 @@ async fn raw_orphan_sweep_persists_removal_evidence_before_ledger_cleanup() {
 }
 
 #[tokio::test]
+async fn raw_orphan_sweep_recovers_when_removal_evidence_write_fails() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-evidence-retry").await;
+    let raw_path = config
+        .proxy_raw_dir
+        .join("evidence-write-failure-orphan.bin");
+    let payload = b"evidence-write-failure-orphan";
+    fs::write(&raw_path, payload).expect("write raw orphan");
+    let mut initial_traversal = RetentionRawDirectoryTraversal::default();
+    let initial =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut initial_traversal)
+            .await
+            .expect("record raw quarantine");
+    assert_eq!(initial.quarantined, 1);
+    sqlx::query("UPDATE retention_raw_reconciliation SET quarantined_at = ?1 WHERE raw_path = ?2")
+        .bind(format_utc_iso(
+            Utc::now() - ChronoDuration::seconds(24 * 60 * 60 + 1),
+        ))
+        .bind(raw_path.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .expect("expire raw quarantine");
+
+    let fail_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut failed_traversal = RetentionRawDirectoryTraversal::default();
+    let failed = crate::maintenance::RETENTION_TEST_RAW_REMOVAL_EVIDENCE_FAILURE
+        .scope(
+            fail_once,
+            sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut failed_traversal),
+        )
+        .await
+        .expect("retain pending release after evidence failure");
+    assert_eq!(failed.removed, 1);
+    assert_eq!(failed.failures, 1);
+    assert!(!failed.complete);
+    assert!(!raw_path.exists());
+    let release_pending: i64 = sqlx::query_scalar(
+        "SELECT release_pending FROM retention_raw_reconciliation WHERE raw_path = ?1",
+    )
+    .bind(raw_path.to_string_lossy().as_ref())
+    .fetch_one(&pool)
+    .await
+    .expect("retain pending release marker");
+    assert_eq!(release_pending, 1);
+
+    let mut retry_traversal = RetentionRawDirectoryTraversal::default();
+    let recovered =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut retry_traversal)
+            .await
+            .expect("recover removal evidence from pending release");
+    assert_eq!(recovered.failures, 0);
+    let ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(raw_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("clear recovered raw quarantine ledger");
+    assert_eq!(ledger_rows, 0);
+    let (last_removed, last_removed_bytes): (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT last_nonzero_removal, last_nonzero_removal_bytes \
+         FROM retention_recovery_cursors WHERE scope = 'raw_payload_files'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered removal evidence");
+    assert_eq!(last_removed, Some(1));
+    assert_eq!(last_removed_bytes, Some(payload.len() as i64));
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn raw_orphan_sweep_continues_after_one_unlink_failure() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-sweep-item-failure").await;
@@ -1648,6 +1721,50 @@ async fn raw_orphan_sweep_continues_after_one_unlink_failure() {
     assert_eq!(remaining_rows, 1);
 
     pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_writer_fences_allow_concurrent_writers_and_block_sweep_lock() {
+    let temp_dir = make_temp_test_dir("retention-raw-writer-fence");
+    let raw_dir = temp_dir.join("proxy_raw_payloads");
+    fs::create_dir_all(&raw_dir).expect("create raw directory");
+    let raw_path = raw_dir.join("writer-fence.bin");
+
+    let first_fence = crate::maintenance::acquire_retention_raw_write_fence(&raw_path)
+        .expect("acquire first raw writer fence");
+    let second_fence = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        tokio::task::spawn_blocking({
+            let raw_path = raw_path.clone();
+            move || crate::maintenance::acquire_retention_raw_write_fence(&raw_path)
+        }),
+    )
+    .await
+    .expect("shared raw writer fences must not deadlock")
+    .expect("join second raw writer fence")
+    .expect("acquire second raw writer fence");
+
+    let exclusive_while_writers_active =
+        crate::maintenance::retention_try_archive_locks_scope(async {
+            crate::maintenance::retention_archive_file_lock(&raw_path)
+        })
+        .await;
+    assert!(
+        exclusive_while_writers_active.is_err(),
+        "sweep lock must defer while raw writers retain their fences"
+    );
+
+    drop(second_fence);
+    drop(first_fence);
+    let exclusive_after_writers_finish =
+        crate::maintenance::retention_try_archive_locks_scope(async {
+            crate::maintenance::retention_archive_file_lock(&raw_path)
+        })
+        .await;
+    assert!(exclusive_after_writers_finish.is_ok());
+
     cleanup_temp_test_dir(&temp_dir);
 }
 
