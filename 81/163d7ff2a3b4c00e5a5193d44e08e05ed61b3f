@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.75.2",
+  "base_stable_version": "2.75.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-27T19:49:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.75.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e7bc31de26cfbc6155c089fc5ad599698ed78d06",
+  "pr_number": 1041,
+  "pr_title": "fix(dashboard): keep invocation timeline during live refresh",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.75.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.75.2",
+  "target_sha": "81163d7ff2a3b4c00e5a5193d44e08e05ed61b3f",
+  "type_label": "type:patch"
+}
