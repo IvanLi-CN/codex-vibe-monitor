@@ -1950,8 +1950,8 @@ mod tests {
         .await
         .expect("insert fractional runtime account fallback fixture");
         for (invoke_id, occurred_at) in [
-            ("persisted-nonpositive-fallback", at(86_870)),
-            ("persisted-fractional-fallback", at(86_871)),
+            ("runtime-nonpositive-fallback", at(86_870)),
+            ("runtime-fractional-fallback", at(86_871)),
         ] {
             sqlx::query(
                 "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{bad-json', '', 'full')",
@@ -2250,8 +2250,8 @@ mod tests {
             assert_eq!(record.upstream_account_id, None);
         }
         for invoke_id in [
-            "persisted-nonpositive-fallback",
-            "persisted-fractional-fallback",
+            "runtime-nonpositive-fallback",
+            "runtime-fractional-fallback",
         ] {
             let record = unfiltered_response
                 .records
@@ -2279,8 +2279,8 @@ mod tests {
                 .records
                 .iter()
                 .all(|record| {
-                    record.invoke_id != "persisted-nonpositive-fallback"
-                        && record.invoke_id != "persisted-fractional-fallback"
+                    record.invoke_id != "runtime-nonpositive-fallback"
+                        && record.invoke_id != "runtime-fractional-fallback"
                 })
         );
         state.pool.close().await;
