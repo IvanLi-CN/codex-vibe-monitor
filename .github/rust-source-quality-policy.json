@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 47,
+    "inventory_entries": 46,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -95,12 +95,6 @@
       "role": "production",
       "line_budget": 4842,
       "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
-    },
-    {
-      "path": "src/proxy/payload_utils.rs",
-      "role": "production",
-      "line_budget": 2936,
-      "next_module_workstream": "Split proxy payload normalization, classification, backfill, and CORS helpers."
     },
     {
       "path": "src/proxy/request_entry.rs",
@@ -477,10 +471,10 @@
       "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/proxy/payload_utils.rs",
+      "path": "src/proxy/payload_utils/backfill_metadata.rs",
       "kind": "allow",
       "declaration": "#[allow(dead_code)]",
-      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils.rs; remove it when the listed module workstream makes the item reachable."
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils/backfill_metadata.rs; remove it when the listed module workstream makes the item reachable."
     },
     {
       "path": "src/proxy/payload_utils.rs",
