@@ -3,6 +3,7 @@ import type { InvocationTimelineRecord, InvocationTimelineResponse } from "../..
 import {
   assignInvocationTimelineLanes,
   getInvocationTimelineLaneCount,
+  hasInvocationTimelineRefreshError,
   resolveInvocationTimelineLayout,
   shouldAdvanceInvocationTimelineBars,
   shouldShowTimelineUnavailable,
@@ -144,6 +145,14 @@ describe("shouldAdvanceInvocationTimelineBars", () => {
     expect(shouldAdvanceInvocationTimelineBars(false, false, false)).toBe(false);
     expect(shouldAdvanceInvocationTimelineBars(false, true, true)).toBe(false);
     expect(shouldAdvanceInvocationTimelineBars(false, true, false, true)).toBe(false);
+  });
+});
+
+describe("hasInvocationTimelineRefreshError", () => {
+  it("surfaces a closed-day refresh failure while retaining the last timeline snapshot", () => {
+    expect(hasInvocationTimelineRefreshError("yesterday refresh failed", null, false)).toBe(true);
+    expect(hasInvocationTimelineRefreshError(null, null, false)).toBe(false);
+    expect(hasInvocationTimelineRefreshError("fixture error", null, true)).toBe(false);
   });
 });
 

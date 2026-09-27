@@ -49,6 +49,56 @@ static INVOCATION_TIMELINE_SNAPSHOTS: once_cell::sync::Lazy<
 static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
 
+struct TimelineSnapshotCleanupGuard {
+    token: String,
+    pool: Pool<Sqlite>,
+    armed: bool,
+}
+
+impl TimelineSnapshotCleanupGuard {
+    fn new(pool: &Pool<Sqlite>, token: String) -> Self {
+        Self {
+            token,
+            pool: pool.clone(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    async fn cleanup_now(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        remove_timeline_snapshot_reservation(&self.token);
+        if let Err(error) = delete_timeline_snapshot_rows(&self.pool, &self.token).await {
+            tracing::warn!(?error, snapshot_token = %self.token, "failed to clean up invocation timeline snapshot");
+        }
+    }
+}
+
+impl Drop for TimelineSnapshotCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        remove_timeline_snapshot_reservation(&self.token);
+        let pool = self.pool.clone();
+        let token = self.token.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(error) = delete_timeline_snapshot_rows(&pool, &token).await {
+                    tracing::warn!(?error, snapshot_token = %token, "failed to clean up canceled invocation timeline snapshot");
+                }
+            });
+        }
+    }
+}
+
 fn encode_timeline_cursor(cursor: &TimelineCursor) -> Result<String, ApiError> {
     let payload = serde_json::to_vec(cursor)
         .map_err(|error| ApiError::from(anyhow!("encode timeline cursor: {error}")))?;
@@ -244,6 +294,7 @@ struct TimelineAccountFallbackRow {
     invoke_id: String,
     occurred_at: String,
     upstream_account_id: Option<i64>,
+    payload_upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
 }
 
@@ -392,6 +443,26 @@ async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<(), ApiEr
         "CREATE INDEX IF NOT EXISTS {INVOCATION_TIMELINE_SNAPSHOT_TABLE}_order \
          ON {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (snapshot_token, occurred_at, invoke_id)"
     ))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn remove_timeline_snapshot_reservation(token: &str) {
+    INVOCATION_TIMELINE_SNAPSHOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(token);
+}
+
+async fn delete_timeline_snapshot_rows(
+    pool: &Pool<Sqlite>,
+    token: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&format!(
+        "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+    ))
+    .bind(token)
     .execute(pool)
     .await?;
     Ok(())
@@ -818,6 +889,7 @@ pub(crate) async fn fetch_timeline(
             include_live,
             source_scope,
         )?;
+        let mut cleanup_guard = TimelineSnapshotCleanupGuard::new(&state.pool, as_of.clone());
         let materialize_result = materialize_timeline_snapshot(
             state.as_ref(),
             &as_of,
@@ -835,28 +907,18 @@ pub(crate) async fn fetch_timeline(
         )
         .await;
         if let Err(error) = materialize_result {
-            INVOCATION_TIMELINE_SNAPSHOTS
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&as_of);
-            let _ = sqlx::query(&format!(
-                "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-            ))
-            .bind(&as_of)
-            .execute(&state.pool)
-            .await;
+            cleanup_guard.cleanup_now().await;
             return Err(error);
         }
-        (
-            as_of.clone(),
-            load_timeline_snapshot(
-                &as_of,
-                &canonical_range_start,
-                &canonical_range_end,
-                params.upstream_account_id,
-                include_live,
-            )?,
-        )
+        let snapshot = load_timeline_snapshot(
+            &as_of,
+            &canonical_range_start,
+            &canonical_range_end,
+            params.upstream_account_id,
+            include_live,
+        )?;
+        cleanup_guard.disarm();
+        (as_of.clone(), snapshot)
     };
     ensure_timeline_snapshot_table(&state.pool).await?;
     let mut page_query = QueryBuilder::<Sqlite>::new(&format!(
@@ -993,6 +1055,7 @@ async fn hydrate_timeline_accounts_on_connection(
         {
             invalid_account_keys.insert((record.invoke_id.clone(), record.occurred_at.clone()));
             record.upstream_account_id = None;
+            record.upstream_account_name = None;
         }
     }
     let keys = records
@@ -1013,6 +1076,8 @@ async fn hydrate_timeline_accounts_on_connection(
         query
             .push(resolved_id.as_str())
             .push(" AS upstream_account_id, ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" AS payload_upstream_account_id, ")
             .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
             .push(" AS upstream_account_name FROM codex_invocations WHERE (");
         for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
@@ -1050,7 +1115,12 @@ async fn hydrate_timeline_accounts_on_connection(
     for record in records {
         if let Some(row) = fallbacks.get(&(record.invoke_id.clone(), record.occurred_at.clone())) {
             record.upstream_account_id = row.upstream_account_id;
-            record.upstream_account_name = row.upstream_account_name.clone();
+            record.upstream_account_name = row
+                .payload_upstream_account_id
+                .filter(|account_id| {
+                    *account_id > 0 && *account_id < TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE
+                })
+                .and(row.upstream_account_name.clone());
         }
         if invalid_account_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
             && record.upstream_account_id.is_none()
@@ -1096,6 +1166,8 @@ fn timeline_upstream_account_id_sql(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use sqlx::Connection;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 
     fn at(seconds: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(seconds, 0)
@@ -1215,6 +1287,207 @@ mod tests {
         )
         .expect("oldest unexpired snapshot remains available");
         assert_eq!(snapshot.snapshot_id, 1);
+    }
+
+    #[tokio::test]
+    async fn dropping_snapshot_cleanup_guard_releases_an_in_progress_reservation() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        ensure_timeline_snapshot_table(&state.pool)
+            .await
+            .expect("create snapshot table");
+        let token = create_timeline_snapshot(
+            1,
+            1,
+            "cancellation-start".to_string(),
+            "cancellation-end".to_string(),
+            None,
+            true,
+            Vec::new(),
+        )
+        .expect("reserve snapshot");
+        sqlx::query(&format!(
+            "INSERT INTO {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) VALUES (?1, 'canceled', '2026-01-01T00:00:00.000Z', 1, 0, 0, '{{}}')"
+        ))
+        .bind(&token)
+        .execute(&state.pool)
+        .await
+        .expect("insert canceled snapshot row");
+
+        let guard_pool = state.pool.clone();
+        let guard_token = token.clone();
+        let task = tokio::spawn(async move {
+            let _guard = TimelineSnapshotCleanupGuard::new(&guard_pool, guard_token);
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        task.abort();
+        task.await
+            .expect_err("pending snapshot task should be aborted");
+
+        assert!(
+            load_timeline_snapshot(&token, "cancellation-start", "cancellation-end", None, true,)
+                .is_err()
+        );
+        for _ in 0..20 {
+            let row_count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+            ))
+            .bind(&token)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count canceled snapshot rows");
+            if row_count == 0 {
+                state.pool.close().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("canceled snapshot rows were not cleaned up");
+    }
+
+    #[tokio::test]
+    async fn snapshot_publication_executes_multiple_insert_batches() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_start = at(20_000);
+        let range_end = at(21_000);
+        for index in 0..=100 {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{\"upstreamAccountId\":42}', '', 'full')",
+            )
+            .bind(format!("batched-{index:03}"))
+            .bind(db_occurred_at_lower_bound(range_start + chrono::Duration::seconds(index)))
+            .execute(&state.pool)
+            .await
+            .expect("insert batched publication fixture");
+        }
+
+        let Json(response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(range_start),
+                to: format_utc_iso(range_end),
+                upstream_account_id: Some(42),
+                include_live: Some(false),
+                limit: Some(200),
+                cursor: None,
+                as_of: None,
+            }),
+        )
+        .await
+        .expect("fetch batched publication fixture");
+        assert!(!response.has_more);
+        assert_eq!(response.total, 101);
+        assert_eq!(response.records.len(), 101);
+        assert_eq!(
+            response
+                .records
+                .first()
+                .map(|record| record.invoke_id.as_str()),
+            Some("batched-000")
+        );
+        assert_eq!(
+            response
+                .records
+                .last()
+                .map(|record| record.invoke_id.as_str()),
+            Some("batched-100")
+        );
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_publication_waits_for_file_backed_writer_with_busy_timeout() {
+        let db_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-timeline-contention-{}-{}.sqlite",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        let db_url = format!("sqlite://{}", db_path.display());
+        let options = db_url
+            .parse::<SqliteConnectOptions>()
+            .expect("parse sqlite URL")
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(1));
+        let schema_pool = sqlx::SqlitePool::connect_with(options.clone())
+            .await
+            .expect("connect schema pool");
+        ensure_timeline_snapshot_table(&schema_pool)
+            .await
+            .expect("create snapshot table");
+        schema_pool.close().await;
+
+        let mut lock_connection = SqliteConnection::connect_with(&options)
+            .await
+            .expect("connect lock database");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut lock_connection)
+            .await
+            .expect("acquire writer lock");
+
+        let rows = (0..101)
+            .map(|index| TimelineSnapshotInsertRow {
+                invoke_id: format!("contention-{index:03}"),
+                occurred_at: format!("2026-01-01T00:00:{index:02}.000Z"),
+                record_id: index,
+                is_runtime: 0,
+                is_in_flight: 0,
+                payload: "{}".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let publish_options = options.clone();
+        let publish_task = tokio::spawn(async move {
+            let mut connection = SqliteConnection::connect_with(&publish_options)
+                .await
+                .expect("connect publishing database");
+            let mut transaction = connection
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .expect("wait for writer lock");
+            insert_timeline_snapshot_records_on_connection(
+                &mut transaction,
+                "contention-token",
+                &rows,
+            )
+            .await
+            .expect("publish contention rows");
+            transaction.commit().await.expect("commit published rows");
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        sqlx::query("COMMIT")
+            .execute(&mut lock_connection)
+            .await
+            .expect("release writer lock");
+        publish_task.await.expect("publishing task should succeed");
+
+        let mut verify_connection = SqliteConnection::connect_with(&options)
+            .await
+            .expect("connect verification database");
+        let row_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = 'contention-token'"
+        ))
+        .fetch_one(&mut verify_connection)
+        .await
+        .expect("count published contention rows");
+        assert_eq!(row_count, 101);
+        verify_connection
+            .close()
+            .await
+            .expect("close verification connection");
+        lock_connection
+            .close()
+            .await
+            .expect("close lock connection");
+        for suffix in ["", "-shm", "-wal"] {
+            let path = std::path::PathBuf::from(format!("{}{}", db_path.display(), suffix));
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[tokio::test]
@@ -1372,7 +1645,7 @@ mod tests {
             "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES ('overflow', ?1, 'proxy', 'success', 100, ?2, '', 'full')",
         )
         .bind(&occurred_at)
-        .bind(r#"{"upstreamAccountId":"9223372036854775808"}"#)
+        .bind(r#"{"upstreamAccountId":"9223372036854775808","upstreamAccountName":"unsafe"}"#)
         .execute(&state.pool)
         .await
         .expect("insert overflow timeline fixture");
@@ -1519,6 +1792,7 @@ mod tests {
         assert_eq!(response.total, 1);
         assert_eq!(response.records[0].invoke_id, "overflow");
         assert_eq!(response.records[0].upstream_account_id, Some(42));
+        assert_eq!(response.records[0].upstream_account_name, None);
         let Json(integer_response) = fetch_timeline(
             State(state.clone()),
             Query(InvocationTimelineQuery {

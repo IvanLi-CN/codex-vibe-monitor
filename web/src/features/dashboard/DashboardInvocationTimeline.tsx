@@ -56,6 +56,14 @@ export function shouldAdvanceInvocationTimelineBars(
   return !closedNaturalDay && liveConnected && !hasTimelineDataOverride && !isStale;
 }
 
+export function hasInvocationTimelineRefreshError(
+  error: string | null | undefined,
+  timelineError: string | null | undefined,
+  hasTimelineDataOverride: boolean,
+) {
+  return !hasTimelineDataOverride && Boolean(error || timelineError);
+}
+
 function TimelineSurfaceState({
   message,
   loading = false,
@@ -298,6 +306,13 @@ export function DashboardInvocationTimeline({
 
   const renderedData = timelineDataOverride ?? timeline.data;
   const renderedError = timelineDataOverride ? null : timeline.error;
+  const hasTimelineRefreshError = hasInvocationTimelineRefreshError(
+    error,
+    renderedError,
+    timelineDataOverride != null,
+  );
+  const timelineIsStale = timeline.isStale || hasTimelineRefreshError;
+  const timelineIsFrozen = timeline.isFrozen || hasTimelineRefreshError;
   useEffect(() => {
     if (closedNaturalDay || !renderedData || !response) return;
     recordTodayChartDataCommit("today");
@@ -310,7 +325,7 @@ export function DashboardInvocationTimeline({
     closedNaturalDay,
     liveConnected,
     timelineDataOverride != null,
-    timeline.isStale,
+    timelineIsStale,
   );
   const lanes = useMemo(
     () =>
@@ -377,7 +392,7 @@ export function DashboardInvocationTimeline({
     ? null
     : !response && !loading
       ? t("dashboard.activityOverview.timelineUnavailable")
-      : error || renderedError
+      : hasTimelineRefreshError
         ? t("dashboard.activityOverview.timelineUnavailable")
         : !closedNaturalDay && !liveRefreshAllowed
           ? t("dashboard.activityOverview.timelineOffline")
@@ -483,10 +498,10 @@ export function DashboardInvocationTimeline({
             {timeline.isRefreshing ? (
               <span className="text-info">{t("dashboard.activityOverview.timelineLive")}</span>
             ) : null}
-            {timeline.isStale ? (
+            {timelineIsStale ? (
               <span className="text-warning">{t("dashboard.activityOverview.timelineStale")}</span>
             ) : null}
-            {timeline.isFrozen ? (
+            {timelineIsFrozen ? (
               <span className="text-warning">
                 {t("dashboard.activityOverview.timelineOffline")}
               </span>
