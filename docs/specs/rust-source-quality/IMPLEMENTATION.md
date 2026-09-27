@@ -284,9 +284,9 @@ all-target Cargo checking, all-target Clippy, and `git diff --check`.
 ## Inventory Contract
 
 The policy has 23 `production` entries above the 2,500-line destination target
-and 19 `test_helper` entries above the 3,000-line destination target. Each
+and 18 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 42 paths; a long path absent from the inventory is
+The checker only reads those 41 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
