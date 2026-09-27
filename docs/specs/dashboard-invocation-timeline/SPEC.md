@@ -79,9 +79,9 @@
 
 ### VER-DIT-003
 
-- Method: responsive Storybook and dashboard render evidence.
+- Method: responsive Storybook evidence and production-build dashboard E2E rendering checks.
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
-- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the new timeline remains the only chart in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
+- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads the timeline without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
 
 ## Related ADRs
 
