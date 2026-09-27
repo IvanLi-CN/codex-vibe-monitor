@@ -886,6 +886,8 @@ describe("fetchInvocationTimeline", () => {
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const response = await fetchInvocationTimeline({
+      naturalDayStart: "2026-03-26T00:00:00Z",
+      naturalDayEnd: "2026-03-27T00:00:00Z",
       from: "2026-03-26T12:00:00Z",
       to: "2026-03-26T12:30:00Z",
       upstreamAccountId: 42,
@@ -898,6 +900,9 @@ describe("fetchInvocationTimeline", () => {
       upstreamAccountId: 42,
     });
     expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("upstreamAccountId=42");
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain(
+      "naturalDayStart=2026-03-26T00%3A00%3A00Z",
+    );
   });
 
   it("passes the live overlay contract explicitly", async () => {

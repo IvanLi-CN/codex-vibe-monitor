@@ -12,7 +12,11 @@ use std::time::{Duration, Instant};
 
 const INVOCATION_TIMELINE_PAGE_SIZE: i64 = 500;
 const INVOCATION_TIMELINE_MAX_PAGE_SIZE: i64 = 2_000;
-const INVOCATION_TIMELINE_MAX_DURATION_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1_000.0;
+// The duration guard protects malformed records; it is deliberately separate from
+// the selected natural-day query boundary below.
+const INVOCATION_TIMELINE_MAX_VALID_DURATION_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1_000.0;
+const INVOCATION_TIMELINE_MAX_QUERY_WINDOW_MS: i64 = 24 * 60 * 60 * 1_000;
+const INVOCATION_TIMELINE_MAX_CROSS_DAY_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 256;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
@@ -35,6 +39,8 @@ struct TimelineSnapshot {
     snapshot_id: i64,
     attempt_snapshot_id: i64,
     revision: u64,
+    natural_day_start: String,
+    natural_day_end: String,
     range_start: String,
     range_end: String,
     upstream_account_id: Option<i64>,
@@ -205,7 +211,7 @@ fn append_timeline_db_predicates(
         .push(" AND (occurred_at >= ")
         .push_bind(start_bound.to_string())
         .push(" OR (t_total_ms IS NOT NULL AND t_total_ms >= 0 AND t_total_ms <= ")
-        .push_bind(INVOCATION_TIMELINE_MAX_DURATION_MS)
+        .push_bind(INVOCATION_TIMELINE_MAX_VALID_DURATION_MS)
         .push(" AND julianday(occurred_at) + t_total_ms / 86400000.0 >= julianday(")
         .push_bind(start_bound.to_string())
         .push("))");
@@ -239,6 +245,8 @@ fn create_timeline_snapshot(
     create_timeline_snapshot_for_scope(
         snapshot_id,
         attempt_snapshot_id,
+        range_start.clone(),
+        range_end.clone(),
         range_start,
         range_end,
         upstream_account_id,
@@ -250,6 +258,8 @@ fn create_timeline_snapshot(
 fn create_timeline_snapshot_for_scope(
     snapshot_id: i64,
     attempt_snapshot_id: i64,
+    natural_day_start: String,
+    natural_day_end: String,
     range_start: String,
     range_end: String,
     upstream_account_id: Option<i64>,
@@ -273,6 +283,8 @@ fn create_timeline_snapshot_for_scope(
             snapshot_id,
             attempt_snapshot_id,
             revision: current_dashboard_activity_live_revision(),
+            natural_day_start,
+            natural_day_end,
             range_start,
             range_end,
             upstream_account_id,
@@ -286,8 +298,10 @@ fn create_timeline_snapshot_for_scope(
     Ok(token)
 }
 
-fn load_timeline_snapshot(
+fn load_timeline_snapshot_with_scope(
     token: &str,
+    natural_day_start: &str,
+    natural_day_end: &str,
     range_start: &str,
     range_end: &str,
     upstream_account_id: Option<i64>,
@@ -308,12 +322,34 @@ fn load_timeline_snapshot(
             "invocation timeline snapshot does not match query"
         )));
     }
-    if snapshot.range_start != range_start || snapshot.range_end != range_end {
+    if snapshot.natural_day_start != natural_day_start
+        || snapshot.natural_day_end != natural_day_end
+        || snapshot.range_start != range_start
+        || snapshot.range_end != range_end
+    {
         return Err(ApiError::bad_request(anyhow!(
             "invocation timeline snapshot does not match window"
         )));
     }
     Ok(snapshot)
+}
+
+fn load_timeline_snapshot(
+    token: &str,
+    range_start: &str,
+    range_end: &str,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
+) -> Result<TimelineSnapshot, ApiError> {
+    load_timeline_snapshot_with_scope(
+        token,
+        range_start,
+        range_end,
+        range_start,
+        range_end,
+        upstream_account_id,
+        include_live,
+    )
 }
 
 async fn resolve_timeline_snapshot_watermarks(
@@ -353,9 +389,13 @@ struct TimelineAccountFallbackRow {
     upstream_account_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationTimelineQuery {
+    #[serde(default)]
+    pub(crate) natural_day_start: Option<String>,
+    #[serde(default)]
+    pub(crate) natural_day_end: Option<String>,
     pub(crate) from: String,
     pub(crate) to: String,
     pub(crate) upstream_account_id: Option<i64>,
@@ -869,8 +909,47 @@ pub(crate) async fn fetch_timeline(
     };
     let range_start = parse_bound(&params.from, "from")?;
     let range_end = parse_bound(&params.to, "to")?;
+    // Older internal callers may omit the scope fields. Treat that as the
+    // requested viewport itself so the endpoint remains bounded rather than
+    // reopening the former unbounded lookback behavior.
+    let natural_day_start = match params.natural_day_start.as_deref() {
+        Some(value) => parse_bound(value, "naturalDayStart")?,
+        None => range_start,
+    };
+    let natural_day_end = match params.natural_day_end.as_deref() {
+        Some(value) => parse_bound(value, "naturalDayEnd")?,
+        None => range_end,
+    };
+    if natural_day_start >= natural_day_end {
+        return Err(ApiError::bad_request(anyhow!(
+            "naturalDayStart must be before naturalDayEnd"
+        )));
+    }
+    if natural_day_end
+        .signed_duration_since(natural_day_start)
+        .num_milliseconds()
+        > INVOCATION_TIMELINE_MAX_QUERY_WINDOW_MS
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "natural day range must not exceed 24 hours"
+        )));
+    }
     if range_start >= range_end {
         return Err(ApiError::bad_request(anyhow!("from must be before to")));
+    }
+    if range_start < natural_day_start || range_end > natural_day_end {
+        return Err(ApiError::bad_request(anyhow!(
+            "timeline window must stay within the natural day"
+        )));
+    }
+    if range_end
+        .signed_duration_since(range_start)
+        .num_milliseconds()
+        > INVOCATION_TIMELINE_MAX_QUERY_WINDOW_MS
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "timeline window must not exceed 24 hours"
+        )));
     }
     if params
         .upstream_account_id
@@ -880,6 +959,8 @@ pub(crate) async fn fetch_timeline(
     }
 
     let include_live = params.include_live.unwrap_or(true);
+    let canonical_natural_day_start = format_utc_iso(natural_day_start);
+    let canonical_natural_day_end = format_utc_iso(natural_day_end);
     let canonical_range_start = format_utc_iso(range_start);
     let canonical_range_end = format_utc_iso(range_end);
     let page_size = params
@@ -904,8 +985,8 @@ pub(crate) async fn fetch_timeline(
         ..ListQuery::default()
     })?;
     let start_bound = crate::db_occurred_at_lower_bound(range_start);
-    let overlap_start =
-        range_start - chrono::Duration::milliseconds(INVOCATION_TIMELINE_MAX_DURATION_MS as i64);
+    let overlap_start = natural_day_start
+        - chrono::Duration::milliseconds(INVOCATION_TIMELINE_MAX_CROSS_DAY_LOOKBACK_MS);
     let overlap_start_bound = crate::db_occurred_at_lower_bound(overlap_start);
     let end_bound = crate::db_occurred_at_upper_bound(range_end);
     let mut cleanup_guard: Option<TimelineSnapshotCleanupGuard> = None;
@@ -919,8 +1000,10 @@ pub(crate) async fn fetch_timeline(
         }
         (
             as_of.to_string(),
-            load_timeline_snapshot(
+            load_timeline_snapshot_with_scope(
                 as_of,
+                &canonical_natural_day_start,
+                &canonical_natural_day_end,
                 &canonical_range_start,
                 &canonical_range_end,
                 params.upstream_account_id,
@@ -941,6 +1024,8 @@ pub(crate) async fn fetch_timeline(
         let as_of = create_timeline_snapshot_for_scope(
             snapshot_id,
             attempt_snapshot_id,
+            canonical_natural_day_start.clone(),
+            canonical_natural_day_end.clone(),
             canonical_range_start.clone(),
             canonical_range_end.clone(),
             params.upstream_account_id,
@@ -969,8 +1054,10 @@ pub(crate) async fn fetch_timeline(
             snapshot_cleanup_guard.cleanup_now().await;
             return Err(error);
         }
-        let snapshot = load_timeline_snapshot(
+        let snapshot = load_timeline_snapshot_with_scope(
             &as_of,
+            &canonical_natural_day_start,
+            &canonical_natural_day_end,
             &canonical_range_start,
             &canonical_range_end,
             params.upstream_account_id,
@@ -1077,7 +1164,7 @@ fn timeline_record_overlaps(
 
 fn valid_timeline_duration_ms(value: Option<f64>) -> Option<f64> {
     value.filter(|value| {
-        value.is_finite() && *value >= 0.0 && *value <= INVOCATION_TIMELINE_MAX_DURATION_MS
+        value.is_finite() && *value >= 0.0 && *value <= INVOCATION_TIMELINE_MAX_VALID_DURATION_MS
     })
 }
 
@@ -1320,7 +1407,7 @@ mod tests {
         ));
         assert!(timeline_record_overlaps(
             at(150),
-            Some(INVOCATION_TIMELINE_MAX_DURATION_MS + 1.0),
+            Some(INVOCATION_TIMELINE_MAX_VALID_DURATION_MS + 1.0),
             range_start,
             range_end
         ));
@@ -1483,6 +1570,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         ));
         pause.entered.notified().await;
@@ -1554,6 +1642,7 @@ mod tests {
                 limit: Some(200),
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -1784,6 +1873,8 @@ mod tests {
         let Json(response) = fetch_timeline(
             State(state.clone()),
             Query(InvocationTimelineQuery {
+                natural_day_start: Some(format_utc_iso(range_start)),
+                natural_day_end: Some(format_utc_iso(at(172_800))),
                 from: format_utc_iso(range_start),
                 to: format_utc_iso(range_end),
                 upstream_account_id: Some(42),
@@ -1807,6 +1898,8 @@ mod tests {
         let Json(closed_response) = fetch_timeline(
             State(state.clone()),
             Query(InvocationTimelineQuery {
+                natural_day_start: Some(format_utc_iso(range_start)),
+                natural_day_end: Some(format_utc_iso(at(172_800))),
                 from: format_utc_iso(range_start),
                 to: format_utc_iso(range_end),
                 upstream_account_id: Some(42),
@@ -1821,6 +1914,40 @@ mod tests {
         assert_eq!(closed_response.total, 1);
         assert_eq!(closed_response.records.len(), 1);
         assert_eq!(closed_response.records[0].invoke_id, "cross");
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn endpoint_rejects_ranges_outside_one_natural_day() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let too_wide = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                natural_day_start: Some(format_utc_iso(at(0))),
+                natural_day_end: Some(format_utc_iso(at(86_401))),
+                from: format_utc_iso(at(0)),
+                to: format_utc_iso(at(60)),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert!(too_wide.is_err());
+
+        let viewport_outside = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                natural_day_start: Some(format_utc_iso(at(0))),
+                natural_day_end: Some(format_utc_iso(at(86_400))),
+                from: format_utc_iso(at(86_399)),
+                to: format_utc_iso(at(86_401)),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert!(viewport_outside.is_err());
         state.pool.close().await;
     }
 
@@ -2049,6 +2176,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2067,6 +2195,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2096,6 +2225,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2113,6 +2243,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2130,6 +2261,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2147,6 +2279,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2164,6 +2297,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2184,6 +2318,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2207,6 +2342,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2234,6 +2370,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2270,6 +2407,7 @@ mod tests {
                 limit: None,
                 cursor: None,
                 as_of: None,
+                ..Default::default()
             }),
         )
         .await
@@ -2316,6 +2454,7 @@ mod tests {
             limit: Some(2),
             cursor: None,
             as_of: None,
+            ..Default::default()
         };
         let Json(first) = fetch_timeline(State(state.clone()), Query(base_query()))
             .await
@@ -2383,6 +2522,7 @@ mod tests {
             limit: Some(2),
             cursor: None,
             as_of: None,
+            ..Default::default()
         };
         let Json(live_first) = fetch_timeline(State(state.clone()), Query(live_query()))
             .await
@@ -2471,6 +2611,7 @@ mod tests {
             limit: Some(1),
             cursor: None,
             as_of: None,
+            ..Default::default()
         };
         let Json(first) = fetch_timeline(State(state.clone()), Query(query()))
             .await

@@ -75,6 +75,8 @@ function preferTimelineRecord(
 }
 
 async function fetchInvocationTimelineSnapshot(options: {
+  naturalDayStart: string;
+  naturalDayEnd: string;
   from: string;
   to: string;
   upstreamAccountId?: number;
@@ -254,6 +256,8 @@ export function useInvocationTimeline({
     const request = (async () => {
       try {
         const next = await fetchInvocationTimelineSnapshot({
+          naturalDayStart: new Date(bounds?.startMs ?? viewportWindow.startMs).toISOString(),
+          naturalDayEnd: new Date(bounds?.endMs ?? viewportWindow.endMs).toISOString(),
           from: new Date(viewportWindow.startMs).toISOString(),
           to: new Date(viewportWindow.endMs).toISOString(),
           upstreamAccountId,
@@ -294,7 +298,7 @@ export function useInvocationTimeline({
     })();
     inFlightRefreshRef.current = request;
     return request;
-  }, [closedNaturalDay, enabled, upstreamAccountId, viewportWindow]);
+  }, [bounds, closedNaturalDay, enabled, upstreamAccountId, viewportWindow]);
 
   refreshRef.current = refresh;
 
@@ -335,7 +339,7 @@ export function useInvocationTimeline({
     if (!enabled) return;
     if (committedBoundsContextKey !== boundsContextKey) return;
     if (suppressRefreshRef.current) {
-      if (!closedNaturalDay && !liveRefreshAllowed) return;
+      if (!closedNaturalDay && !liveRefreshAllowed && hasDataRef.current) return;
       suppressRefreshRef.current = false;
       if (deferredRefreshRef.current) {
         deferredRefreshRef.current = false;
@@ -343,7 +347,7 @@ export function useInvocationTimeline({
       }
       return;
     }
-    if (!closedNaturalDay && !liveRefreshAllowed) return;
+    if (!closedNaturalDay && !liveRefreshAllowed && hasDataRef.current) return;
     void refresh();
   }, [
     boundsContextKey,
