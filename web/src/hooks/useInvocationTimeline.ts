@@ -151,11 +151,15 @@ export function useInvocationTimeline({
   const boundsContextKey = bounds
     ? `${bounds.startMs}:${closedNaturalDay}:${upstreamAccountId ?? "all"}`
     : "empty";
-  const [viewportWindow, setViewportWindow] = useState<InvocationTimelineWindow | null>(() =>
+  const [requestedWindow, setRequestedWindow] = useState<InvocationTimelineWindow | null>(() =>
     resolveInitialWindow(response, closedNaturalDay),
   );
-  const [data, setData] = useState<InvocationTimelineResponse | null>(null);
+  const [committedSnapshot, setCommittedSnapshot] = useState<{
+    data: InvocationTimelineResponse;
+    window: InvocationTimelineWindow;
+  } | null>(null);
   const [isLoading, setIsLoading] = useState(enabled);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -166,11 +170,12 @@ export function useInvocationTimeline({
   const liveRefreshAllowedRef = useRef(liveRefreshAllowed);
   liveRefreshAllowedRef.current = liveRefreshAllowed;
   const hasDataRef = useRef(false);
-  const suppressRefreshRef = useRef(false);
-  const deferredRefreshRef = useRef(false);
+  const autoWindowAdvanceRef = useRef(false);
   const [committedBoundsContextKey, setCommittedBoundsContextKey] = useState(boundsContextKey);
   const previousBoundsContextKey = useRef(boundsContextKey);
   const previousBounds = useRef<InvocationTimelineWindow | null>(bounds);
+  const requestedWindowRef = useRef(requestedWindow);
+  requestedWindowRef.current = requestedWindow;
 
   useEffect(() => {
     if (!bounds) {
@@ -186,11 +191,13 @@ export function useInvocationTimeline({
         globalThis.clearTimeout(pendingRefreshTimerRef.current);
         pendingRefreshTimerRef.current = null;
       }
-      setViewportWindow(null);
-      setData(null);
+      setRequestedWindow(null);
+      setCommittedSnapshot(null);
+      autoWindowAdvanceRef.current = false;
       hasDataRef.current = false;
       setError(null);
       setIsLoading(false);
+      setIsRefreshing(false);
       return;
     }
     const contextChanged = previousBoundsContextKey.current !== boundsContextKey;
@@ -207,66 +214,93 @@ export function useInvocationTimeline({
         pendingRefreshTimerRef.current = null;
       }
       previousBounds.current = bounds;
-      setViewportWindow(resolveInitialWindow(response, closedNaturalDay));
-      setData(null);
+      const initialWindow = resolveInitialWindow(response, closedNaturalDay);
+      requestedWindowRef.current = initialWindow;
+      setRequestedWindow(initialWindow);
+      setCommittedSnapshot(null);
+      autoWindowAdvanceRef.current = false;
       hasDataRef.current = false;
       setError(null);
       setIsLoading(enabled);
+      setIsRefreshing(false);
       return;
     }
     const priorBounds = previousBounds.current;
     previousBounds.current = bounds;
-    setViewportWindow((current) => {
-      if (!current) return resolveInitialWindow(response, closedNaturalDay);
-      const liveDelta = priorBounds ? bounds.endMs - priorBounds.endMs : 0;
-      const followsLiveEnd =
-        liveDelta > 0 && priorBounds != null && Math.abs(current.endMs - priorBounds.endMs) <= 1;
-      const next = clampWindow(
-        followsLiveEnd
-          ? { startMs: current.startMs + liveDelta, endMs: current.endMs + liveDelta }
-          : current,
-        bounds,
-      );
-      if (next.startMs === current.startMs && next.endMs === current.endMs) return current;
-      suppressRefreshRef.current = true;
-      deferredRefreshRef.current = !liveRefreshAllowed;
-      return next;
-    });
-  }, [bounds, boundsContextKey, closedNaturalDay, enabled, liveRefreshAllowed, response]);
+    const current = requestedWindow;
+    if (!current) {
+      setRequestedWindow(resolveInitialWindow(response, closedNaturalDay));
+      return;
+    }
+    const liveDelta = priorBounds ? bounds.endMs - priorBounds.endMs : 0;
+    const followsLiveEnd =
+      liveDelta > 0 && priorBounds != null && Math.abs(current.endMs - priorBounds.endMs) <= 1;
+    const next = clampWindow(
+      followsLiveEnd
+        ? { startMs: current.startMs + liveDelta, endMs: current.endMs + liveDelta }
+        : current,
+      bounds,
+    );
+    if (next.startMs === current.startMs && next.endMs === current.endMs) return;
+    requestedWindowRef.current = next;
+    autoWindowAdvanceRef.current = true;
+    setRequestedWindow(next);
+  }, [bounds, boundsContextKey, closedNaturalDay, enabled, requestedWindow, response]);
 
   useEffect(() => {
-    if (!bounds || !viewportWindow) return;
-    setViewportWindow((current) => {
-      if (!current) return current;
-      const next = clampWindow(current, bounds);
-      return next.startMs === current.startMs && next.endMs === current.endMs ? current : next;
-    });
-  }, [bounds, viewportWindow]);
+    if (!bounds || !requestedWindow) return;
+    const next = clampWindow(requestedWindow, bounds);
+    if (next.startMs === requestedWindow.startMs && next.endMs === requestedWindow.endMs) return;
+    requestedWindowRef.current = next;
+    setRequestedWindow(next);
+  }, [bounds, requestedWindow]);
 
   const refresh = useCallback(async () => {
-    if (!enabled || !viewportWindow) return;
+    if (!enabled || !requestedWindow) return;
     if (inFlightRefreshRef.current) {
       pendingRefreshRef.current = true;
       return inFlightRefreshRef.current;
     }
     const controller = new AbortController();
     const sequence = requestSequence.current;
+    const requestedTarget = requestedWindow;
     abortControllerRef.current = controller;
     setIsLoading(!hasDataRef.current);
+    setIsRefreshing(hasDataRef.current);
     const request = (async () => {
       try {
         const next = await fetchInvocationTimelineSnapshot({
-          naturalDayStart: new Date(bounds?.startMs ?? viewportWindow.startMs).toISOString(),
-          naturalDayEnd: new Date(bounds?.endMs ?? viewportWindow.endMs).toISOString(),
-          from: new Date(viewportWindow.startMs).toISOString(),
-          to: new Date(viewportWindow.endMs).toISOString(),
+          naturalDayStart: new Date(bounds?.startMs ?? requestedTarget.startMs).toISOString(),
+          naturalDayEnd: new Date(bounds?.endMs ?? requestedTarget.endMs).toISOString(),
+          from: new Date(requestedTarget.startMs).toISOString(),
+          to: new Date(requestedTarget.endMs).toISOString(),
           upstreamAccountId,
           includeLive: !closedNaturalDay,
           signal: controller.signal,
         });
         if (sequence !== requestSequence.current) return;
+        const returnedStart = parseEpoch(next.rangeStart);
+        const returnedEnd = parseEpoch(next.rangeEnd);
+        if (
+          returnedStart == null ||
+          returnedEnd == null ||
+          canonicalTimelineEpoch(returnedStart) !==
+            canonicalTimelineEpoch(requestedTarget.startMs) ||
+          canonicalTimelineEpoch(returnedEnd) !== canonicalTimelineEpoch(requestedTarget.endMs)
+        ) {
+          throw new Error("Invocation timeline snapshot does not match the requested window");
+        }
+        const latestTarget = requestedWindowRef.current;
+        if (
+          !latestTarget ||
+          latestTarget.startMs !== requestedTarget.startMs ||
+          latestTarget.endMs !== requestedTarget.endMs
+        ) {
+          pendingRefreshRef.current = true;
+          return;
+        }
         hasDataRef.current = true;
-        setData(next);
+        setCommittedSnapshot({ data: next, window: requestedTarget });
         setError(null);
       } catch (nextError) {
         if (controller.signal.aborted) return;
@@ -276,7 +310,8 @@ export function useInvocationTimeline({
         if (sequence === requestSequence.current && abortControllerRef.current === controller) {
           abortControllerRef.current = null;
           inFlightRefreshRef.current = null;
-          setIsLoading(false);
+          setIsLoading(!hasDataRef.current);
+          setIsRefreshing(false);
           if (pendingRefreshRef.current) {
             pendingRefreshRef.current = false;
             const followUpSequence = sequence;
@@ -298,7 +333,7 @@ export function useInvocationTimeline({
     })();
     inFlightRefreshRef.current = request;
     return request;
-  }, [bounds, closedNaturalDay, enabled, upstreamAccountId, viewportWindow]);
+  }, [bounds, closedNaturalDay, enabled, requestedWindow, upstreamAccountId]);
 
   refreshRef.current = refresh;
 
@@ -314,6 +349,7 @@ export function useInvocationTimeline({
       pendingRefreshTimerRef.current = null;
     }
     setIsLoading(false);
+    setIsRefreshing(false);
     setError(null);
   }, [enabled]);
 
@@ -338,14 +374,16 @@ export function useInvocationTimeline({
   useEffect(() => {
     if (!enabled) return;
     if (committedBoundsContextKey !== boundsContextKey) return;
-    if (suppressRefreshRef.current) {
-      if (!closedNaturalDay && !liveRefreshAllowed && hasDataRef.current) return;
-      suppressRefreshRef.current = false;
-      if (deferredRefreshRef.current) {
-        deferredRefreshRef.current = false;
-        void refresh();
+    if (autoWindowAdvanceRef.current) {
+      autoWindowAdvanceRef.current = false;
+      if (
+        requestedWindow &&
+        requestedWindowRef.current &&
+        (requestedWindow.startMs !== requestedWindowRef.current.startMs ||
+          requestedWindow.endMs !== requestedWindowRef.current.endMs)
+      ) {
+        return;
       }
-      return;
     }
     if (!closedNaturalDay && !liveRefreshAllowed && hasDataRef.current) return;
     void refresh();
@@ -368,30 +406,50 @@ export function useInvocationTimeline({
   const updateWindow = useCallback(
     (next: InvocationTimelineWindow) => {
       if (!bounds) return;
-      setViewportWindow(clampWindow(next, bounds));
+      const normalized = clampWindow(next, bounds);
+      if (
+        requestedWindow?.startMs === normalized.startMs &&
+        requestedWindow.endMs === normalized.endMs
+      ) {
+        return;
+      }
+      requestedWindowRef.current = normalized;
+      setRequestedWindow(normalized);
+      setCommittedSnapshot(null);
+      hasDataRef.current = false;
+      setError(null);
+      setIsLoading(true);
+      setIsRefreshing(false);
     },
-    [bounds],
+    [bounds, requestedWindow],
   );
 
   const contextReady = committedBoundsContextKey === boundsContextKey;
-  const dataMatchesWindow =
+  const data = committedSnapshot?.data ?? null;
+  const committedWindow = committedSnapshot?.window ?? null;
+  const dataMatchesCommittedWindow =
     data != null &&
-    viewportWindow != null &&
+    committedWindow != null &&
     parseEpoch(data.rangeStart) != null &&
     parseEpoch(data.rangeEnd) != null &&
     canonicalTimelineEpoch(parseEpoch(data.rangeStart) as number) ===
-      canonicalTimelineEpoch(viewportWindow.startMs) &&
+      canonicalTimelineEpoch(committedWindow.startMs) &&
     canonicalTimelineEpoch(parseEpoch(data.rangeEnd) as number) ===
-      canonicalTimelineEpoch(viewportWindow.endMs);
+      canonicalTimelineEpoch(committedWindow.endMs);
+  const visibleData = contextReady && dataMatchesCommittedWindow ? data : null;
 
   return {
-    data: contextReady && dataMatchesWindow ? data : null,
+    data: visibleData,
     error,
     isStale: data != null && error != null,
     isFrozen: !closedNaturalDay && !liveRefreshAllowed,
-    isLoading: contextReady ? isLoading || (data != null && !dataMatchesWindow) : enabled,
-    isRefreshing: contextReady && isLoading && dataMatchesWindow,
-    window: contextReady ? viewportWindow : null,
+    isLoading: contextReady ? (visibleData ? false : isLoading) : enabled,
+    isRefreshing: contextReady && isRefreshing && visibleData != null,
+    window: contextReady
+      ? visibleData && committedWindow
+        ? committedWindow
+        : requestedWindow
+      : null,
     bounds,
     setWindow: updateWindow,
     refresh,

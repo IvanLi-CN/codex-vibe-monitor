@@ -53,6 +53,8 @@
 - The system MUST update today's live bars from the authoritative activity revision or a refresh after reconnect, pause local live extension while disconnected, and use HTTP-only data for yesterday.
 - Live revisions MUST be coalesced while a snapshot request is in flight. A completed request MUST be followed by at most one refresh for the newest revision observed during that request.
 - A page traversal MUST use one immutable `asOf` snapshot. New records observed after that point MUST appear in the next refresh, not be mixed into later pages of the current traversal.
+- When a live update advances the followed viewport, the system MUST keep rendering the last committed timeline snapshot together with the viewport for which it was fetched until the replacement snapshot succeeds. This refresh MUST NOT present the initial-loading state or temporarily remove the chart.
+- If that live refresh fails, the last committed snapshot and its matching viewport MUST remain visible, frozen, and marked stale or unavailable. A user-requested zoom/pan or a natural-day/account context change MUST clear the prior snapshot and show loading until data for the requested window is committed.
 
 ### REQ-DIT-006
 
@@ -81,7 +83,7 @@
 
 - Method: responsive Storybook evidence and production-build dashboard E2E rendering checks.
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
-- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a failed refresh freezes the last good timeline.
+- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a delayed live-window refresh keeps the last committed bars and matching viewport visible until replacement; a failed refresh freezes that last good timeline, while a user-requested window change shows loading for the new window.
 
 ## Related ADRs
 

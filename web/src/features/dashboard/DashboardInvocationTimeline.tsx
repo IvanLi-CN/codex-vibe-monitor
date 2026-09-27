@@ -26,6 +26,7 @@ interface DashboardInvocationTimelineProps {
   upstreamAccountId?: number;
   liveRevision?: number;
   timelineData?: InvocationTimelineResponse | null;
+  timelineStatusOverride?: "refreshing" | "stale";
 }
 
 export interface LaneRecord {
@@ -280,6 +281,7 @@ export function DashboardInvocationTimeline({
   upstreamAccountId,
   liveRevision,
   timelineData: timelineDataOverride,
+  timelineStatusOverride,
 }: DashboardInvocationTimelineProps) {
   const { locale, t } = useTranslation();
   const isCompactViewport = useCompactViewport();
@@ -306,12 +308,14 @@ export function DashboardInvocationTimeline({
 
   const renderedData = timelineDataOverride ?? timeline.data;
   const renderedError = timelineDataOverride ? null : timeline.error;
+  const timelineIsRefreshing = timeline.isRefreshing || timelineStatusOverride === "refreshing";
   const hasTimelineRefreshError = hasInvocationTimelineRefreshError(
     error,
     renderedError,
     timelineDataOverride != null,
   );
-  const timelineIsStale = timeline.isStale || hasTimelineRefreshError;
+  const timelineIsStale =
+    timeline.isStale || timelineStatusOverride === "stale" || hasTimelineRefreshError;
   const timelineIsFrozen = timeline.isFrozen || hasTimelineRefreshError;
   useEffect(() => {
     if (closedNaturalDay || !renderedData || !response) return;
@@ -495,7 +499,7 @@ export function DashboardInvocationTimeline({
                 count: renderedData?.total ?? 0,
               })}
             </span>
-            {timeline.isRefreshing ? (
+            {timelineIsRefreshing ? (
               <span className="text-info">{t("dashboard.activityOverview.timelineLive")}</span>
             ) : null}
             {timelineIsStale ? (
