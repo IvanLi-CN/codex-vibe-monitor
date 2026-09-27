@@ -111,10 +111,15 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
       referencedSkipped: undefined,
       quarantined: undefined,
       removed: undefined,
+      removedBytes: undefined,
       lastProgressAt: undefined,
       nextRetryAt: undefined,
       deferReason: undefined,
       failureFingerprint: undefined,
+      admissionStage: undefined,
+      admissionCause: undefined,
+      lastSettledPass: undefined,
+      lastNonzeroRemoval: undefined,
     });
   });
 
@@ -167,6 +172,74 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     const sweep = (await fetchSystemStatus()).runtimePressureHealth?.rawOrphanSweep;
 
     expect(sweep?.failureFingerprint).toBeUndefined();
+  });
+
+  it("normalizes durable settled-pass evidence and fixed admission causes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                rawOrphanSweep: {
+                  state: "deferred",
+                  removedBytes: 4096,
+                  admissionStage: "background_slot",
+                  admissionCause: "background_busy",
+                  lastSettledPass: {
+                    settledAt: "2026-09-26T02:00:00Z",
+                    complete: false,
+                    inspectedEntries: 128,
+                    removed: 1,
+                    removedBytes: 4096,
+                  },
+                  lastNonzeroRemoval: {
+                    removedAt: "2026-09-26T01:59:00Z",
+                    removed: 1,
+                    removedBytes: 4096,
+                  },
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const sweep = (await fetchSystemStatus()).runtimePressureHealth?.rawOrphanSweep;
+
+    expect(sweep?.removedBytes).toBe(4096);
+    expect(sweep?.admissionStage).toBe("background_slot");
+    expect(sweep?.admissionCause).toBe("background_busy");
+    expect(sweep?.lastSettledPass).toMatchObject({ complete: false, removedBytes: 4096 });
+    expect(sweep?.lastNonzeroRemoval).toMatchObject({ removed: 1, removedBytes: 4096 });
+  });
+
+  it("rejects unknown raw orphan admission values", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtimePressureHealth: {
+                rawOrphanSweep: {
+                  state: "deferred",
+                  admissionStage: "/private/raw/path",
+                  admissionCause: "sql=secret",
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const sweep = (await fetchSystemStatus()).runtimePressureHealth?.rawOrphanSweep;
+
+    expect(sweep?.admissionStage).toBeUndefined();
+    expect(sweep?.admissionCause).toBeUndefined();
   });
 
   it("keeps omitted recovery counters unknown when a partial diagnostic arrives", async () => {

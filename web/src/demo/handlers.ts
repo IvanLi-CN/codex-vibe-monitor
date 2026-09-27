@@ -2147,6 +2147,7 @@ function systemStatus() {
         referencedSkipped: 12,
         quarantined: rawOrphanSweepState === "degraded" ? 3 : 2,
         removed: rawOrphanSweepState === "degraded" ? 0 : 1,
+        removedBytes: rawOrphanSweepState === "degraded" ? 0 : 65_536,
         lastProgressAt: "2026-09-21T03:00:00Z",
         nextRetryAt: rawOrphanSweepState === "idle" ? undefined : "2026-09-21T03:05:00Z",
         deferReason:
@@ -2155,7 +2156,23 @@ function systemStatus() {
             : rawOrphanSweepState === "degraded"
               ? "retry_backoff"
               : undefined,
+        admissionStage: rawOrphanSweepState === "deferred" ? "background_slot" : undefined,
+        admissionCause: rawOrphanSweepState === "deferred" ? "background_busy" : undefined,
         failureFingerprint: rawOrphanSweepState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+        lastSettledPass: {
+          settledAt: "2026-09-21T03:00:00Z",
+          complete: rawOrphanSweepState !== "degraded",
+          inspectedEntries: 96,
+          referencedSkipped: 12,
+          quarantined: rawOrphanSweepState === "degraded" ? 3 : 2,
+          removed: rawOrphanSweepState === "degraded" ? 0 : 1,
+          removedBytes: rawOrphanSweepState === "degraded" ? 0 : 65_536,
+        },
+        lastNonzeroRemoval: {
+          removedAt: "2026-09-21T02:59:58Z",
+          removed: 1,
+          removedBytes: 65_536,
+        },
       },
       dashboardProjection: {
         mode: "auto",

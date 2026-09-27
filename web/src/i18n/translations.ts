@@ -1826,10 +1826,31 @@ const baseTranslations = {
     "system.status.runtimePressure.rawOrphanSweep.referenced": "Referenced files skipped",
     "system.status.runtimePressure.rawOrphanSweep.quarantined": "Files quarantined",
     "system.status.runtimePressure.rawOrphanSweep.removed": "Files removed",
+    "system.status.runtimePressure.rawOrphanSweep.removedBytes": "Bytes removed",
     "system.status.runtimePressure.rawOrphanSweep.progressHint": "Last progress {{progress}}.",
     "system.status.runtimePressure.rawOrphanSweep.deferHint": "Deferred: {{reason}}.",
     "system.status.runtimePressure.rawOrphanSweep.failureHint":
       "Failure fingerprint {{fingerprint}}.",
+    "system.status.runtimePressure.rawOrphanSweep.admissionHint":
+      "Admission: {{stage}} · {{cause}}.",
+    "system.status.runtimePressure.rawOrphanSweep.admissionStages.background_slot":
+      "background slot",
+    "system.status.runtimePressure.rawOrphanSweep.admissionStages.maintenance_write":
+      "maintenance write",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.pressure_cooldown":
+      "pressure cooldown",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.background_busy":
+      "background work busy",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.coordinator_wait":
+      "coordinator wait",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.shutdown": "shutdown",
+    "system.status.runtimePressure.rawOrphanSweep.settledPass": "Most recent settled pass",
+    "system.status.runtimePressure.rawOrphanSweep.settledStates.complete": "Complete",
+    "system.status.runtimePressure.rawOrphanSweep.settledStates.partial": "Partial",
+    "system.status.runtimePressure.rawOrphanSweep.settledPassHint":
+      "Settled {{settledAt}} · inspected {{inspected}} · removed {{removed}} ({{removedBytes}}).",
+    "system.status.runtimePressure.rawOrphanSweep.lastRemoval": "Most recent nonzero removal",
+    "system.status.runtimePressure.rawOrphanSweep.lastRemovalHint": "Removed {{removedAt}}.",
     "system.status.runtimePressure.rawCapture.title": "Raw capture circuit",
     "system.status.runtimePressure.rawCapture.state": "Capture state",
     "system.status.runtimePressure.rawCapture.states.capturing": "Capturing",
@@ -5118,9 +5139,25 @@ const baseTranslations = {
     "system.status.runtimePressure.rawOrphanSweep.referenced": "跳过的已引用文件",
     "system.status.runtimePressure.rawOrphanSweep.quarantined": "已隔离文件",
     "system.status.runtimePressure.rawOrphanSweep.removed": "已删除文件",
+    "system.status.runtimePressure.rawOrphanSweep.removedBytes": "已删除字节",
     "system.status.runtimePressure.rawOrphanSweep.progressHint": "最近进展：{{progress}}。",
     "system.status.runtimePressure.rawOrphanSweep.deferHint": "已延后：{{reason}}。",
     "system.status.runtimePressure.rawOrphanSweep.failureHint": "失败指纹 {{fingerprint}}。",
+    "system.status.runtimePressure.rawOrphanSweep.admissionHint":
+      "admission：{{stage}} · {{cause}}。",
+    "system.status.runtimePressure.rawOrphanSweep.admissionStages.background_slot": "后台槽位",
+    "system.status.runtimePressure.rawOrphanSweep.admissionStages.maintenance_write": "维护写入",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.pressure_cooldown": "压力冷却",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.background_busy": "后台任务繁忙",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.coordinator_wait": "协调器等待",
+    "system.status.runtimePressure.rawOrphanSweep.admissionCauses.shutdown": "正在关闭",
+    "system.status.runtimePressure.rawOrphanSweep.settledPass": "最近一次已结算轮次",
+    "system.status.runtimePressure.rawOrphanSweep.settledStates.complete": "完整",
+    "system.status.runtimePressure.rawOrphanSweep.settledStates.partial": "部分完成",
+    "system.status.runtimePressure.rawOrphanSweep.settledPassHint":
+      "结算于 {{settledAt}} · 检查 {{inspected}} · 删除 {{removed}}（{{removedBytes}}）。",
+    "system.status.runtimePressure.rawOrphanSweep.lastRemoval": "最近一次非零删除",
+    "system.status.runtimePressure.rawOrphanSweep.lastRemovalHint": "删除于 {{removedAt}}。",
     "system.status.runtimePressure.rawCapture.title": "原始载荷熔断",
     "system.status.runtimePressure.rawCapture.state": "落盘状态",
     "system.status.runtimePressure.rawCapture.states.capturing": "正常采集",
