@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.75.3",
+  "base_stable_version": "2.75.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-27T22:28:38Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.75.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5d74f3fee75629efb360eaae671ddc304ec142ed",
+  "pr_number": 1043,
+  "pr_title": "refactor(tests): split provisioning scope cases",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.75.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.75.3",
+  "target_sha": "b7fabbada37934b76d47365ca08067ba8ae3a3c9",
+  "type_label": "type:patch"
+}
