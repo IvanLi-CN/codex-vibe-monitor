@@ -297,10 +297,8 @@ describe("useInvocationTimeline", () => {
 
     pending.shift()?.(createTimeline("revision-1"));
     await act(async () => {
-      await Promise.resolve();
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await vi.waitFor(() => expect(timelineMocks.fetch).toHaveBeenCalledTimes(2));
     });
-    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
     pending.shift()?.(createTimeline("revision-2"));
     await act(async () => {
       await Promise.resolve();
