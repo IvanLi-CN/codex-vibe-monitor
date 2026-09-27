@@ -32,7 +32,8 @@ const records: InvocationTimelineResponse = {
   rangeEnd,
   asOf: "2026-07-16T11:05:00.000Z",
   total: 5,
-  overLimit: false,
+  hasMore: false,
+  nextCursor: null,
   records: [
     {
       id: 1,
@@ -112,10 +113,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <div data-theme="vibe-dark" className="min-h-screen bg-[#08172b] text-white">
-          <div
-            data-visual-evidence-surface
-            className="mx-auto max-w-[1280px] bg-[#08172b] px-6 py-8"
-          >
+          <div data-visual-evidence-surface className="mx-auto max-w-[1280px] bg-[#08172b] p-8">
             <div data-visual-evidence-target>
               <Story />
             </div>
@@ -130,19 +128,12 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-const fallback = (
-  <div className="rounded-lg border border-warning/40 bg-warning/10 p-6 text-warning">
-    Aggregate chart fallback
-  </div>
-);
-
 export const LiveTraffic: Story = {
   args: {
     response,
     loading: false,
     error: null,
     timelineData: records,
-    fallback,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -259,15 +250,14 @@ export const LiveTraffic: Story = {
   },
 };
 
-export const DenseFallback: Story = {
+export const DensePagination: Story = {
   args: {
     response,
     loading: false,
-    timelineData: { ...records, total: 2_001, overLimit: true, records: [] },
-    fallback,
+    timelineData: denseRecords,
   },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByText("Aggregate chart fallback")).toBeVisible();
+    await expect(within(canvasElement).getByTestId("dashboard-invocation-timeline")).toBeVisible();
   },
 };
 
@@ -276,10 +266,24 @@ export const EmptyWindow: Story = {
     response,
     loading: false,
     timelineData: { ...records, total: 0, records: [] },
-    fallback,
   },
   play: async ({ canvasElement }) => {
     await expect(within(canvasElement).getByText(/No invocations|当前时间窗口没有/)).toBeVisible();
+  },
+};
+
+export const Unavailable: Story = {
+  args: {
+    response,
+    loading: false,
+    error: "snapshot unavailable",
+    timelineData: null,
+  },
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByTestId("dashboard-invocation-timeline-state"),
+    ).toBeVisible();
+    await expect(within(canvasElement).getByText(/unavailable|无法获取/)).toBeVisible();
   },
 };
 
@@ -301,7 +305,6 @@ export const DenseConcurrency190: Story = {
     loading: false,
     error: null,
     timelineData: denseRecords,
-    fallback,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

@@ -4,11 +4,11 @@
 
 ## Lifecycle / Compatibility
 
-- Added as an additive dashboard read model. Existing aggregate metrics and PWA snapshot formats remain compatible.
+- The timeline is the replacement read model for the screenshot's natural-day “今日/昨日 + 次数” activity chart. Existing aggregate metrics and PWA snapshot formats remain compatible outside this replacement surface.
 
 ## Replacements / Background
 
-- Replaces the natural-day “次数” chart presentation with invocation bars while retaining the aggregate chart as a bounded-data and offline fallback.
+- Replaces the in-scope natural-day “次数” chart presentation with invocation bars. The old aggregate chart is not a fallback for this surface; it remains only for metrics and ranges outside this topic. The timeline reads existing Invocation records directly, so no conversion exception is part of this topic.
 
 ## Related Changes
 

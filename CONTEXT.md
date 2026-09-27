@@ -12,6 +12,22 @@ _Avoid_: 上游尝试, 重试次数
 One attempt to send an invocation to an upstream route or account. An invocation may contain several upstream attempts, so attempt counts do not equal invocation counts.
 _Avoid_: 对外调用, 调用次数
 
+**调用时间线（Invocation Timeline）**:
+The target Dashboard read model for the natural-day count view. It renders one horizontal bar for each logical Invocation and keeps time, concurrency, duration, terminal state, and TTFT in one shared chart surface.
+_Avoid_: 旧聚合图, 调用次数柱状图
+
+**时间线明细不可用（Timeline Detail Unavailable）**:
+A visible state of the Invocation Timeline when detailed records cannot currently be read or completed. It is not zero calls, not an aggregate substitute, and not permission to mount the legacy chart.
+_Avoid_: 空数据, 聚合回退, 数据转换中
+
+**时间线快照（Timeline Snapshot）**:
+The consistent set of Invocation records represented by one chart read, identified by its `asOf` point. Later records belong to a later snapshot and must not be mixed into the current one.
+_Avoid_: 实时流片段, 分页临时结果, 旧图快照
+
+**时间线实时修订（Timeline Live Revision）**:
+The authoritative signal that today's Invocation data changed and the current Timeline Snapshot should be refreshed. It is not an Invocation, an Upstream Attempt, or a count of changes.
+_Avoid_: 重试次数, 调用次数, 每条调用事件
+
 ## Invocation Compaction
 
 **Compact**:
