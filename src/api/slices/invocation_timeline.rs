@@ -5,6 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection};
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
@@ -48,6 +50,38 @@ static INVOCATION_TIMELINE_SNAPSHOTS: once_cell::sync::Lazy<
 > = once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
 static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TimelineMaterializationPause {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    token: Arc<StdMutex<Option<String>>>,
+}
+
+#[cfg(test)]
+static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
+    StdMutex<Option<TimelineMaterializationPause>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+async fn pause_after_timeline_materialization(token: &str) {
+    let pause = INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(pause) = pause {
+        *pause
+            .token
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(token.to_string());
+        pause.entered.notify_one();
+        pause.release.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_after_timeline_materialization(_: &str) {}
 
 struct TimelineSnapshotCleanupGuard {
     token: String,
@@ -912,6 +946,7 @@ pub(crate) async fn fetch_timeline(
             snapshot_cleanup_guard.cleanup_now().await;
             return Err(error);
         }
+        pause_after_timeline_materialization(&as_of).await;
         let snapshot = load_timeline_snapshot(
             &as_of,
             &canonical_range_start,
@@ -1369,6 +1404,82 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("canceled snapshot rows were not cleaned up");
+    }
+
+    #[tokio::test]
+    async fn aborting_fetch_after_materialization_cleans_up_snapshot() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let range_start = at(22_000);
+        let range_end = at(22_100);
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES ('aborted-fetch', ?1, 'proxy', 'success', 100, '{\"upstreamAccountId\":42}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(range_start))
+        .execute(&state.pool)
+        .await
+        .expect("insert abort fixture");
+
+        let pause = TimelineMaterializationPause {
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            token: Arc::new(StdMutex::new(None)),
+        };
+        *INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause.clone());
+        let task = tokio::spawn(fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(range_start),
+                to: format_utc_iso(range_end),
+                upstream_account_id: Some(42),
+                include_live: Some(false),
+                limit: None,
+                cursor: None,
+                as_of: None,
+            }),
+        ));
+        pause.entered.notified().await;
+        let token = pause
+            .token
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .expect("materialization pause should publish a token");
+        task.abort();
+        task.await.expect_err("fetch task should be aborted");
+        *INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+
+        assert!(
+            load_timeline_snapshot(
+                &token,
+                &format_utc_iso(range_start),
+                &format_utc_iso(range_end),
+                Some(42),
+                false,
+            )
+            .is_err()
+        );
+        for _ in 0..20 {
+            let row_count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+            ))
+            .bind(&token)
+            .fetch_one(&state.pool)
+            .await
+            .expect("count aborted fetch snapshot rows");
+            if row_count == 0 {
+                state.pool.close().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("aborted fetch snapshot rows were not cleaned up");
     }
 
     #[tokio::test]
