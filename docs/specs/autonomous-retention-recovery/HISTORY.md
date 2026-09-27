@@ -43,9 +43,10 @@
   across mid-pass deferral, and a two-second candidate budget with one-second progress cadence. It
   adds nullable admission, settled-pass, and nonzero-removal evidence columns to the existing
   `raw_payload_files` cursor; old values remain unknown, and defer no longer erases settled or
-  removal evidence. Successful unlink counts and bytes are recorded before ledger cleanup, and the
-  System Status API, Web normalizer, Runtime Pressure UI, translations, and Storybook states expose
-  the new diagnostics additively.
+  removal evidence. Raw writers hold the shared directory fence through owner-link persistence;
+  release rechecks identity and size immediately before unlink, and successful unlink counts and
+  bytes are recorded before ledger cleanup. The System Status API, Web normalizer, Runtime Pressure
+  UI, translations, and Storybook states expose the new diagnostics additively.
 
 ## References
 

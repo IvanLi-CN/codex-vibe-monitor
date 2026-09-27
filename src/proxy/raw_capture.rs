@@ -599,6 +599,7 @@ pub(crate) async fn store_raw_payload_file(
         size_bytes: bytes.len() as i64,
         truncated: false,
         truncated_reason: None,
+        write_fence: None,
     };
 
     if bytes.is_empty() {
@@ -643,35 +644,40 @@ pub(crate) async fn store_raw_payload_file(
     } else {
         plain_path
     };
-    let write_result = if codec == RAW_CODEC_GZIP {
+    let write_fence = if codec == RAW_CODEC_GZIP {
         let write_path = path.clone();
         run_blocking_raw_writer_io(move || {
+            let write_fence = crate::maintenance::acquire_retention_raw_write_fence(&write_path)?;
             let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
             encoder.write_all(content.as_ref())?;
             let mut writer = encoder.finish()?;
-            writer.flush()
+            writer.flush()?;
+            Ok(write_fence)
         })
         .await
     } else if codec == RAW_CODEC_ZSTD {
         let write_path = path.clone();
         run_blocking_raw_writer_io(move || {
+            let write_fence = crate::maintenance::acquire_retention_raw_write_fence(&write_path)?;
             let mut encoder = create_zstd_streaming_raw_encoder(&write_path)?;
             encoder.write_all(content.as_ref())?;
             let mut writer = encoder.finish()?;
-            writer.flush()
+            writer.flush()?;
+            Ok(write_fence)
         })
         .await
     } else {
-        if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
-            meta.truncated = true;
-            meta.truncated_reason = Some(format!("write_failed:{err}"));
-            return meta;
-        }
-        tokio::fs::write(&path, content).await
+        let write_path = path.clone();
+        run_blocking_raw_writer_io(move || {
+            let write_fence = crate::maintenance::acquire_retention_raw_write_fence(&write_path)?;
+            fs::write(&write_path, content).map(|_| write_fence)
+        })
+        .await
     };
-    match write_result {
-        Ok(_) => {
+    match write_fence {
+        Ok(write_fence) => {
             meta.path = Some(path.to_string_lossy().to_string());
+            meta.write_fence = Some(write_fence);
         }
         Err(err) => {
             let _ = fs::remove_file(&path);
@@ -724,6 +730,7 @@ pub(crate) async fn store_raw_payload_snapshot_file(
         size_bytes: source_size as i64,
         truncated: file_bytes < source_size,
         truncated_reason: (file_bytes < source_size).then(|| "max_bytes_exceeded".to_string()),
+        write_fence: None,
     };
     let raw_dir = config.resolved_proxy_raw_dir();
     let born_compressed = match config.proxy_raw_compression {
@@ -747,7 +754,8 @@ pub(crate) async fn store_raw_payload_snapshot_file(
         plain_path
     };
     let write_path = path.clone();
-    let write_result = run_blocking_raw_writer_io(move || {
+    let write_fence = run_blocking_raw_writer_io(move || {
+        let write_fence = crate::maintenance::acquire_retention_raw_write_fence(&write_path)?;
         let mut source = std::io::BufReader::with_capacity(
             REQUEST_SEMANTIC_BUSINESS_BUFFER_BYTES,
             fs::File::open(source_path)?,
@@ -756,21 +764,25 @@ pub(crate) async fn store_raw_payload_snapshot_file(
         if codec == RAW_CODEC_GZIP {
             let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
             std::io::copy(&mut source, &mut encoder)?;
-            encoder.finish()?.flush()
+            encoder.finish()?.flush()?;
         } else if codec == RAW_CODEC_ZSTD {
             let mut encoder = create_zstd_streaming_raw_encoder(&write_path)?;
             std::io::copy(&mut source, &mut encoder)?;
-            encoder.finish()?.flush()
+            encoder.finish()?.flush()?;
         } else {
             prepare_streaming_raw_parent(&write_path)?;
             let mut writer = fs::File::create(&write_path)?;
             std::io::copy(&mut source, &mut writer)?;
-            writer.flush()
+            writer.flush()?;
         }
+        Ok(write_fence)
     })
     .await;
-    match write_result {
-        Ok(()) => meta.path = Some(path.to_string_lossy().to_string()),
+    match write_fence {
+        Ok(write_fence) => {
+            meta.path = Some(path.to_string_lossy().to_string());
+            meta.write_fence = Some(write_fence);
+        }
         Err(err) => {
             let _ = fs::remove_file(&path);
             meta.truncated = true;
@@ -1266,6 +1278,7 @@ pub(crate) async fn persist_proxy_capture_record_tx(
             size_bytes: record.resp_raw.size_bytes,
             truncated: record.resp_raw.truncated,
             truncated_reason: record.resp_raw.truncated_reason.clone(),
+            write_fence: None,
         }
     };
     let failure = resolve_failure_classification(

@@ -138,6 +138,8 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_RAW_UNLINK_FAILURE:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
+    pub(crate) static RETENTION_TEST_RAW_LEDGER_CLEANUP_FAILURE:
+        std::sync::Arc<std::sync::atomic::AtomicBool>;
     pub(crate) static RETENTION_TEST_RAW_MIDPASS_WRITE_DENY:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
 }
@@ -250,6 +252,13 @@ fn retention_test_raw_unlink_should_fail() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+fn retention_test_raw_ledger_cleanup_should_fail() -> bool {
+    RETENTION_TEST_RAW_LEDGER_CLEANUP_FAILURE
+        .try_with(|flag| flag.swap(false, std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
 static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static RAW_ORPHAN_SWEEP_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -257,6 +266,7 @@ static RAW_ORPHAN_SWEEP_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Advisory directory lock shared by archive publishers and cleanup finalizers. SQLite admission
 /// serializes database writers, while this lock also fences their filesystem rename/delete window.
 #[cfg(unix)]
+#[derive(Debug)]
 pub(crate) struct RetentionArchiveFileLock(Option<File>);
 
 #[cfg(unix)]
@@ -330,6 +340,7 @@ impl Drop for RetentionArchiveFileLock {
 }
 
 #[cfg(not(unix))]
+#[derive(Debug)]
 pub(crate) struct RetentionArchiveFileLock;
 
 #[cfg(not(unix))]
@@ -342,6 +353,21 @@ impl RetentionArchiveFileLock {
 #[cfg(not(unix))]
 pub(crate) fn retention_archive_file_lock(_path: &Path) -> Result<RetentionArchiveFileLock> {
     Ok(RetentionArchiveFileLock)
+}
+
+pub(crate) fn acquire_retention_raw_write_fence(
+    path: &Path,
+) -> io::Result<std::sync::Arc<RetentionArchiveFileLock>> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("raw payload path has no parent: {}", path.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    retention_archive_file_lock(path)
+        .map(std::sync::Arc::new)
+        .map_err(|error| io::Error::other(error.to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -4051,6 +4077,27 @@ struct RetentionRawDirectorySlice {
     failures: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RawOrphanSweepCandidateBudgetExpired;
+
+impl std::fmt::Display for RawOrphanSweepCandidateBudgetExpired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("raw orphan sweep candidate budget expired")
+    }
+}
+
+impl std::error::Error for RawOrphanSweepCandidateBudgetExpired {}
+
+fn raw_orphan_sweep_candidate_budget_expired() -> anyhow::Error {
+    anyhow::Error::new(RawOrphanSweepCandidateBudgetExpired)
+}
+
+fn is_raw_orphan_sweep_candidate_budget_expired(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<RawOrphanSweepCandidateBudgetExpired>())
+}
+
 struct RawOrphanSweepPassContext {
     _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     candidate_deadline: Instant,
@@ -4061,10 +4108,31 @@ impl RawOrphanSweepPassContext {
         Instant::now() >= self.candidate_deadline
     }
 
+    fn candidate_budget_remaining(&self) -> Option<Duration> {
+        self.candidate_deadline
+            .checked_duration_since(Instant::now())
+    }
+
+    async fn run_with_candidate_budget<T, F>(&self, future: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        let Some(remaining) = self.candidate_budget_remaining() else {
+            return Err(raw_orphan_sweep_candidate_budget_expired());
+        };
+        tokio::time::timeout(remaining, future)
+            .await
+            .map_err(|_| raw_orphan_sweep_candidate_budget_expired())?
+    }
+
     async fn try_write(
         &self,
         operation: &'static str,
     ) -> Result<crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit> {
+        let Some(remaining) = self.candidate_budget_remaining() else {
+            return Err(raw_orphan_sweep_candidate_budget_expired());
+        };
+        let admission_wait = remaining.min(RETENTION_FAIRNESS_INTERVAL);
         #[cfg(test)]
         if RETENTION_TEST_RAW_MIDPASS_WRITE_DENY
             .try_with(|deny| deny.load(std::sync::atomic::Ordering::Relaxed))
@@ -4079,14 +4147,14 @@ impl RawOrphanSweepPassContext {
         let coordinator = retention_write_coordinator_handle();
         let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {
             Ok(shutdown) => tokio::time::timeout(
-                RETENTION_FAIRNESS_INTERVAL,
+                admission_wait,
                 coordinator.acquire_maintenance_cancellable(RETENTION_FAIRNESS_INTERVAL, &shutdown),
             )
             .await
             .ok()
             .flatten(),
             Err(_) => tokio::time::timeout(
-                RETENTION_FAIRNESS_INTERVAL,
+                admission_wait,
                 coordinator.acquire_maintenance(RETENTION_FAIRNESS_INTERVAL),
             )
             .await
@@ -4094,6 +4162,9 @@ impl RawOrphanSweepPassContext {
         };
         if let Some(write_permit) = write_permit {
             return Ok(write_permit);
+        }
+        if self.candidate_budget_expired() {
+            return Err(raw_orphan_sweep_candidate_budget_expired());
         }
         let cause = if RETENTION_SHUTDOWN
             .try_with(|shutdown| shutdown.is_cancelled())
@@ -4434,32 +4505,37 @@ async fn record_retention_raw_reconciliation_observation(
     byte_size: i64,
 ) -> Result<()> {
     let admission = context.try_write("raw_reconciliation_quarantine").await?;
-    sqlx::query(
-        r#"
-        INSERT INTO retention_raw_reconciliation (
-            raw_path, file_identity, byte_size, quarantined_at
-        )
-        VALUES (?1, ?2, ?3, ?4)
-        ON CONFLICT(raw_path) DO UPDATE SET
-            file_identity = excluded.file_identity,
-            byte_size = excluded.byte_size,
-            quarantined_at = CASE
-                WHEN retention_raw_reconciliation.file_identity = excluded.file_identity
-                    AND retention_raw_reconciliation.byte_size = excluded.byte_size
-                    THEN retention_raw_reconciliation.quarantined_at
-                ELSE excluded.quarantined_at
-            END,
-            updated_at = datetime('now')
-        "#,
-    )
-    .bind(raw_path)
-    .bind(file_identity)
-    .bind(byte_size)
-    .bind(format_utc_iso(Utc::now()))
-    .execute(pool)
-    .await?;
+    let result = context
+        .run_with_candidate_budget(async {
+            sqlx::query(
+                r#"
+                INSERT INTO retention_raw_reconciliation (
+                    raw_path, file_identity, byte_size, quarantined_at
+                )
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(raw_path) DO UPDATE SET
+                    file_identity = excluded.file_identity,
+                    byte_size = excluded.byte_size,
+                    quarantined_at = CASE
+                        WHEN retention_raw_reconciliation.file_identity = excluded.file_identity
+                            AND retention_raw_reconciliation.byte_size = excluded.byte_size
+                            THEN retention_raw_reconciliation.quarantined_at
+                        ELSE excluded.quarantined_at
+                    END,
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(raw_path)
+            .bind(file_identity)
+            .bind(byte_size)
+            .bind(format_utc_iso(Utc::now()))
+            .execute(pool)
+            .await?;
+            Ok(())
+        })
+        .await;
     drop(admission);
-    Ok(())
+    result
 }
 
 async fn clear_retention_raw_reconciliation_row(
@@ -4468,25 +4544,36 @@ async fn clear_retention_raw_reconciliation_row(
     raw_path: &str,
     file_identity: Option<&str>,
 ) -> Result<()> {
+    #[cfg(test)]
+    if retention_test_raw_ledger_cleanup_should_fail() {
+        return Err(anyhow!(
+            "simulated raw reconciliation ledger cleanup failure"
+        ));
+    }
     let admission = context
         .try_write("raw_reconciliation_ledger_cleanup")
         .await?;
-    if let Some(file_identity) = file_identity {
-        sqlx::query(
-            "DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1 AND file_identity = ?2",
-        )
-        .bind(raw_path)
-        .bind(file_identity)
-        .execute(pool)
-        .await?;
-    } else {
-        sqlx::query("DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1")
-            .bind(raw_path)
-            .execute(pool)
-            .await?;
-    }
+    let result = context
+        .run_with_candidate_budget(async {
+            if let Some(file_identity) = file_identity {
+                sqlx::query(
+                    "DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1 AND file_identity = ?2",
+                )
+                .bind(raw_path)
+                .bind(file_identity)
+                .execute(pool)
+                .await?;
+            } else {
+                sqlx::query("DELETE FROM retention_raw_reconciliation WHERE raw_path = ?1")
+                    .bind(raw_path)
+                    .execute(pool)
+                    .await?;
+            }
+            Ok(())
+        })
+        .await;
     drop(admission);
-    Ok(())
+    result
 }
 
 async fn cleanup_missing_retention_raw_reconciliation_rows(
@@ -4495,26 +4582,34 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
     raw_root: &Path,
     limit: usize,
 ) -> Result<(usize, usize, bool)> {
-    let cursor = sqlx::query_scalar::<_, String>(
-        "SELECT cursor FROM retention_recovery_cursors WHERE scope = ?1",
-    )
-    .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
-    .fetch_optional(pool)
-    .await?
-    .unwrap_or_default();
-    let rows = sqlx::query_as::<_, RetentionRawReconciliationRow>(
-        r#"
-        SELECT raw_path, file_identity, byte_size, quarantined_at
-        FROM retention_raw_reconciliation
-        WHERE raw_path > ?1
-        ORDER BY raw_path
-        LIMIT ?2
-        "#,
-    )
-    .bind(&cursor)
-    .bind(limit as i64)
-    .fetch_all(pool)
-    .await?;
+    let cursor = context
+        .run_with_candidate_budget(async {
+            Ok(sqlx::query_scalar::<_, String>(
+                "SELECT cursor FROM retention_recovery_cursors WHERE scope = ?1",
+            )
+            .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or_default())
+        })
+        .await?;
+    let rows = context
+        .run_with_candidate_budget(async {
+            Ok(sqlx::query_as::<_, RetentionRawReconciliationRow>(
+                r#"
+                SELECT raw_path, file_identity, byte_size, quarantined_at
+                FROM retention_raw_reconciliation
+                WHERE raw_path > ?1
+                ORDER BY raw_path
+                LIMIT ?2
+                "#,
+            )
+            .bind(&cursor)
+            .bind(limit as i64)
+            .fetch_all(pool)
+            .await?)
+        })
+        .await?;
     let mut failures = 0;
     let mut processed_rows = 0;
     let mut progressed = None;
@@ -4561,46 +4656,90 @@ async fn cleanup_missing_retention_raw_reconciliation_rows(
 
     if let Some(progress) = progressed {
         let admission = context.try_write("retention_recovery_cursor").await?;
-        sqlx::query(
-            r#"
-            INSERT INTO retention_recovery_cursors (scope, cursor, updated_at)
-            VALUES (?1, ?2, datetime('now'))
-            ON CONFLICT(scope) DO UPDATE SET
-                cursor = CASE
-                    WHEN retention_recovery_cursors.cursor = ?3
-                        AND excluded.cursor > retention_recovery_cursors.cursor
-                        THEN excluded.cursor
-                    ELSE retention_recovery_cursors.cursor
-                END,
-                updated_at = CASE
-                    WHEN retention_recovery_cursors.cursor = ?3
-                        AND excluded.cursor > retention_recovery_cursors.cursor
-                        THEN excluded.updated_at
-                    ELSE retention_recovery_cursors.updated_at
-                END
-            "#,
-        )
-        .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
-        .bind(progress)
-        .bind(&cursor)
-        .execute(pool)
-        .await?;
+        let result = context
+            .run_with_candidate_budget(async {
+                sqlx::query(
+                    r#"
+                    INSERT INTO retention_recovery_cursors (scope, cursor, updated_at)
+                    VALUES (?1, ?2, datetime('now'))
+                    ON CONFLICT(scope) DO UPDATE SET
+                        cursor = CASE
+                            WHEN retention_recovery_cursors.cursor = ?3
+                                AND excluded.cursor > retention_recovery_cursors.cursor
+                                THEN excluded.cursor
+                            ELSE retention_recovery_cursors.cursor
+                        END,
+                        updated_at = CASE
+                            WHEN retention_recovery_cursors.cursor = ?3
+                                AND excluded.cursor > retention_recovery_cursors.cursor
+                                THEN excluded.updated_at
+                            ELSE retention_recovery_cursors.updated_at
+                        END
+                    "#,
+                )
+                .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+                .bind(progress)
+                .bind(&cursor)
+                .execute(pool)
+                .await?;
+                Ok(())
+            })
+            .await;
         drop(admission);
+        result?;
     } else if rows.is_empty() && !cursor.is_empty() {
         let admission = context.try_write("retention_recovery_cursor").await?;
-        sqlx::query(
-            "UPDATE retention_recovery_cursors SET cursor = '', updated_at = datetime('now') \
-             WHERE scope = ?1 AND cursor = ?2",
-        )
-        .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
-        .bind(&cursor)
-        .execute(pool)
-        .await?;
+        let result = context
+            .run_with_candidate_budget(async {
+                sqlx::query(
+                    "UPDATE retention_recovery_cursors SET cursor = '', updated_at = datetime('now') \
+                     WHERE scope = ?1 AND cursor = ?2",
+                )
+                .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+                .bind(&cursor)
+                .execute(pool)
+                .await?;
+                Ok(())
+            })
+            .await;
         drop(admission);
+        result?;
     }
 
     let has_more = budget_exhausted || rows.len() == limit;
     Ok((processed_rows, failures, has_more))
+}
+
+async fn persist_raw_orphan_sweep_removal_evidence_after_admission(
+    pool: &Pool<Sqlite>,
+    context: &RawOrphanSweepPassContext,
+    removed: usize,
+    removed_bytes: u64,
+) -> Result<()> {
+    context
+        .run_with_candidate_budget(async {
+            sqlx::query(
+                "INSERT OR IGNORE INTO retention_recovery_cursors (scope, cursor) VALUES (?1, '')",
+            )
+            .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "UPDATE retention_recovery_cursors
+                 SET last_nonzero_removal_at = datetime('now'),
+                     last_nonzero_removal = ?2,
+                     last_nonzero_removal_bytes = ?3,
+                     updated_at = datetime('now')
+                 WHERE scope = ?1",
+            )
+            .bind(RETENTION_RAW_RECONCILIATION_SCOPE)
+            .bind(removed as i64)
+            .bind(removed_bytes.min(i64::MAX as u64) as i64)
+            .execute(pool)
+            .await?;
+            Ok(())
+        })
+        .await
 }
 
 #[derive(Debug, Default)]
@@ -4671,6 +4810,10 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         )
         .await
         {
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                result.complete = false;
+                return Ok(result);
+            }
             Ok((examined, failures, has_more)) => {
                 result.reconciliation_rows_checked = examined;
                 result.reconciliation_has_more = has_more;
@@ -4719,8 +4862,16 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         .iter()
         .map(|candidate| normalize_path_for_compare(&candidate.path))
         .collect::<Vec<_>>();
-    let linked_paths = match retention_raw_link_paths(pool, config, &candidate_paths).await {
+    let linked_paths = match context
+        .run_with_candidate_budget(retention_raw_link_paths(pool, config, &candidate_paths))
+        .await
+    {
         Ok(paths) => paths,
+        Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+            result.complete = false;
+            traversal.pending_candidates.extend(candidate_entries);
+            return Ok(result);
+        }
         Err(_) => {
             result.failures += 1;
             result.complete = false;
@@ -4754,6 +4905,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
+        if context.candidate_budget_expired() {
+            result.complete = false;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        }
         let raw_path = path.to_string_lossy().into_owned();
         let file_identity = retention_raw_file_identity(&metadata);
         let byte_size = match i64::try_from(metadata.len()) {
@@ -4764,8 +4922,18 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
-        let existing = match load_retention_raw_reconciliation_row(pool, &raw_path).await {
+        let existing = match context
+            .run_with_candidate_budget(load_retention_raw_reconciliation_row(pool, &raw_path))
+            .await
+        {
             Ok(existing) => existing,
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
             Err(_) => {
                 result.complete = false;
                 result.failures += 1;
@@ -4780,6 +4948,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             {
                 result.complete = false;
                 result.failures += 1;
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    result.failures = result.failures.saturating_sub(1);
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
                 if is_retention_write_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
@@ -4813,6 +4988,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             {
                 result.complete = false;
                 result.failures += 1;
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    result.failures = result.failures.saturating_sub(1);
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
                 if is_retention_write_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
@@ -4839,17 +5021,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             continue;
         }
 
-        let _directory_lock =
-            match retention_try_archive_locks_scope(async { retention_archive_file_lock(&path) })
-                .await
-            {
-                Ok(lock) => lock,
-                Err(_) => {
-                    result.complete = false;
-                    result.failures += 1;
-                    continue;
-                }
-            };
+        if context.candidate_budget_expired() {
+            result.complete = false;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        }
         let final_metadata = match retention_raw_file_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
@@ -4864,6 +5042,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 {
                     result.complete = false;
                     result.failures += 1;
+                    if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                        result.failures = result.failures.saturating_sub(1);
+                        traversal
+                            .pending_candidates
+                            .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                        break;
+                    }
                     if is_retention_write_deferred(&error) {
                         result.complete = false;
                         result.deferred = true;
@@ -4873,7 +5058,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                         }
                         traversal
                             .pending_candidates
-                            .extend(candidate_entries.iter().skip(candidate_index + 1).cloned());
+                            .extend(candidate_entries.iter().skip(candidate_index).cloned());
                         break;
                     }
                 }
@@ -4885,6 +5070,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
+        if context.candidate_budget_expired() {
+            result.complete = false;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        }
         let final_identity = retention_raw_file_identity(&final_metadata);
         let final_size = match i64::try_from(final_metadata.len()) {
             Ok(size) => size,
@@ -4894,9 +5086,19 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 continue;
             }
         };
-        let current = match load_retention_raw_reconciliation_row(pool, &raw_path).await {
+        let current = match context
+            .run_with_candidate_budget(load_retention_raw_reconciliation_row(pool, &raw_path))
+            .await
+        {
             Ok(Some(current)) => current,
             Ok(None) => continue,
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
             Err(_) => {
                 result.complete = false;
                 result.failures += 1;
@@ -4915,6 +5117,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             {
                 result.complete = false;
                 result.failures += 1;
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    result.failures = result.failures.saturating_sub(1);
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
                 if is_retention_write_deferred(&error) {
                     result.complete = false;
                     result.deferred = true;
@@ -4935,6 +5144,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         }
         let inventory_admission = match context.try_write("raw_reconciliation_release").await {
             Ok(admission) => admission,
+            Err(error) if is_raw_orphan_sweep_candidate_budget_expired(&error) => {
+                result.complete = false;
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
             Err(error) => {
                 result.complete = false;
                 result.deferred = true;
@@ -4948,60 +5164,181 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 break;
             }
         };
-        match retention_raw_candidate_is_referenced(pool, config, &path, effective_fallback_root)
+        let directory_lock =
+            match retention_try_archive_locks_scope(async { retention_archive_file_lock(&path) })
+                .await
+            {
+                Ok(lock) => lock,
+                Err(_) => {
+                    drop(inventory_admission);
+                    result.complete = false;
+                    result.failures += 1;
+                    continue;
+                }
+            };
+        match context
+            .run_with_candidate_budget(retention_raw_candidate_is_referenced(
+                pool,
+                config,
+                &path,
+                effective_fallback_root,
+            ))
             .await
         {
             Ok(true) => {
+                drop(directory_lock);
                 drop(inventory_admission);
                 result.referenced_skipped += 1;
                 continue;
             }
             Ok(false) => {}
-            Err(_) => {
+            Err(error) => {
+                drop(directory_lock);
                 drop(inventory_admission);
+                if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                    result.complete = false;
+                    traversal
+                        .pending_candidates
+                        .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                    break;
+                }
                 result.complete = false;
                 result.failures += 1;
                 continue;
             }
         }
-        if mark_retention_raw_inventory_reset_intent(pool)
+        if let Err(error) = context
+            .run_with_candidate_budget(mark_retention_raw_inventory_reset_intent(pool))
             .await
-            .is_err()
         {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
+            result.failures += 1;
+            continue;
+        }
+        let unlink_metadata = match retention_raw_file_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata,
+            Ok(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                continue;
+            }
+            Err(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+        };
+        if context.candidate_budget_expired() {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        }
+        let unlink_identity = retention_raw_file_identity(&unlink_metadata);
+        let unlink_size = match i64::try_from(unlink_metadata.len()) {
+            Ok(size) => size,
+            Err(_) => {
+                drop(directory_lock);
+                drop(inventory_admission);
+                result.complete = false;
+                result.failures += 1;
+                continue;
+            }
+        };
+        if unlink_identity != final_identity
+            || unlink_size != final_size
+            || unlink_identity != current.file_identity
+            || unlink_size != current.byte_size
+        {
+            drop(directory_lock);
             drop(inventory_admission);
             result.complete = false;
             result.failures += 1;
+            traversal
+                .pending_candidates
+                .push_back(candidate_entries[candidate_index].clone());
             continue;
         }
         #[cfg(test)]
         if retention_test_raw_unlink_should_fail() {
+            drop(directory_lock);
             drop(inventory_admission);
             result.complete = false;
             result.failures += 1;
             continue;
         }
         if fs::remove_file(&path).is_err() {
+            drop(directory_lock);
             drop(inventory_admission);
             result.complete = false;
             result.failures += 1;
             continue;
         }
         result.removed += 1;
-        result.removed_bytes = result.removed_bytes.saturating_add(final_metadata.len());
+        result.removed_bytes = result.removed_bytes.saturating_add(unlink_metadata.len());
         RETENTION_RAW_CAPTURE_CIRCUIT
             .try_with(|circuit| {
                 if let Some(circuit) = circuit.borrow().as_ref() {
-                    circuit.record_deleted_bytes(final_metadata.len());
+                    circuit.record_deleted_bytes(unlink_metadata.len());
                 }
             })
             .ok();
+        if let Err(error) = persist_raw_orphan_sweep_removal_evidence_after_admission(
+            pool,
+            &context,
+            result.removed,
+            result.removed_bytes,
+        )
+        .await
+        {
+            drop(directory_lock);
+            drop(inventory_admission);
+            result.complete = false;
+            if !is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                result.failures += 1;
+            }
+            traversal
+                .pending_candidates
+                .extend(candidate_entries.iter().skip(candidate_index).cloned());
+            break;
+        }
+        drop(directory_lock);
         drop(inventory_admission);
-        if let Err(error) =
-            clear_retention_raw_reconciliation_row(pool, &context, &raw_path, Some(&final_identity))
-                .await
+        if let Err(error) = clear_retention_raw_reconciliation_row(
+            pool,
+            &context,
+            &raw_path,
+            Some(&unlink_identity),
+        )
+        .await
         {
             result.complete = false;
             result.failures += 1;
+            if is_raw_orphan_sweep_candidate_budget_expired(&error) {
+                result.failures = result.failures.saturating_sub(1);
+                traversal
+                    .pending_candidates
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
+                break;
+            }
             if is_retention_write_deferred(&error) {
                 result.complete = false;
                 result.deferred = true;
@@ -5011,7 +5348,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 }
                 traversal
                     .pending_candidates
-                    .extend(candidate_entries.iter().skip(candidate_index + 1).cloned());
+                    .extend(candidate_entries.iter().skip(candidate_index).cloned());
                 break;
             }
         }

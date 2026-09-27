@@ -1532,6 +1532,71 @@ async fn raw_reset_intent_survives_unlink_failure_before_file_release() {
 }
 
 #[tokio::test]
+async fn raw_orphan_sweep_persists_removal_evidence_before_ledger_cleanup() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-removal-evidence").await;
+    let raw_path = config
+        .proxy_raw_dir
+        .join("ledger-cleanup-failure-orphan.bin");
+    let payload = b"ledger-cleanup-failure-orphan";
+    fs::write(&raw_path, payload).expect("write raw orphan");
+    let mut initial_traversal = RetentionRawDirectoryTraversal::default();
+    let initial =
+        sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut initial_traversal)
+            .await
+            .expect("record raw quarantine");
+    assert_eq!(initial.quarantined, 1);
+    sqlx::query("UPDATE retention_raw_reconciliation SET quarantined_at = ?1 WHERE raw_path = ?2")
+        .bind(format_utc_iso(
+            Utc::now() - ChronoDuration::seconds(24 * 60 * 60 + 1),
+        ))
+        .bind(raw_path.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .expect("expire raw quarantine");
+
+    let fail_cleanup = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut release_traversal = RetentionRawDirectoryTraversal::default();
+    let pass = crate::maintenance::RETENTION_TEST_RAW_LEDGER_CLEANUP_FAILURE
+        .scope(
+            fail_cleanup,
+            sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut release_traversal),
+        )
+        .await
+        .expect("retain removal evidence after ledger cleanup failure");
+
+    assert_eq!(pass.removed, 1);
+    assert_eq!(pass.removed_bytes, payload.len() as u64);
+    assert_eq!(pass.failures, 1);
+    assert!(!pass.complete);
+    assert!(!raw_path.exists());
+    let (last_removed, last_removed_bytes, last_removed_at): (
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT last_nonzero_removal, last_nonzero_removal_bytes, last_nonzero_removal_at \
+             FROM retention_recovery_cursors WHERE scope = 'raw_payload_files'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load durable removal evidence");
+    assert_eq!(last_removed, Some(1));
+    assert_eq!(last_removed_bytes, Some(payload.len() as i64));
+    assert!(last_removed_at.is_some());
+    let ledger_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path = ?1")
+            .bind(raw_path.to_string_lossy().as_ref())
+            .fetch_one(&pool)
+            .await
+            .expect("retain raw quarantine ledger after cleanup failure");
+    assert_eq!(ledger_rows, 1);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn raw_orphan_sweep_continues_after_one_unlink_failure() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-sweep-item-failure").await;
