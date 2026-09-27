@@ -290,6 +290,37 @@ describe("useInvocationTimeline", () => {
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("revision-2");
   });
 
+  it("does not run a coalesced follow-up while live refresh is frozen", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRevision={1} liveRefreshAllowed />);
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} liveRefreshAllowed />);
+    });
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} liveRefreshAllowed={false} />);
+    });
+    pending.shift()?.(createTimeline("frozen-request"));
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} liveRefreshAllowed />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("traverses immutable pages and folds duplicate logical invocations", async () => {
     const firstPage = createTimeline("page-one");
     firstPage.asOf = "snapshot-1";

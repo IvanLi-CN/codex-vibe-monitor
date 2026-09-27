@@ -55,6 +55,9 @@ static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sy
 #[derive(Clone)]
 struct TimelineMaterializationPause {
     range_start: String,
+    range_end: String,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     token: Arc<StdMutex<Option<String>>>,
@@ -66,12 +69,29 @@ static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
 
 #[cfg(test)]
-async fn pause_after_timeline_materialization(token: &str, range_start: &str) {
-    let pause = INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    if let Some(pause) = pause.filter(|pause| pause.range_start == range_start) {
+async fn pause_after_timeline_materialization(
+    token: &str,
+    range_start: &str,
+    range_end: &str,
+    upstream_account_id: Option<i64>,
+    include_live: bool,
+) {
+    let pause = {
+        let mut configured_pause = INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if configured_pause.as_ref().is_some_and(|pause| {
+            pause.range_start == range_start
+                && pause.range_end == range_end
+                && pause.upstream_account_id == upstream_account_id
+                && pause.include_live == include_live
+        }) {
+            configured_pause.take()
+        } else {
+            None
+        }
+    };
+    if let Some(pause) = pause {
         *pause
             .token
             .lock()
@@ -82,7 +102,7 @@ async fn pause_after_timeline_materialization(token: &str, range_start: &str) {
 }
 
 #[cfg(not(test))]
-async fn pause_after_timeline_materialization(_: &str, _: &str) {}
+async fn pause_after_timeline_materialization(_: &str, _: &str, _: &str, _: Option<i64>, _: bool) {}
 
 struct TimelineSnapshotCleanupGuard {
     token: String,
@@ -701,6 +721,7 @@ async fn materialize_timeline_snapshot(
             source_scope,
             snapshot_id,
             attempt_snapshot_id,
+            false,
         )
         .await?;
         for record in page
@@ -750,6 +771,7 @@ async fn materialize_timeline_snapshot(
         source_scope,
         snapshot_id,
         attempt_snapshot_id,
+        true,
     )
     .await?;
     runtime_records.retain(|record| runtime_record_matches_filters(record, filters, source_scope));
@@ -955,7 +977,14 @@ pub(crate) async fn fetch_timeline(
             include_live,
         )?;
         cleanup_guard = Some(snapshot_cleanup_guard);
-        pause_after_timeline_materialization(&as_of, &canonical_range_start).await;
+        pause_after_timeline_materialization(
+            &as_of,
+            &canonical_range_start,
+            &canonical_range_end,
+            params.upstream_account_id,
+            include_live,
+        )
+        .await;
         (as_of.clone(), snapshot)
     };
     ensure_timeline_snapshot_table(&state.pool).await?;
@@ -1076,6 +1105,7 @@ async fn hydrate_timeline_accounts(
         source_scope,
         snapshot_id,
         attempt_snapshot_id,
+        false,
     )
     .await
 }
@@ -1086,6 +1116,7 @@ async fn hydrate_timeline_accounts_on_connection(
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
     attempt_snapshot_id: i64,
+    preserve_valid_runtime_account: bool,
 ) -> Result<(), ApiError> {
     let mut invalid_account_keys = HashSet::new();
     for record in records.iter_mut() {
@@ -1157,10 +1188,17 @@ async fn hydrate_timeline_accounts_on_connection(
         .collect::<std::collections::HashMap<_, _>>();
     for record in records {
         if let Some(row) = fallbacks.get(&(record.invoke_id.clone(), record.occurred_at.clone())) {
-            record.upstream_account_id = row.upstream_account_id;
-            record.upstream_account_name = (row.payload_upstream_account_id_is_valid == 1)
-                .then(|| row.upstream_account_name.clone())
-                .flatten();
+            if let Some(upstream_account_id) = row.upstream_account_id {
+                record.upstream_account_id = Some(upstream_account_id);
+                record.upstream_account_name = (row.payload_upstream_account_id_is_valid == 1)
+                    .then(|| row.upstream_account_name.clone())
+                    .flatten();
+            } else if !preserve_valid_runtime_account
+                && row.payload_upstream_account_id_is_valid != 1
+            {
+                record.upstream_account_id = None;
+                record.upstream_account_name = None;
+            }
         }
         if invalid_account_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
             && record.upstream_account_id.is_none()
@@ -1425,6 +1463,9 @@ mod tests {
 
         let pause = TimelineMaterializationPause {
             range_start: format_utc_iso(range_start),
+            range_end: format_utc_iso(range_end),
+            upstream_account_id: Some(42),
+            include_live: false,
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             token: Arc::new(StdMutex::new(None)),
@@ -1931,6 +1972,27 @@ mod tests {
         state
             .proxy_runtime_invocations
             .upsert(runtime_missing_account);
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response, detail_level) VALUES ('runtime-valid-account', ?1, 'proxy', 'running', '{bad-json', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_880)))
+        .execute(&state.pool)
+        .await
+        .expect("insert malformed durable runtime account fixture");
+        let mut runtime_valid_account =
+            crate::api::slices::invocations_and_summary::summary_projection_test_invocation();
+        runtime_valid_account.id = 99_005;
+        runtime_valid_account.invoke_id = "runtime-valid-account".to_string();
+        runtime_valid_account.occurred_at = db_occurred_at_lower_bound(at(86_880));
+        runtime_valid_account.source = SOURCE_PROXY.to_string();
+        runtime_valid_account.status = Some("running".to_string());
+        runtime_valid_account.live_phase = Some("requesting".to_string());
+        runtime_valid_account.t_total_ms = None;
+        runtime_valid_account.upstream_account_id = Some(48);
+        runtime_valid_account.upstream_account_name = Some("runtime-valid".to_string());
+        state
+            .proxy_runtime_invocations
+            .upsert(runtime_valid_account);
 
         let Json(response) = fetch_timeline(
             State(state.clone()),
@@ -1950,6 +2012,35 @@ mod tests {
         assert_eq!(response.records[0].invoke_id, "overflow");
         assert_eq!(response.records[0].upstream_account_id, Some(42));
         assert_eq!(response.records[0].upstream_account_name, None);
+        let Json(runtime_valid_response) = fetch_timeline(
+            State(state.clone()),
+            Query(InvocationTimelineQuery {
+                from: format_utc_iso(at(86_000)),
+                to: format_utc_iso(at(87_000)),
+                upstream_account_id: Some(48),
+                include_live: Some(true),
+                limit: None,
+                cursor: None,
+                as_of: None,
+            }),
+        )
+        .await
+        .expect("fetch valid runtime account fixture");
+        assert_eq!(runtime_valid_response.total, 1);
+        assert_eq!(
+            runtime_valid_response.records[0].invoke_id,
+            "runtime-valid-account"
+        );
+        assert_eq!(
+            runtime_valid_response.records[0].upstream_account_id,
+            Some(48)
+        );
+        assert_eq!(
+            runtime_valid_response.records[0]
+                .upstream_account_name
+                .as_deref(),
+            Some("runtime-valid")
+        );
         let Json(integer_response) = fetch_timeline(
             State(state.clone()),
             Query(InvocationTimelineQuery {

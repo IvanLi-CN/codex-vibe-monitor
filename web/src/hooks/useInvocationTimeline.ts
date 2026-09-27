@@ -161,6 +161,8 @@ export function useInvocationTimeline({
   const pendingRefreshRef = useRef(false);
   const pendingRefreshTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const refreshRef = useRef<(() => Promise<void>) | null>(null);
+  const liveRefreshAllowedRef = useRef(liveRefreshAllowed);
+  liveRefreshAllowedRef.current = liveRefreshAllowed;
   const hasDataRef = useRef(false);
   const suppressRefreshRef = useRef(false);
   const deferredRefreshRef = useRef(false);
@@ -279,6 +281,10 @@ export function useInvocationTimeline({
               if (pendingRefreshTimerRef.current !== followUpTimer) return;
               pendingRefreshTimerRef.current = null;
               if (followUpSequence !== requestSequence.current) return;
+              if (!closedNaturalDay && !liveRefreshAllowedRef.current) {
+                pendingRefreshRef.current = false;
+                return;
+              }
               void refreshRef.current?.();
             }, 0);
             pendingRefreshTimerRef.current = followUpTimer;
