@@ -103,6 +103,14 @@ describe("UsageBreakdownTooltip", () => {
     ).not.toBeNull();
     expect(host.querySelector('[data-testid="usage-breakdown-mobile-list"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="usage-breakdown-mobile-controls"]')).not.toBeNull();
+    const mobileSortRow = host.querySelector('[data-testid="usage-breakdown-mobile-sort-row"]');
+    expect(mobileSortRow).not.toBeNull();
+    expect(
+      mobileSortRow?.querySelector('[data-testid="dashboard-model-breakdown-model-sort"]'),
+    ).not.toBeNull();
+    expect(
+      mobileSortRow?.querySelector('[data-testid="dashboard-model-breakdown-sort-total"]'),
+    ).not.toBeNull();
     expect(totalRowCells(host)).toEqual([
       "T100$3.00",
       "T20$0.50",
@@ -199,9 +207,12 @@ describe("UsageBreakdownTooltip", () => {
     ];
     const { host, root } = renderTooltip(breakdown);
 
-    expect(host.textContent).toContain("Reasoning effort: max");
-    expect(host.textContent).toContain("Reasoning effort: ultra");
-    expect(host.textContent).toContain("Reasoning effort: —");
+    expect(host.textContent).toContain("gpt-5.6 · max");
+    expect(host.textContent).toContain("gpt-5.6-luna-2026-07-27 · ultra");
+    expect(host.textContent).toContain("custom-model · —");
+    expect(host.querySelectorAll('[data-model-context-display="model-badge"]')).toHaveLength(4);
+    expect(host.querySelectorAll("[data-reasoning-effort-tone]")).toHaveLength(6);
+    expect(host.textContent).not.toContain("Reasoning effort:");
     expect(host.querySelector('[data-model-identity="gpt-5.6"]')).not.toBeNull();
     expect(host.querySelector('[data-model-identity="gpt-5.6-luna-2026-07-27"]')).not.toBeNull();
     expect(host.textContent).not.toContain("MAX");

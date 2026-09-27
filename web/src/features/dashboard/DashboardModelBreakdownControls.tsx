@@ -54,14 +54,8 @@ export function ModelBreakdownSortIndicator({
 }) {
   return (
     <AppIcon
-      name={
-        active && direction === "asc"
-          ? "arrow-up-bold"
-          : active
-            ? "arrow-down-bold"
-            : "sort-variant"
-      }
-      className="h-3.5 w-3.5 shrink-0"
+      name={active && direction === "asc" ? "arrow-up" : active ? "arrow-down" : "sort-variant"}
+      className="block h-3 w-3 shrink-0"
       aria-hidden="true"
     />
   );
@@ -113,7 +107,7 @@ export function ModelBreakdownModelSortButton({
       }
       data-testid="dashboard-model-breakdown-model-sort"
     >
-      <span className="truncate">{label}</span>
+      <span className="truncate leading-4">{label}</span>
       <ModelBreakdownSortIndicator active={active} direction={direction} />
     </button>
   );
@@ -178,7 +172,7 @@ export function ModelBreakdownMetricSortButton({
       }
       data-testid={`dashboard-model-breakdown-sort-${column}`}
     >
-      <span>{label}</span>
+      <span className="leading-4">{label}</span>
       <ModelBreakdownSortIndicator active={active} direction={direction} />
     </button>
   );

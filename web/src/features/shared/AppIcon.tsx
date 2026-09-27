@@ -5,9 +5,11 @@ import alertCircleIcon from "@iconify-icons/mdi/alert-circle";
 import alertCircleOutlineIcon from "@iconify-icons/mdi/alert-circle-outline";
 import alertDecagramOutlineIcon from "@iconify-icons/mdi/alert-decagram-outline";
 import alertOutlineIcon from "@iconify-icons/mdi/alert-outline";
+import arrowDownIcon from "@iconify-icons/mdi/arrow-down";
 import arrowDownBoldIcon from "@iconify-icons/mdi/arrow-down-bold";
 import arrowLeftIcon from "@iconify-icons/mdi/arrow-left";
 import arrowRightBoldIcon from "@iconify-icons/mdi/arrow-right-bold";
+import arrowUpIcon from "@iconify-icons/mdi/arrow-up";
 import arrowUpBoldIcon from "@iconify-icons/mdi/arrow-up-bold";
 import autoFixIcon from "@iconify-icons/mdi/auto-fix";
 import badgeAccountHorizontalOutlineIcon from "@iconify-icons/mdi/badge-account-horizontal-outline";
@@ -86,9 +88,11 @@ const appIconRegistry = {
   "alert-circle-outline": alertCircleOutlineIcon,
   "alert-decagram-outline": alertDecagramOutlineIcon,
   "alert-outline": alertOutlineIcon,
+  "arrow-down": arrowDownIcon,
   "arrow-down-bold": arrowDownBoldIcon,
   "arrow-left": arrowLeftIcon,
   "arrow-right-bold": arrowRightBoldIcon,
+  "arrow-up": arrowUpIcon,
   "arrow-up-bold": arrowUpBoldIcon,
   "auto-fix": autoFixIcon,
   "badge-account-horizontal-outline": badgeAccountHorizontalOutlineIcon,
