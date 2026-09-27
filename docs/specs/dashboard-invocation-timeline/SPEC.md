@@ -139,6 +139,86 @@
   evidence_note: verifies mobile readability, complete Y-axis ticks, zero-origin alignment, centered status legend, controls, the overlaid timeline/TTFT plot, and the bottom X-axis.
   image: ![Invocation timeline mobile](./assets/invocation-timeline-mobile.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/LiveRefreshPending
+  state: live revision refresh in progress while the committed snapshot remains visible
+  evidence_note: verifies the timeline remains mounted and retains the matching committed viewport while a live refresh is delayed.
+  image: ![Timeline refreshing on desktop](./assets/dashboard-timeline-refreshing-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileLiveRefreshPending
+  state: responsive live refresh in progress with the committed snapshot visible
+  evidence_note: verifies mobile timeline visibility and stable layout during a delayed refresh.
+  image: ![Timeline refreshing on mobile](./assets/dashboard-timeline-refreshing-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/LiveRefreshStale
+  state: failed live refresh with the last committed snapshot retained and marked stale
+  evidence_note: verifies a failed refresh freezes the last successful data and does not replace the timeline with initial loading.
+  image: ![Stale timeline after refresh failure](./assets/dashboard-timeline-stale-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/DenseConcurrency190
+  state: dense 190-call sample
+  evidence_note: verifies dense invocation rendering remains inside the fixed chart frame.
+  image: ![Dense invocation timeline on desktop](./assets/dashboard-timeline-dense-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileDenseConcurrency190
+  state: responsive dense 190-call sample
+  evidence_note: verifies dense invocation rendering and chart controls remain readable on mobile.
+  image: ![Dense invocation timeline on mobile](./assets/dashboard-timeline-dense-mobile.png)
+
 ## References
 
 - `./IMPLEMENTATION.md`
