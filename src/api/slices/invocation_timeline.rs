@@ -1224,12 +1224,12 @@ fn timeline_upstream_account_id_sql(
     let attempt_snapshot_predicate = attempt_snapshot_id
         .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
         .unwrap_or_default();
+    let payload_id = format!(
+        "CASE WHEN {payload_is_valid} THEN {} END",
+        timeline_payload_account_id_sql(invocation_ref)
+    );
     format!(
         "COALESCE({payload_id}, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.id > 0{attempt_snapshot_predicate} AND typeof(attempt.upstream_account_id) = 'integer' AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < 9007199254740992 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))",
-        payload_id = format!(
-            "CASE WHEN {payload_is_valid} THEN {} END",
-            timeline_payload_account_id_sql(invocation_ref)
-        ),
     )
 }
 
