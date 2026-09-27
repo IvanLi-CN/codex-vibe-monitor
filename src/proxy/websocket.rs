@@ -1644,10 +1644,12 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let terminal_for_message = upstream_text
                             .as_deref()
                             .is_some_and(ws_text_event_is_terminal);
-                        if let Some(text) = upstream_text.as_deref() {
-                            usage_tracker.observe_upstream_text(state.as_ref(), text).await;
-                        }
-                        if terminal_for_message {
+                        let terminal_persisted = if let Some(text) = upstream_text.as_deref() {
+                            usage_tracker.observe_upstream_text(state.as_ref(), text).await
+                        } else {
+                            false
+                        };
+                        if terminal_for_message && terminal_persisted {
                             saw_terminal_upstream_event = true;
                             active_turn_waiting_terminal = false;
                         }
@@ -1754,10 +1756,10 @@ pub(crate) async fn proxy_websocket_tunnel(
                     if let TungsteniteMessage::Text(text) = &message {
                         let text = text.as_str();
                         let terminal_for_message = ws_text_event_is_terminal(text);
-                        usage_tracker
+                        let terminal_persisted = usage_tracker
                             .observe_upstream_text(state.as_ref(), text)
                             .await;
-                        if terminal_for_message {
+                        if terminal_for_message && terminal_persisted {
                             saw_terminal_upstream_event = true;
                             active_turn_waiting_terminal = false;
                             break;
@@ -2211,9 +2213,7 @@ pub(crate) async fn record_ws_pre_upstream_failure(
         message,
     )
     .await;
-    if result.is_err()
-        && let Some(prompt_cache_key) = prompt_cache_key
-    {
+    if let Some(prompt_cache_key) = prompt_cache_key {
         release_active_prompt_cache_conversation(
             &state.prompt_cache_conversation_cache,
             prompt_cache_key,
@@ -2597,7 +2597,7 @@ impl WsUsageTracker {
         true
     }
 
-    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
+    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) -> bool {
         if self.turn_stream_started_at.is_none() {
             self.turn_stream_started_at = Some(Instant::now());
         }
@@ -2640,7 +2640,7 @@ impl WsUsageTracker {
                     );
                 }
             }
-            return;
+            return false;
         };
         if let Some(service_tier) = event.service_tier.as_ref() {
             self.service_tier = Some(service_tier.clone());
@@ -2650,7 +2650,7 @@ impl WsUsageTracker {
         let (usage, usage_changed) = self.usage.update_with_change(event.usage);
         event.usage = usage;
         if !websocket_event_is_terminal(event.event_type.as_str()) {
-            return;
+            return false;
         }
         let response_id_override = self.response_id.clone();
         let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
@@ -2685,9 +2685,10 @@ impl WsUsageTracker {
                 error = %err,
                 "failed to persist websocket usage event"
             );
-        } else {
-            self.mark_terminal_prompt_cache_key();
+            return false;
         }
+        self.mark_terminal_prompt_cache_key();
+        true
     }
 
     async fn publish_first_token_runtime_snapshot(&mut self, state: &AppState) {
@@ -4958,6 +4959,58 @@ mod websocket_tests {
             conversation_id.as_str()
         );
         assert_eq!(&invoke_id[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
+    }
+
+    #[tokio::test]
+    async fn websocket_pre_upstream_failure_releases_prompt_cache_lease_after_persistence() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base"),
+        )
+        .await;
+        let prompt_cache_key = "websocket-pre-upstream-failure";
+        let invoke_id = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
+            .await
+            .expect("allocate websocket pre-upstream failure invoke id");
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: invoke_id.clone(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+            upstream_base_url_host: Some("api.openai.com".to_string()),
+            request_model: Some("gpt-5.6".to_string()),
+        };
+
+        record_ws_pre_upstream_failure(
+            &state,
+            &trace,
+            Some(prompt_cache_key),
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            "test pre-upstream failure",
+        )
+        .await
+        .expect("persist websocket pre-upstream failure");
+
+        let cache = state.prompt_cache_conversation_cache.lock().await;
+        assert!(
+            !cache
+                .identity_cache
+                .active_prompt_cache_keys
+                .contains_key(prompt_cache_key)
+        );
+        drop(cache);
+
+        state
+            .sqlite_batch_writer
+            .flush_buffered_for_test(&state.pool)
+            .await;
+        let persisted_status: String =
+            sqlx::query_scalar("SELECT status FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(invoke_id)
+                .fetch_one(&state.pool)
+                .await
+                .expect("load persisted websocket pre-upstream failure");
+        assert_eq!(persisted_status, "http_502");
     }
 
     #[test]

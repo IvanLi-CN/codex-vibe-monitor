@@ -122,6 +122,10 @@ async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats(
     .await;
     assert!(invalid_conversation_id.is_err());
 
+    sqlx::query("DELETE FROM prompt_cache_conversations")
+        .execute(&pool)
+        .await
+        .expect("remove backfilled identity to exercise marker recovery");
     ensure_schema(&pool)
         .await
         .expect("rerun prompt-cache conversation migration");
@@ -511,8 +515,12 @@ async fn prompt_cache_conversation_allocator_recovers_same_key_database_race() {
         &first[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
         &second[..PROMPT_CACHE_CONVERSATION_ID_LENGTH]
     );
-    assert_eq!(&first[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
-    assert_eq!(&second[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
+    let mut suffixes = [
+        &first[PROMPT_CACHE_CONVERSATION_ID_LENGTH..],
+        &second[PROMPT_CACHE_CONVERSATION_ID_LENGTH..],
+    ];
+    suffixes.sort_unstable();
+    assert_eq!(suffixes, ["AAAA", "AAAB"]);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'concurrent-allocator-key'",

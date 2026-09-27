@@ -332,11 +332,10 @@ pub(crate) fn extract_prompt_cache_key_from_request_body(value: &Value) -> Optio
         "/prompt_cache_key",
         "/promptCacheKey",
     ] {
-        if let Some(prompt_cache_key) = value.pointer(pointer).and_then(|v| v.as_str()) {
-            let normalized = prompt_cache_key.trim();
-            if !normalized.is_empty() {
-                return Some(normalized.to_string());
-            }
+        if let Some(prompt_cache_key) = value.pointer(pointer).and_then(|v| v.as_str())
+            && let Some(normalized) = bounded_prompt_cache_key(prompt_cache_key)
+        {
+            return Some(normalized);
         }
     }
     None

@@ -2305,8 +2305,10 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cac
     recovery_trigger: &'static str,
     prompt_cache_key: Option<String>,
 ) -> Result<()> {
+    let mut flush_completed = false;
     let result = async {
         state.sqlite_batch_writer.flush_now(&state.pool).await?;
+        flush_completed = true;
 
         let recovered_invocations = {
             let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
@@ -2345,11 +2347,19 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cac
     .await;
 
     if let Some(prompt_cache_key) = prompt_cache_key {
-        release_active_prompt_cache_conversation(
-            &state.prompt_cache_conversation_cache,
-            &prompt_cache_key,
-        )
-        .await;
+        if flush_completed {
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                &prompt_cache_key,
+            )
+            .await;
+        } else {
+            warn!(
+                prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(&prompt_cache_key),
+                error = ?result.as_ref().err(),
+                "retaining prompt-cache conversation lease because dropped-invocation recovery could not flush pending writes"
+            );
+        }
     }
 
     result

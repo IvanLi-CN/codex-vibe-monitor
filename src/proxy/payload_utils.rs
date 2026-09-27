@@ -1999,6 +1999,7 @@ pub(crate) fn header_value_as_str<'a>(
 
 pub(crate) const PROMPT_CACHE_ATTRIBUTION_TTL: Duration = Duration::from_secs(15 * 60);
 pub(crate) const CLIENT_ATTRIBUTION_FINGERPRINT_VERSION: &str = "v1";
+pub(crate) const PROMPT_CACHE_KEY_MAX_BYTES: usize = REQUEST_CHAIN_METADATA_MAX_BYTES;
 
 pub(crate) static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<
     std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionBucket>>,
@@ -2265,12 +2266,17 @@ pub(crate) fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Opti
                 .map(str::trim)
                 .unwrap_or(raw_value.trim())
                 .trim_matches('"');
-            if !candidate.is_empty() {
-                return Some(candidate.to_string());
+            if let Some(candidate) = bounded_prompt_cache_key(candidate) {
+                return Some(candidate);
             }
         }
     }
     None
+}
+
+pub(crate) fn bounded_prompt_cache_key(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (!value.is_empty() && value.len() <= PROMPT_CACHE_KEY_MAX_BYTES).then(|| value.to_string())
 }
 
 pub(crate) fn extract_first_ip_from_x_forwarded_for(raw: &str) -> Option<String> {
