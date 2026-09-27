@@ -54,6 +54,7 @@ static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sy
 #[cfg(test)]
 #[derive(Clone)]
 struct TimelineMaterializationPause {
+    range_start: String,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     token: Arc<StdMutex<Option<String>>>,
@@ -65,12 +66,12 @@ static INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE: once_cell::sync::Lazy<
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
 
 #[cfg(test)]
-async fn pause_after_timeline_materialization(token: &str) {
+async fn pause_after_timeline_materialization(token: &str, range_start: &str) {
     let pause = INVOCATION_TIMELINE_TEST_MATERIALIZATION_PAUSE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    if let Some(pause) = pause {
+    if let Some(pause) = pause.filter(|pause| pause.range_start == range_start) {
         *pause
             .token
             .lock()
@@ -81,7 +82,7 @@ async fn pause_after_timeline_materialization(token: &str) {
 }
 
 #[cfg(not(test))]
-async fn pause_after_timeline_materialization(_: &str) {}
+async fn pause_after_timeline_materialization(_: &str, _: &str) {}
 
 struct TimelineSnapshotCleanupGuard {
     token: String,
@@ -946,7 +947,6 @@ pub(crate) async fn fetch_timeline(
             snapshot_cleanup_guard.cleanup_now().await;
             return Err(error);
         }
-        pause_after_timeline_materialization(&as_of).await;
         let snapshot = load_timeline_snapshot(
             &as_of,
             &canonical_range_start,
@@ -955,6 +955,7 @@ pub(crate) async fn fetch_timeline(
             include_live,
         )?;
         cleanup_guard = Some(snapshot_cleanup_guard);
+        pause_after_timeline_materialization(&as_of, &canonical_range_start).await;
         (as_of.clone(), snapshot)
     };
     ensure_timeline_snapshot_table(&state.pool).await?;
@@ -1423,6 +1424,7 @@ mod tests {
         .expect("insert abort fixture");
 
         let pause = TimelineMaterializationPause {
+            range_start: format_utc_iso(range_start),
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             token: Arc::new(StdMutex::new(None)),
