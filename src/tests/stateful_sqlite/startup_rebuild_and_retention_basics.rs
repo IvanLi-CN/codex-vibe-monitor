@@ -4573,6 +4573,12 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
     .execute(&pool)
     .await
     .expect("seed legacy cursor row");
+    sqlx::query(
+        "INSERT INTO retention_recovery_cursors (scope, cursor) VALUES ('raw_payload_files', 'raw-legacy-cursor')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy raw cursor row");
     sqlx::query("DROP TABLE retention_prepared_archives")
         .execute(&pool)
         .await
@@ -4616,10 +4622,71 @@ async fn ensure_schema_recreates_retention_recovery_tables_idempotently() {
         "last_failure_fingerprint",
         "defer_reason",
         "last_progress_at",
+        "last_admission_stage",
+        "last_admission_cause",
+        "last_settled_pass_at",
+        "last_settled_pass_complete",
+        "last_settled_pass_inspected_entries",
+        "last_settled_pass_referenced_skipped",
+        "last_settled_pass_quarantined",
+        "last_settled_pass_removed",
+        "last_settled_pass_removed_bytes",
+        "last_nonzero_removal_at",
+        "last_nonzero_removal",
+        "last_nonzero_removal_bytes",
     ] {
         assert!(
             cursor_columns.contains(column),
             "missing cursor migration column {column}"
+        );
+    }
+    let raw_cursor = sqlx::query(
+        r#"
+        SELECT cursor,
+               last_admission_stage,
+               last_admission_cause,
+               last_settled_pass_at,
+               last_settled_pass_complete,
+               last_settled_pass_inspected_entries,
+               last_settled_pass_referenced_skipped,
+               last_settled_pass_quarantined,
+               last_settled_pass_removed,
+               last_settled_pass_removed_bytes,
+               last_nonzero_removal_at,
+               last_nonzero_removal,
+               last_nonzero_removal_bytes
+        FROM retention_recovery_cursors
+        WHERE scope = 'raw_payload_files'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated legacy raw cursor row");
+    assert_eq!(raw_cursor.get::<String, _>("cursor"), "raw-legacy-cursor");
+    for column in [
+        "last_admission_stage",
+        "last_admission_cause",
+        "last_settled_pass_at",
+        "last_nonzero_removal_at",
+    ] {
+        assert!(
+            raw_cursor.get::<Option<String>, _>(column).is_none(),
+            "legacy raw cursor evidence should remain unknown for {column}"
+        );
+    }
+    for column in [
+        "last_settled_pass_complete",
+        "last_settled_pass_inspected_entries",
+        "last_settled_pass_referenced_skipped",
+        "last_settled_pass_quarantined",
+        "last_settled_pass_removed",
+        "last_settled_pass_removed_bytes",
+        "last_nonzero_removal",
+        "last_nonzero_removal_bytes",
+    ] {
+        assert!(
+            raw_cursor.get::<Option<i64>, _>(column).is_none(),
+            "legacy raw cursor evidence should remain unknown for {column}"
         );
     }
 

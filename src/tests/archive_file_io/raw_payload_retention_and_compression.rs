@@ -1509,6 +1509,7 @@ async fn raw_reset_intent_survives_unlink_failure_before_file_release() {
 
     assert_eq!(pass.removed, 0);
     assert_eq!(pass.failures, 1);
+    assert!(!pass.complete);
     assert!(raw_path.exists());
     let (inventory_state, inventory_recheck_active): (String, i64) = sqlx::query_as(
         "SELECT inventory_state, inventory_recheck_active FROM system_raw_payload_metrics WHERE singleton = 1",
@@ -1572,6 +1573,7 @@ async fn raw_orphan_sweep_continues_after_one_unlink_failure() {
 
     assert_eq!(pass.failures, 1);
     assert_eq!(pass.removed, 1);
+    assert!(!pass.complete);
     assert_eq!(raw_paths.iter().filter(|path| path.exists()).count(), 1);
     let remaining_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation")
@@ -1898,6 +1900,46 @@ async fn raw_orphan_sweep_pressure_rejection_performs_no_directory_io() {
 }
 
 #[tokio::test]
+async fn raw_orphan_sweep_retains_unprocessed_batch_after_midpass_admission_defer() {
+    let (pool, config, temp_dir) =
+        retention_fresh_schema_test_pool_and_config("retention-raw-midpass-defer").await;
+    for name in ["midpass-a.bin", "midpass-b.bin"] {
+        fs::write(config.proxy_raw_dir.join(name), b"midpass-candidate")
+            .expect("write midpass candidate");
+    }
+
+    let deny = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut traversal = RetentionRawDirectoryTraversal::default();
+    let first = crate::maintenance::RETENTION_TEST_RAW_MIDPASS_WRITE_DENY
+        .scope(
+            deny.clone(),
+            sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal),
+        )
+        .await
+        .expect("settle a partial pass after admission defer");
+    assert!(first.deferred);
+    assert_eq!(first.admission_stage.as_deref(), Some("maintenance_write"));
+    assert_eq!(first.admission_cause.as_deref(), Some("coordinator_wait"));
+    assert_eq!(first.quarantined, 0);
+
+    deny.store(false, std::sync::atomic::Ordering::Relaxed);
+    let second = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut traversal)
+        .await
+        .expect("retry retained midpass candidates");
+    assert_eq!(second.quarantined, 2);
+    assert_eq!(second.removed, 0);
+
+    let ledger_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation")
+        .fetch_one(&pool)
+        .await
+        .expect("count retained midpass ledger rows");
+    assert_eq!(ledger_rows, 2);
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn raw_orphan_sweep_holds_pressure_slot_but_releases_write_admission_during_directory_io() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-pressure-slot").await;
@@ -1963,7 +2005,7 @@ async fn raw_orphan_sweep_schedule_persists_pressure_backoff_and_progress() {
     ));
     let schedule_test = async {
         sqlx::query(
-            "UPDATE retention_recovery_cursors SET next_retry_at = NULL, consecutive_failure_count = 0, last_failure_fingerprint = NULL, defer_reason = NULL, last_progress_at = NULL WHERE scope = 'raw_payload_files'",
+            "UPDATE retention_recovery_cursors SET next_retry_at = NULL, consecutive_failure_count = 0, last_failure_fingerprint = NULL, defer_reason = NULL, last_progress_at = NULL, last_admission_stage = NULL, last_admission_cause = NULL, last_settled_pass_at = NULL, last_settled_pass_complete = NULL, last_settled_pass_inspected_entries = NULL, last_settled_pass_referenced_skipped = NULL, last_settled_pass_quarantined = NULL, last_settled_pass_removed = NULL, last_settled_pass_removed_bytes = NULL, last_nonzero_removal_at = NULL, last_nonzero_removal = NULL, last_nonzero_removal_bytes = NULL WHERE scope = 'raw_payload_files'",
         )
         .execute(&pool)
         .await
@@ -2031,6 +2073,64 @@ async fn raw_orphan_sweep_schedule_persists_pressure_backoff_and_progress() {
         assert!(recovered.last_progress_at.is_some());
         assert!(recovered.next_retry_at.is_some());
 
+        let evidence_pass = RawOrphanSweepPassResult {
+            inspected_entries: 12,
+            referenced_skipped: 3,
+            quarantined: 2,
+            removed: 1,
+            removed_bytes: 4_096,
+            reached_end: false,
+            complete: true,
+            ..Default::default()
+        };
+        persist_raw_orphan_sweep_schedule_with_evidence(
+            &pool,
+            1,
+            RawOrphanSweepScheduleTransition::Success { progressed: true },
+            Some(&evidence_pass),
+            None,
+        )
+        .await
+        .expect("persist settled raw sweep evidence");
+        let settled = load_raw_orphan_sweep_schedule(&pool)
+            .await
+            .expect("load settled raw sweep evidence");
+        let settled_pass = settled
+            .last_settled_pass
+            .as_ref()
+            .expect("settled pass evidence");
+        assert!(settled_pass.complete);
+        assert_eq!(settled_pass.inspected_entries, 12);
+        assert_eq!(settled_pass.removed_bytes, 4_096);
+        let last_removal = settled
+            .last_nonzero_removal
+            .as_ref()
+            .expect("last nonzero removal evidence");
+        assert_eq!(last_removal.removed, 1);
+        assert_eq!(last_removal.removed_bytes, 4_096);
+
+        persist_raw_orphan_sweep_schedule_with_evidence(
+            &pool,
+            300,
+            RawOrphanSweepScheduleTransition::Pressure,
+            None,
+            Some(("background_slot", "background_busy")),
+        )
+        .await
+        .expect("persist admission defer evidence");
+        let deferred_with_evidence = load_raw_orphan_sweep_schedule(&pool)
+            .await
+            .expect("reload deferred evidence");
+        assert_eq!(
+            deferred_with_evidence.admission_stage.as_deref(),
+            Some("background_slot")
+        );
+        assert_eq!(
+            deferred_with_evidence.admission_cause.as_deref(),
+            Some("background_busy")
+        );
+        assert!(deferred_with_evidence.last_settled_pass.is_some());
+
         let progressing_pass = RawOrphanSweepPassResult {
             inspected_entries: 128,
             reached_end: false,
@@ -2052,10 +2152,20 @@ async fn raw_orphan_sweep_schedule_persists_pressure_backoff_and_progress() {
 
         let empty_pass = RawOrphanSweepPassResult {
             reached_end: true,
+            complete: true,
             ..Default::default()
         };
         let empty_delay = raw_orphan_sweep_next_retry_secs(&empty_pass, 0);
         assert_eq!(empty_delay, 300);
+        let budget_exhausted_at_eof = RawOrphanSweepPassResult {
+            reached_end: true,
+            complete: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            raw_orphan_sweep_next_retry_secs(&budget_exhausted_at_eof, 0),
+            1
+        );
         persist_raw_orphan_sweep_schedule(
             &pool,
             empty_delay,
@@ -2086,6 +2196,8 @@ async fn raw_orphan_sweep_schedule_persists_pressure_backoff_and_progress() {
     assert_eq!(persisted.consecutive_failure_count, 0);
     assert!(persisted.last_progress_at.is_some());
     assert!(persisted.next_retry_at.is_some());
+    assert!(persisted.last_settled_pass.is_some());
+    assert!(persisted.last_nonzero_removal.is_some());
 
     reopened.close().await;
     cleanup_temp_test_dir(&temp_dir);

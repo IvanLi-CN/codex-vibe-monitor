@@ -527,6 +527,21 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   )
     ? rawOrphanSweep?.deferReason
     : undefined;
+  const rawOrphanSweepAdmissionStage = ["background_slot", "maintenance_write"].includes(
+    rawOrphanSweep?.admissionStage ?? "",
+  )
+    ? rawOrphanSweep?.admissionStage
+    : undefined;
+  const rawOrphanSweepAdmissionCause = [
+    "pressure_cooldown",
+    "background_busy",
+    "coordinator_wait",
+    "shutdown",
+  ].includes(rawOrphanSweep?.admissionCause ?? "")
+    ? rawOrphanSweep?.admissionCause
+    : undefined;
+  const rawOrphanSweepSettledPass = rawOrphanSweep?.lastSettledPass;
+  const rawOrphanSweepLastRemoval = rawOrphanSweep?.lastNonzeroRemoval;
   const rawOrphanSweepHints = rawOrphanSweep
     ? [
         rawOrphanSweep.lastProgressAt
@@ -549,6 +564,16 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
         rawOrphanSweep.failureFingerprint
           ? t("system.status.runtimePressure.rawOrphanSweep.failureHint", {
               fingerprint: rawOrphanSweep.failureFingerprint,
+            })
+          : undefined,
+        rawOrphanSweepAdmissionStage && rawOrphanSweepAdmissionCause
+          ? t("system.status.runtimePressure.rawOrphanSweep.admissionHint", {
+              stage: t(
+                `system.status.runtimePressure.rawOrphanSweep.admissionStages.${rawOrphanSweepAdmissionStage}`,
+              ),
+              cause: t(
+                `system.status.runtimePressure.rawOrphanSweep.admissionCauses.${rawOrphanSweepAdmissionCause}`,
+              ),
             })
           : undefined,
       ]
@@ -930,6 +955,51 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                         : t("system.status.runtimePressure.states.unknown")
                     }
                     hint={rawOrphanSweepHints || t("system.status.runtimePressure.additiveUnknown")}
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.removedBytes")}
+                    value={formatBytes(rawOrphanSweep?.removedBytes)}
+                  />
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.settledPass")}
+                    value={
+                      rawOrphanSweepSettledPass?.complete == null
+                        ? t("system.status.runtimePressure.states.unknown")
+                        : t(
+                            `system.status.runtimePressure.rawOrphanSweep.settledStates.${rawOrphanSweepSettledPass.complete ? "complete" : "partial"}`,
+                          )
+                    }
+                    hint={
+                      rawOrphanSweepSettledPass
+                        ? t("system.status.runtimePressure.rawOrphanSweep.settledPassHint", {
+                            settledAt: formatRecoveryTimestamp(rawOrphanSweepSettledPass.settledAt),
+                            inspected:
+                              rawOrphanSweepSettledPass.inspectedEntries?.toLocaleString() ??
+                              t("system.status.runtimePressure.states.unknown"),
+                            removed:
+                              rawOrphanSweepSettledPass.removed?.toLocaleString() ??
+                              t("system.status.runtimePressure.states.unknown"),
+                            removedBytes: formatBytes(rawOrphanSweepSettledPass.removedBytes),
+                          })
+                        : t("system.status.runtimePressure.additiveUnknown")
+                    }
+                  />
+                  <BreakdownRow
+                    label={t("system.status.runtimePressure.rawOrphanSweep.lastRemoval")}
+                    value={
+                      rawOrphanSweepLastRemoval
+                        ? `${rawOrphanSweepLastRemoval.removed?.toLocaleString() ?? t("system.status.runtimePressure.states.unknown")} / ${formatBytes(rawOrphanSweepLastRemoval.removedBytes)}`
+                        : t("system.status.runtimePressure.states.unknown")
+                    }
+                    hint={
+                      rawOrphanSweepLastRemoval
+                        ? t("system.status.runtimePressure.rawOrphanSweep.lastRemovalHint", {
+                            removedAt: formatRecoveryTimestamp(rawOrphanSweepLastRemoval.removedAt),
+                          })
+                        : t("system.status.runtimePressure.additiveUnknown")
+                    }
                   />
                 </div>
               </div>

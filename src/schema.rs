@@ -2491,6 +2491,18 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             last_failure_fingerprint TEXT,
             defer_reason TEXT,
             last_progress_at TEXT,
+            last_admission_stage TEXT,
+            last_admission_cause TEXT,
+            last_settled_pass_at TEXT,
+            last_settled_pass_complete INTEGER,
+            last_settled_pass_inspected_entries INTEGER,
+            last_settled_pass_referenced_skipped INTEGER,
+            last_settled_pass_quarantined INTEGER,
+            last_settled_pass_removed INTEGER,
+            last_settled_pass_removed_bytes INTEGER,
+            last_nonzero_removal_at TEXT,
+            last_nonzero_removal INTEGER,
+            last_nonzero_removal_bytes INTEGER,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2515,6 +2527,18 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("last_failure_fingerprint", "TEXT"),
         ("defer_reason", "TEXT"),
         ("last_progress_at", "TEXT"),
+        ("last_admission_stage", "TEXT"),
+        ("last_admission_cause", "TEXT"),
+        ("last_settled_pass_at", "TEXT"),
+        ("last_settled_pass_complete", "INTEGER"),
+        ("last_settled_pass_inspected_entries", "INTEGER"),
+        ("last_settled_pass_referenced_skipped", "INTEGER"),
+        ("last_settled_pass_quarantined", "INTEGER"),
+        ("last_settled_pass_removed", "INTEGER"),
+        ("last_settled_pass_removed_bytes", "INTEGER"),
+        ("last_nonzero_removal_at", "TEXT"),
+        ("last_nonzero_removal", "INTEGER"),
+        ("last_nonzero_removal_bytes", "INTEGER"),
     ] {
         ensure_column_with_definition(pool, "retention_recovery_cursors", column, definition)
             .await

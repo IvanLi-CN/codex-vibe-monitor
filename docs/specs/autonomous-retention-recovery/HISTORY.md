@@ -34,11 +34,18 @@
   progress independently of raw inventory reset work.
 - The raw-orphan-sweep throughput follow-up replaces full-directory selection and per-file owner-table
   scans with a process-local bounded iterator, indexed batched blob-link checks, a separately
-  scheduled worker, and observable retry/progress state. It reuses existing cursor columns and adds
-  no schema objects. Bounded filesystem inspections retain the background pressure slot but release
-  the SQLite write-coordinator permit; final unlink locking is nonblocking while maintenance
-  admission is held, and an item-level lock or unlink failure does not prevent later candidates in
-  the same slice from running.
+  scheduled worker, and observable retry/progress state. Bounded filesystem inspections retain the
+  background pressure slot but release the SQLite write-coordinator permit; final unlink locking is
+  nonblocking while maintenance admission is held, and an item-level lock or unlink failure does
+  not prevent later candidates in the same slice from running.
+- The raw-orphan-sweep admission-liveness follow-up adds FIFO background-slot and bounded
+  maintenance-write admission, fixed sanitized stage/cause evidence, pending-candidate retention
+  across mid-pass deferral, and a two-second candidate budget with one-second progress cadence. It
+  adds nullable admission, settled-pass, and nonzero-removal evidence columns to the existing
+  `raw_payload_files` cursor; old values remain unknown, and defer no longer erases settled or
+  removal evidence. Successful unlink counts and bytes are recorded before ledger cleanup, and the
+  System Status API, Web normalizer, Runtime Pressure UI, translations, and Storybook states expose
+  the new diagnostics additively.
 
 ## References
 
