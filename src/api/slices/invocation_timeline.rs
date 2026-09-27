@@ -294,7 +294,7 @@ struct TimelineAccountFallbackRow {
     invoke_id: String,
     occurred_at: String,
     upstream_account_id: Option<i64>,
-    payload_upstream_account_id: Option<i64>,
+    payload_upstream_account_id_is_valid: i64,
     upstream_account_name: Option<String>,
 }
 
@@ -851,6 +851,7 @@ pub(crate) async fn fetch_timeline(
         range_start - chrono::Duration::milliseconds(INVOCATION_TIMELINE_MAX_DURATION_MS as i64);
     let overlap_start_bound = crate::db_occurred_at_lower_bound(overlap_start);
     let end_bound = crate::db_occurred_at_upper_bound(range_end);
+    let mut cleanup_guard: Option<TimelineSnapshotCleanupGuard> = None;
     let (as_of, _snapshot) = if let Some(as_of) = params.as_of.as_deref() {
         if let Some(cursor) = cursor.as_ref()
             && cursor.as_of != as_of
@@ -889,7 +890,8 @@ pub(crate) async fn fetch_timeline(
             include_live,
             source_scope,
         )?;
-        let mut cleanup_guard = TimelineSnapshotCleanupGuard::new(&state.pool, as_of.clone());
+        let mut snapshot_cleanup_guard =
+            TimelineSnapshotCleanupGuard::new(&state.pool, as_of.clone());
         let materialize_result = materialize_timeline_snapshot(
             state.as_ref(),
             &as_of,
@@ -907,7 +909,7 @@ pub(crate) async fn fetch_timeline(
         )
         .await;
         if let Err(error) = materialize_result {
-            cleanup_guard.cleanup_now().await;
+            snapshot_cleanup_guard.cleanup_now().await;
             return Err(error);
         }
         let snapshot = load_timeline_snapshot(
@@ -917,7 +919,7 @@ pub(crate) async fn fetch_timeline(
             params.upstream_account_id,
             include_live,
         )?;
-        cleanup_guard.disarm();
+        cleanup_guard = Some(snapshot_cleanup_guard);
         (as_of.clone(), snapshot)
     };
     ensure_timeline_snapshot_table(&state.pool).await?;
@@ -977,6 +979,9 @@ pub(crate) async fn fetch_timeline(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    if let Some(cleanup_guard) = cleanup_guard.as_mut() {
+        cleanup_guard.disarm();
+    }
     Ok(Json(InvocationTimelineResponse {
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
@@ -1076,8 +1081,10 @@ async fn hydrate_timeline_accounts_on_connection(
         query
             .push(resolved_id.as_str())
             .push(" AS upstream_account_id, ")
-            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
-            .push(" AS payload_upstream_account_id, ")
+            .push(timeline_payload_account_id_is_valid_sql(
+                "codex_invocations",
+            ))
+            .push(" AS payload_upstream_account_id_is_valid, ")
             .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
             .push(" AS upstream_account_name FROM codex_invocations WHERE (");
         for (index, (invoke_id, occurred_at)) in chunk.iter().enumerate() {
@@ -1115,12 +1122,9 @@ async fn hydrate_timeline_accounts_on_connection(
     for record in records {
         if let Some(row) = fallbacks.get(&(record.invoke_id.clone(), record.occurred_at.clone())) {
             record.upstream_account_id = row.upstream_account_id;
-            record.upstream_account_name = row
-                .payload_upstream_account_id
-                .filter(|account_id| {
-                    *account_id > 0 && *account_id < TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE
-                })
-                .and(row.upstream_account_name.clone());
+            record.upstream_account_name = (row.payload_upstream_account_id_is_valid == 1)
+                .then(|| row.upstream_account_name.clone())
+                .flatten();
         }
         if invalid_account_keys.contains(&(record.invoke_id.clone(), record.occurred_at.clone()))
             && record.upstream_account_id.is_none()
@@ -1143,6 +1147,20 @@ fn timeline_upstream_account_id_sql(
     attempt_snapshot_id: Option<i64>,
 ) -> String {
     let payload_is_valid = format!("json_valid({invocation_ref}.payload)");
+    let attempt_snapshot_predicate = attempt_snapshot_id
+        .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
+        .unwrap_or_default();
+    format!(
+        "COALESCE({payload_id}, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.id > 0{attempt_snapshot_predicate} AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < 9007199254740992 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))",
+        payload_id = format!(
+            "CASE WHEN {payload_is_valid} THEN {} END",
+            timeline_payload_account_id_sql(invocation_ref)
+        ),
+    )
+}
+
+fn timeline_payload_account_id_parts(invocation_ref: &str) -> (String, String) {
+    let payload_is_valid = format!("json_valid({invocation_ref}.payload)");
     let value = format!(
         "CASE WHEN {payload_is_valid} THEN json_extract({invocation_ref}.payload, '$.upstreamAccountId') END"
     );
@@ -1154,12 +1172,17 @@ fn timeline_upstream_account_id_sql(
     let valid_payload_id = format!(
         "({value} IS NOT NULL AND (({value_type} = 'integer' AND typeof({value}) = 'integer' AND {value} > 0 AND {value} < 9007199254740992) OR ({value_type} = 'real' AND {value} > 0 AND {value} < 9007199254740992.0 AND CAST({value} AS REAL) = CAST({value} AS INTEGER)) OR ({value_type} = 'text' AND {trimmed} <> '' AND {trimmed} NOT GLOB '*[^0-9]*' AND {normalized} <> '' AND (length({normalized}) < 16 OR (length({normalized}) = 16 AND {normalized} <= '9007199254740991')))))"
     );
-    let attempt_snapshot_predicate = attempt_snapshot_id
-        .map(|snapshot_id| format!(" AND attempt.id <= {snapshot_id}"))
-        .unwrap_or_default();
-    format!(
-        "COALESCE(CASE WHEN {payload_is_valid} AND {valid_payload_id} THEN CAST({value} AS INTEGER) END, (SELECT attempt.upstream_account_id FROM pool_upstream_request_attempts attempt WHERE attempt.invoke_id = {invocation_ref}.invoke_id AND attempt.occurred_at = {invocation_ref}.occurred_at AND attempt.id > 0{attempt_snapshot_predicate} AND attempt.upstream_account_id IS NOT NULL AND attempt.upstream_account_id > 0 AND attempt.upstream_account_id < 9007199254740992 ORDER BY attempt.attempt_index DESC, attempt.id DESC LIMIT 1))"
-    )
+    (value, valid_payload_id)
+}
+
+fn timeline_payload_account_id_sql(invocation_ref: &str) -> String {
+    let (value, valid_payload_id) = timeline_payload_account_id_parts(invocation_ref);
+    format!("CASE WHEN {valid_payload_id} THEN CAST({value} AS INTEGER) END")
+}
+
+fn timeline_payload_account_id_is_valid_sql(invocation_ref: &str) -> String {
+    let (_, valid_payload_id) = timeline_payload_account_id_parts(invocation_ref);
+    format!("CASE WHEN {valid_payload_id} THEN 1 ELSE 0 END")
 }
 
 #[cfg(test)]
@@ -1441,30 +1464,43 @@ mod tests {
                 payload: "{}".to_string(),
             })
             .collect::<Vec<_>>();
-        let publish_options = options.clone();
-        let publish_task = tokio::spawn(async move {
-            let mut connection = SqliteConnection::connect_with(&publish_options)
-                .await
-                .expect("connect publishing database");
-            let mut transaction = connection
-                .begin_with("BEGIN IMMEDIATE")
-                .await
-                .expect("wait for writer lock");
-            insert_timeline_snapshot_records_on_connection(
-                &mut transaction,
-                "contention-token",
-                &rows,
-            )
+        let mut blocked_connection = SqliteConnection::connect_with(&options)
             .await
-            .expect("publish contention rows");
-            transaction.commit().await.expect("commit published rows");
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+            .expect("connect blocked publishing database");
+        let blocked_begin = tokio::time::timeout(
+            Duration::from_millis(100),
+            blocked_connection.begin_with("BEGIN IMMEDIATE"),
+        )
+        .await;
+        assert!(
+            blocked_begin.is_err(),
+            "publisher must remain blocked while another writer owns the database"
+        );
+        drop(blocked_begin);
+        blocked_connection
+            .close()
+            .await
+            .expect("close blocked publishing connection");
         sqlx::query("COMMIT")
             .execute(&mut lock_connection)
             .await
             .expect("release writer lock");
-        publish_task.await.expect("publishing task should succeed");
+
+        let mut publish_connection = SqliteConnection::connect_with(&options)
+            .await
+            .expect("connect publishing database");
+        let mut transaction = publish_connection
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("begin publication after writer release");
+        insert_timeline_snapshot_records_on_connection(&mut transaction, "contention-token", &rows)
+            .await
+            .expect("publish contention rows");
+        transaction.commit().await.expect("commit published rows");
+        publish_connection
+            .close()
+            .await
+            .expect("close publishing connection");
 
         let mut verify_connection = SqliteConnection::connect_with(&options)
             .await
@@ -1685,6 +1721,14 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("insert malformed attempt fallback fixture");
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES ('fractional-account-name', ?1, 'proxy', 'success', 100, ?2, '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(at(86_650)))
+        .bind(r#"{"upstreamAccountId":1.5,"upstreamAccountName":"fractional"}"#)
+        .execute(&state.pool)
+        .await
+        .expect("insert fractional account name fixture");
         sqlx::query(
             "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES ('exact-max', ?1, 'proxy', 'success', 100, ?2, '', 'full')",
         )
@@ -1924,6 +1968,13 @@ mod tests {
             .find(|record| record.invoke_id == "invalid-attempt-account")
             .expect("invalid attempt record is present");
         assert_eq!(invalid_attempt.upstream_account_id, None);
+        let fractional_account = unfiltered_response
+            .records
+            .iter()
+            .find(|record| record.invoke_id == "fractional-account-name")
+            .expect("fractional account record is present");
+        assert_eq!(fractional_account.upstream_account_id, None);
+        assert_eq!(fractional_account.upstream_account_name, None);
         state.pool.close().await;
     }
 
