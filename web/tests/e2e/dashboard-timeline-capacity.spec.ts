@@ -13,7 +13,12 @@ const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 const REVISION_INTERVAL_MS = 1_000;
 const MINIMUM_LIVE_EVENTS = Math.max(
   10,
-  Math.floor(CAPACITY_SCENARIO_DURATION_MS / REVISION_INTERVAL_MS / 2),
+  Math.floor((CAPACITY_SCENARIO_DURATION_MS / REVISION_INTERVAL_MS) * 0.8),
+);
+const MINIMUM_LIVE_EVENT_SPAN_MS = CAPACITY_SCENARIO_DURATION_MS * 0.8;
+const MAXIMUM_LIVE_EVENT_GAP_MS = Math.max(
+  5_000,
+  Math.min(15_000, CAPACITY_SCENARIO_DURATION_MS * 0.1),
 );
 const MINIMUM_TEST_TIMEOUT_MS = 4 * 60 * 1_000;
 
@@ -31,10 +36,12 @@ type TimelineDiagnostics = {
   sseOpenCount: number;
   sseMessageCount: number;
   sseLiveMessageCount: number;
+  sseLiveMessageTimesMs: number[];
   sseErrorCount: number;
   lastSseMessageAtMs: number;
   sseSourceUrls: string[];
   demoRevisionTriggers: number;
+  demoRevisionTriggerTimesMs: number[];
 };
 
 type TimelineDiagnosticsWindow = Window & {
@@ -61,10 +68,12 @@ function installDiagnostics(page: Page) {
       sseOpenCount: 0,
       sseMessageCount: 0,
       sseLiveMessageCount: 0,
+      sseLiveMessageTimesMs: [],
       sseErrorCount: 0,
       lastSseMessageAtMs: 0,
       sseSourceUrls: [],
       demoRevisionTriggers: 0,
+      demoRevisionTriggerTimesMs: [],
     };
     const instrumentedWindow = window as TimelineDiagnosticsWindow;
     instrumentedWindow.__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__ = diagnostics;
@@ -77,6 +86,7 @@ function installDiagnostics(page: Page) {
           typeof trigger === "function"
             ? () => {
                 diagnostics.demoRevisionTriggers += 1;
+                diagnostics.demoRevisionTriggerTimesMs.push(performance.now());
                 trigger();
               }
             : trigger;
@@ -103,6 +113,7 @@ function installDiagnostics(page: Page) {
             try {
               if (JSON.parse((event as MessageEvent<string>).data).type === "live") {
                 diagnostics.sseLiveMessageCount += 1;
+                diagnostics.sseLiveMessageTimesMs.push(performance.now());
               }
             } catch {
               // Keep collecting counters when an unrelated demo event has another payload shape.
@@ -127,6 +138,19 @@ function installDiagnostics(page: Page) {
       observer.observe({ type: "longtask", buffered: true });
     }
   });
+}
+
+function expectSustainedEvents(eventTimes: number[], baselineCount: number): void {
+  const scenarioEvents = eventTimes.slice(baselineCount);
+  expect(scenarioEvents.length).toBeGreaterThanOrEqual(MINIMUM_LIVE_EVENTS);
+  expect(scenarioEvents.at(-1)! - scenarioEvents[0]!).toBeGreaterThanOrEqual(
+    MINIMUM_LIVE_EVENT_SPAN_MS,
+  );
+  const maximumGapMs = Math.max(
+    0,
+    ...scenarioEvents.slice(1).map((time, index) => time - scenarioEvents[index]!),
+  );
+  expect(maximumGapMs).toBeLessThanOrEqual(MAXIMUM_LIVE_EVENT_GAP_MS);
 }
 
 async function instrumentTimelineFetch(page: Page) {
@@ -411,12 +435,14 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
       expect(diagnostics?.releaseFailures).toBe(0);
       expect(diagnostics?.timelineHttpFailures).toBe(0);
       expect(diagnostics?.sseErrorCount).toBe(0);
-      expect(
-        (diagnostics?.demoRevisionTriggers ?? 0) - (baseline?.demoRevisionTriggers ?? 0),
-      ).toBeGreaterThanOrEqual(MINIMUM_LIVE_EVENTS);
-      expect(
-        (diagnostics?.sseLiveMessageCount ?? 0) - (baseline?.sseLiveMessageCount ?? 0),
-      ).toBeGreaterThanOrEqual(MINIMUM_LIVE_EVENTS);
+      expectSustainedEvents(
+        diagnostics?.demoRevisionTriggerTimesMs ?? [],
+        baseline?.demoRevisionTriggerTimesMs.length ?? 0,
+      );
+      expectSustainedEvents(
+        diagnostics?.sseLiveMessageTimesMs ?? [],
+        baseline?.sseLiveMessageTimesMs.length ?? 0,
+      );
       expect(diagnostics?.pageRequests).toBeGreaterThanOrEqual(
         (diagnostics?.traversalStarts.length ?? 0) * 2,
       );
