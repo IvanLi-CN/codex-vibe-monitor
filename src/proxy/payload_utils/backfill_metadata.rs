@@ -172,6 +172,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
         if !updates.is_empty() {
             let mut tx = pool.begin().await?;
             let mut updated_ids = Vec::new();
+            let mut updated_prompt_cache_keys = HashSet::new();
             for (id, prompt_cache_key) in updates {
                 let affected = sqlx::query(
                     r#"
@@ -195,7 +196,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                       )
                     "#,
                 )
-                .bind(prompt_cache_key)
+                .bind(&prompt_cache_key)
                 .bind(id)
                 .bind(SOURCE_PROXY)
                 .execute(&mut *tx)
@@ -204,12 +205,20 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                 summary.updated += affected;
                 if affected > 0 {
                     updated_ids.push(id);
+                    updated_prompt_cache_keys.insert(prompt_cache_key);
                 }
             }
             if !updated_ids.is_empty() {
                 recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
             }
             tx.commit().await?;
+            if !updated_prompt_cache_keys.is_empty() {
+                for prompt_cache_key in &updated_prompt_cache_keys {
+                    crate::ensure_prompt_cache_conversation_row(pool, prompt_cache_key).await?;
+                }
+                crate::refresh_prompt_cache_conversation_stats(pool, &updated_prompt_cache_keys)
+                    .await?;
+            }
         }
     }
 

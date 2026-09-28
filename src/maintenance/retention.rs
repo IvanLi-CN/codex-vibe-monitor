@@ -2617,7 +2617,41 @@ async fn retention_recovery_finalize_published(
         )
         .await?;
         retention_recovery_verify_publication_tx(tx.as_mut(), descriptor, artifact_sha256).await?;
+        let ids_json = serde_json::to_string(&source_ids)?;
+        let archived_prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
+             FROM codex_invocations \
+             WHERE id IN (SELECT value FROM json_each(?1)) \
+               AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
+               AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
+        ))
+        .bind(ids_json)
+        .fetch_all(tx.as_mut())
+        .await?;
+        let archived_prompt_cache_key_refs = archived_prompt_cache_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !archived_prompt_cache_key_refs.is_empty() {
+            mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
+        }
         delete_rows_by_ids(tx.as_mut(), descriptor.dataset, &source_ids).await?;
+        refresh_prompt_cache_conversation_stats_on_connection(
+            tx.as_mut(),
+            &archived_prompt_cache_key_refs,
+        )
+        .await
+        .context(
+            "failed to refresh prompt-cache conversation statistics after recovered archive delete",
+        )?;
+        if !archived_prompt_cache_key_refs.is_empty() {
+            clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+                tx.as_mut(),
+                &archived_prompt_cache_key_refs,
+            )
+            .await?;
+            mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
+        }
         mark_retention_archived_hourly_rollup_targets_tx(
             tx.as_mut(),
             descriptor.dataset,
@@ -10362,6 +10396,11 @@ pub(crate) async fn archive_old_invocations(
             .await
             .context("failed to refresh prompt-cache conversation statistics after invocation archive delete")?;
             if !archived_prompt_cache_key_refs.is_empty() {
+                clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+                    tx.as_mut(),
+                    &archived_prompt_cache_key_refs,
+                )
+                .await?;
                 mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
             }
             prompt_cache_keys.extend(archived_prompt_cache_keys);

@@ -177,7 +177,7 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
     .await
     .expect("make prompt-cache statistics stale");
     sqlx::query(
-        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v1'",
+        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
     )
     .execute(&pool)
     .await
@@ -204,12 +204,81 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
     assert!((stats.4 - 0.25).abs() < 1e-9);
 
     let marker_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v1'",
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
     )
     .fetch_one(&pool)
     .await
     .expect("count recovered statistics marker");
     assert_eq!(marker_count, 1);
+}
+
+#[tokio::test]
+async fn ensure_schema_recovers_prompt_cache_identity_after_invocation_payload_update() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('LEGACYKEY0001', '2026-09-01 00:00:00', ?1, 'success', 8, 0.5, '{}', '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("insert invocation without prompt-cache key");
+
+    ensure_schema(&pool)
+        .await
+        .expect("complete initial prompt-cache conversation migration");
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET payload = '{"promptCacheKey":"backfilled-prompt-cache-key"}'
+        WHERE invoke_id = 'LEGACYKEY0001'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("update invocation prompt-cache metadata");
+
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = 'backfilled-prompt-cache-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count queued prompt-cache refresh");
+    assert_eq!(queued, 1);
+
+    ensure_schema(&pool)
+        .await
+        .expect("recover prompt-cache identity after invocation update");
+
+    let stats = sqlx::query_as::<_, (i64, i64, f64)>(
+        r#"
+        SELECT request_count, total_tokens, cost
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = 'backfilled-prompt-cache-key'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered prompt-cache identity");
+    assert_eq!(stats.0, 1);
+    assert_eq!(stats.1, 8);
+    assert!((stats.2 - 0.5).abs() < 1e-9);
+
+    let remaining_queue: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining prompt-cache refresh queue");
+    assert_eq!(remaining_queue, 0);
 }
 
 #[tokio::test]
