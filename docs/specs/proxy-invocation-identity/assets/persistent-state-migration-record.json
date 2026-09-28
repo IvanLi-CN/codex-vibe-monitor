@@ -3,12 +3,12 @@
   "kind": "persistent-state-migration-record",
   "migration": {
     "description": "Introduce a durable prompt-cache conversation master and compact proxy invocation identity allocation.",
-    "release_unit_description": "Backend PR1 for conversation and invoke ID redesign.",
+    "release_unit_description": "Prompt-cache conversation background materialization follow-up for the conversation and invoke ID redesign.",
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue and freshness marker for restart recovery.",
-    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, codex_invocations mutation triggers, and schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness.",
+    "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization.",
+    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, codex_invocations mutation triggers, startup_backfill_progress, and schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness.",
     "source_compatibility_range": {
       "from_program_versions": "0.2.x without prompt_cache_conversations",
       "to_program_version": "next minor release",
@@ -34,12 +34,10 @@
         ],
         "observable": true,
         "pauseable": true
-      }
-    ],
-    "dml_changes": [
+      },
       {
-        "id": "dml-prompt-cache-conversation-statistics",
-        "description": "Materialize aggregate fields from retained codex_invocations after identity rows exist, drain the affected refresh-queue keys only after the rebuild succeeds, and record a freshness marker only when no durable refresh obligation remains.",
+        "id": "ddl-prompt-cache-conversation-migration-progress",
+        "description": "Create the additive migration progress table with migration_name, phase, source_max_invocation_id, cursor_key, and updated_at so materialization can resume after cancellation or restart.",
         "order": 3,
         "depends_on": [
           "ddl-prompt-cache-conversation-master",
@@ -49,15 +47,35 @@
         "pauseable": true
       }
     ],
-    "historical_data_backfill_or_transformation": [
+    "dml_changes": [
       {
-        "id": "backfill-prompt-cache-conversation-identities",
-        "description": "Create one normalized prompt-cache master per historical prompt-cache key and record an idempotent completion marker.",
+        "id": "dml-prompt-cache-conversation-identity-backfill",
+        "description": "In the background identity_backfill phase, snapshot the maximum invocation ID and materialize distinct historical prompt-cache keys by keyset pages; after the snapshot scan, run uncursored missing-identity reconciliation and record the identity marker only after coverage is complete.",
         "order": 4,
         "depends_on": [
           "ddl-prompt-cache-conversation-master",
-          "ddl-prompt-cache-conversation-stats-refresh-queue",
-          "dml-prompt-cache-conversation-statistics"
+          "ddl-prompt-cache-conversation-migration-progress"
+        ],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-prompt-cache-conversation-statistics",
+        "description": "In the background stats_rebuild phase, refresh aggregate fields for conversation keys by bounded pages after identity coverage is complete.",
+        "order": 5,
+        "depends_on": [
+          "dml-prompt-cache-conversation-identity-backfill"
+        ],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-prompt-cache-conversation-queue-drain",
+        "description": "In the background queue_drain phase, refresh and clear durable mutation-queue keys only after successful aggregate refresh, then record the statistics freshness marker and complete phase when the queue is empty.",
+        "order": 6,
+        "depends_on": [
+          "dml-prompt-cache-conversation-statistics",
+          "ddl-prompt-cache-conversation-stats-refresh-queue"
         ],
         "observable": true,
         "pauseable": true
@@ -69,17 +87,20 @@
     "operation_sequence": [
       "ddl-prompt-cache-conversation-master",
       "ddl-prompt-cache-conversation-stats-refresh-queue",
+      "ddl-prompt-cache-conversation-migration-progress",
+      "dml-prompt-cache-conversation-identity-backfill",
       "dml-prompt-cache-conversation-statistics",
-      "backfill-prompt-cache-conversation-identities"
+      "dml-prompt-cache-conversation-queue-drain"
     ],
     "progress_signals": [
-      "Structured migration start/completion logs with candidate and backfilled counts.",
+      "The prompt_cache_conversation_migration_progress row exposes the current phase, invocation snapshot boundary, keyset cursor, and updated_at checkpoint.",
+      "Structured startup-backfill logs expose phase, scanned, updated, completion, retry, failure, and defer status.",
       "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
       "The prompt_cache_conversations_stats_v2 marker identifies a completed aggregate refresh only when the prompt_cache_conversation_stats_refresh_queue is empty; its absence or a pending queue triggers a paged startup rebuild."
     ],
     "pause_points": [
-      "Backfill may re-enter before the schema marker is written; existing identities are recognized and remaining keys continue.",
-      "Statistics refresh runs after terminal or derived batch commit and can be retried independently.",
+      "Schema installation stops after additive DDL and does not scan historical invocations, allowing HTTP readiness to continue.",
+      "Each identity, statistics, and queue page commits its data before the phase cursor advances; cancellation or process exit repeats an idempotent page.",
       "SQLite invocation mutation triggers enqueue affected prompt-cache keys and remove the freshness marker in the source transaction; startup recovery can rebuild aggregates and identities after a stopped release."
     ]
   },
@@ -92,10 +113,11 @@
   "validation": {
     "minor": {
       "required_test_evidence": [
-        "Legacy codex_invocations without a master table backfill successfully.",
-        "Backfill rerun recognizes the marker and does not duplicate identities.",
-        "A missing prompt-cache statistics marker rebuilds aggregates during the next schema startup.",
+        "Schema installation completes without scanning historical prompt-cache invocations.",
+        "A bounded startup materialization creates identities, checkpoints committed pages, and reruns without duplicate identities.",
+        "A stopped release or process restart resumes from the durable phase/cursor and converges to both markers with an empty queue.",
         "An invocation payload update enqueues its prompt-cache key and startup recovery creates the missing identity before rebuilding aggregates.",
+        "Aggregate reads return the existing unavailable contract while identity, statistics, or queue completeness is not satisfied.",
         "A cache miss recovers the next sequence from retained invocation IDs.",
         "Retention releases orphan masters without a permanent ID blacklist."
       ]

@@ -643,8 +643,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
             request.selection,
             request.recent_invocation_limit,
         )
-        .await
-        .map_err(ApiError::from)?;
+        .await?;
         return Ok(match request.detail_level {
             PromptCacheConversationDetailLevel::Full => response,
             PromptCacheConversationDetailLevel::Compact => {
@@ -659,6 +658,14 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
     let snapshot_at = resolve_prompt_cache_conversation_snapshot_at(request.snapshot_at.as_deref())
         .map_err(ApiError::bad_request)?;
     let mut transaction = state.pool.begin().await?;
+    if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "prompt-cache conversation history is still materializing"
+        )));
+    }
     let response = build_prompt_cache_conversations_response_for_request_on_connection(
         state,
         request,
@@ -876,7 +883,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request_with_r
 pub(crate) async fn build_prompt_cache_conversations_response(
     state: &AppState,
     selection: PromptCacheConversationSelection,
-) -> Result<PromptCacheConversationsResponse> {
+) -> Result<PromptCacheConversationsResponse, ApiError> {
     build_prompt_cache_conversations_response_with_recent_limit(state, selection, None).await
 }
 
@@ -884,6 +891,32 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
     state: &AppState,
     selection: PromptCacheConversationSelection,
     recent_invocation_limit: Option<i64>,
+) -> Result<PromptCacheConversationsResponse, ApiError> {
+    let mut transaction = state.pool.begin().await?;
+    if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+        .await?
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "prompt-cache conversation history is still materializing"
+        )));
+    }
+    let response = build_prompt_cache_conversations_response_with_recent_limit_on_connection(
+        state,
+        selection,
+        recent_invocation_limit,
+        transaction.as_mut(),
+    )
+    .await
+    .map_err(ApiError::from)?;
+    transaction.commit().await?;
+    Ok(response)
+}
+
+async fn build_prompt_cache_conversations_response_with_recent_limit_on_connection(
+    state: &AppState,
+    selection: PromptCacheConversationSelection,
+    recent_invocation_limit: Option<i64>,
+    connection: &mut SqliteConnection,
 ) -> Result<PromptCacheConversationsResponse> {
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_end = Utc::now();
@@ -896,14 +929,14 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
     let (aggregates, active_filtered_count) = match selection {
         PromptCacheConversationSelection::Count(limit) => {
             let aggregates = query_prompt_cache_conversation_aggregates(
-                &state.pool,
+                &mut *connection,
                 &range_start_bound,
                 source_scope,
                 display_limit,
             )
             .await?;
             let filtered_count = query_prompt_cache_conversation_hidden_count(
-                &state.pool,
+                &mut *connection,
                 &range_start_bound,
                 source_scope,
                 limit,
@@ -914,14 +947,14 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
         }
         PromptCacheConversationSelection::ActivityWindowHours(_) => {
             let aggregates = query_prompt_cache_conversation_aggregates(
-                &state.pool,
+                &mut *connection,
                 &range_start_bound,
                 source_scope,
                 display_limit,
             )
             .await?;
             let matched_count = query_active_prompt_cache_conversation_count(
-                &state.pool,
+                &mut *connection,
                 &range_start_bound,
                 source_scope,
             )
@@ -930,7 +963,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
         }
         PromptCacheConversationSelection::ActivityWindowMinutes(_) => {
             let aggregates = query_prompt_cache_working_conversation_aggregates(
-                &state.pool,
+                &mut *connection,
                 &range_start_bound,
                 source_scope,
                 display_limit,
@@ -942,8 +975,8 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
                 None,
                 display_limit,
             );
-            apply_prompt_cache_lifecycle_aggregate_totals(
-                &state.pool,
+            apply_prompt_cache_lifecycle_aggregate_totals_on_connection(
+                &mut *connection,
                 source_scope,
                 &mut aggregates,
                 &runtime_overlay_records,
@@ -953,7 +986,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
             )
             .await?;
             let matched_count = query_working_prompt_cache_conversation_count(
-                &state.pool,
+                &mut *connection,
                 &range_start_bound,
                 source_scope,
             )
@@ -961,7 +994,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
             let runtime_overlay_keys = runtime_prompt_cache_overlay_keys(&runtime_overlay_records);
             let existing_runtime_overlay_keys =
                 query_existing_working_prompt_cache_conversation_keys(
-                    &state.pool,
+                    &mut *connection,
                     &range_start_bound,
                     source_scope,
                     &runtime_overlay_keys,
@@ -996,8 +1029,9 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
             conversations: Vec::new(),
         });
     }
-    let conversations = hydrate_prompt_cache_conversations(
+    let conversations = hydrate_prompt_cache_conversations_on_connection(
         state,
+        &mut *connection,
         source_scope,
         aggregates,
         range_end,

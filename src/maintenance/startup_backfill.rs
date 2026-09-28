@@ -18,6 +18,7 @@ pub(crate) enum StartupBackfillTask {
     ProxyUsage,
     ProxyCost,
     PromptCacheKey,
+    PromptCacheConversationsMaterialization,
     RequestedServiceTier,
     InvocationServiceTier,
     ReasoningEffort,
@@ -542,6 +543,7 @@ impl StartupBackfillTask {
         &[
             Self::ProxyUsage,
             Self::PromptCacheKey,
+            Self::PromptCacheConversationsMaterialization,
             Self::RequestedServiceTier,
             Self::InvocationServiceTier,
             Self::ProxyCost,
@@ -563,6 +565,9 @@ impl StartupBackfillTask {
             Self::ProxyUsage => STARTUP_BACKFILL_TASK_PROXY_USAGE,
             Self::ProxyCost => STARTUP_BACKFILL_TASK_PROXY_COST,
             Self::PromptCacheKey => STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY,
+            Self::PromptCacheConversationsMaterialization => {
+                STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION
+            }
             Self::RequestedServiceTier => STARTUP_BACKFILL_TASK_REQUESTED_SERVICE_TIER,
             Self::InvocationServiceTier => STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
             Self::ReasoningEffort => STARTUP_BACKFILL_TASK_REASONING_EFFORT,
@@ -587,6 +592,9 @@ impl StartupBackfillTask {
             Self::ProxyUsage => "proxy usage",
             Self::ProxyCost => "proxy cost",
             Self::PromptCacheKey => "proxy prompt cache key",
+            Self::PromptCacheConversationsMaterialization => {
+                "prompt-cache conversation materialization"
+            }
             Self::RequestedServiceTier => "proxy requested service tier",
             Self::InvocationServiceTier => "invocation service tier",
             Self::ReasoningEffort => "proxy reasoning effort",
@@ -621,6 +629,13 @@ pub(crate) fn startup_backfill_tasks_for_terminal(
     }
     if has_request_raw && record.prompt_cache_key.is_none() {
         tasks.push(StartupBackfillTask::PromptCacheKey);
+    }
+    if record
+        .prompt_cache_key
+        .as_deref()
+        .is_some_and(|prompt_cache_key| !prompt_cache_key.trim().is_empty())
+    {
+        tasks.push(StartupBackfillTask::PromptCacheConversationsMaterialization);
     }
     if has_request_raw && record.requested_service_tier.is_none() {
         tasks.push(StartupBackfillTask::RequestedServiceTier);
@@ -2281,6 +2296,31 @@ pub(crate) async fn run_startup_backfill_task(
                 detail,
             ))
         }
+        StartupBackfillTask::PromptCacheConversationsMaterialization => {
+            let outcome = run_prompt_cache_conversations_materialization(
+                &state.pool,
+                scan_limit,
+                max_elapsed,
+            )
+            .await?;
+            let detail = format!(
+                "phase={} scanned={} updated={} complete={}",
+                outcome.phase, outcome.scanned, outcome.updated, outcome.complete
+            );
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: outcome.scanned,
+                    updated: outcome.updated,
+                    hit_scan_limit: outcome.hit_scan_limit && !outcome.complete,
+                    retry_soon: false,
+                    force_idle: outcome.complete,
+                    source_unavailable: false,
+                    samples: Vec::new(),
+                },
+                detail,
+            ))
+        }
         StartupBackfillTask::RequestedServiceTier => {
             let outcome = backfill_proxy_requested_service_tiers_from_cursor(
                 &state.pool,
@@ -3104,12 +3144,26 @@ mod startup_backfill_tests {
             ]
         );
 
+        let mut materialization_record =
+            api_invocation_from_runtime_record(&crate::tests::test_proxy_capture_record(
+                "startup-backfill-materialization",
+                "2026-08-09 12:00:30",
+            ));
+        materialization_record.prompt_cache_key = Some("startup-materialization-key".to_string());
+        assert_eq!(
+            startup_backfill_tasks_for_terminal(&materialization_record),
+            vec![StartupBackfillTask::PromptCacheConversationsMaterialization]
+        );
+
         let complete =
             api_invocation_from_runtime_record(&crate::tests::test_proxy_capture_record(
                 "startup-backfill-terminal-complete",
                 "2026-08-09 12:01:00",
             ));
-        assert!(startup_backfill_tasks_for_terminal(&complete).is_empty());
+        assert_eq!(
+            startup_backfill_tasks_for_terminal(&complete),
+            vec![StartupBackfillTask::PromptCacheConversationsMaterialization]
+        );
     }
 
     #[test]
