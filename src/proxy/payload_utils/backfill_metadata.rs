@@ -213,11 +213,11 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
             }
             tx.commit().await?;
             if !updated_prompt_cache_keys.is_empty() {
+                // The trigger keeps the aggregate refresh durable; historical aggregation belongs
+                // to the pressure-gated materialization task, not this metadata backfill pass.
                 for prompt_cache_key in &updated_prompt_cache_keys {
                     crate::ensure_prompt_cache_conversation_row(pool, prompt_cache_key).await?;
                 }
-                crate::refresh_prompt_cache_conversation_stats(pool, &updated_prompt_cache_keys)
-                    .await?;
             }
         }
     }

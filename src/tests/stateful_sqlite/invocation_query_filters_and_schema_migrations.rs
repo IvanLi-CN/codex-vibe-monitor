@@ -782,7 +782,7 @@ async fn prompt_cache_conversation_retention_preserves_active_and_live_identitie
 }
 
 #[tokio::test]
-async fn prompt_cache_conversation_stats_refresh_after_terminal_batch() {
+async fn prompt_cache_conversation_stats_refresh_is_deferred_after_terminal_batch() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -843,6 +843,30 @@ async fn prompt_cache_conversation_stats_refresh_after_terminal_batch() {
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
         .await;
+
+    let queued_refreshes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count deferred prompt-cache aggregate refresh");
+    assert_eq!(
+        queued_refreshes, 1,
+        "terminal persistence must defer the historical aggregate refresh"
+    );
+    let fresh_marker: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check deferred prompt-cache aggregate marker");
+    assert_eq!(
+        fresh_marker, 0,
+        "deferred aggregates must remain unavailable"
+    );
+
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let stats = sqlx::query_as::<_, (i64, i64, i64, i64, i64, f64, String, String)>(
         r#"

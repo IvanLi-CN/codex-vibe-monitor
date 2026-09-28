@@ -38,8 +38,10 @@ Historical materialization is an ordered startup backfill task named
 The identity marker, statistics freshness marker, complete phase, and empty refresh queue are a
 single read-completeness contract. Until all four conditions hold, prompt-cache aggregate reads
 and subscription baselines return the existing `ApiError::Unavailable` error. They do not expose
-partial statistics or zero-valued placeholders. New invocation writes and incremental refreshes
-remain available; mutation triggers continue to invalidate freshness and enqueue affected keys.
+partial statistics or zero-valued placeholders. New invocation writes remain available; terminal
+writes and prompt-cache key backfills only invalidate freshness and enqueue affected keys. The
+startup materialization task owns the historical aggregate refresh so foreground P1/P2 write paths
+never synchronously scan retained invocation payloads.
 
 The startup backfill scheduler owns pressure admission, P2 write coordination, cancellation,
 failure backoff, and task wake-up. Page data is committed before its progress cursor is advanced,
@@ -53,7 +55,8 @@ IDs. WebSocket behavior is outside this decision.
 - Progress is observable through the durable migration phase/cursor and existing startup-backfill
   scanned/updated/status records and structured task logs.
 - A newly started process can serve normal writes while aggregate prompt-cache reads fail closed
-  until materialization converges.
+  until materialization converges; queued aggregate refreshes do not extend foreground write
+  transactions or retry in the online writer.
 - Deployment rollback does not reverse the additive schema or derived rows; a newer program
   version performs forward repair.
 
