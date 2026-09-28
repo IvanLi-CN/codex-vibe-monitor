@@ -607,6 +607,7 @@ pub(crate) struct PerformanceTelemetryRuntime {
     active_http_requests: AtomicU64,
     browser_rate_limiter: Mutex<BrowserRateLimiter>,
     shutdown: CancellationToken,
+    init_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
     writer_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -683,6 +684,7 @@ impl PerformanceTelemetryRuntime {
             active_http_requests: AtomicU64::new(0),
             browser_rate_limiter: Mutex::new(BrowserRateLimiter::new()),
             shutdown: CancellationToken::new(),
+            init_handle: std::sync::Mutex::new(None),
             writer_handle: std::sync::Mutex::new(None),
         })
     }
@@ -726,15 +728,21 @@ impl PerformanceTelemetryRuntime {
             active_http_requests: AtomicU64::new(0),
             browser_rate_limiter: Mutex::new(BrowserRateLimiter::new()),
             shutdown: shutdown.clone(),
+            init_handle: std::sync::Mutex::new(None),
             writer_handle: std::sync::Mutex::new(None),
         });
         if config.performance_telemetry_enabled {
             let runtime_for_init = runtime.clone();
             let main_path = config.database_path.clone();
             let telemetry_path = config.performance_database_path.clone();
-            tokio::spawn(async move {
+            let init_handle = tokio::spawn(async move {
                 initialize_telemetry_runtime(runtime_for_init, main_path, telemetry_path).await;
             });
+            if let Ok(mut slot) = runtime.init_handle.lock() {
+                *slot = Some(init_handle);
+            } else {
+                init_handle.abort();
+            }
         }
         if config.performance_telemetry_enabled {
             let writer_handle =
@@ -749,6 +757,14 @@ impl PerformanceTelemetryRuntime {
     }
 
     pub(crate) async fn shutdown_and_drain(&self) {
+        let init_handle = self
+            .init_handle
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(init_handle) = init_handle {
+            let _ = init_handle.await;
+        }
         let writer_handle = self
             .writer_handle
             .lock()
@@ -1207,21 +1223,35 @@ async fn initialize_telemetry_runtime(
             .await;
         return;
     }
-    if runtime.pool.set(pool).is_err() {
-        runtime
-            .update_health(|health| {
-                health.state = "unavailable".to_string();
-                health.last_error = Some("performance database initialized twice".to_string());
-            })
-            .await;
-        return;
-    }
     runtime
         .update_health(|health| {
             health.state = "healthy".to_string();
             health.last_error = None;
         })
         .await;
+    if let Err(error) = persist_collector_health(&runtime, &pool).await {
+        runtime
+            .update_health(|health| {
+                health.state = "unavailable".to_string();
+                health.last_error = Some(error.to_string());
+            })
+            .await;
+        let _ = close_telemetry_epoch(&pool, &epoch).await;
+        return;
+    }
+    if runtime.pool.set(pool.clone()).is_err() {
+        runtime
+            .update_health(|health| {
+                health.state = "unavailable".to_string();
+                health.last_error = Some("performance database initialized twice".to_string());
+            })
+            .await;
+        let _ = close_telemetry_epoch(&pool, &epoch).await;
+        return;
+    }
+    if runtime.shutdown.is_cancelled() {
+        let _ = close_telemetry_epoch(&pool, &epoch).await;
+    }
 }
 
 async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
