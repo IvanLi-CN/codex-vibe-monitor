@@ -4,7 +4,7 @@
 
 ## Context and Scope
 
-- Context: The IvanLi blog needs a public snapshot of aggregate Codex Vibe Monitor runtime activity. Read-only means there is no public mutation operation or source invocation-data write; an eligible exact fallback may asynchronously warm the existing derived timeseries cache.
+- Context: The IvanLi blog needs a public snapshot of aggregate Codex Vibe Monitor runtime activity. Read-only means there is no public mutation operation or persistent-state write.
 - In scope: One project-owned endpoint, its aggregate response shape, freshness and failure behavior, CORS, and request limiting.
 - Out of scope: Changes to existing Codex Vibe Monitor APIs, blog application code, and any raw invocation or account data interface.
 
@@ -40,7 +40,7 @@
 ### REQ-PBRA-004
 
 - The system MUST assemble the response from project-owned aggregate runtime read models and MUST NOT expose request records, prompts, account or user identifiers, API keys, IP addresses, URLs, error details, or unrelated operational fields.
-- Inputs: Dashboard live summary, hourly token rollups, minute activity coverage, the shared timeseries read model, and long-term daily usage rollups. On an eligible exact fallback, the shared timeseries reader MAY asynchronously warm its existing `timeseries_minute_projection_v2` derived cache; response generation MUST NOT wait for that cache write.
+- Inputs: Dashboard live summary, hourly token rollups, minute activity coverage, the shared timeseries read model, and long-term daily usage rollups. The endpoint's `today`, `1h`, `Asia/Shanghai` timeseries request MUST use the existing hourly rollups and MUST NOT write persistent state.
 - Outputs: Only the aggregate contract in `REQ-PBRA-001` is serialized.
 
 ### REQ-PBRA-005
