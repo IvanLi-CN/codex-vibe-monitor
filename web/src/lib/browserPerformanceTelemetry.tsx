@@ -30,6 +30,8 @@ export function BrowserPerformanceTelemetry({ pathname }: { pathname: string }) 
   const familyRef = useRef<PageFamily | null>(family);
   const eventsRef = useRef<BrowserPerformanceEvent[]>([]);
   const lastSentAtRef = useRef(0);
+  const readinessStartedAtRef = useRef<number | null>(null);
+  const dataReadyRecordedRef = useRef(false);
 
   useEffect(() => {
     familyRef.current = family;
@@ -37,16 +39,8 @@ export function BrowserPerformanceTelemetry({ pathname }: { pathname: string }) 
 
   useEffect(() => {
     if (!supportedRuntime() || !family) return;
-    const startedAt = performance.now();
-    const add = (metric: BrowserPerformanceEvent["metric"], value: number) => {
-      if (!Number.isFinite(value) || value < 0 || eventsRef.current.length >= 8) return;
-      eventsRef.current.push({ page: family, device: deviceClass(), metric, value });
-    };
-    const frame = window.requestAnimationFrame(() => {
-      add("data_ready_ms", performance.now() - startedAt);
-      window.requestAnimationFrame(() => add("update_to_paint_ms", performance.now() - startedAt));
-    });
-    return () => window.cancelAnimationFrame(frame);
+    readinessStartedAtRef.current = performance.now();
+    dataReadyRecordedRef.current = false;
   }, [family]);
 
   useEffect(() => {
@@ -117,6 +111,30 @@ export function BrowserPerformanceTelemetry({ pathname }: { pathname: string }) 
             pathname = new URL(entry.name, window.location.href).pathname;
           } catch {
             continue;
+          }
+          if (pathname.startsWith("/api/") && !dataReadyRecordedRef.current) {
+            const startedAt = readinessStartedAtRef.current;
+            if (startedAt !== null) {
+              dataReadyRecordedRef.current = true;
+              const dataReadyAt = performance.now();
+              if (eventsRef.current.length < 8) {
+                eventsRef.current.push({
+                  page: currentFamily,
+                  device: deviceClass(),
+                  metric: "data_ready_ms",
+                  value: dataReadyAt - startedAt,
+                });
+              }
+              window.requestAnimationFrame(() => {
+                if (eventsRef.current.length >= 8) return;
+                eventsRef.current.push({
+                  page: currentFamily,
+                  device: deviceClass(),
+                  metric: "update_to_paint_ms",
+                  value: performance.now() - dataReadyAt,
+                });
+              });
+            }
           }
           if (pathname === "/events") {
             eventsRef.current.push({

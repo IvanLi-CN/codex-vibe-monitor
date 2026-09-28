@@ -45,7 +45,7 @@
     {
       "path": "src/app_state.rs",
       "role": "production",
-      "line_budget": 3083,
+      "line_budget": 3084,
       "next_module_workstream": "Split application state construction, routing caches, dashboard state, and invocation store."
     },
     {
@@ -69,7 +69,7 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4433,
+      "line_budget": 4447,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -135,7 +135,7 @@
     {
       "path": "src/sqlite_batch_writer.rs",
       "role": "production",
-      "line_budget": 6213,
+      "line_budget": 6248,
       "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
     },
     {
@@ -159,7 +159,7 @@
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
       "role": "test_helper",
-      "line_budget": 4141,
+      "line_budget": 4182,
       "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
     },
     {
@@ -171,7 +171,7 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
       "role": "test_helper",
-      "line_budget": 3866,
+      "line_budget": 3867,
       "next_module_workstream": "Split OAuth route rewrite/timeout fixtures by request preparation, response, and failure paths."
     },
     {
@@ -183,7 +183,7 @@
     {
       "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
       "role": "test_helper",
-      "line_budget": 3395,
+      "line_budget": 3396,
       "next_module_workstream": "Split pricing catalog/model passthrough fixtures by catalog, fallback, and accounting cases."
     },
     {
@@ -201,7 +201,7 @@
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
       "role": "test_helper",
-      "line_budget": 3884,
+      "line_budget": 3886,
       "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {
@@ -231,7 +231,7 @@
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
       "role": "test_helper",
-      "line_budget": 4956,
+      "line_budget": 4960,
       "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
     },
     {
@@ -267,13 +267,13 @@
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4464,
+      "line_budget": 4467,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7130,
+      "line_budget": 7131,
       "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
     },
     {

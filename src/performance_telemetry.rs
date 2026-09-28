@@ -564,6 +564,10 @@ impl BucketAccumulator {
                 self.histogram[duration_histogram_index(value)].saturating_add(1);
         }
     }
+
+    fn add_expected_only(&mut self, count: u64) {
+        self.expected_count = self.expected_count.saturating_add(count);
+    }
 }
 
 fn duration_histogram_index(value: f64) -> usize {
@@ -595,6 +599,7 @@ pub(crate) struct PerformanceTelemetryRuntime {
     sender: mpsc::Sender<TelemetryEvent>,
     health: Mutex<PerformanceTelemetryHealth>,
     dropped_samples: AtomicU64,
+    dropped_expectations: std::sync::Mutex<HashMap<(i64, &'static str, &'static str), u64>>,
     flush_failure_count: AtomicU64,
     active_http_requests: AtomicU64,
     browser_rate_limiter: Mutex<BrowserRateLimiter>,
@@ -669,6 +674,7 @@ impl PerformanceTelemetryRuntime {
                 last_error: None,
             }),
             dropped_samples: AtomicU64::new(0),
+            dropped_expectations: std::sync::Mutex::new(HashMap::new()),
             flush_failure_count: AtomicU64::new(0),
             active_http_requests: AtomicU64::new(0),
             browser_rate_limiter: Mutex::new(BrowserRateLimiter::new()),
@@ -710,6 +716,7 @@ impl PerformanceTelemetryRuntime {
             sender,
             health: Mutex::new(health),
             dropped_samples: AtomicU64::new(0),
+            dropped_expectations: std::sync::Mutex::new(HashMap::new()),
             flush_failure_count: AtomicU64::new(0),
             active_http_requests: AtomicU64::new(0),
             browser_rate_limiter: Mutex::new(BrowserRateLimiter::new()),
@@ -813,8 +820,32 @@ impl PerformanceTelemetryRuntime {
             })
             .is_err()
         {
+            self.note_dropped_expectation(metric_id, dimension, Utc::now(), 1);
             self.dropped_samples.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    fn note_dropped_expectation(
+        &self,
+        metric_id: &'static str,
+        dimension: &'static str,
+        at: DateTime<Utc>,
+        count: u64,
+    ) {
+        let key = (at.timestamp().div_euclid(60) * 60, metric_id, dimension);
+        if let Ok(mut dropped) = self.dropped_expectations.lock()
+            && (dropped.len() < TELEMETRY_QUEUE_CAPACITY || dropped.contains_key(&key))
+        {
+            let entry = dropped.entry(key).or_default();
+            *entry = entry.saturating_add(count);
+        }
+    }
+
+    fn take_dropped_expectations(&self) -> HashMap<(i64, &'static str, &'static str), u64> {
+        self.dropped_expectations
+            .lock()
+            .map(|mut dropped| std::mem::take(&mut *dropped))
+            .unwrap_or_default()
     }
 
     pub(crate) async fn health_snapshot(&self) -> PerformanceTelemetryHealth {
@@ -885,6 +916,18 @@ fn metric_dimension_allowed(metric_id: &str, dimension: &str) -> bool {
         ),
         _ => false,
     }
+}
+
+fn registered_metric_dimension(
+    metric_id: &str,
+    dimension: &str,
+) -> Option<(&'static str, &'static str)> {
+    let spec = metric_spec(metric_id)?;
+    metric_dimensions(spec.id)
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == dimension)
+        .map(|dimension| (spec.id, dimension))
 }
 
 fn metric_dimensions(metric_id: &str) -> &'static [&'static str] {
@@ -992,18 +1035,48 @@ fn gauge_weight_seconds(metric_id: &str) -> f64 {
 }
 
 fn telemetry_paths_conflict(main_path: &Path, telemetry_path: &Path) -> bool {
-    let normalize = |path: &Path| {
-        std::fs::canonicalize(path).unwrap_or_else(|_| {
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .join(path)
+    fn normalize_path(path: &Path) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+        let mut unresolved = Vec::new();
+        let mut probe = absolute.clone();
+        while !probe.exists() {
+            let Some(name) = probe.file_name().map(ToOwned::to_owned) else {
+                break;
+            };
+            unresolved.push(name);
+            if !probe.pop() {
+                break;
             }
-        })
-    };
-    normalize(main_path) == normalize(telemetry_path)
+        }
+        let mut normalized = std::fs::canonicalize(&probe).unwrap_or(probe);
+        for name in unresolved.into_iter().rev() {
+            normalized.push(name);
+        }
+        normalized
+    }
+
+    if normalize_path(main_path) == normalize_path(telemetry_path) {
+        return true;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(main_metadata), Ok(telemetry_metadata)) = (
+            std::fs::metadata(main_path),
+            std::fs::metadata(telemetry_path),
+        ) {
+            return main_metadata.dev() == telemetry_metadata.dev()
+                && main_metadata.ino() == telemetry_metadata.ino();
+        }
+    }
+    false
 }
 
 async fn open_telemetry_pool(path: &Path) -> Result<Pool<Sqlite>> {
@@ -1090,6 +1163,80 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "unrecognized performance telemetry schema marker {current_version}; expected final marker {TELEMETRY_SCHEMA_VERSION}; recreate the disposable telemetry database"
         );
     }
+    let existing_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'performance_%'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if current_version == 0 && existing_table_count > 0 {
+        bail!(
+            "partial performance telemetry schema found without final schema marker; recreate the disposable telemetry database"
+        );
+    }
+    if current_version == TELEMETRY_SCHEMA_VERSION {
+        let expected_tables: &[(&str, &[&str])] = &[
+            ("performance_meta", &["key", "value"]),
+            ("performance_epochs", &["epoch", "started_at", "ended_at"]),
+            (
+                "performance_buckets",
+                &[
+                    "bucket_start",
+                    "resolution_seconds",
+                    "metric_id",
+                    "dimension_code",
+                    "sample_count",
+                    "expected_count",
+                    "sum_value",
+                    "min_value",
+                    "max_value",
+                    "last_value",
+                    "weighted_sum",
+                    "weighted_seconds",
+                    "histogram_json",
+                    "epoch",
+                ],
+            ),
+            (
+                "performance_collector_health",
+                &[
+                    "id",
+                    "state",
+                    "last_successful_flush",
+                    "dropped_samples",
+                    "flush_failure_count",
+                    "last_error",
+                ],
+            ),
+        ];
+        for (table, expected_columns) in expected_tables {
+            let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .map(|row| row.try_get::<String, _>("name"))
+                .collect::<Result<Vec<_>, _>>()?;
+            if columns.len() != expected_columns.len()
+                || expected_columns
+                    .iter()
+                    .any(|column| !columns.iter().any(|actual| actual == column))
+            {
+                bail!(
+                    "malformed performance telemetry table {table}; recreate the disposable telemetry database"
+                );
+            }
+        }
+        let index_exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_performance_buckets_range'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if index_exists != 1 {
+            bail!(
+                "malformed performance telemetry index; recreate the disposable telemetry database"
+            );
+        }
+        return Ok(());
+    }
     let mut transaction = pool.begin().await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS performance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -1160,20 +1307,31 @@ async fn run_telemetry_writer(
     loop {
         tokio::select! {
             _ = runtime.shutdown.cancelled() => {
-                let dropped = drain_events(&mut receiver, &mut accumulators);
+                let dropped = drain_events(&runtime, &mut receiver, &mut accumulators);
                 runtime
                     .dropped_samples
                     .fetch_add(dropped, Ordering::Relaxed);
+                merge_dropped_expectations(&runtime, &mut accumulators);
                 let _ = flush_accumulators(&runtime, &mut accumulators, &epoch).await;
                 return;
             }
             event = receiver.recv() => match event {
                 Some(event) => {
+                    let event_at = event.at;
+                    let event_metric_id = event.metric_id;
+                    let event_dimension = event.dimension;
                     if !add_event(&mut accumulators, event) {
+                        runtime.note_dropped_expectation(
+                            event_metric_id,
+                            event_dimension,
+                            event_at,
+                            1,
+                        );
                         runtime.dropped_samples.fetch_add(1, Ordering::Relaxed);
                     }
                     if runtime.pool.get().is_none() {
-                        let dropped = trim_unflushed_accumulators(&mut accumulators);
+                        let dropped =
+                            trim_unflushed_accumulators_with_runtime(&runtime, &mut accumulators);
                         runtime.dropped_samples.fetch_add(dropped, Ordering::Relaxed);
                     }
                 }
@@ -1181,11 +1339,16 @@ async fn run_telemetry_writer(
             },
             _ = ticker.tick() => {
                 if !accumulators.is_empty()
+                    || !runtime.dropped_expectations.lock().is_ok_and(|dropped| dropped.is_empty())
+                {
+                    merge_dropped_expectations(&runtime, &mut accumulators);
+                }
+                if !accumulators.is_empty()
                     && flush_accumulators(&runtime, &mut accumulators, &epoch)
                         .await
                         .is_err()
                 {
-                    let dropped = trim_unflushed_accumulators(&mut accumulators);
+                    let dropped = trim_unflushed_accumulators_with_runtime(&runtime, &mut accumulators);
                     runtime.dropped_samples.fetch_add(dropped, Ordering::Relaxed);
                 }
                 if let Some(pool) = runtime.pool.get() {
@@ -1209,12 +1372,17 @@ async fn run_telemetry_writer(
 }
 
 fn drain_events(
+    runtime: &PerformanceTelemetryRuntime,
     receiver: &mut mpsc::Receiver<TelemetryEvent>,
     accumulators: &mut HashMap<(i64, String, String), BucketAccumulator>,
 ) -> u64 {
     let mut dropped = 0_u64;
     while let Ok(event) = receiver.try_recv() {
+        let event_at = event.at;
+        let event_metric_id = event.metric_id;
+        let event_dimension = event.dimension;
         if !add_event(accumulators, event) {
+            runtime.note_dropped_expectation(event_metric_id, event_dimension, event_at, 1);
             dropped = dropped.saturating_add(1);
         }
     }
@@ -1245,8 +1413,75 @@ fn add_event(
     }
 }
 
+fn merge_dropped_expectations(
+    runtime: &PerformanceTelemetryRuntime,
+    accumulators: &mut HashMap<(i64, String, String), BucketAccumulator>,
+) {
+    for ((bucket_start, metric_id, dimension), expected_count) in
+        runtime.take_dropped_expectations()
+    {
+        let Some(spec) = metric_spec(metric_id) else {
+            continue;
+        };
+        let key = (bucket_start, metric_id.to_string(), dimension.to_string());
+        if let Some(accumulator) = accumulators.get_mut(&key) {
+            accumulator.add_expected_only(expected_count);
+        } else if accumulators.len() < 512 {
+            let mut accumulator = BucketAccumulator {
+                kind: match spec.kind {
+                    MetricKind::Counter => EventKind::Counter,
+                    MetricKind::Duration => EventKind::Duration,
+                    MetricKind::Gauge => EventKind::Gauge,
+                },
+                count: 0,
+                expected_count: 0,
+                sum: 0.0,
+                min: 0.0,
+                max: 0.0,
+                last: 0.0,
+                weighted_sum: 0.0,
+                weighted_seconds: 0.0,
+                histogram: [0; 8],
+            };
+            accumulator.add_expected_only(expected_count);
+            accumulators.insert(key, accumulator);
+        } else {
+            runtime
+                .dropped_samples
+                .fetch_add(expected_count, Ordering::Relaxed);
+        }
+    }
+}
+
 fn trim_unflushed_accumulators(
     accumulators: &mut HashMap<(i64, String, String), BucketAccumulator>,
+) -> u64 {
+    trim_unflushed_accumulators_with(accumulators, |_, _, _, _| {})
+}
+
+fn trim_unflushed_accumulators_with_runtime(
+    runtime: &PerformanceTelemetryRuntime,
+    accumulators: &mut HashMap<(i64, String, String), BucketAccumulator>,
+) -> u64 {
+    trim_unflushed_accumulators_with(
+        accumulators,
+        |bucket_start, metric_id, dimension, expected_count| {
+            if expected_count == 0 {
+                return;
+            }
+            runtime.note_dropped_expectation(
+                metric_id,
+                dimension,
+                DateTime::from_timestamp(bucket_start, 0).unwrap_or_else(Utc::now),
+                expected_count,
+            );
+        },
+    )
+}
+
+fn trim_unflushed_accumulators_with(
+    accumulators: &mut HashMap<(i64, String, String), BucketAccumulator>,
+    mut on_drop: impl FnMut(i64, &'static str, &'static str, u64),
 ) -> u64 {
     let mut bucket_starts = accumulators.keys().map(|key| key.0).collect::<Vec<_>>();
     bucket_starts.sort_unstable();
@@ -1266,6 +1501,13 @@ fn trim_unflushed_accumulators(
         .map(|accumulator| accumulator.count)
         .sum();
     for key in stale_keys {
+        if let Some((metric_id, dimension)) = registered_metric_dimension(&key.1, &key.2) {
+            let expected_count = accumulators
+                .get(&key)
+                .map(|accumulator| accumulator.expected_count)
+                .unwrap_or_default();
+            on_drop(key.0, metric_id, dimension, expected_count);
+        }
         accumulators.remove(&key);
     }
     dropped
@@ -1285,6 +1527,17 @@ async fn flush_accumulators(
             .values()
             .map(|accumulator| accumulator.count)
             .sum::<u64>();
+        for ((bucket_start, metric_id, dimension), accumulator) in accumulators.iter() {
+            if let Some((metric_id, dimension)) = registered_metric_dimension(metric_id, dimension)
+            {
+                runtime.note_dropped_expectation(
+                    metric_id,
+                    dimension,
+                    DateTime::from_timestamp(*bucket_start, 0).unwrap_or_else(Utc::now),
+                    accumulator.expected_count,
+                );
+            }
+        }
         runtime
             .dropped_samples
             .fetch_add(dropped, Ordering::Relaxed);
@@ -1317,23 +1570,26 @@ async fn flush_accumulators(
                 mut sum,
                 mut min,
                 mut max,
+                mut last,
                 mut weighted_sum,
                 mut weighted_seconds,
                 mut histogram,
             ) = if let Some(row) = existing {
                     let parsed = serde_json::from_str::<Vec<u64>>(row.try_get::<String, _>("histogram_json")?.as_str()).unwrap_or_else(|_| vec![0; 8]);
-                    (row.try_get::<i64, _>("sample_count")? as u64, row.try_get::<i64, _>("expected_count")? as u64, row.try_get::<f64, _>("sum_value")?, row.try_get::<Option<f64>, _>("min_value")?.unwrap_or(accumulator.min), row.try_get::<Option<f64>, _>("max_value")?.unwrap_or(accumulator.max), row.try_get::<f64, _>("weighted_sum")?, row.try_get::<f64, _>("weighted_seconds")?, parsed)
+                    (row.try_get::<i64, _>("sample_count")? as u64, row.try_get::<i64, _>("expected_count")? as u64, row.try_get::<f64, _>("sum_value")?, row.try_get::<Option<f64>, _>("min_value")?, row.try_get::<Option<f64>, _>("max_value")?, row.try_get::<Option<f64>, _>("last_value")?, row.try_get::<f64, _>("weighted_sum")?, row.try_get::<f64, _>("weighted_seconds")?, parsed)
                 } else {
-                    (0, 0, 0.0, accumulator.min, accumulator.max, 0.0, 0.0, vec![0; 8])
+                    (0, 0, 0.0, None, None, None, 0.0, 0.0, vec![0; 8])
                 };
             count = count.saturating_add(accumulator.count);
             expected = expected.saturating_add(accumulator.expected_count);
             sum += accumulator.sum;
-            min = min.min(accumulator.min);
-            max = max.max(accumulator.max);
+            if accumulator.count > 0 {
+                min = Some(min.map_or(accumulator.min, |value| value.min(accumulator.min)));
+                max = Some(max.map_or(accumulator.max, |value| value.max(accumulator.max)));
+                last = Some(accumulator.last);
+            }
             weighted_sum += accumulator.weighted_sum;
             weighted_seconds += accumulator.weighted_seconds;
-            let last = accumulator.last;
             for (index, value) in accumulator.histogram.iter().enumerate() {
                 if index < histogram.len() { histogram[index] = histogram[index].saturating_add(*value); }
             }
@@ -1478,6 +1734,9 @@ async fn rollup_resolution(
             continue;
         }
         let dimension: String = row.try_get("dimension_code")?;
+        if !metric_dimension_allowed(&metric_id, &dimension) {
+            continue;
+        }
         let key = ((bucket_start / target) * target, metric_id, dimension);
         let histogram =
             serde_json::from_str::<Vec<u64>>(row.try_get::<String, _>("histogram_json")?.as_str())
@@ -2351,7 +2610,8 @@ async fn query_performance(
     let long_term_only = to.saturating_sub(from) > 30 * 24 * 60 * 60;
     let mut grouped: HashMap<(String, String, i64), PerformancePoint> = HashMap::new();
     let mut epochs = BTreeSet::new();
-    let mut covered_buckets = BTreeSet::new();
+    let mut covered_series_buckets = BTreeSet::new();
+    let mut observed_series = BTreeSet::new();
     let total_buckets = ((to - from + step_seconds - 1) / step_seconds).max(1) as usize;
     for (resolution, segment_from, segment_to) in query_resolution_segments(from, to) {
         let rows = sqlx::query("SELECT bucket_start, metric_id, dimension_code, sample_count, expected_count, sum_value, min_value, max_value, last_value, weighted_sum, weighted_seconds, histogram_json, epoch FROM performance_buckets WHERE resolution_seconds = ? AND bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start, metric_id, dimension_code")
@@ -2373,15 +2633,18 @@ async fn query_performance(
             }
             let bucket_start: i64 = row.try_get("bucket_start")?;
             let output_bucket = bucket_start / step_seconds * step_seconds;
-            let key = (
-                metric_id.clone(),
-                row.try_get::<String, _>("dimension_code")?,
-                output_bucket,
-            );
+            let dimension: String = row.try_get("dimension_code")?;
+            if !metric_dimension_allowed(&metric_id, &dimension) {
+                continue;
+            }
+            let key = (metric_id.clone(), dimension.clone(), output_bucket);
             let sample_count = row.try_get::<i64, _>("sample_count")?.max(0) as u64;
             let expected_count = row.try_get::<i64, _>("expected_count")?.max(0) as u64;
-            if sample_count > 0 {
-                covered_buckets.insert(output_bucket);
+            if expected_count > 0 || sample_count > 0 {
+                observed_series.insert((metric_id.clone(), dimension.clone()));
+            }
+            if sample_count > 0 && sample_count >= expected_count {
+                covered_series_buckets.insert(key.clone());
             }
             epochs.insert(row.try_get::<String, _>("epoch")?);
             let point = grouped.entry(key).or_insert_with(|| PerformancePoint {
@@ -2492,8 +2755,9 @@ async fn query_performance(
             .unwrap_or_else(Utc::now)
             .to_rfc3339(),
         step_seconds,
-        coverage: (covered_buckets.len() as f64
-            / total_buckets.min(TELEMETRY_MAX_QUERY_POINTS) as f64)
+        coverage: (covered_series_buckets.len() as f64
+            / (observed_series.len().max(1) * total_buckets.min(TELEMETRY_MAX_QUERY_POINTS))
+                as f64)
             .min(1.0),
         epochs: epochs.into_iter().collect(),
         series: series_map.into_values().collect(),
@@ -2676,6 +2940,18 @@ mod tests {
             .await
             .expect("insert query source bucket");
         }
+        sqlx::query(
+            "INSERT INTO performance_buckets(
+                bucket_start, resolution_seconds, metric_id, dimension_code,
+                sample_count, expected_count, sum_value, min_value, max_value,
+                last_value, weighted_sum, weighted_seconds, histogram_json, epoch
+            ) VALUES (?, 60, 'http.in_flight', 'untrusted:dimension', 99, 99, 99, 99, 99, 99, 0, 0, ?, 'query-merge')",
+        )
+        .bind(recent_bucket)
+        .bind("[0,0,0,0,0,0,0,0]")
+        .execute(&pool)
+        .await
+        .expect("insert invalid dimension fixture");
 
         let response = query_performance(&pool, from, to, 3600, None)
             .await
@@ -2694,6 +2970,12 @@ mod tests {
             3
         );
         assert!(response.coverage > 0.0);
+        assert!(
+            response
+                .series
+                .iter()
+                .all(|series| series.dimension != "untrusted:dimension")
+        );
 
         let overview = query_performance(&pool, from, to, 3600, Some("overview"))
             .await
@@ -2829,6 +3111,49 @@ mod tests {
             .await
             .expect("read incompatible telemetry marker");
         assert_eq!(version, 42);
+    }
+
+    #[tokio::test]
+    async fn marked_schema_with_missing_table_is_rejected() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory telemetry database");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        sqlx::query("DROP TABLE performance_buckets")
+            .execute(&pool)
+            .await
+            .expect("remove a required telemetry table");
+        let error = ensure_telemetry_schema(&pool)
+            .await
+            .expect_err("marked partial schema must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("malformed performance telemetry table")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hard_link_alias_to_main_database_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "cvm-performance-path-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).expect("create path test directory");
+        let main_path = root.join("main.sqlite");
+        let telemetry_path = root.join("telemetry.sqlite");
+        std::fs::write(&main_path, b"sqlite").expect("create main database fixture");
+        std::fs::hard_link(&main_path, &telemetry_path).expect("create hard-link alias");
+        assert!(telemetry_paths_conflict(&main_path, &telemetry_path));
+        std::fs::remove_file(&telemetry_path).expect("remove telemetry alias");
+        std::fs::remove_file(&main_path).expect("remove main fixture");
+        std::fs::remove_dir(&root).expect("remove path test directory");
     }
 
     #[tokio::test]
