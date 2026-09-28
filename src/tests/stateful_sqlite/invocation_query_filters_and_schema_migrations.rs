@@ -204,7 +204,7 @@ async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
     assert_eq!(row_count, 1);
 
     sqlx::query(
-        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = 'allocator-key'",
+        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00', updated_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = 'allocator-key'",
     )
     .execute(&state.pool)
     .await
@@ -549,7 +549,7 @@ async fn prompt_cache_conversation_allocator_recovers_after_cross_state_cleanup(
         .expect("allocate initial prompt-cache invoke id");
 
     sqlx::query(
-        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = ?1",
+        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00', updated_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = ?1",
     )
     .bind(prompt_cache_key)
     .execute(&state.pool)
@@ -636,6 +636,34 @@ async fn prompt_cache_conversation_allocator_retries_colliding_candidates() {
     .expect("allocator should retry a colliding candidate");
     assert_eq!(identity.conversation_id, "ZZZZZZ");
     assert_eq!(identity.next_sequence, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_rejects_invocation_only_prefix_collision() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        ) VALUES ('ABCDEFZAAA', '2026-09-01 00:00:00', ?1, 'running', '{}', '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert invocation-only prefix collision");
+
+    let identity = create_prompt_cache_conversation_row_with_test_candidates(
+        &state.pool,
+        "invocation-only-collision-key",
+        &["ABCDEF", "ZZZZZZ"],
+    )
+    .await
+    .expect("allocator should reject invocation-only prefix collision");
+    assert_eq!(identity.conversation_id, "ZZZZZZ");
 }
 
 #[tokio::test]

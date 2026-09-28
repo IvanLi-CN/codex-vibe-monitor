@@ -31,6 +31,9 @@ pub(crate) struct UnboundInvokePrefix {
 
 #[derive(Debug, FromRow)]
 struct PromptCacheConversationStatsRow {
+    prompt_cache_key: String,
+    conversation_id: String,
+    max_invoke_id: Option<String>,
     request_count: i64,
     success_count: i64,
     failure_count: i64,
@@ -285,7 +288,9 @@ async fn conversation_prefix_conflicts_with_live_invocation(
     pool: &Pool<Sqlite>,
     conversation_id: &str,
 ) -> Result<bool> {
-    let upper_bound = format!("{conversation_id}:");
+    // The generated suffix alphabet is A-Z followed by digits. '[' is the
+    // first byte after that alphabet in SQLite's BINARY collation.
+    let upper_bound = format!("{conversation_id}[");
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(\
             SELECT 1 FROM codex_invocations \
@@ -676,9 +681,20 @@ async fn allocate_proxy_invoke_id_locked(
             .as_mut()
             .expect("current unbound invoke prefix should exist")
     } else {
+        let prefix = loop {
+            let candidate = generate_prompt_cache_conversation_id();
+            if !conversation_prefix_conflicts_with_live_invocation(&state.pool, &candidate).await? {
+                break candidate;
+            }
+            debug!(
+                prefix = %candidate,
+                prefix_hour = hour_key,
+                "unbound proxy invoke prefix conflicts with a retained invocation"
+            );
+        };
         cache.identity_cache.unbound_prefix = Some(UnboundInvokePrefix {
             hour_key,
-            prefix: generate_prompt_cache_conversation_id(),
+            prefix,
             next_sequence: 0,
         });
         cache
@@ -745,61 +761,55 @@ async fn refresh_prompt_cache_conversation_stats_once(
         return Ok(0);
     }
     let mut tx = pool.begin().await?;
-    let mut refreshed = 0;
+    let placeholders = std::iter::repeat_n("?", prompt_cache_keys.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let success_like_sql = invocation_status_is_success_like_sql("i.status", "i.error_message");
+    let stats_sql = format!(
+        r#"
+        SELECT
+            c.prompt_cache_key AS prompt_cache_key,
+            c.conversation_id AS conversation_id,
+            MAX(CASE
+                WHEN length(i.invoke_id) = {PROXY_INVOKE_ID_LENGTH}
+                 AND i.invoke_id >= c.conversation_id
+                 AND i.invoke_id < (c.conversation_id || '[')
+                THEN i.invoke_id
+            END) AS max_invoke_id,
+            COUNT(i.id) AS request_count,
+            COALESCE(SUM(CASE WHEN i.id IS NOT NULL AND ({success_like_sql}) THEN 1 ELSE 0 END), 0) AS success_count,
+            COALESCE(SUM(CASE WHEN i.id IS NULL THEN 0 WHEN {success_like_sql} THEN 0 ELSE 1 END), 0) AS failure_count,
+            COALESCE(SUM(i.input_tokens), 0) AS input_tokens,
+            COALESCE(SUM(i.output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(i.cache_input_tokens), 0) AS cache_input_tokens,
+            COALESCE(SUM(i.reported_cache_write_tokens), 0) AS reported_cache_write_tokens,
+            COALESCE(SUM(i.reasoning_tokens), 0) AS reasoning_tokens,
+            COALESCE(SUM(i.total_tokens), 0) AS total_tokens,
+            COALESCE(SUM(CAST(i.cost AS REAL)), 0.0) AS cost,
+            COALESCE(SUM(CAST(i.cost_input AS REAL)), 0.0) AS cost_input,
+            COALESCE(SUM(CAST(i.cost_cache_write AS REAL)), 0.0) AS cost_cache_write,
+            COALESCE(SUM(CAST(i.cost_cache_read AS REAL)), 0.0) AS cost_cache_read,
+            COALESCE(SUM(CAST(i.cost_output AS REAL)), 0.0) AS cost_output,
+            COALESCE(SUM(CAST(i.cost_reasoning AS REAL)), 0.0) AS cost_reasoning,
+            MIN(i.occurred_at) AS first_invocation_at,
+            MAX(i.occurred_at) AS last_invocation_at
+        FROM prompt_cache_conversations AS c
+        LEFT JOIN codex_invocations AS i
+            ON {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = c.prompt_cache_key
+        WHERE c.prompt_cache_key IN ({placeholders})
+        GROUP BY c.prompt_cache_key, c.conversation_id
+        "#,
+    );
+    let mut stats_query = sqlx::query_as::<_, PromptCacheConversationStatsRow>(&stats_sql);
     for prompt_cache_key in prompt_cache_keys {
-        let success_like_sql = invocation_status_is_success_like_sql("status", "error_message");
-        let stats = sqlx::query_as::<_, PromptCacheConversationStatsRow>(&format!(
-            r#"
-            SELECT
-                COUNT(*) AS request_count,
-                COALESCE(SUM(CASE WHEN {success_like_sql} THEN 1 ELSE 0 END), 0) AS success_count,
-                COALESCE(SUM(CASE WHEN {success_like_sql} THEN 0 ELSE 1 END), 0) AS failure_count,
-                COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                COALESCE(SUM(output_tokens), 0) AS output_tokens,
-                COALESCE(SUM(cache_input_tokens), 0) AS cache_input_tokens,
-                COALESCE(SUM(reported_cache_write_tokens), 0) AS reported_cache_write_tokens,
-                COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
-                COALESCE(SUM(total_tokens), 0) AS total_tokens,
-                COALESCE(SUM(CAST(cost AS REAL)), 0.0) AS cost,
-                COALESCE(SUM(CAST(cost_input AS REAL)), 0.0) AS cost_input,
-                COALESCE(SUM(CAST(cost_cache_write AS REAL)), 0.0) AS cost_cache_write,
-                COALESCE(SUM(CAST(cost_cache_read AS REAL)), 0.0) AS cost_cache_read,
-                COALESCE(SUM(CAST(cost_output AS REAL)), 0.0) AS cost_output,
-                COALESCE(SUM(CAST(cost_reasoning AS REAL)), 0.0) AS cost_reasoning,
-                MIN(occurred_at) AS first_invocation_at,
-                MAX(occurred_at) AS last_invocation_at
-            FROM codex_invocations
-            WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = ?1
-            "#,
-        ))
-        .bind(prompt_cache_key)
-        .fetch_one(&mut *tx)
-        .await?;
-        let Some(conversation_id) = sqlx::query_scalar::<_, String>(
-            "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
-        )
-        .bind(prompt_cache_key)
-        .fetch_optional(&mut *tx)
-        .await?
-        else {
-            continue;
-        };
-        let max_sequence = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT invoke_id FROM codex_invocations WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = ?1"
-        ))
-        .bind(prompt_cache_key)
-        .fetch_all(&mut *tx)
-        .await?
-        .iter()
-        .filter_map(|invoke_id| {
-            let invoke_conversation_id = prompt_cache_conversation_id_from_invoke_id(invoke_id)?;
-            if invoke_conversation_id != conversation_id {
-                return None;
-            }
-            let suffix = invoke_id_suffix(invoke_id, &conversation_id)?;
+        stats_query = stats_query.bind(prompt_cache_key);
+    }
+    let stats_rows = stats_query.fetch_all(&mut *tx).await?;
+    for stats in &stats_rows {
+        let max_sequence = stats.max_invoke_id.as_deref().and_then(|invoke_id| {
+            let suffix = invoke_id_suffix(invoke_id, &stats.conversation_id)?;
             decode_prompt_cache_conversation_sequence(suffix)
-        })
-        .max();
+        });
         sqlx::query(
             r#"
             UPDATE prompt_cache_conversations
@@ -841,13 +851,13 @@ async fn refresh_prompt_cache_conversation_stats_once(
         .bind(stats.cost_cache_read)
         .bind(stats.cost_output)
         .bind(stats.cost_reasoning)
-        .bind(stats.first_invocation_at)
-        .bind(stats.last_invocation_at)
-        .bind(prompt_cache_key)
+        .bind(stats.first_invocation_at.as_deref())
+        .bind(stats.last_invocation_at.as_deref())
+        .bind(&stats.prompt_cache_key)
         .execute(&mut *tx)
         .await?;
-        refreshed += 1;
     }
+    let refreshed = stats_rows.len();
     tx.commit().await?;
     debug!(
         keys = prompt_cache_keys.len(),
@@ -888,10 +898,10 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
     active_prompt_cache_keys: &HashSet<String>,
 ) -> Result<usize> {
     let predicate = format!(
-        "{INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = prompt_cache_conversations.prompt_cache_key"
+        "({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = prompt_cache_conversations.prompt_cache_key OR (length(codex_invocations.invoke_id) = {PROXY_INVOKE_ID_LENGTH} AND codex_invocations.invoke_id >= prompt_cache_conversations.conversation_id AND codex_invocations.invoke_id < (prompt_cache_conversations.conversation_id || '[')))"
     );
     let orphan_predicate = format!(
-        "(last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
+        "(last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes') AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
     );
     let active_exclusion = if active_prompt_cache_keys.is_empty() {
         String::new()
@@ -929,8 +939,9 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations_with_cache(
     dry_run: bool,
     cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
 ) -> Result<usize> {
-    let mut cache_state = cache.lock().await;
-    let active_prompt_cache_keys = cache_state
+    let active_prompt_cache_keys = cache
+        .lock()
+        .await
         .identity_cache
         .active_prompt_cache_keys
         .keys()
@@ -950,6 +961,7 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations_with_cache(
         .await?
         .into_iter()
         .collect::<HashSet<_>>();
+        let mut cache_state = cache.lock().await;
         cache_state
             .identity_cache
             .conversations
@@ -958,7 +970,7 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations_with_cache(
             released,
             active = active_prompt_cache_keys.len(),
             cached = cache_state.identity_cache.conversations.len(),
-            "cleared released prompt-cache conversation identities while holding allocator lock"
+            "cleared released prompt-cache conversation identities"
         );
     }
     Ok(released)

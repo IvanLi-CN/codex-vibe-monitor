@@ -341,6 +341,18 @@ pub(crate) fn extract_prompt_cache_key_from_request_body(value: &Value) -> Optio
     None
 }
 
+pub(crate) fn request_body_has_invalid_prompt_cache_key(value: &Value) -> bool {
+    [
+        "/metadata/prompt_cache_key",
+        "/metadata/promptCacheKey",
+        "/prompt_cache_key",
+        "/promptCacheKey",
+    ]
+    .into_iter()
+    .filter_map(|pointer| value.pointer(pointer))
+    .any(|value| value.as_str().is_none_or(prompt_cache_key_is_oversized))
+}
+
 pub(crate) fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<String> {
     ["/service_tier", "/serviceTier"]
         .iter()

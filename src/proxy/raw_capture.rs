@@ -1211,13 +1211,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
-        if let Some(prompt_cache_key) = inserted_record.prompt_cache_key.as_deref() {
-            release_active_prompt_cache_conversation(
-                &state.prompt_cache_conversation_cache,
-                prompt_cache_key,
-            )
-            .await;
-        }
         rollback_terminal_projection_before_enqueue(state, &inserted_record, &projection).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations

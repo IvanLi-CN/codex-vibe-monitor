@@ -269,10 +269,47 @@ pub(crate) async fn persist_websocket_pre_upstream_failure(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
+    status: StatusCode,
     failure_kind: &str,
     error_message: &str,
 ) -> Result<()> {
-    let status = StatusCode::BAD_GATEWAY;
+    {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        if let Err(err) = insert_pool_upstream_request_attempt(
+            &state.pool,
+            trace,
+            None,
+            None,
+            0,
+            0,
+            0,
+            Some(&trace.occurred_at),
+            Some(&trace.occurred_at),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
+            Some(status),
+            Some(status),
+            Some(failure_kind),
+            Some(error_message),
+            Some(error_message),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            warn!(
+                invoke_id = %trace.invoke_id,
+                error = %err,
+                "failed to persist websocket pre-upstream pool attempt"
+            );
+        }
+    }
     let request_info = RequestCaptureInfo {
         model: trace.request_model.clone(),
         is_stream: true,
@@ -2306,9 +2343,25 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cac
     prompt_cache_key: Option<String>,
 ) -> Result<()> {
     let mut flush_completed = false;
+    let mut flush_error = None;
     let result = async {
-        state.sqlite_batch_writer.flush_now(&state.pool).await?;
-        flush_completed = true;
+        for attempt in 1..=3 {
+            match state.sqlite_batch_writer.flush_now(&state.pool).await {
+                Ok(()) => {
+                    flush_completed = true;
+                    break;
+                }
+                Err(err) => {
+                    flush_error = Some(err);
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            }
+        }
+        if !flush_completed {
+            return Err(flush_error.expect("dropped invocation flush should record its error"));
+        }
 
         let recovered_invocations = {
             let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
@@ -2357,8 +2410,13 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cac
             warn!(
                 prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(&prompt_cache_key),
                 error = ?result.as_ref().err(),
-                "retaining prompt-cache conversation lease because dropped-invocation recovery could not flush pending writes"
+                "releasing prompt-cache conversation lease after dropped-invocation flush retries failed"
             );
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                &prompt_cache_key,
+            )
+            .await;
         }
     }
 
@@ -4147,13 +4205,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
-        if let Some(prompt_cache_key) = persisted_record.prompt_cache_key.as_deref() {
-            release_active_prompt_cache_conversation(
-                &state.prompt_cache_conversation_cache,
-                prompt_cache_key,
-            )
-            .await;
-        }
         rollback_terminal_projection_before_enqueue(state, &persisted_record, &projection).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations

@@ -1397,6 +1397,7 @@ pub(crate) struct PoolViaRuntimeSnapshotCleanupGuard {
     state: Arc<AppState>,
     invoke_id: String,
     prompt_cache_key: Option<String>,
+    pending_prompt_cache_key_releases: Vec<String>,
 }
 
 impl PoolViaRuntimeSnapshotCleanupGuard {
@@ -1405,6 +1406,7 @@ impl PoolViaRuntimeSnapshotCleanupGuard {
             state,
             invoke_id: invoke_id.into(),
             prompt_cache_key: None,
+            pending_prompt_cache_key_releases: Vec::new(),
         }
     }
 
@@ -1420,24 +1422,33 @@ impl PoolViaRuntimeSnapshotCleanupGuard {
         if self.prompt_cache_key == next_prompt_cache_key {
             return;
         }
-        if let Some(previous_prompt_cache_key) = self.prompt_cache_key.take() {
+        let previous_prompt_cache_key =
+            std::mem::replace(&mut self.prompt_cache_key, next_prompt_cache_key);
+        if let Some(previous_prompt_cache_key) = previous_prompt_cache_key {
+            self.pending_prompt_cache_key_releases
+                .push(previous_prompt_cache_key.clone());
             release_active_prompt_cache_conversation(
                 &self.state.prompt_cache_conversation_cache,
                 &previous_prompt_cache_key,
             )
             .await;
+            self.pending_prompt_cache_key_releases
+                .retain(|key| key != &previous_prompt_cache_key);
         }
-        self.prompt_cache_key = next_prompt_cache_key;
     }
 }
 
 impl Drop for PoolViaRuntimeSnapshotCleanupGuard {
     fn drop(&mut self) {
+        let mut prompt_cache_keys = std::mem::take(&mut self.pending_prompt_cache_key_releases);
         if let Some(prompt_cache_key) = self.prompt_cache_key.take() {
+            prompt_cache_keys.push(prompt_cache_key);
+        }
+        if !prompt_cache_keys.is_empty() {
             let cache = self.state.prompt_cache_conversation_cache.clone();
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
-                    release_active_prompt_cache_conversation(&cache, &prompt_cache_key).await;
+                    release_active_prompt_cache_conversations(&cache, &prompt_cache_keys).await;
                 });
             }
         }

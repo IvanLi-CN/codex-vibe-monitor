@@ -145,6 +145,17 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         });
     }
 
+    if prompt_cache_key_headers_are_oversized(&headers) {
+        return build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "prompt-cache key exceeds the supported 512-byte limit".to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
+        });
+    }
+
     let runtime_timeouts = match resolve_proxy_route_context_for_request(
         state.as_ref(),
         proxy_request_id,
@@ -1902,6 +1913,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     state.as_ref(),
                     &trace,
                     header_prompt_cache_key.as_deref(),
+                    StatusCode::BAD_GATEWAY,
                     PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     message.as_str(),
                 )
@@ -1933,6 +1945,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     state.as_ref(),
                     &trace,
                     header_prompt_cache_key.as_deref(),
+                    StatusCode::REQUEST_TIMEOUT,
                     PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     message,
                 )
@@ -1960,6 +1973,28 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     let inspected_payload = inspect_ws_request_payload(
         ws_message_payload_bytes(&first_downstream_message.message).unwrap_or_default(),
     );
+    if inspected_payload
+        .as_ref()
+        .is_some_and(|inspection| inspection.prompt_cache_key_invalid)
+    {
+        let reason = "prompt-cache key exceeds the supported 512-byte limit";
+        let _ = record_ws_pre_upstream_failure(
+            state.as_ref(),
+            &trace,
+            header_prompt_cache_key.as_deref(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+            reason,
+        )
+        .await;
+        let _ = downstream
+            .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: axum::extract::ws::close_code::ERROR,
+                reason: reason.into(),
+            })))
+            .await;
+        return;
+    }
     let invalid_prompt_cache_key = inspected_payload
         .as_ref()
         .and_then(|inspection| inspection.prompt_cache_key.clone());
@@ -2038,6 +2073,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 state.as_ref(),
                 &trace,
                 failure_prompt_cache_key.as_deref(),
+                StatusCode::BAD_REQUEST,
                 PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                 reason,
             )
@@ -2094,6 +2130,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     state.as_ref(),
                     &trace,
                     header_prompt_cache_key.as_deref(),
+                    StatusCode::SERVICE_UNAVAILABLE,
                     PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     reason,
                 )
@@ -2126,11 +2163,12 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
         .await
         {
             Ok(result) => result,
-            Err((_status, message)) => {
+            Err((status, message)) => {
                 let _ = record_ws_pre_upstream_failure(
                     state.as_ref(),
                     &trace,
                     prompt_cache_key.as_deref(),
+                    status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
                 )
@@ -2167,6 +2205,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 state.as_ref(),
                 &trace,
                 prompt_cache_key.as_deref(),
+                err.status,
                 PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 &err.message,
             )
@@ -2202,11 +2241,19 @@ pub(crate) async fn record_ws_pre_upstream_failure(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
+    status: StatusCode,
     failure_kind: &'static str,
     message: &str,
 ) -> Result<()> {
-    persist_websocket_pre_upstream_failure(state, trace, prompt_cache_key, failure_kind, message)
-        .await
+    persist_websocket_pre_upstream_failure(
+        state,
+        trace,
+        prompt_cache_key,
+        status,
+        failure_kind,
+        message,
+    )
+    .await
 }
 
 pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
@@ -2269,6 +2316,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
                     state.as_ref(),
                     &trace,
                     header_prompt_cache_key.as_deref(),
+                    StatusCode::SERVICE_UNAVAILABLE,
                     PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     reason,
                 )
@@ -2303,11 +2351,12 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
         .await
         {
             Ok(result) => result,
-            Err((_status, message)) => {
+            Err((status, message)) => {
                 let _ = record_ws_pre_upstream_failure(
                     state.as_ref(),
                     &trace,
                     prompt_cache_key.as_deref(),
+                    status,
                     PROXY_FAILURE_POOL_ROUTING_BLOCKED,
                     &message,
                 )
@@ -2344,6 +2393,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
                 state.as_ref(),
                 &trace,
                 prompt_cache_key.as_deref(),
+                err.status,
                 PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 &err.message,
             )
@@ -2493,7 +2543,20 @@ impl WsUsageTracker {
         if websocket_effective_prompt_cache_key(self.prompt_cache_key.as_deref())
             == websocket_effective_prompt_cache_key(next_prompt_cache_key.as_deref())
         {
+            let terminal_retain_key =
+                websocket_effective_prompt_cache_key(next_prompt_cache_key.as_deref())
+                    .filter(|prompt_cache_key| {
+                        self.terminal_prompt_cache_keys.remove(*prompt_cache_key)
+                    })
+                    .map(ToOwned::to_owned);
             self.prompt_cache_key = next_prompt_cache_key;
+            if let Some(prompt_cache_key) = terminal_retain_key {
+                retain_active_prompt_cache_conversation(
+                    &state.prompt_cache_conversation_cache,
+                    &prompt_cache_key,
+                )
+                .await;
+            }
             return;
         }
         if let Some(previous_prompt_cache_key) = self.prompt_cache_key.as_deref()
@@ -2565,13 +2628,7 @@ impl WsUsageTracker {
         self.active_turn_invoke_id = Some(invoke_id);
         self.turn_prompt_cache_key = turn_prompt_cache_key.clone();
         if let Some(prompt_cache_key) = turn_prompt_cache_key {
-            if self.terminal_prompt_cache_keys.remove(&prompt_cache_key) {
-                retain_active_prompt_cache_conversation(
-                    &state.prompt_cache_conversation_cache,
-                    &prompt_cache_key,
-                )
-                .await;
-            }
+            self.terminal_prompt_cache_keys.remove(&prompt_cache_key);
             self.retain_prompt_cache_key(state, &prompt_cache_key).await;
         }
         Ok(())
@@ -2637,7 +2694,7 @@ impl WsUsageTracker {
                     );
                 }
             }
-            return false;
+            return ws_text_event_is_terminal(text);
         };
         if let Some(service_tier) = event.service_tier.as_ref() {
             self.service_tier = Some(service_tier.clone());
@@ -2815,6 +2872,7 @@ pub(crate) struct WsRequestPayloadInspection {
     requested_model: Option<String>,
     previous_response_id: Option<String>,
     prompt_cache_key: Option<String>,
+    prompt_cache_key_invalid: bool,
     contains_encrypted_content: bool,
 }
 
@@ -3053,6 +3111,7 @@ pub(crate) fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloa
             ],
         ),
         prompt_cache_key: extract_prompt_cache_key_from_request_body(&value),
+        prompt_cache_key_invalid: request_body_has_invalid_prompt_cache_key(&value),
         contains_encrypted_content: value_contains_encrypted_content(&value),
     })
 }
@@ -3068,6 +3127,12 @@ pub(crate) async fn inspect_ws_request_payload_guard(
     bytes: &[u8],
 ) -> Result<WsRequestPayloadGuardOutcome> {
     let inspection = inspect_ws_request_payload(bytes);
+    if inspection
+        .as_ref()
+        .is_some_and(|value| value.prompt_cache_key_invalid)
+    {
+        bail!("websocket prompt-cache key exceeds the supported 512-byte limit");
+    }
     let prompt_cache_key = inspection
         .as_ref()
         .and_then(|value| value.prompt_cache_key.clone())
@@ -4992,6 +5057,7 @@ mod websocket_tests {
             &state,
             &trace,
             Some(prompt_cache_key),
+            StatusCode::BAD_GATEWAY,
             PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             "test pre-upstream failure",
         )

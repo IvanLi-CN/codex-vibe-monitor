@@ -2260,12 +2260,7 @@ pub(crate) fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Opti
         "x-openai-prompt-cache-key",
     ] {
         if let Some(raw_value) = header_value_as_str(headers, header_name) {
-            let candidate = raw_value
-                .split(',')
-                .next()
-                .map(str::trim)
-                .unwrap_or(raw_value.trim())
-                .trim_matches('"');
+            let candidate = prompt_cache_key_header_candidate(raw_value);
             if let Some(candidate) = bounded_prompt_cache_key(candidate) {
                 return Some(candidate);
             }
@@ -2274,9 +2269,35 @@ pub(crate) fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Opti
     None
 }
 
+pub(crate) fn prompt_cache_key_headers_are_oversized(headers: &HeaderMap) -> bool {
+    [
+        "x-prompt-cache-key",
+        "prompt-cache-key",
+        "x-openai-prompt-cache-key",
+    ]
+    .into_iter()
+    .filter_map(|header_name| header_value_as_str(headers, header_name))
+    .map(prompt_cache_key_header_candidate)
+    .any(prompt_cache_key_is_oversized)
+}
+
+fn prompt_cache_key_header_candidate(raw_value: &str) -> &str {
+    raw_value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .unwrap_or(raw_value.trim())
+        .trim_matches('"')
+}
+
 pub(crate) fn bounded_prompt_cache_key(raw: &str) -> Option<String> {
     let value = raw.trim();
     (!value.is_empty() && value.len() <= PROMPT_CACHE_KEY_MAX_BYTES).then(|| value.to_string())
+}
+
+pub(crate) fn prompt_cache_key_is_oversized(raw: &str) -> bool {
+    let value = raw.trim();
+    !value.is_empty() && value.len() > PROMPT_CACHE_KEY_MAX_BYTES
 }
 
 pub(crate) fn extract_first_ip_from_x_forwarded_for(raw: &str) -> Option<String> {

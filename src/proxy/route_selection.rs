@@ -291,6 +291,7 @@ struct SelectiveRequestSemantics {
     declares_remote_v2_compaction: bool,
     stream_options_present: bool,
     invalid_sticky_projection: bool,
+    invalid_prompt_cache_key: bool,
 }
 
 #[derive(Default)]
@@ -598,7 +599,7 @@ struct OptionalString {
     valid: bool,
 }
 
-const REQUEST_SEMANTIC_STRING_MAX_BYTES: usize = 256;
+const REQUEST_SEMANTIC_STRING_MAX_BYTES: usize = PROMPT_CACHE_KEY_MAX_BYTES;
 
 impl<'de> Deserialize<'de> for OptionalString {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -874,6 +875,9 @@ impl<'de> Visitor<'de> for SelectiveSemanticVisitor<'_> {
                 if is_sticky_projection_field && !parsed.valid {
                     self.projection.invalid_sticky_projection = true;
                 }
+                if matches!(key.as_str(), "prompt_cache_key" | "promptCacheKey") && !parsed.valid {
+                    self.projection.invalid_prompt_cache_key = true;
+                }
                 *slot = parsed.value;
                 continue;
             }
@@ -1027,6 +1031,7 @@ pub(crate) struct ReplaySnapshotRouteAnalysis {
     pub(crate) file_read_count: u8,
     pub(crate) json_parse_count: u8,
     pub(crate) parse_outcome: &'static str,
+    pub(crate) invalid_prompt_cache_key: bool,
 }
 
 fn analyze_replay_snapshot_route_value(
@@ -1135,6 +1140,7 @@ fn analyze_replay_snapshot_route_value(
         file_read_count: 0,
         json_parse_count: 0,
         parse_outcome: "empty",
+        invalid_prompt_cache_key: value.invalid_prompt_cache_key,
     }
 }
 
@@ -1833,6 +1839,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
 ) -> ViaPoolResponseFuture<'_> {
     Box::pin(async move {
         let request_started_at = Instant::now();
+        if prompt_cache_key_headers_are_oversized(&headers) {
+            return Err(plain_proxy_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "prompt-cache key exceeds the supported 512-byte limit",
+            ));
+        }
         let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
         let mut via_pool_invoke_id = allocate_via_pool_invoke_id(
             &state,
@@ -1924,6 +1936,15 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     let request_body_bytes = Bytes::from(request_body_bytes);
                     let parsed_request_body =
                         serde_json::from_slice::<Value>(&request_body_bytes).ok();
+                    if parsed_request_body
+                        .as_ref()
+                        .is_some_and(request_body_has_invalid_prompt_cache_key)
+                    {
+                        return Err(plain_proxy_error(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "prompt-cache key exceeds the supported 512-byte limit",
+                        ));
+                    }
                     let requested_model = parsed_request_body
                         .as_ref()
                         .and_then(extract_model_from_payload);
@@ -2481,6 +2502,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             "initial_via_pool",
                         )
                         .await;
+                        if request_analysis.invalid_prompt_cache_key {
+                            return Err(plain_proxy_error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "prompt-cache key exceeds the supported 512-byte limit",
+                            ));
+                        }
                         let body_sticky_key = observed_body_sticky_key
                             .or(request_analysis.sticky_key)
                             .or(Some(sticky_key.clone()));
@@ -2762,6 +2789,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             "buffered_body_route",
                         )
                         .await;
+                        if request_analysis.invalid_prompt_cache_key {
+                            return Err(plain_proxy_error(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "prompt-cache key exceeds the supported 512-byte limit",
+                            ));
+                        }
                         let body_sticky_key = request_analysis.sticky_key;
                         let body_prompt_cache_key = request_analysis.prompt_cache_key;
                         let effective_prompt_cache_key = body_prompt_cache_key
