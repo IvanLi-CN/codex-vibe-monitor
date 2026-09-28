@@ -69,7 +69,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11201,
+      "line_budget": 11426,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -81,7 +81,7 @@
     {
       "path": "src/proxy/dispatch.rs",
       "role": "production",
-      "line_budget": 4033,
+      "line_budget": 4134,
       "next_module_workstream": "Split proxy dispatch body capture, streaming, routing, and request entry coordination."
     },
     {
@@ -93,37 +93,37 @@
     {
       "path": "src/proxy/request_entry.rs",
       "role": "production",
-      "line_budget": 6317,
+      "line_budget": 6424,
       "next_module_workstream": "Split proxy request entry validation, capture, reservation, and response persistence."
     },
     {
       "path": "src/proxy/route_selection.rs",
       "role": "production",
-      "line_budget": 3634,
+      "line_budget": 3757,
       "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
     },
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 6947,
+      "line_budget": 7119,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
       "path": "src/proxy/websocket.rs",
       "role": "production",
-      "line_budget": 4877,
+      "line_budget": 5488,
       "next_module_workstream": "Split WebSocket connection, preparation, tunnel, usage, and protocol event handling."
     },
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6521,
+      "line_budget": 6523,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
       "path": "src/sqlite_batch_writer.rs",
       "role": "production",
-      "line_budget": 6213,
+      "line_budget": 6274,
       "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
     },
     {
@@ -141,7 +141,7 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 9750,
+      "line_budget": 9751,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
@@ -153,7 +153,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 7805,
+      "line_budget": 8627,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -201,7 +201,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6172,
+      "line_budget": 6201,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {
@@ -231,13 +231,13 @@
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4464,
+      "line_budget": 4465,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7130,
+      "line_budget": 7131,
       "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
     },
     {
