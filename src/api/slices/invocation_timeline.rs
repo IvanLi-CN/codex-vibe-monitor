@@ -937,9 +937,14 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         .await?
     };
     if scan_limit > 0 {
+        let next_cursor = if scanned_tokens.len() == scan_limit {
+            scanned_tokens.last().cloned()
+        } else {
+            None
+        };
         *INVOCATION_TIMELINE_CLEANUP_CURSOR
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = scanned_tokens.last().cloned();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_cursor;
     }
     let mut unique_tokens = tokens.iter().cloned().collect::<HashSet<_>>();
     for token in scanned_tokens {

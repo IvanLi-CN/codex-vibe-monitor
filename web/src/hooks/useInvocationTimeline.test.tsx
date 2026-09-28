@@ -170,13 +170,16 @@ describe("useInvocationTimeline", () => {
     });
 
     expect(firstSignal?.aborted).toBe(true);
-    expect(pending.length).toBe(initialRequestCount + 1);
+    expect(pending.length).toBe(initialRequestCount);
     for (const request of pending.slice(0, initialRequestCount)) {
       request.resolve(createTimeline("stale-invoke"));
     }
     await act(async () => {
       await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
     });
+    expect(pending.length).toBe(initialRequestCount + 1);
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("");
 
     pending
@@ -716,14 +719,21 @@ describe("useInvocationTimeline", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(pending).toHaveLength(2);
+    expect(pending).toHaveLength(1);
     expect(pending[0]?.signal?.aborted).toBe(true);
+
+    pending[0]?.resolve(createTimeline("old-viewport"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(pending).toHaveLength(2);
     expect(pending[1]?.options).toMatchObject({
       from: "2026-07-16T10:01:00.000Z",
       to: "2026-07-16T10:30:00.000Z",
     });
 
-    pending[0]?.resolve(createTimeline("old-viewport"));
     pending[1]?.resolve(createTimeline("new-viewport", "2026-07-16T10:01:00.000Z"));
     await act(async () => {
       await Promise.resolve();

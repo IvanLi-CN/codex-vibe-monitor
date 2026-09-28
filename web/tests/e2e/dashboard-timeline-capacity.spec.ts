@@ -324,7 +324,7 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
 }, testInfo) => {
   test.skip(
     process.env.E2E_TIMELINE_CAPACITY !== "1",
-    "Two-client capacity proof is enabled explicitly for testbox validation.",
+    "Two-client capacity proof is enabled explicitly for CI and testbox validation.",
   );
   test.setTimeout(
     Math.max(MINIMUM_TEST_TIMEOUT_MS, CAPACITY_SCENARIO_DURATION_MS * 2 + 3 * 60 * 1_000),
@@ -541,7 +541,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
 }, testInfo) => {
   test.skip(
     process.env.E2E_TIMELINE_CAPACITY !== "1",
-    "Timeline render performance proof is enabled explicitly for testbox validation.",
+    "Timeline render performance proof is enabled explicitly for CI and testbox validation.",
   );
   test.setTimeout(120_000);
   for (const [name, viewport] of [

@@ -173,7 +173,7 @@ export function useInvocationTimeline({
   const inFlightRefreshRef = useRef<Promise<void> | null>(null);
   const pendingAutomaticRefreshRef = useRef(false);
   const automaticRefreshTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
-  const refreshRef = useRef<(() => Promise<void>) | null>(null);
+  const refreshRef = useRef<((immediate?: boolean) => Promise<void>) | null>(null);
   const scheduleAutomaticRefreshRef = useRef<(() => void) | null>(null);
   const lastTraversalStartedAtRef = useRef<number | null>(null);
   const retryAttemptRef = useRef(0);
@@ -184,6 +184,7 @@ export function useInvocationTimeline({
   const liveRefreshAllowedRef = useRef(liveRefreshAllowed);
   liveRefreshAllowedRef.current = liveRefreshAllowed;
   const hasDataRef = useRef(false);
+  const pendingImmediateRefreshRef = useRef(false);
   const requestContextRef = useRef({ bounds, closedNaturalDay, enabled, upstreamAccountId });
   requestContextRef.current = { bounds, closedNaturalDay, enabled, upstreamAccountId };
   const [committedBoundsContextKey, setCommittedBoundsContextKey] = useState(boundsContextKey);
@@ -199,8 +200,6 @@ export function useInvocationTimeline({
       setCommittedBoundsContextKey(boundsContextKey);
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      inFlightRefreshRef.current = null;
       pendingAutomaticRefreshRef.current = false;
       if (automaticRefreshTimerRef.current != null) {
         globalThis.clearTimeout(automaticRefreshTimerRef.current);
@@ -223,8 +222,6 @@ export function useInvocationTimeline({
       setCommittedBoundsContextKey(boundsContextKey);
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      inFlightRefreshRef.current = null;
       pendingAutomaticRefreshRef.current = false;
       if (automaticRefreshTimerRef.current != null) {
         globalThis.clearTimeout(automaticRefreshTimerRef.current);
@@ -276,12 +273,16 @@ export function useInvocationTimeline({
     setRequestedWindow(next);
   }, [bounds, requestedWindow]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (immediate = false) => {
     const context = requestContextRef.current;
     const requestedTarget = requestedWindowRef.current;
     if (!context.enabled || !requestedTarget) return;
     if (inFlightRefreshRef.current) {
-      pendingAutomaticRefreshRef.current = true;
+      if (immediate) {
+        pendingImmediateRefreshRef.current = true;
+      } else {
+        pendingAutomaticRefreshRef.current = true;
+      }
       return inFlightRefreshRef.current;
     }
     const controller = new AbortController();
@@ -339,13 +340,24 @@ export function useInvocationTimeline({
         retryNotBeforeRef.current = Date.now() + retryDelayMs;
         pendingAutomaticRefreshRef.current = true;
       } finally {
-        if (sequence === requestSequence.current && abortControllerRef.current === controller) {
+        if (abortControllerRef.current === controller) {
           abortControllerRef.current = null;
           inFlightRefreshRef.current = null;
-          setIsLoading(!hasDataRef.current);
-          setIsRefreshing(false);
-          if (pendingAutomaticRefreshRef.current) {
-            scheduleAutomaticRefreshRef.current?.();
+          if (pendingImmediateRefreshRef.current && requestContextRef.current.enabled) {
+            pendingImmediateRefreshRef.current = false;
+            pendingAutomaticRefreshRef.current = false;
+            void refreshRef.current?.(true);
+          } else if (sequence === requestSequence.current) {
+            setIsLoading(!hasDataRef.current);
+            setIsRefreshing(false);
+            if (pendingAutomaticRefreshRef.current) {
+              scheduleAutomaticRefreshRef.current?.();
+            }
+          } else if (!requestContextRef.current.enabled) {
+            pendingImmediateRefreshRef.current = false;
+            pendingAutomaticRefreshRef.current = false;
+            setIsLoading(false);
+            setIsRefreshing(false);
           }
         }
       }
@@ -397,7 +409,7 @@ export function useInvocationTimeline({
       globalThis.clearTimeout(automaticRefreshTimerRef.current);
       automaticRefreshTimerRef.current = null;
     }
-    return refreshRef.current?.() ?? Promise.resolve();
+    return refreshRef.current?.(true) ?? Promise.resolve();
   }, []);
 
   useEffect(() => {
@@ -437,9 +449,8 @@ export function useInvocationTimeline({
     immediateRefreshRequiredRef.current = true;
     requestSequence.current += 1;
     abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    inFlightRefreshRef.current = null;
     pendingAutomaticRefreshRef.current = false;
+    pendingImmediateRefreshRef.current = false;
     if (automaticRefreshTimerRef.current != null) {
       globalThis.clearTimeout(automaticRefreshTimerRef.current);
       automaticRefreshTimerRef.current = null;
@@ -476,8 +487,6 @@ export function useInvocationTimeline({
       }
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      inFlightRefreshRef.current = null;
       pendingAutomaticRefreshRef.current = false;
       if (automaticRefreshTimerRef.current != null) {
         globalThis.clearTimeout(automaticRefreshTimerRef.current);

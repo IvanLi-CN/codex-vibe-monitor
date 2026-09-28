@@ -487,6 +487,100 @@ async fn invocation_timeline_snapshot_cleanup_runs_off_the_first_page_path_in_bo
 }
 
 #[tokio::test]
+async fn invocation_timeline_snapshot_cleanup_wraps_after_a_partial_tail_batch() {
+    let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
+    reset_timeline_snapshot_cleanup_cursor_for_test();
+    reset_timeline_snapshot_release_queue_for_test();
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let now = Utc::now();
+    let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+    let natural_day_end = natural_day_start + chrono::Duration::days(1);
+    let range_start = now - chrono::Duration::minutes(30);
+    let range_end = now;
+
+    let _ = fetch_timeline(
+        State(state.clone()),
+        Query(InvocationTimelineQuery {
+            natural_day_start: Some(format_utc_iso(natural_day_start)),
+            natural_day_end: Some(format_utc_iso(natural_day_end)),
+            from: format_utc_iso(range_start),
+            to: format_utc_iso(range_end),
+            include_live: Some(false),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("initialize timeline snapshot table");
+
+    for token in ["cursor-z-1", "cursor-z-2"] {
+        sqlx::query(
+            "INSERT INTO invocation_timeline_snapshot_rows (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) VALUES (?1, ?2, ?3, 1, 0, 0, '{}')",
+        )
+        .bind(token)
+        .bind(format!("fixture-{token}"))
+        .bind(format_utc_iso(range_start))
+        .execute(&state.pool)
+        .await
+        .expect("insert tail snapshot row");
+    }
+
+    let first_cleanup = {
+        let mut admitted = None;
+        for _ in 0..8 {
+            let result = cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .expect("run first bounded cleanup batch");
+            if result.skipped.is_none() {
+                admitted = Some(result);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        admitted.expect("first cleanup batch should be admitted")
+    };
+    assert_eq!(first_cleanup.scanned_tokens, 2);
+
+    sqlx::query(
+        "INSERT INTO invocation_timeline_snapshot_rows (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) VALUES ('cursor-a-late', 'late-row', ?1, 1, 0, 0, '{}')",
+    )
+    .bind(format_utc_iso(range_start))
+    .execute(&state.pool)
+    .await
+    .expect("insert token before the prior cursor");
+
+    let followup_cleanup = {
+        let mut admitted = None;
+        for _ in 0..8 {
+            let result = cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .expect("run wrapped cleanup batch");
+            if result.skipped.is_none() {
+                admitted = Some(result);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        admitted.expect("follow-up cleanup batch should be admitted")
+    };
+    assert_eq!(followup_cleanup.scanned_tokens, 1);
+    assert_eq!(followup_cleanup.deleted_tokens, 1);
+
+    let remaining_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM invocation_timeline_snapshot_rows WHERE snapshot_token = 'cursor-a-late'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count wrapped snapshot row");
+    assert_eq!(remaining_rows, 0);
+
+    reset_timeline_snapshot_cleanup_cursor_for_test();
+    reset_timeline_snapshot_release_queue_for_test();
+    state.pool.close().await;
+}
+
+#[tokio::test]
 async fn invocation_timeline_cleanup_preserves_snapshot_materialized_after_token_scan() {
     let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
     reset_timeline_snapshot_cleanup_cursor_for_test();
