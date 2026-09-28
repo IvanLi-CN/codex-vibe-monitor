@@ -165,6 +165,15 @@ tokio::task_local! {
         std::sync::Arc<std::sync::atomic::AtomicBool>;
     pub(crate) static RETENTION_TEST_RAW_MIDPASS_WRITE_DENY:
         std::sync::Arc<std::sync::atomic::AtomicBool>;
+    pub(crate) static RETENTION_TEST_INVOCATION_STAGE_TRACE:
+        std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
+}
+
+#[cfg(test)]
+fn retention_test_record_invocation_stage(stage: &'static str) {
+    let _ = RETENTION_TEST_INVOCATION_STAGE_TRACE.try_with(|trace| {
+        trace.lock().expect("retention stage trace").push(stage);
+    });
 }
 
 #[cfg(test)]
@@ -8508,47 +8517,11 @@ async fn run_data_retention_maintenance_inner(
         )
         .await
         .context("failed to verify parallel-work minute coverage before invocation retention")?;
-    let pruned = if invocation_payload_retention_ready {
-        match prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await {
-            Ok(pruned) => pruned,
-            Err(error) => {
-                if dry_run {
-                    retention_recovery_record_failure("detail_prune", &error);
-                } else if is_retention_write_deferred(&error) {
-                    retention_recovery_record_deferred("detail_prune");
-                } else if is_retention_recovery_failure_persisted(&error) {
-                    retention_recovery_record_failure("detail_prune", &error);
-                } else {
-                    retention_recovery_persist_latest_failure_best_effort(
-                        pool,
-                        "detail_prune",
-                        &error,
-                    )
-                    .await;
-                }
-                retention_recovery_log_event(
-                    tracing::Level::WARN,
-                    "detail_prune",
-                    "invocation detail pruning failed; continuing independent retention stages",
-                );
-                (0, 0, 0)
-            }
-        }
-    } else {
-        info!(
-            payload_loss_days,
-            "invocation detail pruning deferred until parallel-work minute coverage catches up"
-        );
-        (0, 0, 0)
-    };
-    summary.invocation_details_pruned += pruned.0;
-    summary.archive_batches_touched += pruned.1;
-    summary.raw_files_removed += pruned.2;
-
-    if should_stop_data_retention_maintenance(shutdown) {
-        return Ok(summary);
-    }
-
+    // The >90-day archive is the only stage that reduces the primary expired backlog. Run it
+    // before the independent 30-90-day detail mirror pass so a large detail backlog cannot
+    // starve the recovery-critical archive stage indefinitely.
+    #[cfg(test)]
+    retention_test_record_invocation_stage("invocation_archive");
     retention_recovery_clear_current_prepared_key();
     let invocation_archive = if invocation_payload_retention_ready {
         match archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await {
@@ -8585,6 +8558,50 @@ async fn run_data_retention_maintenance_inner(
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
+    #[cfg(test)]
+    retention_test_record_invocation_stage("invocation_detail_prune");
+    let pruned = if invocation_payload_retention_ready {
+        match prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await {
+            Ok(pruned) => pruned,
+            Err(error) => {
+                if dry_run {
+                    retention_recovery_record_failure("detail_prune", &error);
+                } else if is_retention_write_deferred(&error) {
+                    retention_recovery_record_deferred("detail_prune");
+                } else if is_retention_recovery_failure_persisted(&error) {
+                    retention_recovery_record_failure("detail_prune", &error);
+                } else {
+                    retention_recovery_persist_latest_failure_best_effort(
+                        pool,
+                        "detail_prune",
+                        &error,
+                    )
+                    .await;
+                }
+                retention_recovery_log_event(
+                    tracing::Level::WARN,
+                    "detail_prune",
+                    "invocation detail pruning failed; continuing independent retention stages",
+                );
+                (0, 0, 0)
+            }
+        }
+    } else {
+        info!(
+            payload_loss_days,
+            "invocation detail pruning deferred until parallel-work minute coverage catches up"
+        );
+        (0, 0, 0)
+    };
+    summary.invocation_details_pruned += pruned.0;
+    summary.archive_batches_touched += pruned.1;
+    summary.raw_files_removed += pruned.2;
+    retention_recovery_clear_current_prepared_key();
     summary.prompt_cache_conversations_released = match prompt_cache_conversation_cache {
         Some(cache) => cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache)
             .await

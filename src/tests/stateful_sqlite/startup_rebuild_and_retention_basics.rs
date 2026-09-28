@@ -4492,6 +4492,72 @@ async fn retention_does_not_prune_legacy_http_200_rows_with_error_message() {
 }
 
 #[tokio::test]
+async fn retention_prioritizes_expired_archive_before_detail_prune() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-archive-priority").await;
+    let detail_occurred_at = shanghai_local_days_ago(31, 14, 0, 0);
+    let archive_occurred_at = shanghai_local_days_ago(91, 15, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "detail-priority-candidate",
+        &detail_occurred_at,
+        SOURCE_XY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(10),
+        Some(0.1),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "archive-priority-candidate",
+        &archive_occurred_at,
+        SOURCE_XY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        None,
+        None,
+        Some(20),
+        Some(0.2),
+    )
+    .await;
+
+    let stage_trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let summary = crate::maintenance::RETENTION_TEST_INVOCATION_STAGE_TRACE
+        .scope(
+            stage_trace.clone(),
+            run_data_retention_maintenance(&pool, &config, Some(false), None),
+        )
+        .await
+        .expect("run retention with mixed invocation backlog");
+
+    assert_eq!(summary.invocation_rows_archived, 1);
+    assert_eq!(summary.invocation_details_pruned, 1);
+    assert_eq!(
+        stage_trace
+            .lock()
+            .expect("load retention stage trace")
+            .as_slice(),
+        ["invocation_archive", "invocation_detail_prune"]
+    );
+
+    let archived_live_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'archive-priority-candidate'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count archived priority candidate");
+    assert_eq!(archived_live_rows, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archives_old_invocations_without_changing_summary_all() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("retention-archive").await;
     let old_response = config.proxy_raw_dir.join("old-archive-response.bin");
