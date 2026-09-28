@@ -4,7 +4,7 @@ use tokio::sync::watch;
 pub(crate) async fn fetch_prompt_cache_conversations_cached(
     state: &AppState,
     selection: PromptCacheConversationSelection,
-) -> Result<PromptCacheConversationsResponse> {
+) -> Result<PromptCacheConversationsResponse, ApiError> {
     let started_at = Instant::now();
     loop {
         let mut wait_on: Option<watch::Receiver<bool>> = None;
@@ -161,7 +161,7 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
                     row_count = 0_i64,
                     cache_hit_or_miss = "cache_miss_error",
                     elapsed_ms,
-                    error = %err,
+                    error = ?err,
                     "prompt cache conversations build failed"
                 );
             }

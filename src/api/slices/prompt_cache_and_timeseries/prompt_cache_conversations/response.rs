@@ -643,8 +643,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
             request.selection,
             request.recent_invocation_limit,
         )
-        .await
-        .map_err(ApiError::from)?;
+        .await?;
         return Ok(match request.detail_level {
             PromptCacheConversationDetailLevel::Full => response,
             PromptCacheConversationDetailLevel::Compact => {
@@ -884,7 +883,7 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request_with_r
 pub(crate) async fn build_prompt_cache_conversations_response(
     state: &AppState,
     selection: PromptCacheConversationSelection,
-) -> Result<PromptCacheConversationsResponse> {
+) -> Result<PromptCacheConversationsResponse, ApiError> {
     build_prompt_cache_conversations_response_with_recent_limit(state, selection, None).await
 }
 
@@ -892,14 +891,14 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
     state: &AppState,
     selection: PromptCacheConversationSelection,
     recent_invocation_limit: Option<i64>,
-) -> Result<PromptCacheConversationsResponse> {
+) -> Result<PromptCacheConversationsResponse, ApiError> {
     let mut transaction = state.pool.begin().await?;
     if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
         .await?
     {
-        return Err(anyhow!(
+        return Err(ApiError::unavailable(anyhow!(
             "prompt-cache conversation history is still materializing"
-        ));
+        )));
     }
     let response = build_prompt_cache_conversations_response_with_recent_limit_on_connection(
         state,
@@ -907,7 +906,8 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
         recent_invocation_limit,
         transaction.as_mut(),
     )
-    .await?;
+    .await
+    .map_err(ApiError::from)?;
     transaction.commit().await?;
     Ok(response)
 }
