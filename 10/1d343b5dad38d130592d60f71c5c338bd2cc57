@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.77.1",
+  "base_stable_version": "2.77.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-28T19:44:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.77.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ed43af5aa01caff79c9ab14e2654736097dd8d84",
+  "pr_number": 1051,
+  "pr_title": "fix(retention): prioritize expired invocation archival",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.77.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.77.1",
+  "target_sha": "101d343b5dad38d130592d60f71c5c338bd2cc57",
+  "type_label": "type:patch"
+}
