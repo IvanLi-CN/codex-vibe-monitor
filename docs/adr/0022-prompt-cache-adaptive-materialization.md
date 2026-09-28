@@ -29,7 +29,7 @@ the latest micro-batch idempotently instead of skipping it.
 Prompt-cache materialization checks the existing P1/interactive waiter signal before starting a
 micro-batch and after its commit. If a waiter arrives, the completed batch remains committed and
 the next batch is deferred. When another adaptive micro-batch remains, the committed boundary also
-includes a 1 ms cooperative scheduler window so foreground readers can acquire SQLite access
+includes a 2 ms cooperative scheduler window so foreground readers can acquire SQLite access
 between commits; this wait is outside the transaction and cannot interrupt the active batch. Other
 startup backfills retain the existing P2 cancellation behavior.
 
