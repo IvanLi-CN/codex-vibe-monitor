@@ -1125,12 +1125,10 @@ fn telemetry_paths_conflict(main_path: &Path, telemetry_path: &Path) -> bool {
             for telemetry in sqlite_path_family(telemetry_path) {
                 if let (Ok(main_metadata), Ok(telemetry_metadata)) =
                     (std::fs::metadata(&main), std::fs::metadata(&telemetry))
+                    && main_metadata.dev() == telemetry_metadata.dev()
+                    && main_metadata.ino() == telemetry_metadata.ino()
                 {
-                    if main_metadata.dev() == telemetry_metadata.dev()
-                        && main_metadata.ino() == telemetry_metadata.ino()
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
         }
