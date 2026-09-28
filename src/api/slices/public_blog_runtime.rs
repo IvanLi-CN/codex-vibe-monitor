@@ -234,6 +234,7 @@ fn public_blog_runtime_cors_layer(origins: &[String]) -> CorsLayer {
         .expose_headers([
             HeaderName::from_static("etag"),
             HeaderName::from_static("cache-control"),
+            HeaderName::from_static("retry-after"),
         ])
 }
 
@@ -1192,6 +1193,7 @@ mod tests {
                 Request::builder()
                     .method(Method::GET)
                     .uri(PUBLIC_BLOG_RUNTIME_PATH)
+                    .header("origin", "https://ivanli.cc")
                     .body(Body::empty())
                     .expect("rate-limited request"),
             )
@@ -1200,6 +1202,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()["retry-after"], "1");
         assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(
+            response.headers()["access-control-allow-origin"],
+            "https://ivanli.cc"
+        );
+        assert_eq!(
+            response.headers()["access-control-expose-headers"],
+            "etag,cache-control,retry-after"
+        );
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("rate-limit body");
