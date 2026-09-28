@@ -237,7 +237,6 @@ pub(crate) async fn wait_for_downstream_body_terminal_until(
 pub(crate) async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
-    invoke_id: String,
     original_uri: Uri,
     method: Method,
     headers: HeaderMap,
@@ -247,7 +246,6 @@ pub(crate) async fn proxy_openai_v1_inner(
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
-    admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
     downstream_request_observer: Option<DownstreamRequestObserver>,
     proxy_request_started_at: Instant,
 ) -> Result<Response, ProxyErrorResponse> {
@@ -330,11 +328,9 @@ pub(crate) async fn proxy_openai_v1_inner(
     }
 
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
-        let tracked_invoke_id = invoke_id.clone();
         return proxy_openai_v1_capture_target(
             state,
             proxy_request_id,
-            invoke_id,
             &original_uri,
             headers,
             body,
@@ -344,16 +340,15 @@ pub(crate) async fn proxy_openai_v1_inner(
             pool_route_active,
             runtime_timeouts,
             proxy_request_permit.take(),
-            admitted_runtime_snapshot,
             downstream_request_observer,
             proxy_request_started_at,
         )
         .await
-        .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
-            status,
-            message,
-            cvm_id: Some(tracked_invoke_id),
+        .map_err(|error| ProxyErrorResponse {
+            retry_after_secs: retry_after_secs_for_proxy_error(error.status, &error.message),
+            status: error.status,
+            message: error.message,
+            cvm_id: error.invoke_id,
             code: None,
             blocked_binding: None,
         });
@@ -372,6 +367,13 @@ pub(crate) async fn proxy_openai_v1_inner(
     .await;
 }
 
+#[derive(Debug)]
+pub(crate) struct ProxyCaptureDispatchError {
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+    pub(crate) invoke_id: Option<String>,
+}
+
 pub(crate) fn capture_target_for_request(
     path: &str,
     method: &Method,
@@ -387,6 +389,43 @@ pub(crate) fn capture_target_for_request(
         "/v1/images/generations" => Some(ProxyCaptureTarget::ImageGenerations),
         "/v1/images/edits" => Some(ProxyCaptureTarget::ImageEdits),
         _ => None,
+    }
+}
+
+pub(crate) async fn emit_admitted_proxy_capture_runtime_snapshot(
+    state: &AppState,
+    invoke_id: &str,
+    occurred_at: &str,
+    capture_target: ProxyCaptureTarget,
+    requester_ip: Option<&str>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) {
+    let shell_started = Instant::now();
+    let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
+        invoke_id,
+        occurred_at,
+        capture_target,
+        requester_ip,
+        sticky_key,
+        prompt_cache_key,
+    );
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state, admitted_running_record).await
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast admitted running proxy capture snapshot"
+        );
+    } else {
+        debug!(
+            invoke_id = %invoke_id,
+            occurred_at = %occurred_at,
+            running_shell_emitted = true,
+            running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
+            "admitted proxy capture handler emitted running shell"
+        );
     }
 }
 
@@ -615,7 +654,6 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
 pub(crate) async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
-    invoke_id: String,
     original_uri: &Uri,
     headers: HeaderMap,
     body: Body,
@@ -625,15 +663,22 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
-    admitted_runtime_snapshot: Option<AdmittedProxyRuntimeSnapshot>,
     downstream_request_observer: Option<DownstreamRequestObserver>,
     proxy_request_started_at: Instant,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, ProxyCaptureDispatchError> {
     if !pool_route_active {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            "pool route key missing or invalid".to_string(),
-        ));
+        return Err(ProxyCaptureDispatchError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "pool route key missing or invalid".to_string(),
+            invoke_id: None,
+        });
+    }
+    if prompt_cache_key_headers_are_oversized(&headers) {
+        return Err(ProxyCaptureDispatchError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "prompt-cache key exceeds the supported 512-byte limit".to_string(),
+            invoke_id: None,
+        });
     }
     let capture_started = Instant::now();
     let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
@@ -645,54 +690,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     )
     .await;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    let occurred_at = admitted_runtime_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.occurred_at.clone())
-        .unwrap_or_else(|| format_naive(Utc::now().with_timezone(&Shanghai).naive_local()));
-    let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
-        PoolInvocationCleanupGuard::new(
-            state.clone(),
-            InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
-            "request_drop_guard",
-        )
-    });
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let request_chain_metadata = request_chain_metadata_from_headers(&headers);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
-    if admitted_runtime_snapshot.is_none() {
-        let shell_started = Instant::now();
-        let admitted_running_record = build_admitted_proxy_capture_runtime_snapshot(
-            &invoke_id,
-            &occurred_at,
-            capture_target,
-            requester_ip.as_deref(),
-            header_sticky_key.as_deref(),
-            header_prompt_cache_key.as_deref(),
-        );
-        if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
-            state.as_ref(),
-            admitted_running_record,
-        )
-        .await
-        {
-            warn!(
-                ?err,
-                invoke_id = %invoke_id,
-                "failed to broadcast admitted running proxy capture snapshot"
-            );
-        } else {
-            debug!(
-                invoke_id = %invoke_id,
-                occurred_at = %occurred_at,
-                running_shell_emitted = true,
-                running_shell_emit_elapsed = shell_started.elapsed().as_millis() as u64,
-                "admitted proxy capture handler emitted fallback running shell"
-            );
-        }
-    }
     let proxy_settings = state.proxy_model_settings.read().await.clone();
 
     let req_read_started = Instant::now();
@@ -706,6 +709,42 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     {
         Ok(bytes) => bytes,
         Err(read_err) => {
+            let invoke_id = match allocate_proxy_invoke_id_with_active_lease(
+                state.as_ref(),
+                header_prompt_cache_key.as_deref(),
+            )
+            .await
+            {
+                Ok(invoke_id) => invoke_id,
+                Err(err) => {
+                    warn!(
+                        proxy_request_id,
+                        error = %err,
+                        "failed to allocate proxy invoke id after request body read failure"
+                    );
+                    drop(proxy_request_permit);
+                    return Ok(build_proxy_invoke_id_allocation_error_response(err));
+                }
+            };
+            let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
+                PoolInvocationCleanupGuard::new(
+                    state.clone(),
+                    InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
+                    "request_drop_guard",
+                    header_prompt_cache_key.as_deref(),
+                )
+            });
+            emit_admitted_proxy_capture_runtime_snapshot(
+                state.as_ref(),
+                &invoke_id,
+                &occurred_at,
+                capture_target,
+                requester_ip.as_deref(),
+                header_sticky_key.as_deref(),
+                header_prompt_cache_key.as_deref(),
+            )
+            .await;
             let response_envelope =
                 build_local_capture_error_envelope(&invoke_id, read_err.status, &read_err.message);
             let t_req_read_ms = elapsed_ms(req_read_started);
@@ -741,7 +780,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             );
 
             let record = ProxyCaptureRecord {
-                invoke_id,
+                invoke_id: invoke_id.clone(),
                 occurred_at,
                 model: None,
                 usage,
@@ -872,7 +911,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             if terminal_invocation_persisted {
                 disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
             }
-            return Err((read_err.status, read_err.message));
+            return Err(ProxyCaptureDispatchError {
+                status: read_err.status,
+                message: read_err.message,
+                invoke_id: Some(invoke_id),
+            });
         }
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
@@ -963,6 +1006,45 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Instant::now(),
         );
     }
+    let invoke_id =
+        match allocate_proxy_invoke_id_with_active_lease(&state, prompt_cache_key.as_deref()).await
+        {
+            Ok(invoke_id) => invoke_id,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    prompt_cache_key_fingerprint = prompt_cache_key
+                        .as_deref()
+                        .map(prompt_cache_key_fingerprint),
+                    error = %err,
+                    "failed to allocate proxy invoke id after request semantic projection"
+                );
+                return Err(ProxyCaptureDispatchError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: format!("failed to allocate proxy invoke id: {err}"),
+                    invoke_id: None,
+                });
+            }
+        };
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
+        PoolInvocationCleanupGuard::new(
+            state.clone(),
+            InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
+            "request_drop_guard",
+            prompt_cache_key.as_deref(),
+        )
+    });
+    emit_admitted_proxy_capture_runtime_snapshot(
+        state.as_ref(),
+        &invoke_id,
+        &occurred_at,
+        capture_target,
+        requester_ip.as_deref(),
+        sticky_key.as_deref(),
+        prompt_cache_key.as_deref(),
+    )
+    .await;
     let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) = if pool_route_active
     {
         let encrypted_owner_routing_enabled =
@@ -1011,7 +1093,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 if terminal_invocation_persisted {
                     disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
-                return Err((status, message));
+                return Err(ProxyCaptureDispatchError {
+                    status,
+                    message,
+                    invoke_id: Some(invoke_id.clone()),
+                });
             }
         }
     } else {
@@ -1061,7 +1147,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 if terminal_invocation_persisted {
                     disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
-                return Err((status, message));
+                return Err(ProxyCaptureDispatchError {
+                    status,
+                    message,
+                    invoke_id: Some(invoke_id.clone()),
+                });
             }
         }
     } else {
@@ -1261,7 +1351,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 });
                 let codex_imagegen_rewrite = err.codex_imagegen_rewrite.clone();
                 let record = ProxyCaptureRecord {
-                    invoke_id,
+                    invoke_id: invoke_id.clone(),
                     occurred_at,
                     model: request_info.model.clone(),
                     usage,
@@ -1448,7 +1538,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 if terminal_invocation_persisted {
                     disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
-                return Err((err.status, err.message));
+                return Err(ProxyCaptureDispatchError {
+                    status: err.status,
+                    message: err.message,
+                    invoke_id: Some(invoke_id.clone()),
+                });
             }
         }
     } else {
@@ -1538,7 +1632,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
                 let record = ProxyCaptureRecord {
-                    invoke_id,
+                    invoke_id: invoke_id.clone(),
                     occurred_at,
                     model: request_info.model.clone(),
                     usage,
@@ -1676,7 +1770,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 {
                     warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
                 }
-                return Err((err.status, err.message));
+                return Err(ProxyCaptureDispatchError {
+                    status: err.status,
+                    message: err.message,
+                    invoke_id: Some(invoke_id.clone()),
+                });
             }
         }
     };
@@ -1759,7 +1857,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .finish()
                 .await;
             let record = ProxyCaptureRecord {
-                invoke_id,
+                invoke_id: invoke_id.clone(),
                 occurred_at,
                 model: request_info.model.clone(),
                 usage,
@@ -1902,7 +2000,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             {
                 warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
             }
-            return Err((StatusCode::BAD_GATEWAY, message));
+            return Err(ProxyCaptureDispatchError {
+                status: StatusCode::BAD_GATEWAY,
+                message,
+                invoke_id: Some(invoke_id.clone()),
+            });
         }
     };
 
@@ -2048,6 +2150,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     occurred_at_for_task.clone(),
                 ),
                 "stream_invocation_drop_guard",
+                prompt_cache_key_for_task.as_deref(),
             )
         });
         let upstream_response_content_length = upstream_response.content_length();
@@ -3480,11 +3583,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             ReceiverStream::new(rx),
             downstream_body_terminal_tx,
         )))
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to build proxy response: {err}"),
-            )
+        .map_err(|err| ProxyCaptureDispatchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to build proxy response: {err}"),
+            invoke_id: None,
         })
 }
 

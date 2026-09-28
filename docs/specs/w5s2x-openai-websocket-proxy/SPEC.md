@@ -38,7 +38,7 @@
 - Downstream gate: `websocketEnabled=false` 时返回 HTTP `503` JSON error，不进入 WS upgrade。
 - Upstream gate: `upstreamWebsocketDefaultEnabled=false` 时，已 upgrade 的 downstream WS 收到 retryable close，不建立不可靠上游隧道。
 - Responses initial frame: `/v1/responses` upgrade 成功后，第一个 downstream frame 必须是 text JSON，`type` 必须为 `response.create`。非 text、非 JSON 或非 `response.create` 首帧以 close `1011` 结束。
-- Pre-upstream observability: `/v1/responses` 在上游建连前发生首帧读取超时、读取错误或首帧协议拒绝时，必须写入 `pool_upstream_request_attempts` 的 `transport_failure` / `failed` 记录，保留 `pool-ws-*` invoke id、failure kind 和 downstream error message；downstream 正常主动关闭且未开始 turn 时不制造失败记录。
+- Pre-upstream observability: `/v1/responses` 在上游建连前发生首帧读取超时、读取错误或首帧协议拒绝时，必须写入 `pool_upstream_request_attempts` 的 `transport_failure` / `failed` 记录，保留 compact ten-character invoke id、failure kind 和 downstream error message；downstream 正常主动关闭且未开始 turn 时不制造失败记录。
 - Realtime passthrough: `/v1/realtime` upgrade 成功后必须立即连接上游并 relay 上游先发事件；不得等待 downstream `response.create`。
 - Subprotocol: 若 downstream 请求 `Sec-WebSocket-Protocol`，代理可为客户端兼容性选择第一个请求值，但上游握手必须返回同一 subprotocol 后才允许发送保留首帧；不匹配视为 retryable upstream transport failure 并进入 failover。
 - Routing keys: payload `prompt_cache_key` / `promptCacheKey` 优先；无 payload key 时才使用 header `x-prompt-cache-key` / `prompt-cache-key` / `x-openai-prompt-cache-key`；`x-sticky-key` 只影响 sticky routing，不参与 prompt-cache owner guard。

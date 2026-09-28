@@ -265,6 +265,123 @@ pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_snapshot(
     persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), record, false).await
 }
 
+pub(crate) async fn persist_websocket_pre_upstream_failure(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
+    status: StatusCode,
+    failure_kind: &str,
+    error_message: &str,
+) -> Result<()> {
+    {
+        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        if let Err(err) = insert_pool_upstream_request_attempt(
+            &state.pool,
+            trace,
+            None,
+            None,
+            0,
+            0,
+            0,
+            Some(&trace.occurred_at),
+            Some(&trace.occurred_at),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
+            Some(status),
+            Some(status),
+            Some(failure_kind),
+            Some(error_message),
+            Some(error_message),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            warn!(
+                invoke_id = %trace.invoke_id,
+                error = %err,
+                "failed to persist websocket pre-upstream pool attempt"
+            );
+        }
+    }
+    let request_info = RequestCaptureInfo {
+        model: trace.request_model.clone(),
+        is_stream: true,
+        prompt_cache_key: prompt_cache_key.map(ToOwned::to_owned),
+        prompt_cache_key_attribution_source: prompt_cache_key
+            .map(|_| "websocket_trace".to_string()),
+        ..RequestCaptureInfo::default()
+    };
+    let mut record = build_running_proxy_capture_record(
+        &trace.invoke_id,
+        &trace.occurred_at,
+        ProxyCaptureTarget::from_endpoint(&trace.endpoint),
+        &request_info,
+        trace.requester_ip.as_deref(),
+        trace.sticky_key.as_deref(),
+        prompt_cache_key,
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    );
+    record.status = format!("http_{}", status.as_u16());
+    record.error_message = Some(format!("[{failure_kind}] {error_message}"));
+    record.failure_kind = Some(failure_kind.to_string());
+    let response_envelope = build_proxy_error_response_envelope(
+        &ProxyErrorResponse {
+            status,
+            message: error_message.to_string(),
+            cvm_id: None,
+            retry_after_secs: retry_after_secs_for_proxy_error(status, error_message),
+            code: Some(failure_kind.to_string()),
+            blocked_binding: None,
+        },
+        &trace.invoke_id,
+    );
+    record.raw_response = response_envelope.body_text;
+    record.response_body_preview_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .response_body_logging_enabled;
+    record.resp_raw = RawPayloadMeta {
+        size_bytes: record.raw_response.len() as i64,
+        ..RawPayloadMeta::default()
+    };
+    if let Some(payload) = record.payload.as_deref()
+        && let Ok(mut value) = serde_json::from_str::<Value>(payload)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("statusCode".to_string(), json!(status.as_u16()));
+        object.insert("failureKind".to_string(), json!(failure_kind));
+        object.insert("downstreamStatusCode".to_string(), json!(status.as_u16()));
+        object.insert("downstreamErrorMessage".to_string(), json!(error_message));
+        object.insert(
+            "streamTerminalEvent".to_string(),
+            json!("proxy_pre_upstream_failure"),
+        );
+        record.payload = serde_json::to_string(&value).ok();
+    }
+    persist_and_broadcast_proxy_capture_terminal_record(state, record, false).await
+}
+
 pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
     state: Arc<AppState>,
     trace: &PoolUpstreamAttemptTraceContext,
@@ -2210,41 +2327,95 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
 ) -> Result<()> {
-    state.sqlite_batch_writer.flush_now(&state.pool).await?;
+    recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
+        state,
+        selector,
+        recovery_trigger,
+        None,
+    )
+    .await
+}
 
-    let recovered_invocations = {
-        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-            .await;
-        let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
-        let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-        recover_proxy_invocations_with_scope(
-            &state.pool,
-            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-        )
-        .await?
-    };
+pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
+    state: &AppState,
+    selector: InvocationRecoverySelector,
+    recovery_trigger: &'static str,
+    prompt_cache_key: Option<String>,
+) -> Result<()> {
+    let mut flush_completed = false;
+    let mut flush_error = None;
+    let result = async {
+        for attempt in 1..=3 {
+            match state.sqlite_batch_writer.flush_now(&state.pool).await {
+                Ok(()) => {
+                    flush_completed = true;
+                    break;
+                }
+                Err(err) => {
+                    flush_error = Some(err);
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            }
+        }
+        if !flush_completed {
+            return Err(flush_error.expect("dropped invocation flush should record its error"));
+        }
 
-    if recovered_invocations.is_empty() {
-        terminalize_proxy_runtime_snapshot_by_key(
-            state,
-            &selector.invoke_id,
-            &selector.occurred_at,
+        let recovered_invocations = {
+            let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+                .await;
+            let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
+            let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+            recover_proxy_invocations_with_scope(
+                &state.pool,
+                ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+            )
+            .await?
+        };
+
+        if recovered_invocations.is_empty() {
+            terminalize_proxy_runtime_snapshot_by_key(
+                state,
+                &selector.invoke_id,
+                &selector.occurred_at,
+                recovery_trigger,
+            );
+            schedule_dashboard_activity_live_snapshot(state);
+            return Ok(());
+        }
+
+        info!(
+            invoke_id = %selector.invoke_id,
+            occurred_at = %selector.occurred_at,
+            recovered_invocations = recovered_invocations.len(),
             recovery_trigger,
+            "recovered pool invocation orphan after request future dropped"
         );
-        schedule_dashboard_activity_live_snapshot(state);
-        return Ok(());
+
+        broadcast_recovered_proxy_invocations(state, &recovered_invocations).await
+    }
+    .await;
+
+    if let Some(prompt_cache_key) = prompt_cache_key {
+        if flush_completed {
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                &prompt_cache_key,
+            )
+            .await;
+        } else {
+            warn!(
+                prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(&prompt_cache_key),
+                error = ?result.as_ref().err(),
+                "retaining prompt-cache conversation lease until dropped-invocation batch flush succeeds"
+            );
+        }
     }
 
-    info!(
-        invoke_id = %selector.invoke_id,
-        occurred_at = %selector.occurred_at,
-        recovered_invocations = recovered_invocations.len(),
-        recovery_trigger,
-        "recovered pool invocation orphan after request future dropped"
-    );
-
-    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await
+    result
 }
 
 pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(
@@ -4044,6 +4215,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
             record_flush_deferred_or_failed = "terminal_invocation_enqueue_failed",
             "terminal proxy capture record dropped by sqlite write controller"
         );
+        return Err(anyhow!("proxy capture terminal record could not be queued"));
     } else {
         debug!(
             invoke_id = %invoke_id,

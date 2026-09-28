@@ -1171,6 +1171,7 @@ pub(crate) struct PromptCacheConversationsCacheState {
     pub(crate) in_flight:
         HashMap<PromptCacheConversationSelection, PromptCacheConversationInFlight>,
     pub(crate) generation: u64,
+    pub(crate) identity_cache: PromptCacheConversationIdentityCache,
 }
 
 #[derive(Debug)]
