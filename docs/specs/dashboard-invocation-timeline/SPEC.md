@@ -27,7 +27,10 @@
 
 ### REQ-DIT-002
 
-- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, adapt each lane height between 8px and 16px within the original chart height strategy (`21rem` compact, `20rem` desktop), keep adjacent lanes separated by exactly 1 CSS pixel, and MUST expose parallel, running, and queued counts at the hovered time.
+- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, and adapt each lane height between 1px and 16px within the fixed chart frame (336px compact, 320px desktop). Adjacent lanes MUST have no gap when lane height is 1px or 2px, and exactly 1 CSS pixel of gap when lane height exceeds 2px.
+- The chart frame MUST remain fixed-height at every concurrency level. High concurrency MAY overflow only inside the invocation lane body, which MUST provide vertical scrolling; the calls axis MUST stay pinned to the frame and synchronize its vertical position with the lane body. The first overflowing snapshot MUST start at the bottom; refreshes of the same view MUST preserve the user's scroll position, clamped to the new content bounds. The chart MUST NOT introduce horizontal scrolling.
+- At high concurrency, calls-axis gridlines MUST follow the visible axis tick values rather than drawing one gridline per virtual lane.
+- Pointer hover inside the plot MUST show a floating tooltip anchored within the chart with the snapped time and parallel, running, and queued counts. The tooltip MUST not participate in document flow or change chart height, MUST remain within the chart bounds near its edges, and MUST disappear when the pointer leaves the chart. Hover details MUST NOT be rendered as an additional row below the chart.
 - The calls axis MUST use one linear row-boundary scale for the axis ticks, gridlines, and invocation bars. It MUST reserve the drawable call capacity of the fixed-height plot (and at least 4 values) so sparse windows remain readable; values above the observed concurrency represent empty capacity, not fabricated invocations. The `0` tick MUST share the coordinate origin at the X-axis baseline.
 - Each rendered invocation MUST map its assigned virtual row `n` to the positive Y value `n + 1`, with value `1` closest to the zero baseline and larger values above it; the lower edge of the first row MUST meet the zero baseline without a gap.
 - The TTFT axis MUST show the maximum, intermediate quartile ticks, and `0 ms` at the same plot baseline, using evenly spaced positions.
@@ -36,7 +39,7 @@
 ### REQ-DIT-003
 
 - The system MUST show the existing minute-level average TTFT curve overlaid in the same plot region as the invocation lanes, sharing the invocation time axis. Per-invocation TTFT values remain available through hover and accessible labels without adding an extra visual marker.
-- Implementation-only coordinate names MUST NOT appear in the interface; the rendered surface uses the product axis labels `调用` / `Calls` and `TTFT`.
+- Implementation-only coordinate names MUST NOT appear in the interface; the rendered surface uses the product axis labels `并发调用数` / `Concurrent calls` and `TTFT`.
 - Invocation bars MUST contain no visible text. Calls shorter than the display resolution, including unknown-duration terminal calls, MUST retain their real timing in the accessible label while receiving an 8px minimum click width so they remain visibly horizontal.
 
 ### REQ-DIT-004
@@ -77,7 +80,7 @@
 
 - Method: frontend lane and API normalization unit tests.
 - covers: `REQ-DIT-002`, `REQ-DIT-003`, `REQ-DIT-004`
-- Pass condition: lowest idle lane, zero-duration visibility, in-flight extension, account filtering, valid TTFT-only rendering, page merging, and duplicate invocation folding remain stable.
+- Pass condition: lowest idle lane, zero-duration visibility, in-flight extension, lane height and conditional gap bounds, fixed frame with internal vertical overflow, no horizontal overflow, synchronized axis scrolling, in-chart hover tooltip behavior, account filtering, valid TTFT-only rendering, page merging, and duplicate invocation folding remain stable.
 
 ### VER-DIT-003
 
@@ -103,8 +106,8 @@
   sensitive_exclusion: N/A
   submission_gate: approved
   story_id_or_title: Dashboard/DashboardInvocationTimeline/Live Traffic
-  state: live traffic with success, responding, queued, failed, and unknown calls
-  evidence_note: verifies complete linear calls and TTFT ticks, the zero-origin baseline, state colors, centered status legend, duration bars, overlaid TTFT curve, and the bottom X-axis.
+  state: live traffic with a centered in-chart hover tooltip
+  evidence_note: verifies the concurrent-call and TTFT axes, state colors, duration bars, overlaid TTFT curve, bottom X-axis, and tooltip time and concurrency counts without a separate summary row.
   image: ![Invocation timeline desktop](./assets/invocation-timeline-desktop.png)
 
 - source_type: storybook_canvas
@@ -118,9 +121,41 @@
   target_selector: `[data-visual-evidence-target]`
   sensitive_exclusion: N/A
   submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/Dense Concurrency 190
-  state: dense 190-call pagination sample
-  evidence_note: verifies the fixed chart frame, 8px dense bars, 1px row spacing, scrollable content, linear call scale, and the overlaid TTFT curve without mounting the legacy aggregate chart.
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/Live Traffic (left-edge hover)
+  state: tooltip placement near the left edge of the plot
+  evidence_note: verifies the tooltip flips or shifts within the plot bounds near the left edge without changing chart layout.
+  image: ![Invocation timeline left-edge tooltip](./assets/invocation-timeline-tooltip-left-edge.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/Live Traffic (right-edge hover)
+  state: tooltip placement near the right edge of the plot
+  evidence_note: verifies the tooltip flips or shifts within the plot bounds near the right edge without changing chart layout.
+  image: ![Invocation timeline right-edge tooltip](./assets/invocation-timeline-tooltip-right-edge.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/OverflowConcurrency360
+  state: 360-call dense sample overflowing the fixed desktop frame
+  evidence_note: verifies the 320px frame remains fixed, only the lane body scrolls vertically, the calls axis stays synchronized, and no horizontal scrolling appears.
   image: ![Invocation timeline dense](./assets/invocation-timeline-dense.png)
 
 - source_type: storybook_canvas
@@ -134,90 +169,10 @@
   target_selector: `[data-visual-evidence-target]`
   sensitive_exclusion: N/A
   submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/Mobile Traffic
-  state: responsive live traffic at the project-defined mobile393 viewport
-  evidence_note: verifies mobile readability, complete Y-axis ticks, zero-origin alignment, centered status legend, controls, the overlaid timeline/TTFT plot, and the bottom X-axis.
-  image: ![Invocation timeline mobile](./assets/invocation-timeline-mobile.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: desktop1440x1024
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  surface_selector: `[data-visual-evidence-surface]`
-  target_selector: `[data-visual-evidence-target]`
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/LiveRefreshPending
-  state: live revision refresh in progress while the committed snapshot remains visible
-  evidence_note: verifies the timeline remains mounted and retains the matching committed viewport while a live refresh is delayed.
-  image: ![Timeline refreshing on desktop](./assets/dashboard-timeline-refreshing-desktop.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: 393x852
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  surface_selector: `[data-visual-evidence-surface]`
-  target_selector: `[data-visual-evidence-target]`
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileLiveRefreshPending
-  state: responsive live refresh in progress with the committed snapshot visible
-  evidence_note: verifies mobile timeline visibility and stable layout during a delayed refresh.
-  image: ![Timeline refreshing on mobile](./assets/dashboard-timeline-refreshing-mobile.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: desktop1440x1024
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  surface_selector: `[data-visual-evidence-surface]`
-  target_selector: `[data-visual-evidence-target]`
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/LiveRefreshStale
-  state: failed live refresh with the last committed snapshot retained and marked stale
-  evidence_note: verifies a failed refresh freezes the last successful data and does not replace the timeline with initial loading.
-  image: ![Stale timeline after refresh failure](./assets/dashboard-timeline-stale-desktop.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: desktop1440x1024
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  surface_selector: `[data-visual-evidence-surface]`
-  target_selector: `[data-visual-evidence-target]`
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/DenseConcurrency190
-  state: dense 190-call sample
-  evidence_note: verifies dense invocation rendering remains inside the fixed chart frame.
-  image: ![Dense invocation timeline on desktop](./assets/dashboard-timeline-dense-desktop.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: 393x852
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  surface_selector: `[data-visual-evidence-surface]`
-  target_selector: `[data-visual-evidence-target]`
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileDenseConcurrency190
-  state: responsive dense 190-call sample
-  evidence_note: verifies dense invocation rendering and chart controls remain readable on mobile.
-  image: ![Dense invocation timeline on mobile](./assets/dashboard-timeline-dense-mobile.png)
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileOverflowConcurrency360
+  state: responsive 360-call overflow with an in-chart tooltip
+  evidence_note: verifies the 336px mobile frame, internal vertical scrolling, no horizontal overflow, synchronized axis, and tooltip containment in the narrow plot.
+  image: ![Invocation timeline mobile overflow](./assets/invocation-timeline-mobile.png)
 
 ## References
 

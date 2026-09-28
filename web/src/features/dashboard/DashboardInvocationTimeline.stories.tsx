@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { useState } from "react";
+import { expect, fireEvent, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { InvocationTimelineResponse, TimeseriesResponse } from "../../lib/api";
 import { DashboardInvocationTimeline } from "./DashboardInvocationTimeline";
@@ -101,6 +102,61 @@ const denseRecords: InvocationTimelineResponse = {
   })),
 };
 
+const overflowRecords: InvocationTimelineResponse = {
+  ...denseRecords,
+  total: 360,
+  records: Array.from({ length: 360 }, (_, index) => ({
+    id: index + 1,
+    invokeId: `invoke-overflow-${String(index + 1).padStart(3, "0")}`,
+    occurredAt: "2026-07-16T11:00:00.000Z",
+    endAt: "2026-07-16T11:01:00.000Z",
+    isInFlight: false,
+    status: "success" as const,
+    tTotalMs: 60_000,
+    firstTokenMs: null,
+  })),
+};
+
+async function hoverTimelineAt(canvasElement: HTMLElement, xRatio: number, yRatio: number) {
+  const plot = canvasElement.querySelector('[data-testid="dashboard-invocation-timeline-plot"]');
+  if (!(plot instanceof HTMLElement)) throw new Error("missing invocation timeline plot");
+  const rect = plot.getBoundingClientRect();
+  await fireEvent.pointerMove(plot, {
+    clientX: rect.left + rect.width * xRatio,
+    clientY: rect.top + (rect.height - 28) * yRatio,
+  });
+  const tooltip = within(canvasElement).getByTestId("dashboard-invocation-timeline-hover-tooltip");
+  await expect(tooltip).toBeVisible();
+  return { plot, tooltip };
+}
+
+function RefreshableOverflowTimeline() {
+  const [timelineData, setTimelineData] = useState(overflowRecords);
+  return (
+    <>
+      <button
+        type="button"
+        className="sr-only"
+        data-testid="refresh-overflow-fixture"
+        onClick={() =>
+          setTimelineData((current) => ({
+            ...current,
+            asOf: new Date(Date.parse(current.asOf) + 1_000).toISOString(),
+            records: [...current.records],
+          }))
+        }
+      >
+        Refresh mock snapshot
+      </button>
+      <DashboardInvocationTimeline
+        response={response}
+        loading={false}
+        timelineData={timelineData}
+      />
+    </>
+  );
+}
+
 const meta = {
   title: "Dashboard/DashboardInvocationTimeline",
   component: DashboardInvocationTimeline,
@@ -190,7 +246,7 @@ export const LiveTraffic: Story = {
     expect(ttftTicks?.[ttftTicks.length - 1]?.textContent).toBe("0 ms");
     expect(canvas.queryByText("全天")).toBeNull();
     expect(canvas.queryByText(/Y1|Y2/)).toBeNull();
-    await expect(canvas.getByText("调用")).toBeVisible();
+    await expect(canvas.getByText("并发调用数")).toBeVisible();
     const bars = canvasElement.querySelectorAll(
       '[data-testid="dashboard-invocation-timeline-lane-scroll"] [data-call-value]',
     );
@@ -250,6 +306,36 @@ export const LiveTraffic: Story = {
     }
     expect(Math.abs(firstBarRect.bottom - xAxisRect.top)).toBeLessThanOrEqual(1);
     expect(firstBarRect.top).toBeGreaterThan(secondBarRect.top);
+
+    const timeline = canvas.getByTestId("dashboard-invocation-timeline");
+    const chartFrame = canvas.getByTestId("dashboard-invocation-timeline-lanes");
+    const frameHeight = chartFrame.getBoundingClientRect().height;
+    const { plot, tooltip } = await hoverTimelineAt(canvasElement, 0.75, 0.45);
+    expect(tooltip.textContent).toMatch(/并行 3|parallel 3/);
+    expect(tooltip.textContent).toMatch(/运行 3|running 3/);
+    expect(tooltip.textContent).toMatch(/排队 0|queued 0/);
+    expect(Number(tooltip.getAttribute("data-hover-time-ms"))).toBeGreaterThan(0);
+    expect(chartFrame.getBoundingClientRect().height).toBe(frameHeight);
+    expect(timeline.lastElementChild).toBe(
+      canvas.getByTestId("dashboard-invocation-timeline-legend"),
+    );
+
+    const plotRect = plot.getBoundingClientRect();
+    await hoverTimelineAt(canvasElement, 0.99, 0.99);
+    const edgeRect = canvas
+      .getByTestId("dashboard-invocation-timeline-hover-tooltip")
+      .getBoundingClientRect();
+    expect(edgeRect.left).toBeGreaterThanOrEqual(plotRect.left + 7);
+    expect(edgeRect.right).toBeLessThanOrEqual(plotRect.right - 7);
+    expect(edgeRect.top).toBeGreaterThanOrEqual(plotRect.top + 7);
+    expect(edgeRect.bottom).toBeLessThanOrEqual(plotRect.top + chartFrame.clientHeight - 28 - 7);
+
+    await fireEvent.pointerOut(
+      canvas.getByTestId("dashboard-invocation-timeline-interaction-area"),
+      { relatedTarget: document.body },
+    );
+    await expect(canvas.queryByRole("tooltip")).toBeNull();
+    await hoverTimelineAt(canvasElement, 0.75, 0.45);
   },
 };
 
@@ -339,6 +425,26 @@ export const MobileTraffic: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("dashboard-invocation-timeline")).toBeVisible();
     await expect(canvas.getByRole("img", { name: /invoke-success-001/ })).toBeVisible();
+    await hoverTimelineAt(canvasElement, 0.75, 0.45);
+  },
+};
+
+export const EnglishTraffic: Story = {
+  ...LiveTraffic,
+  decorators: [
+    (Story) => (
+      <I18nProvider initialLocale="en" persistLocale={false}>
+        <Story />
+      </I18nProvider>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Concurrent calls")).toBeVisible();
+    const { tooltip } = await hoverTimelineAt(canvasElement, 0.75, 0.45);
+    expect(tooltip.textContent).toMatch(/parallel 3/);
+    expect(tooltip.textContent).toMatch(/running 3/);
+    expect(tooltip.textContent).toMatch(/queued 0/);
   },
 };
 
@@ -357,7 +463,6 @@ export const DenseConcurrency190: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("dashboard-invocation-timeline")).toBeVisible();
-    await expect(canvas.getByText(/190.*(调用|calls)/i)).toBeVisible();
     const frame = canvas.getByTestId("dashboard-invocation-timeline-lanes");
     await expect(frame).toBeVisible();
     const frameElement = canvasElement.querySelector(
@@ -371,15 +476,98 @@ export const DenseConcurrency190: Story = {
     }
     const expectedChartHeight = window.matchMedia("(max-width: 768px)").matches ? 336 : 320;
     expect(frameElement.getBoundingClientRect().height).toBe(expectedChartHeight);
-    expect(laneScrollElement.scrollHeight).toBe(1733);
     expect(laneScrollElement.clientHeight).toBe(expectedChartHeight - 28);
-    expect(laneScrollElement.scrollTop).toBe(
-      laneScrollElement.scrollHeight - laneScrollElement.clientHeight,
+    expect(laneScrollElement.scrollHeight).toBe(laneScrollElement.clientHeight);
+    const bars = laneScrollElement.querySelectorAll("[data-call-value]");
+    expect(bars).toHaveLength(190);
+    expect(Array.from(bars).every((bar) => bar.getBoundingClientRect().height === 1)).toBe(true);
+    expect(laneScrollElement.querySelectorAll("[data-call-axis-grid]").length).toBeLessThanOrEqual(
+      5,
     );
+  },
+};
+
+export const OverflowConcurrency360: Story = {
+  args: {
+    response,
+    loading: false,
+    error: null,
+    timelineData: overflowRecords,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvas.getByTestId("dashboard-invocation-timeline-lanes");
+    const laneScroll = canvas.getByTestId("dashboard-invocation-timeline-lane-scroll");
+    const axisScroll = canvasElement.querySelector(
+      '[data-testid="dashboard-invocation-timeline-calls-axis"] > div',
+    );
+    if (!(axisScroll instanceof HTMLElement)) throw new Error("missing calls axis scroller");
+    const expectedChartHeight = window.matchMedia("(max-width: 768px)").matches ? 336 : 320;
+    await expect(canvas.getByTestId("dashboard-invocation-timeline")).toBeVisible();
+    expect(frame.getBoundingClientRect().height).toBe(expectedChartHeight);
+    expect(laneScroll.scrollHeight).toBeGreaterThan(laneScroll.clientHeight);
+    expect(laneScroll.scrollTop).toBe(laneScroll.scrollHeight - laneScroll.clientHeight);
+    expect(frame.scrollWidth).toBeLessThanOrEqual(frame.clientWidth);
+    expect(laneScroll.scrollWidth).toBeLessThanOrEqual(laneScroll.clientWidth);
+    expect(laneScroll.querySelectorAll("[data-call-axis-grid]").length).toBeLessThanOrEqual(5);
+    expect(axisScroll.scrollTop).toBe(laneScroll.scrollTop);
+  },
+};
+
+export const OverflowScrollPositionRetention: Story = {
+  args: {
+    response,
+    loading: false,
+    timelineData: overflowRecords,
+  },
+  render: () => <RefreshableOverflowTimeline />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const laneScroll = canvas.getByTestId("dashboard-invocation-timeline-lane-scroll");
+    const axisScroll = canvasElement.querySelector(
+      '[data-testid="dashboard-invocation-timeline-calls-axis"] > div',
+    );
+    if (!(axisScroll instanceof HTMLElement)) throw new Error("missing calls axis scroller");
+    const manualScrollTop = laneScroll.scrollHeight - laneScroll.clientHeight - 32;
+    laneScroll.scrollTop = manualScrollTop;
+    await fireEvent.scroll(laneScroll);
+    expect(axisScroll.scrollTop).toBe(manualScrollTop);
+    await fireEvent.click(canvas.getByTestId("refresh-overflow-fixture"));
+    await expect(laneScroll).toHaveProperty("scrollTop", manualScrollTop);
+    expect(axisScroll.scrollTop).toBe(manualScrollTop);
   },
 };
 
 export const MobileDenseConcurrency190: Story = {
   ...DenseConcurrency190,
   globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const MobileOverflowConcurrency360: Story = {
+  ...OverflowConcurrency360,
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const frame = canvas.getByTestId("dashboard-invocation-timeline-lanes");
+    const laneScroll = canvas.getByTestId("dashboard-invocation-timeline-lane-scroll");
+    const axisScroll = canvasElement.querySelector(
+      '[data-testid="dashboard-invocation-timeline-calls-axis"] > div',
+    );
+    if (!(axisScroll instanceof HTMLElement)) throw new Error("missing calls axis scroller");
+    expect(frame.getBoundingClientRect().height).toBe(336);
+    expect(laneScroll.scrollHeight).toBeGreaterThan(laneScroll.clientHeight);
+    expect(laneScroll.scrollTop).toBe(laneScroll.scrollHeight - laneScroll.clientHeight);
+    expect(frame.scrollWidth).toBeLessThanOrEqual(frame.clientWidth);
+    expect(laneScroll.scrollWidth).toBeLessThanOrEqual(laneScroll.clientWidth);
+    expect(axisScroll.scrollTop).toBe(laneScroll.scrollTop);
+
+    const { plot, tooltip } = await hoverTimelineAt(canvasElement, 0.669, 0.45);
+    const plotRect = plot.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    expect(tooltip.textContent).toMatch(/并行 360/);
+    expect(tooltipRect.left).toBeGreaterThanOrEqual(plotRect.left + 7);
+    expect(tooltipRect.right).toBeLessThanOrEqual(plotRect.right - 7);
+    expect(tooltipRect.top).toBeGreaterThanOrEqual(plotRect.top + 7);
+    expect(tooltipRect.bottom).toBeLessThanOrEqual(plotRect.top + frame.clientHeight - 28 - 7);
+  },
 };
