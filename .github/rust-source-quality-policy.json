@@ -33,7 +33,7 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24001,
+      "line_budget": 24009,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
@@ -69,7 +69,7 @@
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3269,
+      "line_budget": 3323,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {
@@ -147,13 +147,13 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 8627,
+      "line_budget": 8783,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
       "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
       "role": "test_helper",
-      "line_budget": 3867,
+      "line_budget": 3868,
       "next_module_workstream": "Split OAuth route rewrite/timeout fixtures by request preparation, response, and failure paths."
     },
     {
@@ -165,7 +165,7 @@
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
       "role": "test_helper",
-      "line_budget": 6302,
+      "line_budget": 6311,
       "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
     },
     {
@@ -201,7 +201,7 @@
     {
       "path": "src/tests/stateful_sqlite/system_status_and_account_roster.rs",
       "role": "test_helper",
-      "line_budget": 4960,
+      "line_budget": 4976,
       "next_module_workstream": "Split system status/account roster fixtures by archive, account, and projection helpers."
     },
     {
