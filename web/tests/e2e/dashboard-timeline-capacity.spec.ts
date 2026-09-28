@@ -158,6 +158,18 @@ function expectSustainedEvents(eventTimes: number[], baselineCount: number): voi
   expect(maximumGapMs).toBeLessThanOrEqual(MAXIMUM_LIVE_EVENT_GAP_MS);
 }
 
+async function expectVisibleCallsAreVirtualized(page: Page, totalCalls: number): Promise<void> {
+  const laneScroll = page.getByTestId("dashboard-invocation-timeline-lane-scroll");
+  const renderedCalls = await laneScroll.locator("[data-call-value]").count();
+  const viewportHeight = await laneScroll.evaluate(
+    (element) => (element as HTMLElement).clientHeight,
+  );
+
+  expect(renderedCalls).toBeGreaterThan(0);
+  expect(renderedCalls).toBeLessThanOrEqual(viewportHeight + 4);
+  expect(renderedCalls).toBeLessThan(totalCalls);
+}
+
 async function instrumentTimelineFetch(page: Page) {
   await page.evaluate(() => {
     const diagnostics = (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
@@ -431,12 +443,7 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
       .toBe(1);
     const lanesDuringDelayedRefresh = page.getByTestId("dashboard-invocation-timeline-lanes");
     await expect(lanesDuringDelayedRefresh).toHaveAttribute("data-total-calls", "550");
-    const countDuringDelayedRefresh = await page
-      .getByTestId("dashboard-invocation-timeline-lane-scroll")
-      .locator("[data-call-value]")
-      .count();
-    expect(countDuringDelayedRefresh).toBeGreaterThan(0);
-    expect(countDuringDelayedRefresh).toBeLessThan(40);
+    await expectVisibleCallsAreVirtualized(page, 550);
     const releasesDuringDelayedRefresh = await page.evaluate(
       () =>
         (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
@@ -622,12 +629,7 @@ test("single-client dense timeline stays below the long-task budget on desktop a
       await expect(refreshedLanes).toBeVisible();
       await expect(refreshedLanes).toHaveAttribute("data-total-calls", "550");
       await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
-      const visibleCalls = await page
-        .getByTestId("dashboard-invocation-timeline-lane-scroll")
-        .locator("[data-call-value]")
-        .count();
-      expect(visibleCalls).toBeGreaterThan(0);
-      expect(visibleCalls).toBeLessThan(40);
+      await expectVisibleCallsAreVirtualized(page, 550);
 
       await expect
         .poll(

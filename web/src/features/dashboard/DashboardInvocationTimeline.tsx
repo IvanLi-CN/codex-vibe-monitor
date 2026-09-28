@@ -649,15 +649,10 @@ export function DashboardInvocationTimeline({
     callAxisTopForValue(0) >= laneScrollTop &&
     callAxisTopForValue(0) <= laneScrollTop + laneAreaHeightPx;
   const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1) + laneGap;
-  const firstCallAxisGridValue = Math.max(1, visibleLaneRange.firstLane);
-  const lastCallAxisGridValue = Math.min(callAxisMaxValue, visibleLaneRange.lastLane + 1);
   const callAxisGridValues =
     callAxisMaxValue <= 20
       ? Array.from({ length: callAxisMaxValue }, (_, index) => index + 1)
-      : Array.from(
-          { length: Math.max(0, lastCallAxisGridValue - firstCallAxisGridValue + 1) },
-          (_, index) => firstCallAxisGridValue + index,
-        );
+      : [...new Set(callAxisTicks.map((tick) => tick.value).filter((value) => value > 0))];
 
   return (
     <div data-testid="dashboard-today-activity-chart">
