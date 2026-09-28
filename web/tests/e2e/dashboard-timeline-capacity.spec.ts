@@ -255,13 +255,15 @@ async function startCapacityDashboard(
   await page.evaluate(
     () =>
       new Promise<void>((resolve) =>
-        requestAnimationFrame(() => {
-          const diagnostics = (window as TimelineDiagnosticsWindow)
-            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
-          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-          diagnostics.timelineReadyAtMs = performance.now();
-          resolve();
-        }),
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const diagnostics = (window as TimelineDiagnosticsWindow)
+              .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+            if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+            diagnostics.timelineReadyAtMs = performance.now();
+            resolve();
+          }),
+        ),
       ),
   );
   await expect
@@ -648,7 +650,10 @@ test("single-client dense timeline stays below the long-task budget on desktop a
         )
         .toBe(0);
       await page.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
       );
       const refreshEnd = await page.evaluate(() => performance.now());
       const diagnostics = await page.evaluate(
