@@ -34,8 +34,8 @@
 
 ## Verification Evidence
 
-- A five-minute two-client browser run completed 41 timeline traversals and 82 page requests with 41 snapshot releases, zero HTTP or release errors, at most one in-flight traversal per client, and a minimum traversal spacing of about 15.05 seconds. Each client received 315 live revisions during the run.
-- Isolated production-shaped desktop and mobile runs each completed two traversals and released both snapshots with zero request errors. The maximum observed long task was 119 ms on desktop and 80 ms on mobile during page readiness; the delayed refresh phase measured 51 ms and 0 ms respectively. Both runs retained the last committed chart while the delayed refresh was pending and recovered after the live revision.
+- A five-minute two-client browser run completed 41 timeline traversals and 82 page requests with 41 snapshot releases, zero HTTP or release errors, at most one in-flight traversal per client, and a minimum traversal spacing of about 15.05 seconds. Each client received 314 live revisions during the run.
+- Isolated production-shaped desktop and mobile runs each completed two traversals and released both snapshots with zero request errors. The maximum observed long task was 129 ms on desktop and 88 ms on mobile during page readiness; the delayed refresh phase measured 0 ms on both. Both runs retained the last committed chart while the delayed refresh was pending and recovered after the live revision.
 - The dense desktop/mobile and stale desktop Storybook captures match their canonical Spec images. The pending desktop capture has only a small raster difference in the plot/legend area; visual inspection found no change to content, layout, styling, or interaction. Existing canonical assets remain the visual reference.
 - Targeted Storybook coverage passed for 10 timeline states. Rust release/capacity/cleanup tests, web refresh tests, the web typecheck, and the complete web unit suite passed on this candidate source.
 
