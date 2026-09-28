@@ -13,7 +13,7 @@
 - `REQ-DIT-001`, `REQ-DIT-004`: `src/api/slices/invocations_and_summary.rs`, `src/maintenance/hourly_rollups.rs`.
 - `REQ-DIT-002`, `REQ-DIT-003`, `REQ-DIT-005`, `REQ-DIT-006`: `web/src/hooks/useInvocationTimeline.ts`, `web/src/features/dashboard/DashboardInvocationTimeline.tsx`, `web/src/features/dashboard/DashboardActivityOverview.tsx`.
 - API normalization: `web/src/lib/api/core-foundation.ts`, `web/src/lib/api/feature-clients.ts`, `web/src/lib/api/types.ts`.
-- Verification: Rust overlap and background-cleanup tests, web timeline snapshot/window-state tests, web API normalization tests, web lane assignment and layout tests, Storybook interaction coverage, typecheck, Rust check, and responsive visual evidence.
+- Verification: Rust overlap and background-cleanup tests, web timeline snapshot/window-state tests, web API normalization tests, web lane assignment and layout tests, Storybook interaction coverage, web typecheck, lint and production build, Rust check, and responsive visual evidence.
 
 ## Coverage / rollout summary
 
