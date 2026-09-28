@@ -673,6 +673,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             invoke_id: None,
         });
     }
+    if prompt_cache_key_headers_are_oversized(&headers) {
+        return Err(ProxyCaptureDispatchError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "prompt-cache key exceeds the supported 512-byte limit".to_string(),
+            invoke_id: None,
+        });
+    }
     let capture_started = Instant::now();
     let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
         &mut proxy_request_permit,

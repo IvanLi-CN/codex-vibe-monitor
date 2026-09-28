@@ -4021,15 +4021,10 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        if !prompt_cache_keys_to_refresh.is_empty()
-            && let Err(error) =
-                refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
-        {
-            warn!(
-                error = %error,
-                keys = prompt_cache_keys_to_refresh.len(),
-                "failed to refresh prompt-cache conversation statistics after terminal batch"
-            );
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
+                .await
+                .context("refresh prompt-cache conversation statistics after terminal batch")?;
         }
         if !prompt_cache_keys_to_refresh.is_empty()
             && let Some(cache) = prompt_cache_conversation_cache
@@ -4171,19 +4166,14 @@ pub(crate) async fn flush_pending_batch_inner(
 
     tx.commit().await?;
 
-    if let Some(cache) = prompt_cache_conversation_cache {
-        release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
+    if !prompt_cache_keys_to_refresh.is_empty() {
+        refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
+            .await
+            .context("refresh prompt-cache conversation statistics after derived batch")?;
     }
 
-    if !prompt_cache_keys_to_refresh.is_empty()
-        && let Err(error) =
-            refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
-    {
-        warn!(
-            error = %error,
-            keys = prompt_cache_keys_to_refresh.len(),
-            "failed to refresh prompt-cache conversation statistics after derived batch"
-        );
+    if let Some(cache) = prompt_cache_conversation_cache {
+        release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
     }
 
     if !terminal_overlay_keys.is_empty()

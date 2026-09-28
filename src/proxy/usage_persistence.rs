@@ -2410,13 +2410,8 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cac
             warn!(
                 prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(&prompt_cache_key),
                 error = ?result.as_ref().err(),
-                "releasing prompt-cache conversation lease after dropped-invocation flush retries failed"
+                "retaining prompt-cache conversation lease until dropped-invocation batch flush succeeds"
             );
-            release_active_prompt_cache_conversation(
-                &state.prompt_cache_conversation_cache,
-                &prompt_cache_key,
-            )
-            .await;
         }
     }
 

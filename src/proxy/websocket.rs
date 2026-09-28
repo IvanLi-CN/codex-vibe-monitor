@@ -2245,7 +2245,7 @@ pub(crate) async fn record_ws_pre_upstream_failure(
     failure_kind: &'static str,
     message: &str,
 ) -> Result<()> {
-    persist_websocket_pre_upstream_failure(
+    let result = persist_websocket_pre_upstream_failure(
         state,
         trace,
         prompt_cache_key,
@@ -2253,7 +2253,17 @@ pub(crate) async fn record_ws_pre_upstream_failure(
         failure_kind,
         message,
     )
-    .await
+    .await;
+    if result.is_err()
+        && let Some(prompt_cache_key) = prompt_cache_key
+    {
+        release_active_prompt_cache_conversation(
+            &state.prompt_cache_conversation_cache,
+            prompt_cache_key,
+        )
+        .await;
+    }
+    result
 }
 
 pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
@@ -2582,9 +2592,13 @@ impl WsUsageTracker {
     fn mark_terminal_prompt_cache_key(&mut self) {
         if let Some(prompt_cache_key) =
             websocket_effective_prompt_cache_key(self.current_turn_prompt_cache_key())
+                .map(ToOwned::to_owned)
         {
             self.terminal_prompt_cache_keys
-                .insert(prompt_cache_key.to_string());
+                .insert(prompt_cache_key.clone());
+            // The terminal batch writer now owns this lease and releases it after
+            // the terminal row is durable. Keep only non-terminal leases locally.
+            self.active_prompt_cache_keys.remove(&prompt_cache_key);
         }
     }
 
