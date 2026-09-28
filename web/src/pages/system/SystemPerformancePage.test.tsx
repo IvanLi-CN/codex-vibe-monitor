@@ -119,4 +119,22 @@ describe("SystemPerformancePage", () => {
     expect(host.textContent).toContain("p1.queue_depth");
     expect(host.querySelectorAll('[data-testid="performance-series"]')).toHaveLength(13);
   });
+
+  it("shows an explicit error when the collector health endpoint fails", async () => {
+    apiMocks.fetchPerformanceHealth.mockRejectedValueOnce(new Error("health unavailable"));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => {
+      root?.render(
+        <I18nProvider initialLocale="zh" persistLocale={false}>
+          <SystemPerformancePage />
+        </I18nProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(host.querySelector('[data-testid="system-performance-health-error"]')).not.toBeNull();
+    expect(host.textContent).toContain("health unavailable");
+  });
 });

@@ -24,27 +24,17 @@ describe("demo MSW handlers", () => {
     const payload = (await response.json()) as {
       series: Array<{ metricId: string; dimension: string }>;
     };
-    const allowed = new Set([
-      "http.in_flight:other",
-      "telemetry.queue_depth:collector",
-      "telemetry.dropped_samples:collector",
-      "sqlite.write_duration_ms:main",
-      "sqlite.wal_bytes:main",
-      "projection.publish_duration_ms:current",
-      "sse.active_subscribers:dashboard",
-      "maintenance.backlog_age_ms:maintenance",
-      "maintenance.run_duration_ms:maintenance",
-      "process.rss_bytes:process",
-      "process.cpu_percent:process",
-      "browser.data_ready_ms:system:desktop",
-      "browser.update_to_paint_ms:system:desktop",
-    ]);
     expect(response.ok).toBe(true);
-    expect(payload.series).not.toHaveLength(0);
-    expect(payload.series.every((item) => allowed.has(`${item.metricId}:${item.dimension}`))).toBe(
-      true,
-    );
+    expect(payload.series).toHaveLength(126);
+    expect(new Set(payload.series.map((item) => item.metricId)).size).toBe(77);
+    expect(payload.series.some((item) => item.dimension === "all")).toBe(false);
     expect(payload.series.some((item) => item.metricId === "http.in_flight")).toBe(true);
+
+    const longTermResponse = await fetch("http://demo.invalid/api/system/performance?range=13mo");
+    const longTermPayload = (await longTermResponse.json()) as {
+      series: Array<{ metricId: string; dimension: string }>;
+    };
+    expect(longTermPayload.series).toHaveLength(22);
   });
 
   it("treats zero-millisecond TTFT as responding in account attempts", () => {

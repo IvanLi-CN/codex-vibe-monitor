@@ -1157,6 +1157,15 @@ async fn initialize_telemetry_runtime(
             .await;
         return;
     }
+    if let Err(error) = reset_persisted_collector_health(&pool).await {
+        runtime
+            .update_health(|health| {
+                health.state = "unavailable".to_string();
+                health.last_error = Some(error.to_string());
+            })
+            .await;
+        return;
+    }
     if runtime.shutdown.is_cancelled() {
         return;
     }
@@ -1402,6 +1411,49 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
+    Ok(())
+}
+
+async fn reset_persisted_collector_health(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO performance_collector_health(
+            id, state, last_successful_flush, dropped_samples, flush_failure_count, last_error
+        ) VALUES (1, 'starting', NULL, 0, 0, NULL)
+        ON CONFLICT(id) DO UPDATE SET state = excluded.state,
+            last_successful_flush = excluded.last_successful_flush,
+            dropped_samples = excluded.dropped_samples,
+            flush_failure_count = excluded.flush_failure_count,
+            last_error = excluded.last_error",
+    )
+    .execute(pool)
+    .await
+    .context("failed to initialize performance collector health")?;
+    Ok(())
+}
+
+async fn persist_collector_health(
+    runtime: &PerformanceTelemetryRuntime,
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    let health = runtime.health_snapshot().await;
+    sqlx::query(
+        "INSERT INTO performance_collector_health(
+            id, state, last_successful_flush, dropped_samples, flush_failure_count, last_error
+        ) VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET state = excluded.state,
+            last_successful_flush = excluded.last_successful_flush,
+            dropped_samples = excluded.dropped_samples,
+            flush_failure_count = excluded.flush_failure_count,
+            last_error = excluded.last_error",
+    )
+    .bind(health.state)
+    .bind(health.last_successful_flush)
+    .bind(health.dropped_samples as i64)
+    .bind(health.flush_failure_count as i64)
+    .bind(health.last_error)
+    .execute(pool)
+    .await
+    .context("failed to persist performance collector health")?;
     Ok(())
 }
 
@@ -1790,6 +1842,9 @@ async fn flush_accumulators(
                     health.last_error = None;
                 })
                 .await;
+            if let Some(pool) = runtime.pool.get() {
+                let _ = persist_collector_health(runtime, pool).await;
+            }
             runtime.record_duration_ms(
                 "telemetry.flush_duration_ms",
                 "collector",
@@ -1808,6 +1863,9 @@ async fn flush_accumulators(
                     health.last_error = Some(error.to_string());
                 })
                 .await;
+            if let Some(pool) = runtime.pool.get() {
+                let _ = persist_collector_health(runtime, pool).await;
+            }
             Err(error)
         }
     }
@@ -1868,7 +1926,7 @@ async fn rollup_resolution(
         weighted_seconds: f64,
         last_bucket: i64,
         histogram: Vec<u64>,
-        epoch: String,
+        epochs: BTreeSet<String>,
     }
 
     let mut transaction = pool.begin().await?;
@@ -1913,8 +1971,10 @@ async fn rollup_resolution(
             weighted_seconds: 0.0,
             last_bucket: i64::MIN,
             histogram: vec![0; 8],
-            epoch: String::new(),
+            epochs: BTreeSet::new(),
         });
+        let encoded_epoch: String = row.try_get("epoch")?;
+        record_epoch_values(&mut entry.epochs, &encoded_epoch);
         entry.sample_count = entry
             .sample_count
             .saturating_add(row.try_get::<i64, _>("sample_count")?.max(0) as u64);
@@ -1939,7 +1999,6 @@ async fn rollup_resolution(
         if bucket_start >= entry.last_bucket {
             entry.last_bucket = bucket_start;
             entry.last_value = row.try_get("last_value")?;
-            entry.epoch = row.try_get("epoch")?;
         }
         for (index, value) in histogram.into_iter().enumerate().take(8) {
             entry.histogram[index] = entry.histogram[index].saturating_add(value);
@@ -1947,6 +2006,7 @@ async fn rollup_resolution(
     }
     for ((bucket_start, metric_id, dimension), entry) in grouped {
         let histogram_json = serde_json::to_string(&entry.histogram)?;
+        let epoch = serde_json::to_string(&entry.epochs.into_iter().collect::<Vec<_>>())?;
         sqlx::query(
             "INSERT INTO performance_buckets(bucket_start, resolution_seconds, metric_id,
                 dimension_code, sample_count, expected_count, sum_value, min_value, max_value,
@@ -1974,7 +2034,7 @@ async fn rollup_resolution(
         .bind(entry.weighted_sum)
         .bind(entry.weighted_seconds)
         .bind(histogram_json)
-        .bind(entry.epoch)
+        .bind(epoch)
         .execute(&mut *transaction)
         .await?;
     }
@@ -2801,7 +2861,8 @@ async fn query_performance(
             let key = (metric_id.clone(), dimension.clone(), output_bucket);
             let sample_count = row.try_get::<i64, _>("sample_count")?.max(0) as u64;
             let expected_count = row.try_get::<i64, _>("expected_count")?.max(0) as u64;
-            epochs.insert(row.try_get::<String, _>("epoch")?);
+            let encoded_epoch: String = row.try_get("epoch")?;
+            record_epoch_values(&mut epochs, &encoded_epoch);
             let point = grouped.entry(key).or_insert_with(|| PerformancePoint {
                 bucket_start: output_bucket,
                 sample_count: 0,
@@ -2952,6 +3013,14 @@ fn query_resolution_segments(from: i64, to: i64) -> Vec<(i64, i64, i64)> {
     .into_iter()
     .filter(|(_, segment_from, segment_to)| segment_from < segment_to)
     .collect()
+}
+
+fn record_epoch_values(epochs: &mut BTreeSet<String>, encoded_epoch: &str) {
+    if let Ok(values) = serde_json::from_str::<Vec<String>>(encoded_epoch) {
+        epochs.extend(values);
+    } else {
+        epochs.insert(encoded_epoch.to_string());
+    }
 }
 
 pub(crate) async fn performance_http_middleware(
@@ -3586,6 +3655,12 @@ mod tests {
         .expect("load weighted stock value");
         assert_eq!(weighted_sum, 30.0);
         assert_eq!(weighted_seconds, 10.0);
+        let persisted_state: String =
+            sqlx::query_scalar("SELECT state FROM performance_collector_health WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("load persisted collector health");
+        assert_eq!(persisted_state, "healthy");
     }
 
     #[tokio::test]
@@ -3602,16 +3677,17 @@ mod tests {
         let now = Utc::now().timestamp();
         let cutoff = now - 7 * 24 * 60 * 60;
         let old_bucket = (cutoff - 24 * 60 * 60) / 300 * 300;
-        for bucket in [old_bucket, old_bucket + 60] {
+        for (bucket, epoch) in [(old_bucket, "epoch-a"), (old_bucket + 60, "epoch-b")] {
             sqlx::query(
                 "INSERT INTO performance_buckets(
                     bucket_start, resolution_seconds, metric_id, dimension_code,
                     sample_count, expected_count, sum_value, min_value, max_value,
                     last_value, histogram_json, epoch
-                ) VALUES (?, 60, 'p1.queue_depth', 'p1', 1, 1, 1, 1, 1, 1, ?, 'epoch-a')",
+                ) VALUES (?, 60, 'p1.queue_depth', 'p1', 1, 1, 1, 1, 1, 1, ?, ?)",
             )
             .bind(bucket)
             .bind("[0,0,0,0,0,0,0,0]")
+            .bind(epoch)
             .execute(&pool)
             .await
             .expect("insert source bucket");
@@ -3633,8 +3709,8 @@ mod tests {
         .expect("count source buckets");
         assert_eq!(source_count, 0);
 
-        let (rolled_count, rolled_sum): (i64, f64) = sqlx::query_as(
-            "SELECT sample_count, sum_value FROM performance_buckets
+        let (rolled_count, rolled_sum, rolled_epoch): (i64, f64, String) = sqlx::query_as(
+            "SELECT sample_count, sum_value, epoch FROM performance_buckets
              WHERE resolution_seconds = 300 AND metric_id = 'p1.queue_depth' AND dimension_code = 'p1'",
         )
         .fetch_one(&pool)
@@ -3642,6 +3718,9 @@ mod tests {
         .expect("load rolled bucket");
         assert_eq!(rolled_count, 2);
         assert_eq!(rolled_sum, 2.0);
+        let epochs: Vec<String> =
+            serde_json::from_str(&rolled_epoch).expect("decode rolled epochs");
+        assert_eq!(epochs, vec!["epoch-a", "epoch-b"]);
     }
 
     #[tokio::test]

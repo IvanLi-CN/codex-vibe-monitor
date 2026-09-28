@@ -115,6 +115,7 @@ export default function SystemPerformancePage() {
   const [section, setSection] = useState<PerformanceSection | "all">("all");
   const [metrics, setMetrics] = useState<PerformanceMetricsResponse | null>(null);
   const [health, setHealth] = useState<PerformanceTelemetryHealth | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -136,7 +137,17 @@ export default function SystemPerformancePage() {
             : String(metricsResult.reason),
         );
       }
-      if (healthResult.status === "fulfilled") setHealth(healthResult.value);
+      if (healthResult.status === "fulfilled") {
+        setHealth(healthResult.value);
+        setHealthError(null);
+      } else {
+        setHealth(null);
+        setHealthError(
+          healthResult.reason instanceof Error
+            ? healthResult.reason.message
+            : String(healthResult.reason),
+        );
+      }
       setIsLoading(false);
     };
     setIsLoading(true);
@@ -228,6 +239,12 @@ export default function SystemPerformancePage() {
               </span>
             ) : null}
           </div>
+        ) : null}
+
+        {healthError ? (
+          <Alert variant="error" data-testid="system-performance-health-error">
+            {t("system.performance.loadError", { error: healthError })}
+          </Alert>
         ) : null}
 
         {error ? (

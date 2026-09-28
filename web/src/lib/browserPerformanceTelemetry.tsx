@@ -137,6 +137,7 @@ export function BrowserPerformanceTelemetry({ pathname }: { pathname: string }) 
             }
           }
           if (pathname === "/events") {
+            if (eventsRef.current.length >= 8) continue;
             eventsRef.current.push({
               page: currentFamily,
               device: deviceClass(),
@@ -155,6 +156,7 @@ export function BrowserPerformanceTelemetry({ pathname }: { pathname: string }) 
             pathname.startsWith("/api/") &&
             !pathname.startsWith("/api/system/performance")
           ) {
+            if (eventsRef.current.length >= 8) continue;
             eventsRef.current.push({
               page: currentFamily,
               device: deviceClass(),
