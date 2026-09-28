@@ -334,8 +334,8 @@ fn invocation_prompt_cache_key_expr_sql(alias: &str) -> String {
     )
 }
 
-async fn load_prompt_cache_conversation_migration_progress(
-    pool: &Pool<Sqlite>,
+async fn load_prompt_cache_conversation_migration_progress_on_connection(
+    connection: &mut SqliteConnection,
 ) -> Result<PromptCacheConversationMigrationProgressRow> {
     sqlx::query_as::<_, PromptCacheConversationMigrationProgressRow>(&format!(
         "SELECT phase, source_max_invocation_id, cursor_key \
@@ -343,7 +343,7 @@ async fn load_prompt_cache_conversation_migration_progress(
          WHERE migration_name = ?1"
     ))
     .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?
     .ok_or_else(|| {
         anyhow!(
@@ -351,6 +351,13 @@ async fn load_prompt_cache_conversation_migration_progress(
             PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME
         )
     })
+}
+
+async fn load_prompt_cache_conversation_migration_progress(
+    pool: &Pool<Sqlite>,
+) -> Result<PromptCacheConversationMigrationProgressRow> {
+    let mut connection = pool.acquire().await?;
+    load_prompt_cache_conversation_migration_progress_on_connection(&mut connection).await
 }
 
 async fn update_prompt_cache_conversation_migration_progress_on_connection(
@@ -430,30 +437,42 @@ async fn prompt_cache_conversation_refresh_queue_has_rows_on_connection(
         != 0)
 }
 
-pub(crate) async fn prompt_cache_conversation_materialization_is_complete(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn prompt_cache_conversation_materialization_is_complete_on_connection(
+    connection: &mut SqliteConnection,
 ) -> Result<bool> {
-    let progress = load_prompt_cache_conversation_migration_progress(pool).await?;
+    let progress =
+        load_prompt_cache_conversation_migration_progress_on_connection(connection).await?;
     if progress.phase != PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE {
         return Ok(false);
     }
-    if !prompt_cache_conversation_marker_exists(pool, PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME)
-        .await?
-    {
-        return Ok(false);
-    }
-    if !prompt_cache_conversation_marker_exists(pool, PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME)
-        .await?
-    {
-        return Ok(false);
-    }
-    let queue_pending = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT EXISTS(SELECT 1 FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE})"
-    ))
-    .fetch_one(pool)
+    if !prompt_cache_conversation_marker_exists_on_connection(
+        connection,
+        PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME,
+    )
     .await?
-        != 0;
-    Ok(!queue_pending)
+    {
+        return Ok(false);
+    }
+    if !prompt_cache_conversation_marker_exists_on_connection(
+        connection,
+        PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
+    Ok(!prompt_cache_conversation_refresh_queue_has_rows_on_connection(connection).await?)
+}
+
+pub(crate) async fn prompt_cache_conversation_materialization_is_complete(
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    let mut transaction = pool.begin().await?;
+    let complete =
+        prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+            .await?;
+    transaction.commit().await?;
+    Ok(complete)
 }
 
 fn prompt_cache_conversation_materialization_budget_exhausted(

@@ -5827,14 +5827,6 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         topic: &SubscriptionTopic,
     ) -> Result<(BuiltSubscriptionTopicPayload, PromptCacheBaselineBuild), ApiError> {
-        if !prompt_cache_conversation_materialization_is_complete(&state.pool)
-            .await
-            .map_err(ApiError::from)?
-        {
-            return Err(ApiError::unavailable(anyhow!(
-                "prompt-cache conversation history is still materializing"
-            )));
-        }
         if let SubscriptionTopic::DashboardWorkingConversationsCurrent {
             page_size,
             recent_invocation_limit,
@@ -5843,6 +5835,16 @@ impl SubscriptionHub {
         } = topic
         {
             let mut transaction = state.pool.begin().await?;
+            if !prompt_cache_conversation_materialization_is_complete_on_connection(
+                transaction.as_mut(),
+            )
+            .await
+            .map_err(ApiError::from)?
+            {
+                return Err(ApiError::unavailable(anyhow!(
+                    "prompt-cache conversation history is still materializing"
+                )));
+            }
             let baseline_row_id =
                 sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                     .fetch_one(transaction.as_mut())

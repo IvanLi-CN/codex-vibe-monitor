@@ -80,12 +80,15 @@ pub(crate) fn append_working_set_blocked_binding_filter<'a>(
     query.push(")");
 }
 
-pub(crate) async fn query_prompt_cache_conversation_aggregates(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_aggregates<'e, E>(
+    executor: E,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
     limit: i64,
-) -> Result<Vec<PromptCacheConversationAggregateRow>> {
+) -> Result<Vec<PromptCacheConversationAggregateRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH active AS (\
             SELECT prompt_cache_key, MIN(first_seen_at) AS first_seen_24h \
@@ -127,16 +130,19 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates(
 
     query
         .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }
 
-pub(crate) async fn query_active_prompt_cache_conversation_count(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_active_prompt_cache_conversation_count<'e, E>(
+    executor: E,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
-) -> Result<i64> {
+) -> Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
          FROM prompt_cache_rollup_hourly \
@@ -148,15 +154,18 @@ pub(crate) async fn query_active_prompt_cache_conversation_count(
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
     Ok(count)
 }
 
-pub(crate) async fn query_working_prompt_cache_conversation_count(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_working_prompt_cache_conversation_count<'e, E>(
+    executor: E,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
-) -> Result<i64> {
+) -> Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(match source_scope {
         InvocationSourceScope::All => {
             "SELECT COUNT(*) AS count \
@@ -186,7 +195,7 @@ pub(crate) async fn query_working_prompt_cache_conversation_count(
         ),
     }
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
     Ok(count)
 }
 
@@ -342,13 +351,16 @@ where
         .collect())
 }
 
-pub(crate) async fn query_prompt_cache_conversation_hidden_count(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_conversation_hidden_count<'e, E>(
+    executor: E,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
     requested_limit: i64,
     selected_active_count: i64,
-) -> Result<i64> {
+) -> Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     if requested_limit <= 0 {
         return Ok(0);
     }
@@ -408,16 +420,19 @@ pub(crate) async fn query_prompt_cache_conversation_hidden_count(
         .push_bind(requested_limit)
         .push("))");
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
     Ok(count)
 }
 
-pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_prompt_cache_working_conversation_aggregates<'e, E>(
+    executor: E,
     range_start_bound: &str,
     source_scope: InvocationSourceScope,
     limit: i64,
-) -> Result<Vec<PromptCacheConversationAggregateRow>> {
+) -> Result<Vec<PromptCacheConversationAggregateRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
             prompt_cache_key, \
@@ -478,7 +493,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
 
     query
         .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
 }

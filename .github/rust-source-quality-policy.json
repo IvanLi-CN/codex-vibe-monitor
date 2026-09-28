@@ -33,7 +33,7 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24011,
+      "line_budget": 24013,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
@@ -147,7 +147,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 8783,
+      "line_budget": 8902,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -195,7 +195,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6201,
+      "line_budget": 6248,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {

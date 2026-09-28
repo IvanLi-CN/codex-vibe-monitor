@@ -158,9 +158,17 @@ async fn ensure_schema_defers_prompt_cache_conversation_materialization_to_start
 
 #[tokio::test]
 async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_new_keys() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+    let temp_dir = make_temp_test_dir("prompt-cache-conversation-materialization-restart");
+    let db_path = temp_dir.join("state.db");
+    let db_url = test_sqlite_url_for_path(&db_path);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(
+            build_sqlite_connect_options(&db_url, Duration::from_secs(5))
+                .expect("build sqlite options"),
+        )
         .await
-        .expect("in-memory sqlite");
+        .expect("file-backed sqlite");
     sqlx::query(&codex_invocations_create_sql("codex_invocations"))
         .execute(&pool)
         .await
@@ -206,9 +214,21 @@ async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_
     assert!(checkpoint.1 > 0);
     assert_eq!(checkpoint.2.as_deref(), Some("checkpoint-a"));
 
-    insert_invocation(&pool, "checkpoint-c", "checkpoint-c").await;
+    pool.close().await;
+    let resumed_pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(
+            build_sqlite_connect_options(&db_url, Duration::from_secs(5))
+                .expect("build resumed sqlite options"),
+        )
+        .await
+        .expect("reopen file-backed sqlite after checkpoint");
+    ensure_schema(&resumed_pool)
+        .await
+        .expect("restart should preserve prompt-cache structure");
+    insert_invocation(&resumed_pool, "checkpoint-c", "checkpoint-c").await;
     for _ in 0..24 {
-        let outcome = run_prompt_cache_conversations_materialization(&pool, 1, None)
+        let outcome = run_prompt_cache_conversations_materialization(&resumed_pool, 1, None)
             .await
             .expect("resume prompt-cache materialization");
         if outcome.complete {
@@ -217,32 +237,131 @@ async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_
     }
 
     assert!(
-        prompt_cache_conversation_materialization_is_complete(&pool)
+        prompt_cache_conversation_materialization_is_complete(&resumed_pool)
             .await
             .expect("check completed materialization")
     );
     let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
-        .fetch_one(&pool)
+        .fetch_one(&resumed_pool)
         .await
         .expect("count materialized identities");
     assert_eq!(identity_count, 3);
     let total_requests: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
     )
-    .fetch_one(&pool)
+    .fetch_one(&resumed_pool)
     .await
     .expect("sum materialized statistics");
     assert_eq!(total_requests, 3);
     let queue_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue")
-            .fetch_one(&pool)
+            .fetch_one(&resumed_pool)
             .await
             .expect("count drained refresh queue");
     assert_eq!(queue_count, 0);
-    let resumed = run_prompt_cache_conversations_materialization(&pool, 1, None)
+    let resumed = run_prompt_cache_conversations_materialization(&resumed_pool, 1, None)
         .await
         .expect("rerun completed materialization");
     assert!(resumed.complete);
+    resumed_pool.close().await;
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_read_snapshot_keeps_completeness_with_aggregate_reads() {
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "prompt-cache-conversation-read-snapshot",
+        Duration::from_secs(5),
+    )
+    .await;
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
+
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .expect("begin prompt-cache aggregate read snapshot");
+    assert!(
+        prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+            .await
+            .expect("check prompt-cache completeness in read transaction")
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('snapshot-new-invocation', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "snapshot-new-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("commit concurrent prompt-cache invocation");
+
+    assert!(
+        prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+            .await
+            .expect("recheck completeness on the aggregate read snapshot")
+    );
+    let snapshot_queue_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue")
+            .fetch_one(transaction.as_mut())
+            .await
+            .expect("read prompt-cache queue on the aggregate snapshot");
+    assert_eq!(snapshot_queue_count, 0);
+    transaction
+        .rollback()
+        .await
+        .expect("rollback prompt-cache read snapshot");
+
+    assert!(
+        !prompt_cache_conversation_materialization_is_complete(&state.pool)
+            .await
+            .expect("check post-write prompt-cache completeness")
+    );
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn prompt_cache_subscription_baseline_fails_closed_while_refresh_queue_is_pending() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('pending-subscription-read', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "pending-subscription-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert pending subscription invocation");
+
+    let descriptor = SubscriptionTopicDescriptor {
+        topic: "dashboard.working-conversations.current".to_string(),
+        params: BTreeMap::from([
+            ("pageSize".to_string(), "20".to_string()),
+            ("recentInvocationLimit".to_string(), "16".to_string()),
+        ]),
+    };
+    let prepared = state
+        .subscription_hub
+        .prepare_connection(state.clone(), vec![descriptor], Vec::new())
+        .await
+        .expect("prepare subscription unavailable envelope");
+    assert_eq!(prepared.outcomes.len(), 1);
+    assert_eq!(
+        prepared.outcomes[0].disposition,
+        TopicInitDisposition::Unavailable
+    );
+    assert_eq!(prepared.initial.len(), 1);
 }
 
 #[tokio::test]

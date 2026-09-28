@@ -1051,6 +1051,53 @@ async fn health_check_reports_starting_until_startup_is_ready() {
 }
 
 #[tokio::test]
+async fn http_readiness_is_published_before_prompt_cache_materialization_completes() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('readiness-pending-invocation', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "readiness-pending-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert readiness migration fixture");
+    assert!(
+        !prompt_cache_conversation_materialization_is_complete(&state.pool)
+            .await
+            .expect("check pending prompt-cache materialization")
+    );
+
+    state.startup_ready.store(false, Ordering::Release);
+    let hydration_handle =
+        publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
+            state.clone(),
+            Instant::now(),
+            Duration::from_secs(30),
+        );
+    let response = health_check(State(state.clone())).await.into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !prompt_cache_conversation_materialization_is_complete(&state.pool)
+            .await
+            .expect("readiness must not imply prompt-cache materialization completion")
+    );
+
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), hydration_handle)
+        .await
+        .expect("startup hydration should stop after readiness test shutdown")
+        .expect("startup hydration should join after readiness test shutdown");
+    state.pool.close().await;
+}
+
+#[tokio::test]
 async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressure() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "startup-hot-read-readiness-pressure",
