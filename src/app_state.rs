@@ -1,5 +1,31 @@
 use super::*;
 
+mod dashboard;
+mod invocation_store;
+
+use dashboard::DashboardRuntimeProjection;
+pub(crate) use dashboard::{
+    DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE, DASHBOARD_RUNTIME_PROJECTION_COALESCE,
+    DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE, DashboardLiveProjection,
+    DashboardNetworkProjectionCapture, DashboardProjectionCapture,
+    DashboardProjectionPublishWindow, DashboardProjectionSlice, DashboardRuntimeBaselineRecord,
+    DashboardRuntimeNetworkOpenBucketBaseline, DashboardRuntimeProjectionBaseline,
+    DashboardRuntimeTopologyCounterSnapshot, DashboardTerminalProjectionCapture,
+};
+#[cfg(test)]
+pub(crate) use dashboard::{
+    DashboardProjectionSliceCounterSnapshot, dashboard_current_snapshot_content_eq,
+    empty_dashboard_live_core,
+};
+#[cfg(test)]
+pub(crate) use invocation_store::PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE;
+use invocation_store::RuntimeInvocationStore;
+pub(crate) use invocation_store::{
+    PromptCacheRuntimeProjection, RuntimeInvocationKey, RuntimeInvocationStoreRemoveOutcome,
+    RuntimeInvocationStoreShutdownSummary, RuntimeInvocationStoreUpsertOutcome,
+    runtime_store_record_is_terminal,
+};
+
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingRuntimeCache {
     /// Monotonically changes whenever a routing write publishes a new snapshot.
@@ -204,77 +230,6 @@ impl PoolAccountSelectionRuntime {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub(crate) struct RuntimeInvocationKey {
-    pub(crate) invoke_id: String,
-    pub(crate) occurred_at: String,
-}
-
-impl RuntimeInvocationKey {
-    pub(crate) fn new(invoke_id: impl Into<String>, occurred_at: impl Into<String>) -> Self {
-        Self {
-            invoke_id: invoke_id.into(),
-            occurred_at: occurred_at.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RuntimeInvocationEntry {
-    pub(crate) record: ApiInvocation,
-    pub(crate) updated_at: Instant,
-}
-
-/// Typed data needed by the active Prompt Cache projection. This deliberately excludes the
-/// complete runtime record and its raw/detail fields.
-#[derive(Debug, Clone)]
-pub(crate) struct PromptCacheRuntimeProjection {
-    pub(crate) row_id: i64,
-    pub(crate) prompt_cache_key: Option<String>,
-    pub(crate) sticky_key: Option<String>,
-    pub(crate) preview: PromptCacheConversationInvocationPreviewResponse,
-}
-
-impl PromptCacheRuntimeProjection {
-    pub(crate) fn from_record(record: &ApiInvocation) -> Option<Self> {
-        let prompt_cache_key =
-            normalize_trimmed_optional_string_local(record.prompt_cache_key.clone());
-        let sticky_key = normalize_trimmed_optional_string_local(record.sticky_key.clone());
-        let preview_key = prompt_cache_key.clone().or_else(|| sticky_key.clone())?;
-        Some(Self {
-            row_id: record.id,
-            prompt_cache_key,
-            sticky_key,
-            preview: prompt_cache_invocation_preview_from_runtime_record(record, preview_key),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RuntimeInvocationStoreUpsertOutcome {
-    pub(crate) running_count: usize,
-    pub(crate) pruned_count: usize,
-    pub(crate) skipped_terminal: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RuntimeInvocationStoreShutdownSummary {
-    pub(crate) running_count: usize,
-    pub(crate) oldest_age_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RuntimeInvocationStoreRemoveOutcome {
-    pub(crate) removed: bool,
-    pub(crate) already_terminal: bool,
-}
-
-pub(crate) const DASHBOARD_RUNTIME_PROJECTION_COALESCE: Duration = Duration::from_millis(250);
-pub(crate) const DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE: Duration = Duration::from_secs(1);
-pub(crate) const DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE: Duration = Duration::from_secs(5);
-const DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING: usize = 10_000;
-const DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeProjectionMode {
     Auto,
@@ -313,338 +268,6 @@ impl RuntimeProjectionMode {
             Self::Auto => "auto",
             Self::Legacy => "legacy",
         }
-    }
-}
-
-#[derive(Debug)]
-struct DashboardRuntimeProjectionState {
-    dirty_generation: u64,
-    pending_deadline: Option<Instant>,
-    network_dirty_generation: u64,
-    pending_network_deadline: Option<Instant>,
-    terminal_dirty_generation: u64,
-    pending_terminal_deadline: Option<Instant>,
-    terminal_published_generation: u64,
-    current_revision: u64,
-    network_revision: u64,
-    terminal_revision: u64,
-    terminal_pending_delta_bytes: usize,
-    terminal_pending_deltas: VecDeque<DashboardActivityTerminalDelta>,
-    last_good: Option<DashboardActivityLiveSnapshot>,
-    network_last_good: Option<DashboardNetworkProjectionSlice>,
-    legacy_last_good: Option<DashboardActivityLiveSnapshot>,
-    last_good_at: Option<Instant>,
-    last_snapshot_origin: Option<&'static str>,
-    degraded_reason: Option<&'static str>,
-    reconcile_error: Option<&'static str>,
-    last_reconcile_defer_reason: Option<&'static str>,
-    persistence_baseline: Option<DashboardRuntimeProjectionBaseline>,
-    baseline_records: HashMap<RuntimeInvocationKey, DashboardRuntimeBaselineRecord>,
-    projection_records: HashMap<RuntimeInvocationKey, DashboardRuntimeBaselineRecord>,
-    live_core: Option<DashboardActivityLiveSnapshot>,
-    source_scope: InvocationSourceScope,
-    memory_ready: bool,
-}
-
-impl Default for DashboardRuntimeProjectionState {
-    fn default() -> Self {
-        Self {
-            dirty_generation: 0,
-            pending_deadline: None,
-            network_dirty_generation: 0,
-            pending_network_deadline: None,
-            terminal_dirty_generation: 0,
-            pending_terminal_deadline: None,
-            terminal_published_generation: 0,
-            current_revision: 0,
-            network_revision: 0,
-            terminal_revision: 0,
-            terminal_pending_delta_bytes: 0,
-            terminal_pending_deltas: VecDeque::new(),
-            last_good: None,
-            network_last_good: None,
-            legacy_last_good: None,
-            last_good_at: None,
-            last_snapshot_origin: None,
-            degraded_reason: None,
-            reconcile_error: None,
-            last_reconcile_defer_reason: None,
-            persistence_baseline: None,
-            baseline_records: HashMap::new(),
-            projection_records: HashMap::new(),
-            live_core: None,
-            source_scope: InvocationSourceScope::All,
-            memory_ready: false,
-        }
-    }
-}
-
-fn empty_dashboard_live_core() -> DashboardActivityLiveSnapshot {
-    DashboardActivityLiveSnapshot {
-        revision: 0,
-        generated_at: String::new(),
-        in_progress_invocation_count: 0,
-        in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
-        retry_invocation_count: 0,
-        in_progress_wait_sum_ms: 0.0,
-        in_progress_wait_sample_count: 0,
-        network_live_bucket: None,
-        network_realtime_rate: None,
-        accounts: Vec::new(),
-    }
-}
-
-fn dashboard_projection_record_from_invocation(
-    key: RuntimeInvocationKey,
-    record: &ApiInvocation,
-    previous: Option<&DashboardRuntimeBaselineRecord>,
-) -> Option<DashboardRuntimeBaselineRecord> {
-    if !matches!(
-        normalized_runtime_text(record.status.as_deref()).as_str(),
-        "running" | "pending"
-    ) {
-        return None;
-    }
-    let is_retry = record.pool_attempt_count.unwrap_or_default() > 1
-        || previous.is_some_and(|record| record.is_retry);
-    Some(DashboardRuntimeBaselineRecord {
-        key,
-        upstream_account_id: record
-            .upstream_account_id
-            .or_else(|| previous.and_then(|record| record.upstream_account_id)),
-        upstream_account_name: normalize_trimmed_optional_string_local(
-            record.upstream_account_name.clone(),
-        )
-        .or_else(|| previous.and_then(|record| record.upstream_account_name.clone())),
-        is_retry,
-        live_phase: runtime_record_live_phase_with_retry(record, is_retry).map(str::to_string),
-        wait_ms: normalized_wait_ms(record.t_upstream_ttfb_ms),
-    })
-}
-
-fn update_dashboard_live_core(
-    core: &mut DashboardActivityLiveSnapshot,
-    record: &DashboardRuntimeBaselineRecord,
-    add: bool,
-) {
-    let delta = if add { 1 } else { -1 };
-    core.in_progress_invocation_count = (core.in_progress_invocation_count + delta).max(0);
-    if add {
-        core.in_progress_phase_counts
-            .increment_phase_name(record.live_phase.as_deref());
-    } else {
-        core.in_progress_phase_counts
-            .decrement_phase_name(record.live_phase.as_deref());
-    }
-    if record.is_retry {
-        core.retry_invocation_count = (core.retry_invocation_count + delta).max(0);
-    }
-    if let Some(wait_ms) = normalized_wait_ms(record.wait_ms) {
-        core.in_progress_wait_sum_ms =
-            (core.in_progress_wait_sum_ms + if add { wait_ms } else { -wait_ms }).max(0.0);
-        core.in_progress_wait_sample_count = (core.in_progress_wait_sample_count + delta).max(0);
-    }
-
-    let account_key = record
-        .upstream_account_id
-        .map(|id| format!("upstream:{id}"))
-        .unwrap_or_else(|| "unassigned".to_string());
-    let account_index = core
-        .accounts
-        .iter()
-        .position(|account| account.account_key == account_key);
-    let account_index = match (account_index, add) {
-        (Some(index), _) => index,
-        (None, true) => {
-            core.accounts.push(DashboardActivityLiveAccount {
-                account_key,
-                upstream_account_id: record.upstream_account_id,
-                upstream_account_name: record.upstream_account_name.clone(),
-                in_progress_invocation_count: 0,
-                in_progress_phase_counts: InvocationPhaseCountsResponse::default(),
-                retry_invocation_count: 0,
-                in_progress_wait_sum_ms: 0.0,
-                in_progress_wait_sample_count: 0,
-                upload_bytes_per_second: 0.0,
-                download_bytes_per_second: 0.0,
-                network_live_bucket: None,
-            });
-            core.accounts.len() - 1
-        }
-        (None, false) => return,
-    };
-    let account = &mut core.accounts[account_index];
-    if account.upstream_account_name.is_none() {
-        account.upstream_account_name = record.upstream_account_name.clone();
-    }
-    account.in_progress_invocation_count = (account.in_progress_invocation_count + delta).max(0);
-    if add {
-        account
-            .in_progress_phase_counts
-            .increment_phase_name(record.live_phase.as_deref());
-    } else {
-        account
-            .in_progress_phase_counts
-            .decrement_phase_name(record.live_phase.as_deref());
-    }
-    if record.is_retry {
-        account.retry_invocation_count = (account.retry_invocation_count + delta).max(0);
-    }
-    if let Some(wait_ms) = normalized_wait_ms(record.wait_ms) {
-        account.in_progress_wait_sum_ms =
-            (account.in_progress_wait_sum_ms + if add { wait_ms } else { -wait_ms }).max(0.0);
-        account.in_progress_wait_sample_count =
-            (account.in_progress_wait_sample_count + delta).max(0);
-    }
-    if !add && account.in_progress_invocation_count == 0 {
-        core.accounts.swap_remove(account_index);
-    }
-}
-
-fn mark_dashboard_state_dirty(
-    dashboard: &mut DashboardRuntimeProjectionState,
-    _trigger: &'static str,
-    now: Instant,
-) {
-    dashboard.dirty_generation = dashboard.dirty_generation.saturating_add(1);
-    dashboard.memory_ready = true;
-    if dashboard.pending_deadline.is_none() {
-        dashboard.pending_deadline = Some(now + DASHBOARD_RUNTIME_PROJECTION_COALESCE);
-    }
-}
-
-fn mark_dashboard_projection_slice_dirty(
-    generation: &mut u64,
-    deadline: &mut Option<Instant>,
-    now: Instant,
-    cadence: Duration,
-) {
-    *generation = generation.saturating_add(1);
-    if deadline.is_none() {
-        *deadline = Some(now + cadence);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DashboardRuntimeBaselineRecord {
-    pub(crate) key: RuntimeInvocationKey,
-    pub(crate) upstream_account_id: Option<i64>,
-    pub(crate) upstream_account_name: Option<String>,
-    pub(crate) is_retry: bool,
-    pub(crate) live_phase: Option<String>,
-    pub(crate) wait_ms: Option<f64>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DashboardRuntimeProjectionBaseline {
-    pub(crate) records: Vec<DashboardRuntimeBaselineRecord>,
-    pub(crate) source_scope: InvocationSourceScope,
-    pub(crate) network_open_buckets:
-        HashMap<DashboardNetworkScopeKey, DashboardRuntimeNetworkOpenBucketBaseline>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DashboardRuntimeNetworkOpenBucketBaseline {
-    pub(crate) bucket_start: DateTime<Utc>,
-    pub(crate) bucket_end: DateTime<Utc>,
-    pub(crate) baseline_totals: DashboardNetworkByteTotals,
-    pub(crate) memory_totals_at_install: DashboardNetworkByteTotals,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DashboardProjectionPublishWindow {
-    pub(crate) slice: DashboardProjectionSlice,
-    pub(crate) deadline: Instant,
-    pub(crate) generation: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DashboardProjectionSlice {
-    Current,
-    Network,
-    Terminal,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DashboardProjectionCapture {
-    pub(crate) snapshot: DashboardActivityLiveSnapshot,
-    pub(crate) changed: bool,
-    pub(crate) snapshot_origin: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DashboardNetworkProjectionCapture {
-    pub(crate) slice: DashboardNetworkProjectionSlice,
-    pub(crate) changed: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DashboardTerminalProjectionCapture {
-    pub(crate) revision: u64,
-    pub(crate) deltas: Vec<DashboardActivityTerminalDelta>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DashboardProjectionSliceCounterSnapshot {
-    pub(crate) build_count: u64,
-    pub(crate) revision_count: u64,
-    pub(crate) cadence_miss_count: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DashboardRuntimeTopologyCounterSnapshot {
-    pub(crate) current: DashboardProjectionSliceCounterSnapshot,
-    pub(crate) network: DashboardProjectionSliceCounterSnapshot,
-    pub(crate) terminal: DashboardProjectionSliceCounterSnapshot,
-}
-
-#[derive(Debug, Default)]
-struct DashboardProjectionSliceCounters {
-    build_count: AtomicU64,
-    revision_count: AtomicU64,
-    cadence_miss_count: AtomicU64,
-}
-
-impl DashboardProjectionSliceCounters {
-    fn snapshot(&self) -> DashboardProjectionSliceCounterSnapshot {
-        DashboardProjectionSliceCounterSnapshot {
-            build_count: self.build_count.load(Ordering::Relaxed),
-            revision_count: self.revision_count.load(Ordering::Relaxed),
-            cadence_miss_count: self.cadence_miss_count.load(Ordering::Relaxed),
-        }
-    }
-
-    #[cfg(test)]
-    fn reset(&self) {
-        self.build_count.store(0, Ordering::Relaxed);
-        self.revision_count.store(0, Ordering::Relaxed);
-        self.cadence_miss_count.store(0, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug, Default)]
-struct DashboardRuntimeTopologyCounters {
-    current: DashboardProjectionSliceCounters,
-    network: DashboardProjectionSliceCounters,
-    terminal: DashboardProjectionSliceCounters,
-}
-
-impl DashboardRuntimeTopologyCounters {
-    fn snapshot(&self) -> DashboardRuntimeTopologyCounterSnapshot {
-        DashboardRuntimeTopologyCounterSnapshot {
-            current: self.current.snapshot(),
-            network: self.network.snapshot(),
-            terminal: self.terminal.snapshot(),
-        }
-    }
-
-    #[cfg(test)]
-    fn reset(&self) {
-        self.current.reset();
-        self.network.reset();
-        self.terminal.reset();
     }
 }
 
@@ -688,21 +311,16 @@ struct RequestPipelineLastState {
 
 #[derive(Debug)]
 pub(crate) struct RuntimeProjectionHub {
-    pub(crate) inner: std::sync::Mutex<ProxyRuntimeInvocationStoreInner>,
+    invocation_store: RuntimeInvocationStore,
     mode: RuntimeProjectionMode,
-    dashboard_network_speed_cache: std::sync::OnceLock<Arc<DashboardNetworkSpeedCache>>,
-    dashboard: std::sync::Mutex<DashboardRuntimeProjectionState>,
-    dashboard_publish_notify: tokio::sync::Notify,
+    dashboard: DashboardRuntimeProjection,
     live_path_db_read_count: AtomicU64,
     build_count: AtomicU64,
-    dashboard_topology_counters: DashboardRuntimeTopologyCounters,
     producer_running: AtomicBool,
     request_semantic_parse_count: AtomicU64,
     request_whole_body_materialization_count: AtomicU64,
     request_rewrite_buffer_peak_bytes: AtomicU64,
     request_pipeline_last: std::sync::Mutex<RequestPipelineLastState>,
-    #[cfg(test)]
-    full_record_clone_count: AtomicU64,
 }
 
 pub(crate) type ProxyRuntimeInvocationStore = RuntimeProjectionHub;
@@ -716,21 +334,16 @@ impl Default for RuntimeProjectionHub {
 impl RuntimeProjectionHub {
     pub(crate) fn new(mode: RuntimeProjectionMode) -> Self {
         Self {
-            inner: std::sync::Mutex::new(ProxyRuntimeInvocationStoreInner::default()),
+            invocation_store: RuntimeInvocationStore::default(),
             mode,
-            dashboard_network_speed_cache: std::sync::OnceLock::new(),
-            dashboard: std::sync::Mutex::new(DashboardRuntimeProjectionState::default()),
-            dashboard_publish_notify: tokio::sync::Notify::new(),
+            dashboard: DashboardRuntimeProjection::default(),
             live_path_db_read_count: AtomicU64::new(0),
             build_count: AtomicU64::new(0),
-            dashboard_topology_counters: DashboardRuntimeTopologyCounters::default(),
             producer_running: AtomicBool::new(false),
             request_semantic_parse_count: AtomicU64::new(0),
             request_whole_body_materialization_count: AtomicU64::new(0),
             request_rewrite_buffer_peak_bytes: AtomicU64::new(0),
             request_pipeline_last: std::sync::Mutex::new(RequestPipelineLastState::default()),
-            #[cfg(test)]
-            full_record_clone_count: AtomicU64::new(0),
         }
     }
 
@@ -742,693 +355,171 @@ impl RuntimeProjectionHub {
         &self,
         cache: Arc<DashboardNetworkSpeedCache>,
     ) -> Result<()> {
-        if let Some(existing) = self.dashboard_network_speed_cache.get() {
-            return if Arc::ptr_eq(existing, &cache) {
-                Ok(())
-            } else {
-                Err(anyhow!(
-                    "runtime projection hub is already bound to another dashboard network cache"
-                ))
-            };
-        }
-        self.dashboard_network_speed_cache
-            .set(cache)
-            .map_err(|_| anyhow!("dashboard network speed cache is already bound"))
+        self.dashboard.bind_network_speed_cache(cache)
     }
 
     pub(crate) fn dashboard_live_projection(&self) -> DashboardLiveProjection<'_> {
-        DashboardLiveProjection { hub: self }
-    }
-
-    fn update_dashboard_runtime_record(
-        &self,
-        key: RuntimeInvocationKey,
-        record: Option<&ApiInvocation>,
-        trigger: &'static str,
-    ) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        if record.is_none() {
-            dashboard.baseline_records.remove(&key);
-        }
-        let previous = dashboard.projection_records.remove(&key);
-        if let Some(previous) = previous.as_ref() {
-            update_dashboard_live_core(
-                dashboard
-                    .live_core
-                    .get_or_insert_with(empty_dashboard_live_core),
-                previous,
-                false,
-            );
-        }
-        let next = record.and_then(|record| {
-            if dashboard.source_scope == InvocationSourceScope::ProxyOnly
-                && record.source != SOURCE_PROXY
-            {
-                None
-            } else {
-                dashboard_projection_record_from_invocation(key.clone(), record, previous.as_ref())
-            }
-        });
-        if let Some(next) = next {
-            update_dashboard_live_core(
-                dashboard
-                    .live_core
-                    .get_or_insert_with(empty_dashboard_live_core),
-                &next,
-                true,
-            );
-            dashboard.projection_records.insert(key, next);
-        }
-        dashboard
-            .live_core
-            .get_or_insert_with(empty_dashboard_live_core)
-            .accounts
-            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        mark_dashboard_state_dirty(&mut dashboard, trigger, Instant::now());
-        self.dashboard_publish_notify.notify_one();
+        self.dashboard.live_projection()
     }
 
     fn sync_dashboard_runtime_key(&self, key: &RuntimeInvocationKey, trigger: &'static str) {
-        let Ok(runtime) = self.inner.lock() else {
+        let Ok(runtime) = self.invocation_store.lock() else {
             return;
         };
         let record = runtime.records.get(key).map(|entry| &entry.record);
-        self.update_dashboard_runtime_record(key.clone(), record, trigger);
+        self.dashboard
+            .update_runtime_record(key.clone(), record, trigger);
     }
 
     fn rebuild_dashboard_runtime_records(&self, trigger: &'static str) {
-        let Ok(runtime) = self.inner.lock() else {
+        let Ok(runtime) = self.invocation_store.lock() else {
             return;
         };
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        let source_scope = dashboard.source_scope;
-        let mut records = dashboard.baseline_records.clone();
-        for key in runtime.terminal_tombstones.keys() {
-            records.remove(key);
-        }
-        for key in runtime.projection_tombstones.keys() {
-            records.remove(key);
-        }
-        for (key, entry) in &runtime.records {
-            if runtime.terminal_tombstones.contains_key(key) {
-                records.remove(key);
-                continue;
-            }
-            if source_scope == InvocationSourceScope::ProxyOnly
-                && entry.record.source != SOURCE_PROXY
-            {
-                continue;
-            }
-            let previous = records.get(key);
-            match dashboard_projection_record_from_invocation(key.clone(), &entry.record, previous)
-            {
-                Some(projected) => {
-                    records.insert(key.clone(), projected);
-                }
-                None => {
-                    records.remove(key);
-                }
-            }
-        }
-        let mut core = empty_dashboard_live_core();
-        for record in records.values() {
-            update_dashboard_live_core(&mut core, record, true);
-        }
-        core.accounts
-            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        dashboard.projection_records = records;
-        dashboard.live_core = Some(core);
-        mark_dashboard_state_dirty(&mut dashboard, trigger, Instant::now());
-        self.dashboard_publish_notify.notify_one();
+        self.dashboard.rebuild_runtime_records(&runtime, trigger);
     }
 
     pub(crate) fn mark_dashboard_dirty(&self, trigger: &'static str) {
-        self.mark_dashboard_dirty_at(trigger, Instant::now());
+        self.dashboard.mark_dirty(trigger);
     }
 
-    pub(crate) fn mark_dashboard_dirty_at(&self, _trigger: &'static str, now: Instant) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        mark_dashboard_state_dirty(&mut dashboard, _trigger, now);
-        self.dashboard_publish_notify.notify_one();
+    pub(crate) fn mark_dashboard_dirty_at(&self, trigger: &'static str, now: Instant) {
+        self.dashboard.mark_dirty_at(trigger, now);
     }
 
     pub(crate) fn mark_dashboard_network_dirty(&self) {
-        self.mark_dashboard_network_dirty_at(Instant::now());
+        self.dashboard.mark_network_dirty();
     }
 
     fn mark_dashboard_network_dirty_at(&self, now: Instant) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        let DashboardRuntimeProjectionState {
-            network_dirty_generation,
-            pending_network_deadline,
-            ..
-        } = &mut *dashboard;
-        mark_dashboard_projection_slice_dirty(
-            network_dirty_generation,
-            pending_network_deadline,
-            now,
-            DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE,
-        );
-        self.dashboard_publish_notify.notify_one();
+        self.dashboard.mark_network_dirty_at(now);
     }
 
     fn mark_dashboard_terminal_dirty(&self) {
-        self.mark_dashboard_terminal_dirty_at(Instant::now());
+        self.dashboard.mark_terminal_dirty();
     }
 
     fn mark_dashboard_terminal_dirty_at(&self, now: Instant) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        let DashboardRuntimeProjectionState {
-            terminal_dirty_generation,
-            pending_terminal_deadline,
-            ..
-        } = &mut *dashboard;
-        mark_dashboard_projection_slice_dirty(
-            terminal_dirty_generation,
-            pending_terminal_deadline,
-            now,
-            DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE,
-        );
-        self.dashboard_publish_notify.notify_one();
+        self.dashboard.mark_terminal_dirty_at(now);
     }
 
     pub(crate) async fn wait_for_dashboard_publish_signal(&self) {
-        self.dashboard_publish_notify.notified().await;
+        self.dashboard.wait_for_publish_signal().await;
     }
 
     pub(crate) fn pending_dashboard_deadline(&self) -> Option<Instant> {
-        self.dashboard
-            .lock()
-            .ok()
-            .and_then(|dashboard| dashboard.pending_deadline)
+        self.dashboard.pending_deadline()
     }
 
     pub(crate) fn pending_dashboard_publish_window(
         &self,
     ) -> Option<DashboardProjectionPublishWindow> {
-        let dashboard = self.dashboard.lock().ok()?;
-        [
-            (
-                DashboardProjectionSlice::Current,
-                dashboard.pending_deadline,
-                dashboard.dirty_generation,
-            ),
-            (
-                DashboardProjectionSlice::Network,
-                dashboard.pending_network_deadline,
-                dashboard.network_dirty_generation,
-            ),
-            (
-                DashboardProjectionSlice::Terminal,
-                dashboard.pending_terminal_deadline,
-                dashboard.terminal_dirty_generation,
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(slice, deadline, generation)| {
-            deadline.map(|deadline| DashboardProjectionPublishWindow {
-                slice,
-                deadline,
-                generation,
-            })
-        })
-        .min_by_key(|window| window.deadline)
+        self.dashboard.pending_publish_window()
     }
 
     pub(crate) fn has_pending_dashboard_terminal_publish(&self) -> bool {
-        self.dashboard
-            .lock()
-            .map(|dashboard| dashboard.pending_terminal_deadline.is_some())
-            .unwrap_or(false)
+        self.dashboard.has_pending_terminal_publish()
     }
 
     pub(crate) fn begin_dashboard_publish_window(
         &self,
         window: DashboardProjectionPublishWindow,
     ) -> Option<DashboardProjectionPublishWindow> {
-        let mut dashboard = self.dashboard.lock().ok()?;
-        let generation = match window.slice {
-            DashboardProjectionSlice::Current => {
-                if dashboard.pending_deadline != Some(window.deadline) {
-                    return None;
-                }
-                dashboard.pending_deadline = None;
-                dashboard.dirty_generation
-            }
-            DashboardProjectionSlice::Network => {
-                if dashboard.pending_network_deadline != Some(window.deadline) {
-                    return None;
-                }
-                dashboard.pending_network_deadline = None;
-                dashboard.network_dirty_generation
-            }
-            DashboardProjectionSlice::Terminal => {
-                if dashboard.pending_terminal_deadline != Some(window.deadline) {
-                    return None;
-                }
-                dashboard.pending_terminal_deadline = None;
-                dashboard.terminal_dirty_generation
-            }
-        };
-        Some(DashboardProjectionPublishWindow {
-            slice: window.slice,
-            deadline: window.deadline,
-            generation,
-        })
+        self.dashboard.begin_publish_window(window)
     }
 
     pub(crate) fn complete_dashboard_publish_window(
         &self,
         window: DashboardProjectionPublishWindow,
     ) {
-        if let Ok(dashboard) = self.dashboard.lock() {
-            let generation = match window.slice {
-                DashboardProjectionSlice::Current => dashboard.dirty_generation,
-                DashboardProjectionSlice::Network => dashboard.network_dirty_generation,
-                DashboardProjectionSlice::Terminal => dashboard.terminal_dirty_generation,
-            };
-            debug_assert!(generation >= window.generation);
-        }
+        self.dashboard.complete_publish_window(window);
     }
 
     pub(crate) fn is_memory_ready(&self) -> bool {
-        self.dashboard
-            .lock()
-            .map(|dashboard| dashboard.memory_ready && dashboard.degraded_reason.is_none())
-            .unwrap_or(false)
+        self.dashboard.is_memory_ready()
     }
 
     pub(crate) fn dashboard_generation(&self) -> u64 {
-        self.dashboard
-            .lock()
-            .map(|dashboard| dashboard.dirty_generation)
-            .unwrap_or_default()
+        self.dashboard.generation()
     }
 
     pub(crate) fn capture_memory_snapshot(&self) -> Result<DashboardProjectionCapture> {
-        let candidate = self.dashboard_live_projection().snapshot()?;
         self.build_count.fetch_add(1, Ordering::Relaxed);
-        self.dashboard_topology_counters
-            .current
-            .build_count
-            .fetch_add(1, Ordering::Relaxed);
-        let mut dashboard = self
-            .dashboard
-            .lock()
-            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
-        let changed = dashboard
-            .last_good
-            .as_ref()
-            .is_none_or(|current| !dashboard_current_snapshot_content_eq(current, &candidate));
-        if !changed {
-            let revision = dashboard
-                .last_good
-                .as_ref()
-                .expect("unchanged projection has a last-good snapshot")
-                .revision;
-            let mut snapshot = candidate;
-            snapshot.revision = revision;
-            dashboard.last_good = Some(snapshot.clone());
-            dashboard.memory_ready = true;
-            dashboard.degraded_reason = None;
-            dashboard.last_snapshot_origin = Some("memory");
-            return Ok(DashboardProjectionCapture {
-                snapshot,
-                changed: false,
-                snapshot_origin: "memory",
-            });
-        }
-
-        dashboard.current_revision = dashboard.current_revision.saturating_add(1);
-        let mut snapshot = candidate;
-        snapshot.revision = dashboard.current_revision;
-        self.dashboard_topology_counters
-            .current
-            .revision_count
-            .fetch_add(1, Ordering::Relaxed);
-        dashboard.last_good = Some(snapshot.clone());
-        dashboard.last_good_at = Some(Instant::now());
-        dashboard.last_snapshot_origin = Some("memory");
-        dashboard.degraded_reason = None;
-        dashboard.memory_ready = true;
-        Ok(DashboardProjectionCapture {
-            snapshot,
-            changed: true,
-            snapshot_origin: "memory",
-        })
+        self.dashboard.record_build();
+        self.dashboard.capture_memory_snapshot()
     }
 
     pub(crate) fn capture_network_slice(&self) -> Result<DashboardNetworkProjectionCapture> {
-        let dashboard_network_speed_cache = self
-            .dashboard_network_speed_cache
-            .get()
-            .ok_or_else(|| anyhow!("dashboard network speed cache is not bound"))?;
-        let (network_open_buckets, known_account_ids) = {
-            let dashboard = self
-                .dashboard
-                .lock()
-                .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
-            let network_open_buckets = dashboard
-                .persistence_baseline
-                .as_ref()
-                .map(|baseline| baseline.network_open_buckets.clone())
-                .unwrap_or_default();
-            let known_account_ids = dashboard
-                .network_last_good
-                .as_ref()
-                .map(|slice| {
-                    slice
-                        .accounts
-                        .iter()
-                        .map(|account| account.upstream_account_id)
-                        .collect()
-                })
-                .unwrap_or_default();
-            (network_open_buckets, known_account_ids)
-        };
-        let candidate = DashboardNetworkProjectionSlice::from_memory(
-            dashboard_network_speed_cache.as_ref(),
-            &network_open_buckets,
-            &known_account_ids,
-        );
-        self.dashboard_topology_counters
-            .network
-            .build_count
-            .fetch_add(1, Ordering::Relaxed);
-        let mut dashboard = self
-            .dashboard
-            .lock()
-            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
-        let changed = dashboard
-            .network_last_good
-            .as_ref()
-            .is_none_or(|current| !dashboard_network_slice_content_eq(current, &candidate));
-        if !changed {
-            return Ok(DashboardNetworkProjectionCapture {
-                slice: dashboard
-                    .network_last_good
-                    .clone()
-                    .expect("unchanged network projection has a last-good snapshot"),
-                changed: false,
-            });
-        }
-
-        dashboard.network_revision = dashboard.network_revision.saturating_add(1);
-        let mut snapshot = candidate;
-        snapshot.revision = dashboard.network_revision;
-        self.dashboard_topology_counters
-            .network
-            .revision_count
-            .fetch_add(1, Ordering::Relaxed);
-        dashboard.network_last_good = Some(snapshot.clone());
-        Ok(DashboardNetworkProjectionCapture {
-            slice: snapshot,
-            changed: true,
-        })
+        self.dashboard.capture_network_slice()
     }
 
     pub(crate) fn record_dashboard_terminal_delta(&self, delta: DashboardActivityTerminalDelta) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        if dashboard.terminal_pending_deltas.len() >= DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING
-            || dashboard
-                .terminal_pending_delta_bytes
-                .saturating_add(delta.estimated_bytes)
-                > DASHBOARD_RUNTIME_TERMINAL_MAX_PENDING_BYTES
-        {
-            dashboard.degraded_reason = Some("terminal_slice_hard_limit");
-            tracing::warn!(
-                pending_delta_count = dashboard.terminal_pending_deltas.len(),
-                pending_delta_estimated_bytes = dashboard.terminal_pending_delta_bytes,
-                "dashboard terminal projection slice reached its hard limit"
-            );
-            return;
-        }
-        dashboard.terminal_pending_delta_bytes = dashboard
-            .terminal_pending_delta_bytes
-            .saturating_add(delta.estimated_bytes);
-        dashboard.terminal_pending_deltas.push_back(delta);
-        let now = Instant::now();
-        let DashboardRuntimeProjectionState {
-            terminal_dirty_generation,
-            pending_terminal_deadline,
-            ..
-        } = &mut *dashboard;
-        mark_dashboard_projection_slice_dirty(
-            terminal_dirty_generation,
-            pending_terminal_deadline,
-            now,
-            DASHBOARD_RUNTIME_TERMINAL_PROJECTION_COALESCE,
-        );
-        self.dashboard_publish_notify.notify_one();
+        self.dashboard.record_terminal_delta(delta);
     }
 
     pub(crate) fn discard_dashboard_terminal_delta(&self, invoke_id: &str, occurred_at: &str) {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return;
-        };
-        let mut removed_bytes = 0usize;
-        dashboard.terminal_pending_deltas.retain(|delta| {
-            let retain = delta.invoke_id != invoke_id || delta.occurred_at != occurred_at;
-            if !retain {
-                removed_bytes = removed_bytes.saturating_add(delta.estimated_bytes);
-            }
-            retain
-        });
-        dashboard.terminal_pending_delta_bytes = dashboard
-            .terminal_pending_delta_bytes
-            .saturating_sub(removed_bytes);
+        self.dashboard
+            .discard_terminal_delta(invoke_id, occurred_at);
     }
 
     pub(crate) fn capture_terminal_slice(&self) -> Option<DashboardTerminalProjectionCapture> {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            return None;
-        };
-        self.dashboard_topology_counters
-            .terminal
-            .build_count
-            .fetch_add(1, Ordering::Relaxed);
-        if dashboard.terminal_published_generation == dashboard.terminal_dirty_generation {
-            return None;
-        }
-        dashboard.terminal_published_generation = dashboard.terminal_dirty_generation;
-        let deltas = std::mem::take(&mut dashboard.terminal_pending_deltas)
-            .into_iter()
-            .collect::<Vec<_>>();
-        dashboard.terminal_pending_delta_bytes = 0;
-        if deltas.is_empty() {
-            return None;
-        }
-        dashboard.terminal_revision = dashboard.terminal_revision.saturating_add(1);
-        self.dashboard_topology_counters
-            .terminal
-            .revision_count
-            .fetch_add(1, Ordering::Relaxed);
-        Some(DashboardTerminalProjectionCapture {
-            revision: dashboard.terminal_revision,
-            deltas,
-        })
+        self.dashboard.capture_terminal_slice()
     }
 
     #[cfg(test)]
     pub(crate) fn pending_terminal_slice_count(&self) -> usize {
-        self.dashboard
-            .lock()
-            .map(|dashboard| dashboard.terminal_pending_deltas.len())
-            .unwrap_or_default()
+        self.dashboard.pending_terminal_slice_count()
     }
 
     pub(crate) fn legacy_live_snapshot(
         &self,
-        mut current: DashboardActivityLiveSnapshot,
+        current: DashboardActivityLiveSnapshot,
     ) -> DashboardActivityLiveSnapshot {
-        if let Ok(dashboard) = self.dashboard.lock()
-            && let Some(network) = dashboard.network_last_good.as_ref()
-        {
-            apply_dashboard_network_slice_to_live_snapshot(&mut current, network);
-        }
-        self.commit_legacy_live_snapshot(current)
+        self.dashboard.legacy_live_snapshot(current)
     }
 
     pub(crate) fn legacy_live_snapshot_for_network(
         &self,
         network: &DashboardNetworkProjectionSlice,
     ) -> Option<DashboardActivityLiveSnapshot> {
-        let mut current = self.dashboard.lock().ok()?.last_good.clone()?;
-        apply_dashboard_network_slice_to_live_snapshot(&mut current, network);
-        Some(self.commit_legacy_live_snapshot(current))
-    }
-
-    fn commit_legacy_live_snapshot(
-        &self,
-        mut candidate: DashboardActivityLiveSnapshot,
-    ) -> DashboardActivityLiveSnapshot {
-        let Ok(mut dashboard) = self.dashboard.lock() else {
-            candidate.revision = reserve_dashboard_activity_live_revision();
-            return candidate;
-        };
-        if let Some(previous) = dashboard.legacy_last_good.as_ref()
-            && dashboard_legacy_snapshot_content_eq(previous, &candidate)
-        {
-            return previous.clone();
-        }
-        candidate.revision = reserve_dashboard_activity_live_revision();
-        dashboard.legacy_last_good = Some(candidate.clone());
-        candidate
+        self.dashboard.legacy_live_snapshot_for_network(network)
     }
 
     pub(crate) fn install_persistence_baseline_if_generation(
         &self,
         _snapshot: DashboardActivityLiveSnapshot,
-        mut baseline: DashboardRuntimeProjectionBaseline,
+        baseline: DashboardRuntimeProjectionBaseline,
         snapshot_origin: &'static str,
         expected_generation: u64,
     ) -> Result<Option<DashboardProjectionCapture>> {
-        let mut projection_records = baseline
-            .records
-            .iter()
-            .cloned()
-            .map(|record| (record.key.clone(), record))
-            .collect::<HashMap<_, _>>();
-        let baseline_records = projection_records.clone();
         let runtime = self
-            .inner
+            .invocation_store
             .lock()
             .map_err(|_| anyhow!("runtime invocation store lock is poisoned"))?;
-        for key in runtime.terminal_tombstones.keys() {
-            projection_records.remove(key);
-        }
-        for key in runtime.projection_tombstones.keys() {
-            projection_records.remove(key);
-        }
-        for (key, entry) in &runtime.records {
-            if runtime.terminal_tombstones.contains_key(key) {
-                projection_records.remove(key);
-                continue;
-            }
-            if baseline.source_scope == InvocationSourceScope::ProxyOnly
-                && entry.record.source != SOURCE_PROXY
-            {
-                continue;
-            }
-            let previous = projection_records.get(key);
-            match dashboard_projection_record_from_invocation(key.clone(), &entry.record, previous)
-            {
-                Some(record) => {
-                    projection_records.insert(key.clone(), record);
-                }
-                None => {
-                    projection_records.remove(key);
-                }
-            }
-        }
-        let mut dashboard = self
-            .dashboard
-            .lock()
-            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))?;
-        if dashboard.dirty_generation < expected_generation {
-            tracing::warn!(
-                expected_generation,
-                actual_generation = dashboard.dirty_generation,
-                "rejecting persistence baseline with an impossible generation rollback"
-            );
-            return Ok(None);
-        }
-        let snapshot_origin = if dashboard.dirty_generation > expected_generation {
-            "reconcile_replayed"
-        } else {
-            snapshot_origin
-        };
-        let mut core = empty_dashboard_live_core();
-        for record in projection_records.values() {
-            update_dashboard_live_core(&mut core, record, true);
-        }
-        core.accounts
-            .sort_by(|left, right| left.account_key.cmp(&right.account_key));
-        let mut snapshot = core.clone();
-        let changed = dashboard
-            .last_good
-            .as_ref()
-            .is_none_or(|current| !dashboard_current_snapshot_content_eq(current, &snapshot));
-        let snapshot = if changed {
-            dashboard.current_revision = dashboard.current_revision.saturating_add(1);
-            snapshot.revision = dashboard.current_revision;
-            self.dashboard_topology_counters
-                .current
-                .revision_count
-                .fetch_add(1, Ordering::Relaxed);
-            dashboard.last_good = Some(snapshot.clone());
-            dashboard.last_good_at = Some(Instant::now());
-            snapshot
-        } else {
-            snapshot.revision = dashboard
-                .last_good
-                .as_ref()
-                .expect("unchanged baseline has a last-good snapshot")
-                .revision;
-            dashboard.last_good = Some(snapshot.clone());
-            snapshot
-        };
-        dashboard.last_snapshot_origin = Some(snapshot_origin);
-        dashboard.degraded_reason = None;
-        dashboard.reconcile_error = None;
-        dashboard.last_reconcile_defer_reason = None;
-        dashboard.source_scope = baseline.source_scope;
-        dashboard.baseline_records = baseline_records;
-        dashboard.projection_records = projection_records;
-        dashboard.live_core = Some(core);
-        baseline.records.clear();
-        dashboard.persistence_baseline = Some(baseline);
-        dashboard.memory_ready = false;
-        Ok(Some(DashboardProjectionCapture {
-            snapshot,
-            changed,
+        self.dashboard.install_persistence_baseline_if_generation(
+            baseline,
             snapshot_origin,
-        }))
+            expected_generation,
+            &runtime,
+        )
     }
 
     pub(crate) fn last_good_capture(
         &self,
         snapshot_origin: &'static str,
     ) -> Option<DashboardProjectionCapture> {
-        let mut dashboard = self.dashboard.lock().ok()?;
-        let snapshot = dashboard.last_good.clone()?;
-        dashboard.last_snapshot_origin = Some(snapshot_origin);
-        Some(DashboardProjectionCapture {
-            snapshot,
-            changed: false,
-            snapshot_origin,
-        })
+        self.dashboard.last_good_capture(snapshot_origin)
     }
 
     pub(crate) fn mark_degraded(&self, reason: &'static str) {
-        if let Ok(mut dashboard) = self.dashboard.lock() {
-            dashboard.degraded_reason = Some(reason);
-        }
+        self.dashboard.mark_degraded(reason);
     }
 
     pub(crate) fn record_reconcile_failure(&self, reason: &'static str) {
-        if let Ok(mut dashboard) = self.dashboard.lock() {
-            dashboard.reconcile_error = Some(reason);
-            dashboard.last_reconcile_defer_reason = None;
-        }
+        self.dashboard.record_reconcile_failure(reason);
     }
 
     pub(crate) fn record_reconcile_deferred(&self, reason: &'static str) {
-        if let Ok(mut dashboard) = self.dashboard.lock() {
-            dashboard.last_reconcile_defer_reason = Some(reason);
-        }
+        self.dashboard.record_reconcile_deferred(reason);
     }
 
     pub(crate) fn record_live_path_db_read(&self) {
@@ -1437,41 +528,34 @@ impl RuntimeProjectionHub {
 
     pub(crate) fn record_build(&self) {
         self.build_count.fetch_add(1, Ordering::Relaxed);
-        self.dashboard_topology_counters
-            .current
-            .build_count
-            .fetch_add(1, Ordering::Relaxed);
+        self.dashboard.record_build();
     }
 
     pub(crate) fn record_current_slice_cadence_miss(&self) {
-        self.dashboard_topology_counters
-            .current
-            .cadence_miss_count
-            .fetch_add(1, Ordering::Relaxed);
+        self.dashboard.record_current_slice_cadence_miss();
     }
 
     pub(crate) fn record_network_slice_cadence_miss(&self) {
-        self.dashboard_topology_counters
-            .network
-            .cadence_miss_count
-            .fetch_add(1, Ordering::Relaxed);
+        self.dashboard.record_network_slice_cadence_miss();
     }
 
     pub(crate) fn record_terminal_slice_cadence_miss(&self) {
-        self.dashboard_topology_counters
-            .terminal
-            .cadence_miss_count
-            .fetch_add(1, Ordering::Relaxed);
+        self.dashboard.record_terminal_slice_cadence_miss();
     }
 
     #[cfg(test)]
     pub(crate) fn dashboard_topology_counters(&self) -> DashboardRuntimeTopologyCounterSnapshot {
-        self.dashboard_topology_counters.snapshot()
+        self.dashboard.topology_counters()
     }
 
     #[cfg(test)]
     pub(crate) fn reset_dashboard_topology_counters(&self) {
-        self.dashboard_topology_counters.reset();
+        self.dashboard.reset_topology_counters();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_live_core_for_test(&self, core: DashboardActivityLiveSnapshot) {
+        self.dashboard.set_live_core_for_test(core);
     }
 
     pub(crate) fn set_producer_running(&self, running: bool) {
@@ -1531,22 +615,10 @@ impl RuntimeProjectionHub {
         &self,
         active_subscriber_count: usize,
     ) -> RuntimeProjectionHealthSnapshot {
-        let slice_counters = self.dashboard_topology_counters.snapshot();
-        let dashboard = self.dashboard.lock().ok();
-        let last_good_age_ms = dashboard
-            .as_ref()
-            .and_then(|state| state.last_good_at)
-            .map(|captured_at| captured_at.elapsed().as_millis() as u64);
-        let state = match dashboard.as_ref() {
-            Some(state) if state.degraded_reason.is_some() || state.reconcile_error.is_some() => {
-                "degraded"
-            }
-            Some(state) if state.memory_ready || state.last_good.is_some() => "healthy",
-            _ => "cold",
-        };
+        let projection = self.dashboard.health_snapshot();
         RuntimeProjectionHealthSnapshot {
             mode: self.mode.as_str().to_string(),
-            state: state.to_string(),
+            state: projection.state.to_string(),
             producer_state: if self.producer_running.load(Ordering::Acquire) {
                 "running".to_string()
             } else {
@@ -1555,25 +627,12 @@ impl RuntimeProjectionHub {
             active_subscriber_count: active_subscriber_count as u64,
             live_path_db_read_count: self.live_path_db_read_count.load(Ordering::Relaxed),
             build_count: self.build_count.load(Ordering::Relaxed),
-            revision: dashboard
-                .as_ref()
-                .and_then(|state| state.last_good.as_ref())
-                .map_or(0, |snapshot| snapshot.revision),
-            snapshot_origin: dashboard
-                .as_ref()
-                .and_then(|state| state.last_snapshot_origin)
-                .unwrap_or("none")
-                .to_string(),
-            last_good_age_ms,
-            degraded_reason: dashboard
-                .as_ref()
-                .and_then(|state| state.degraded_reason.or(state.reconcile_error))
-                .map(str::to_string),
-            last_defer_reason: dashboard
-                .as_ref()
-                .and_then(|state| state.last_reconcile_defer_reason)
-                .map(str::to_string),
-            slice_counters,
+            revision: projection.revision,
+            snapshot_origin: projection.snapshot_origin.to_string(),
+            last_good_age_ms: projection.last_good_age_ms,
+            degraded_reason: projection.degraded_reason,
+            last_defer_reason: projection.last_defer_reason,
+            slice_counters: projection.slice_counters,
         }
     }
 
@@ -1581,217 +640,23 @@ impl RuntimeProjectionHub {
         &self,
         snapshot: &mut DashboardActivityLiveSnapshot,
     ) {
-        if let Ok(dashboard) = self.dashboard.lock()
-            && let Some(network) = dashboard.network_last_good.as_ref()
-        {
-            apply_dashboard_network_slice_to_live_snapshot(snapshot, network);
-        }
+        self.dashboard.apply_network_overlay_to_snapshot(snapshot);
     }
-}
 
-pub(crate) struct DashboardLiveProjection<'a> {
-    hub: &'a RuntimeProjectionHub,
-}
-
-impl DashboardLiveProjection<'_> {
-    pub(crate) fn snapshot(&self) -> Result<DashboardActivityLiveSnapshot> {
-        self.hub
-            .dashboard
-            .lock()
-            .map_err(|_| anyhow!("runtime projection state lock is poisoned"))
-            .map(|dashboard| {
-                dashboard
-                    .live_core
-                    .clone()
-                    .unwrap_or_else(empty_dashboard_live_core)
-            })
-    }
-}
-
-fn dashboard_current_snapshot_content_eq(
-    left: &DashboardActivityLiveSnapshot,
-    right: &DashboardActivityLiveSnapshot,
-) -> bool {
-    left.in_progress_invocation_count == right.in_progress_invocation_count
-        && left.in_progress_phase_counts == right.in_progress_phase_counts
-        && left.retry_invocation_count == right.retry_invocation_count
-        && left.in_progress_wait_sum_ms == right.in_progress_wait_sum_ms
-        && left.in_progress_wait_sample_count == right.in_progress_wait_sample_count
-        && left.accounts.len() == right.accounts.len()
-        && left.accounts.iter().all(|left| {
-            right
-                .accounts
-                .iter()
-                .find(|right| right.account_key == left.account_key)
-                .is_some_and(|right| {
-                    left.upstream_account_id == right.upstream_account_id
-                        && left.upstream_account_name == right.upstream_account_name
-                        && left.in_progress_invocation_count == right.in_progress_invocation_count
-                        && left.in_progress_phase_counts == right.in_progress_phase_counts
-                        && left.retry_invocation_count == right.retry_invocation_count
-                        && left.in_progress_wait_sum_ms == right.in_progress_wait_sum_ms
-                        && left.in_progress_wait_sample_count == right.in_progress_wait_sample_count
-                })
-        })
-}
-
-fn dashboard_legacy_snapshot_content_eq(
-    left: &DashboardActivityLiveSnapshot,
-    right: &DashboardActivityLiveSnapshot,
-) -> bool {
-    let mut left = left.clone();
-    let mut right = right.clone();
-    left.revision = 0;
-    right.revision = 0;
-    left.generated_at.clear();
-    right.generated_at.clear();
-    left == right
-}
-
-fn dashboard_network_slice_content_eq(
-    left: &DashboardNetworkProjectionSlice,
-    right: &DashboardNetworkProjectionSlice,
-) -> bool {
-    left.network_live_bucket == right.network_live_bucket
-        && left.network_realtime_rate == right.network_realtime_rate
-        && left.recent == right.recent
-        && left.current_snapshot == right.current_snapshot
-        && left.current_snapshot_by_account == right.current_snapshot_by_account
-        && left.accounts.len() == right.accounts.len()
-        && left.accounts.iter().all(|left| {
-            right
-                .accounts
-                .iter()
-                .find(|right| right.account_key == left.account_key)
-                .is_some_and(|right| {
-                    left.upload_bytes_per_second == right.upload_bytes_per_second
-                        && left.download_bytes_per_second == right.download_bytes_per_second
-                        && left.network_live_bucket == right.network_live_bucket
-                })
-        })
-}
-
-fn apply_dashboard_network_slice_to_live_snapshot(
-    current: &mut DashboardActivityLiveSnapshot,
-    network: &DashboardNetworkProjectionSlice,
-) {
-    current.network_live_bucket = network.network_live_bucket.clone();
-    current.network_realtime_rate = network.network_realtime_rate.clone();
-    for account in &mut current.accounts {
-        let Some(network_account) = network
-            .accounts
-            .iter()
-            .find(|candidate| candidate.account_key == account.account_key)
-        else {
-            account.upload_bytes_per_second = 0.0;
-            account.download_bytes_per_second = 0.0;
-            account.network_live_bucket = None;
-            continue;
-        };
-        account.upload_bytes_per_second = network_account.upload_bytes_per_second;
-        account.download_bytes_per_second = network_account.download_bytes_per_second;
-        account.network_live_bucket = network_account.network_live_bucket.clone();
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ProxyRuntimeInvocationStoreInner {
-    pub(crate) records: HashMap<RuntimeInvocationKey, RuntimeInvocationEntry>,
-    pub(crate) terminal_tombstones: HashMap<RuntimeInvocationKey, Instant>,
-    projection_tombstones: HashMap<RuntimeInvocationKey, Instant>,
-}
-
-pub(crate) const PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE: Duration =
-    Duration::from_secs(6 * 60 * 60);
-pub(crate) const PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS: usize = 10_000;
-pub(crate) const PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS: usize = 50_000;
-
-impl RuntimeProjectionHub {
     pub(crate) fn runtime_record_count(&self) -> usize {
-        self.inner
-            .lock()
-            .map(|guard| guard.records.len())
-            .unwrap_or_default()
+        self.invocation_store.runtime_record_count()
     }
 
     pub(crate) fn memory_estimate(&self) -> MemoryComponentEstimate {
-        let Ok(guard) = self.inner.lock() else {
-            return MemoryComponentEstimate::default();
-        };
-        let record_bytes = guard
-            .records
-            .values()
-            .map(|entry| entry.record.estimated_memory_bytes())
-            .sum::<usize>();
-        let key_bytes = guard
-            .records
-            .keys()
-            .chain(guard.terminal_tombstones.keys())
-            .chain(guard.projection_tombstones.keys())
-            .map(|key| key.invoke_id.capacity() + key.occurred_at.capacity())
-            .sum::<usize>();
-        MemoryComponentEstimate {
-            entries: guard
-                .records
-                .len()
-                .saturating_add(guard.terminal_tombstones.len())
-                .saturating_add(guard.projection_tombstones.len()),
-            bytes: record_bytes.saturating_add(key_bytes).saturating_add(
-                (guard.records.capacity()
-                    + guard.terminal_tombstones.capacity()
-                    + guard.projection_tombstones.capacity())
-                .saturating_mul(std::mem::size_of::<usize>() * 2),
-            ),
-            detail_items: guard.records.len(),
-        }
+        self.invocation_store.memory_estimate()
     }
 
     pub(crate) fn upsert(&self, record: ApiInvocation) -> RuntimeInvocationStoreUpsertOutcome {
-        let now = Instant::now();
         let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
-        let Ok(mut guard) = self.inner.lock() else {
-            return RuntimeInvocationStoreUpsertOutcome {
-                running_count: 0,
-                pruned_count: 0,
-                skipped_terminal: false,
-            };
-        };
-        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        let terminal_overlay_exists = guard
-            .records
-            .get(&key)
-            .is_some_and(|entry| runtime_store_record_is_terminal(&entry.record));
-        if guard.terminal_tombstones.contains_key(&key) || terminal_overlay_exists {
-            let outcome = RuntimeInvocationStoreUpsertOutcome {
-                running_count: guard.records.len(),
-                pruned_count,
-                skipped_terminal: true,
-            };
-            drop(guard);
-            if pruned_count > 0 {
-                self.rebuild_dashboard_runtime_records("runtime_prune");
-            }
-            return outcome;
-        }
-        guard.projection_tombstones.remove(&key);
-        guard.records.insert(
-            key.clone(),
-            RuntimeInvocationEntry {
-                record,
-                updated_at: now,
-            },
-        );
-        let pruned_count =
-            pruned_count + prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        let outcome = RuntimeInvocationStoreUpsertOutcome {
-            running_count: guard.records.len(),
-            pruned_count,
-            skipped_terminal: false,
-        };
-        drop(guard);
-        if pruned_count > 0 {
+        let outcome = self.invocation_store.upsert(record);
+        if outcome.pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
-        } else {
+        } else if !outcome.skipped_terminal {
             self.sync_dashboard_runtime_key(&key, "runtime_upsert");
         }
         outcome
@@ -1801,84 +666,40 @@ impl RuntimeProjectionHub {
         &self,
         record: ApiInvocation,
     ) -> RuntimeInvocationStoreRemoveOutcome {
-        let Ok(mut guard) = self.inner.lock() else {
-            return RuntimeInvocationStoreRemoveOutcome {
-                removed: false,
-                already_terminal: false,
-            };
-        };
-        let now = Instant::now();
         let key = RuntimeInvocationKey::new(record.invoke_id.clone(), record.occurred_at.clone());
-        let already_terminal = guard.terminal_tombstones.contains_key(&key);
-        if already_terminal {
-            let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-            drop(guard);
+        let (outcome, pruned_count) = self.invocation_store.upsert_terminal(record);
+        if outcome.already_terminal {
             if pruned_count > 0 {
                 self.rebuild_dashboard_runtime_records("runtime_prune");
             }
-            return RuntimeInvocationStoreRemoveOutcome {
-                removed: false,
-                already_terminal: true,
-            };
+            return outcome;
         }
-        let removed = guard
-            .records
-            .insert(
-                key.clone(),
-                RuntimeInvocationEntry {
-                    record,
-                    updated_at: now,
-                },
-            )
-            .is_some();
-        guard.terminal_tombstones.insert(key.clone(), now);
-        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        let outcome = RuntimeInvocationStoreRemoveOutcome {
-            removed,
-            already_terminal: false,
-        };
-        drop(guard);
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         } else {
-            self.update_dashboard_runtime_record(key, None, "terminal_delta");
+            self.dashboard
+                .update_runtime_record(key, None, "terminal_delta");
         }
         self.mark_dashboard_terminal_dirty();
         outcome
     }
 
     pub(crate) fn clear_terminal_tombstone(&self, invoke_id: &str, occurred_at: &str) -> bool {
-        let Ok(mut guard) = self.inner.lock() else {
-            return false;
-        };
-        let removed = guard
-            .terminal_tombstones
-            .remove(&RuntimeInvocationKey::new(invoke_id, occurred_at))
-            .is_some();
-        drop(guard);
+        let removed = self
+            .invocation_store
+            .clear_terminal_tombstone(invoke_id, occurred_at);
         if removed {
-            self.sync_dashboard_runtime_key(
-                &RuntimeInvocationKey::new(invoke_id, occurred_at),
-                "terminal_rollback",
-            );
+            let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
+            self.sync_dashboard_runtime_key(&key, "terminal_rollback");
             self.mark_dashboard_terminal_dirty();
         }
         removed
     }
 
     pub(crate) fn contains_terminal(&self, invoke_id: &str, occurred_at: &str) -> bool {
-        let Ok(mut guard) = self.inner.lock() else {
-            return false;
-        };
-        let now = Instant::now();
-        let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
-        let contains_terminal = guard.terminal_tombstones.contains_key(&key)
-            || guard
-                .records
-                .get(&key)
-                .is_some_and(|entry| runtime_store_record_is_terminal(&entry.record));
-        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        drop(guard);
+        let (contains_terminal, pruned_count) = self
+            .invocation_store
+            .contains_terminal(invoke_id, occurred_at);
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         }
@@ -1890,32 +711,13 @@ impl RuntimeProjectionHub {
         invoke_id: &str,
         occurred_at: &str,
     ) -> Option<ApiInvocation> {
-        let Ok(mut guard) = self.inner.lock() else {
-            return None;
-        };
         let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
-        let should_remove = guard
-            .records
-            .get(&key)
-            .is_some_and(|entry| !runtime_store_record_is_terminal(&entry.record));
-        let removed = if should_remove {
-            guard.records.remove(&key).map(|entry| entry.record)
-        } else {
-            None
-        };
+        let (removed, pruned_count) = self
+            .invocation_store
+            .remove_non_terminal(invoke_id, occurred_at);
         if removed.is_some() {
-            guard
-                .projection_tombstones
-                .insert(key.clone(), Instant::now());
-        }
-        let pruned_count = if removed.is_some() {
-            prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now())
-        } else {
-            0
-        };
-        drop(guard);
-        if removed.is_some() {
-            self.update_dashboard_runtime_record(key, None, "runtime_remove");
+            self.dashboard
+                .update_runtime_record(key, None, "runtime_remove");
         }
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
@@ -1924,42 +726,12 @@ impl RuntimeProjectionHub {
     }
 
     pub(crate) fn remove_non_terminal_by_invoke_id(&self, invoke_id: &str) -> Vec<ApiInvocation> {
-        let Ok(mut guard) = self.inner.lock() else {
-            return Vec::new();
-        };
-        let keys = guard
-            .records
-            .iter()
-            .filter(|(key, entry)| {
-                key.invoke_id == invoke_id && !runtime_store_record_is_terminal(&entry.record)
-            })
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        let removed = keys
-            .iter()
-            .filter_map(|key| {
-                guard
-                    .records
-                    .remove(key)
-                    .map(|entry| (key.clone(), entry.record))
-            })
-            .collect::<Vec<_>>();
-        if !removed.is_empty() {
-            let now = Instant::now();
-            for (key, _) in &removed {
-                guard.projection_tombstones.insert(key.clone(), now);
-            }
-        }
-        let pruned_count = if !removed.is_empty() {
-            prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now())
-        } else {
-            0
-        };
-        drop(guard);
-        if !removed.is_empty() {
-            for (key, _) in &removed {
-                self.update_dashboard_runtime_record(key.clone(), None, "runtime_remove");
-            }
+        let (removed, pruned_count) = self
+            .invocation_store
+            .remove_non_terminal_by_invoke_id(invoke_id);
+        for (key, _) in &removed {
+            self.dashboard
+                .update_runtime_record(key.clone(), None, "runtime_remove");
         }
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
@@ -1972,36 +744,22 @@ impl RuntimeProjectionHub {
         invoke_id: &str,
         occurred_at: &str,
     ) -> bool {
-        let Ok(mut guard) = self.inner.lock() else {
-            return false;
-        };
-        let now = Instant::now();
         let key = RuntimeInvocationKey::new(invoke_id, occurred_at);
-        let removed = guard.records.remove(&key).is_some();
-        guard.terminal_tombstones.insert(key.clone(), now);
-        let pruned_count = prune_bounded_runtime_invocation_store_locked(&mut guard, now);
-        drop(guard);
+        let (removed, pruned_count) = self
+            .invocation_store
+            .remove_persisted_terminal_overlay(invoke_id, occurred_at);
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         } else {
-            self.update_dashboard_runtime_record(key, None, "terminal_persisted");
+            self.dashboard
+                .update_runtime_record(key, None, "terminal_persisted");
         }
         self.mark_dashboard_terminal_dirty();
         removed
     }
 
     pub(crate) fn snapshot(&self) -> Vec<ApiInvocation> {
-        let Ok(mut guard) = self.inner.lock() else {
-            return Vec::new();
-        };
-        let pruned_count =
-            prune_bounded_runtime_invocation_store_locked(&mut guard, Instant::now());
-        let snapshot = guard
-            .records
-            .values()
-            .map(|entry| entry.record.clone())
-            .collect();
-        drop(guard);
+        let (snapshot, pruned_count) = self.invocation_store.snapshot();
         if pruned_count > 0 {
             self.rebuild_dashboard_runtime_records("runtime_prune");
         }
@@ -2013,13 +771,8 @@ impl RuntimeProjectionHub {
         invoke_id: &str,
         occurred_at: &str,
     ) -> Option<ApiInvocation> {
-        #[cfg(test)]
-        self.full_record_clone_count.fetch_add(1, Ordering::Relaxed);
-        let guard = self.inner.lock().ok()?;
-        guard
-            .records
-            .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
-            .map(|entry| entry.record.clone())
+        self.invocation_store
+            .record_by_identity(invoke_id, occurred_at)
     }
 
     pub(crate) fn prompt_cache_projection_by_identity(
@@ -2027,201 +780,29 @@ impl RuntimeProjectionHub {
         invoke_id: &str,
         occurred_at: &str,
     ) -> Option<PromptCacheRuntimeProjection> {
-        let guard = self.inner.lock().ok()?;
-        guard
-            .records
-            .get(&RuntimeInvocationKey::new(invoke_id, occurred_at))
-            .and_then(|entry| PromptCacheRuntimeProjection::from_record(&entry.record))
+        self.invocation_store
+            .prompt_cache_projection_by_identity(invoke_id, occurred_at)
     }
 
     #[cfg(test)]
     pub(crate) fn reset_full_record_clone_count(&self) {
-        self.full_record_clone_count.store(0, Ordering::Relaxed);
+        self.invocation_store.reset_full_record_clone_count();
     }
 
     #[cfg(test)]
     pub(crate) fn full_record_clone_count(&self) -> u64 {
-        self.full_record_clone_count.load(Ordering::Relaxed)
+        self.invocation_store.full_record_clone_count()
     }
 
     #[cfg(test)]
     pub(crate) fn backdate_for_test(&self, invoke_id: &str, occurred_at: &str, age: Duration) {
-        let Some(updated_at) = Instant::now().checked_sub(age) else {
-            return;
-        };
-        if let Ok(mut guard) = self.inner.lock()
-            && let Some(entry) = guard
-                .records
-                .get_mut(&RuntimeInvocationKey::new(invoke_id, occurred_at))
-        {
-            entry.updated_at = updated_at;
-        }
+        self.invocation_store
+            .backdate_for_test(invoke_id, occurred_at, age);
     }
 
     pub(crate) fn shutdown_summary(&self) -> RuntimeInvocationStoreShutdownSummary {
-        let Ok(guard) = self.inner.lock() else {
-            return RuntimeInvocationStoreShutdownSummary {
-                running_count: 0,
-                oldest_age_ms: None,
-            };
-        };
-        let now = Instant::now();
-        RuntimeInvocationStoreShutdownSummary {
-            running_count: guard.records.len(),
-            oldest_age_ms: guard
-                .records
-                .values()
-                .map(|entry| now.duration_since(entry.updated_at).as_millis() as u64)
-                .max(),
-        }
+        self.invocation_store.shutdown_summary()
     }
-}
-
-impl ApiInvocation {
-    pub(crate) fn estimated_memory_bytes(&self) -> usize {
-        fn option_string_bytes(value: &Option<String>) -> usize {
-            value.as_ref().map_or(0, String::capacity)
-        }
-
-        self.invoke_id.capacity()
-            + self.occurred_at.capacity()
-            + self.source.capacity()
-            + self.detail_level.capacity()
-            + option_string_bytes(&self.proxy_display_name)
-            + option_string_bytes(&self.model)
-            + option_string_bytes(&self.request_model)
-            + option_string_bytes(&self.response_model)
-            + option_string_bytes(&self.reasoning_effort)
-            + option_string_bytes(&self.status)
-            + option_string_bytes(&self.live_phase)
-            + option_string_bytes(&self.error_message)
-            + option_string_bytes(&self.failure_kind)
-            + option_string_bytes(&self.blocked_binding_json)
-            + option_string_bytes(&self.stream_terminal_event)
-            + option_string_bytes(&self.upstream_error_code)
-            + option_string_bytes(&self.upstream_error_message)
-            + option_string_bytes(&self.downstream_error_message)
-            + option_string_bytes(&self.upstream_request_id)
-            + option_string_bytes(&self.failure_class)
-            + option_string_bytes(&self.endpoint)
-            + option_string_bytes(&self.compaction_request_kind)
-            + option_string_bytes(&self.compaction_response_kind)
-            + option_string_bytes(&self.image_intent)
-            + option_string_bytes(&self.requester_ip)
-            + option_string_bytes(&self.prompt_cache_key)
-            + option_string_bytes(&self.sticky_key)
-            + option_string_bytes(&self.route_mode)
-            + option_string_bytes(&self.upstream_account_name)
-            + option_string_bytes(&self.response_content_encoding)
-            + option_string_bytes(&self.request_compression_algorithm)
-            + option_string_bytes(&self.transport)
-            + option_string_bytes(&self.pool_attempt_terminal_reason)
-            + option_string_bytes(&self.requested_service_tier)
-            + option_string_bytes(&self.service_tier)
-            + option_string_bytes(&self.billing_service_tier)
-            + option_string_bytes(&self.price_version)
-            + option_string_bytes(&self.request_raw_path)
-            + option_string_bytes(&self.request_raw_truncated_reason)
-            + option_string_bytes(&self.response_raw_path)
-            + option_string_bytes(&self.response_raw_truncated_reason)
-            + option_string_bytes(&self.detail_pruned_at)
-            + option_string_bytes(&self.detail_prune_reason)
-            + self.created_at.capacity()
-            + std::mem::size_of::<Self>()
-    }
-}
-
-pub(crate) fn runtime_store_record_is_terminal(record: &ApiInvocation) -> bool {
-    !matches!(
-        record
-            .status
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "running" | "pending"
-    )
-}
-
-pub(crate) fn prune_bounded_runtime_invocation_store_locked(
-    store: &mut ProxyRuntimeInvocationStoreInner,
-    now: Instant,
-) -> usize {
-    let pruned_keys = prune_bounded_runtime_invocations_locked(
-        &mut store.records,
-        now,
-        PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
-        PROXY_RUNTIME_INVOCATION_STORE_MAX_RECORDS,
-    );
-    let pruned_count = pruned_keys.len();
-    for key in pruned_keys {
-        store.projection_tombstones.insert(key, now);
-    }
-    pruned_count
-        + prune_bounded_runtime_tombstones_locked(
-            &mut store.terminal_tombstones,
-            now,
-            PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
-            PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS,
-        )
-        + prune_bounded_runtime_tombstones_locked(
-            &mut store.projection_tombstones,
-            now,
-            PROXY_RUNTIME_INVOCATION_STORE_MAX_AGE,
-            PROXY_RUNTIME_INVOCATION_TERMINAL_TOMBSTONE_MAX_RECORDS,
-        )
-}
-
-pub(crate) fn prune_bounded_runtime_invocations_locked(
-    records: &mut HashMap<RuntimeInvocationKey, RuntimeInvocationEntry>,
-    now: Instant,
-    max_age: Duration,
-    max_records: usize,
-) -> Vec<RuntimeInvocationKey> {
-    let mut pruned_keys = Vec::new();
-    records.retain(|key, entry| {
-        let retain = now.duration_since(entry.updated_at) <= max_age;
-        if !retain {
-            pruned_keys.push(key.clone());
-        }
-        retain
-    });
-    if records.len() > max_records {
-        let mut ranked_keys = records
-            .iter()
-            .map(|(key, entry)| (key.clone(), entry.updated_at))
-            .collect::<Vec<_>>();
-        ranked_keys.sort_by_key(|(_, updated_at)| *updated_at);
-        let excess = records.len().saturating_sub(max_records);
-        for (key, _) in ranked_keys.into_iter().take(excess) {
-            records.remove(&key);
-            pruned_keys.push(key);
-        }
-    }
-    pruned_keys
-}
-
-pub(crate) fn prune_bounded_runtime_tombstones_locked(
-    tombstones: &mut HashMap<RuntimeInvocationKey, Instant>,
-    now: Instant,
-    max_age: Duration,
-    max_records: usize,
-) -> usize {
-    let before = tombstones.len();
-    tombstones.retain(|_, terminal_at| now.duration_since(*terminal_at) <= max_age);
-    if tombstones.len() > max_records {
-        let mut ranked_keys = tombstones
-            .iter()
-            .map(|(key, terminal_at)| (key.clone(), *terminal_at))
-            .collect::<Vec<_>>();
-        ranked_keys.sort_by_key(|(_, terminal_at)| *terminal_at);
-        let excess = tombstones.len().saturating_sub(max_records);
-        for (key, _) in ranked_keys.into_iter().take(excess) {
-            tombstones.remove(&key);
-        }
-    }
-    before.saturating_sub(tombstones.len())
 }
 
 #[derive(Debug)]
@@ -3060,12 +1641,9 @@ mod tests {
         let network_cache = Arc::new(DashboardNetworkSpeedCache::new(Utc::now()));
         hub.bind_dashboard_network_speed_cache(network_cache.clone())
             .expect("bind network cache");
-        {
-            let mut dashboard = hub.dashboard.lock().expect("dashboard state");
-            let mut core = empty_dashboard_live_core();
-            core.in_progress_invocation_count = 1;
-            dashboard.live_core = Some(core);
-        }
+        let mut core = empty_dashboard_live_core();
+        core.in_progress_invocation_count = 1;
+        hub.set_live_core_for_test(core);
 
         let current = hub.capture_memory_snapshot().expect("current slice");
         network_cache.record_request_bytes(
