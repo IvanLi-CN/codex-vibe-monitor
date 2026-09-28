@@ -21,6 +21,7 @@ async fn websocket_terminal_usage_retains_unsupported_actual_tier_from_intermedi
         None,
         None,
         None,
+        None,
     );
     tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
     tracker
@@ -78,6 +79,7 @@ async fn interrupted_websocket_turn_retains_unsupported_actual_tier() {
     let mut tracker = WsUsageTracker::new(
         api_key_account(Url::parse("https://api.openai.com/").expect("valid base")),
         trace,
+        None,
         None,
         None,
         None,
@@ -153,6 +155,7 @@ async fn interrupted_websocket_turn_persists_partial_cache_usage_from_upstream_e
     let mut tracker = WsUsageTracker::new(
         api_key_account(Url::parse("https://api.openai.com/").expect("valid base")),
         trace,
+        None,
         None,
         None,
         None,
@@ -233,6 +236,7 @@ async fn interrupted_websocket_turn_persists_cache_write_only_usage_to_api_and_r
     let mut tracker = WsUsageTracker::new(
         api_key_account(Url::parse("https://api.openai.com/").expect("valid base")),
         trace,
+        None,
         None,
         None,
         None,

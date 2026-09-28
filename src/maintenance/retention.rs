@@ -8441,7 +8441,7 @@ async fn run_data_retention_maintenance_inner(
                     "invocation_archive",
                     "invocation archive stage failed; continuing independent retention stages",
                 );
-                (0, 0, 0)
+                (0, 0, 0, std::collections::HashSet::new())
             }
         }
     } else {
@@ -8449,14 +8449,14 @@ async fn run_data_retention_maintenance_inner(
             payload_loss_days,
             "invocation archival deferred until parallel-work minute coverage catches up"
         );
-        (0, 0, 0)
+        (0, 0, 0, std::collections::HashSet::new())
     };
     retention_recovery_clear_current_prepared_key();
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
-    if !dry_run {
-        match refresh_all_prompt_cache_conversation_stats(pool).await {
+    if !dry_run && !invocation_archive.3.is_empty() {
+        match refresh_prompt_cache_conversation_stats(pool, &invocation_archive.3).await {
             Ok(refreshed) => {
                 if refreshed > 0 {
                     info!(
@@ -9967,7 +9967,7 @@ pub(crate) async fn archive_old_invocations(
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
-) -> Result<(usize, usize, usize)> {
+) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let spec = archive_table_spec("codex_invocations");
     let candidate_limit = retention_candidate_limit(config, "invocation_archive");
@@ -10027,12 +10027,14 @@ pub(crate) async fn archive_old_invocations(
             candidates.len(),
             by_group.len(),
             count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+            std::collections::HashSet::new(),
         ));
     }
 
     let mut rows_archived = 0usize;
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
+    let mut prompt_cache_keys = std::collections::HashSet::new();
 
     loop {
         let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
@@ -10104,7 +10106,12 @@ pub(crate) async fn archive_old_invocations(
             if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("preparing");
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    return Ok((
+                        rows_archived,
+                        archive_batches,
+                        raw_files_removed,
+                        prompt_cache_keys,
+                    ));
                 }
                 if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("preparing", &error);
@@ -10148,7 +10155,12 @@ pub(crate) async fn archive_old_invocations(
                 Ok(outcome) => Some(outcome),
                 Err(error) if is_retention_write_deferred(&error) => {
                     retention_recovery_record_deferred("preparing");
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    return Ok((
+                        rows_archived,
+                        archive_batches,
+                        raw_files_removed,
+                        prompt_cache_keys,
+                    ));
                 }
                 Err(error) => {
                     retention_recovery_persist_failure(
@@ -10164,7 +10176,12 @@ pub(crate) async fn archive_old_invocations(
                     ));
                 }
             }) else {
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                return Ok((
+                    rows_archived,
+                    archive_batches,
+                    raw_files_removed,
+                    prompt_cache_keys,
+                ));
             };
             if archive_outcome.source_identity_sha256.as_deref()
                 != Some(descriptor.source_identity_sha256.as_str())
@@ -10221,7 +10238,12 @@ pub(crate) async fn archive_old_invocations(
                     "prepared_reconcile",
                 )
                 .await?;
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                return Ok((
+                    rows_archived,
+                    archive_batches,
+                    raw_files_removed,
+                    prompt_cache_keys,
+                ));
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
@@ -10333,6 +10355,18 @@ pub(crate) async fn archive_old_invocations(
                 &archive_outcome.sha256,
             )
             .await?;
+            let ids_json = serde_json::to_string(&ids)?;
+            let archived_prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
+                "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
+                 FROM codex_invocations \
+                 WHERE id IN (SELECT value FROM json_each(?1)) \
+                   AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
+                   AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
+            ))
+            .bind(ids_json)
+            .fetch_all(tx.as_mut())
+            .await?;
+            prompt_cache_keys.extend(archived_prompt_cache_keys);
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),
@@ -10400,7 +10434,12 @@ pub(crate) async fn archive_old_invocations(
         }
     }
 
-    Ok((rows_archived, archive_batches, raw_files_removed))
+    Ok((
+        rows_archived,
+        archive_batches,
+        raw_files_removed,
+        prompt_cache_keys,
+    ))
 }
 
 pub(crate) async fn archive_timestamped_dataset(

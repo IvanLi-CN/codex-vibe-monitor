@@ -94,6 +94,7 @@ pub(crate) async fn proxy_openai_v1_common(
     let request_may_have_body = request_may_have_body(&method, &headers);
     let method_for_log = method.clone();
     let uri_for_log = original_uri.clone();
+    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
 
     info!(
         proxy_request_id,
@@ -122,7 +123,12 @@ pub(crate) async fn proxy_openai_v1_common(
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
+            let invoke_id = match allocate_proxy_invoke_id(
+                &state,
+                header_prompt_cache_key.as_deref(),
+            )
+            .await
+            {
                 Ok(invoke_id) => invoke_id,
                 Err(error) => {
                     warn!(
@@ -174,17 +180,18 @@ pub(crate) async fn proxy_openai_v1_common(
             code: None,
             blocked_binding: None,
         };
-        let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
-            Ok(invoke_id) => invoke_id,
-            Err(error) => {
-                warn!(
-                    proxy_request_id,
-                    error = %error,
-                    "failed to allocate proxy invoke id for missing bearer token"
-                );
-                return build_proxy_invoke_id_allocation_error_response(error);
-            }
-        };
+        let invoke_id =
+            match allocate_proxy_invoke_id(&state, header_prompt_cache_key.as_deref()).await {
+                Ok(invoke_id) => invoke_id,
+                Err(error) => {
+                    warn!(
+                        proxy_request_id,
+                        error = %error,
+                        "failed to allocate proxy invoke id for missing bearer token"
+                    );
+                    return build_proxy_invoke_id_allocation_error_response(error);
+                }
+            };
         if let Some(target) = capture_target {
             let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let requester_ip = extract_requester_ip(&headers, peer_ip);
@@ -196,7 +203,7 @@ pub(crate) async fn proxy_openai_v1_common(
                 target,
                 requester_ip.as_deref(),
                 header_sticky_key.as_deref(),
-                None,
+                header_prompt_cache_key.as_deref(),
             )
             .await;
             terminalize_proxy_runtime_snapshot_with_error(
@@ -235,17 +242,18 @@ pub(crate) async fn proxy_openai_v1_common(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed during route validation"
             );
-            let invoke_id = match allocate_proxy_invoke_id(&state, None).await {
-                Ok(invoke_id) => invoke_id,
-                Err(error) => {
-                    warn!(
-                        proxy_request_id,
-                        error = %error,
-                        "failed to allocate proxy invoke id for route validation failure"
-                    );
-                    return build_proxy_invoke_id_allocation_error_response(error);
-                }
-            };
+            let invoke_id =
+                match allocate_proxy_invoke_id(&state, header_prompt_cache_key.as_deref()).await {
+                    Ok(invoke_id) => invoke_id,
+                    Err(error) => {
+                        warn!(
+                            proxy_request_id,
+                            error = %error,
+                            "failed to allocate proxy invoke id for route validation failure"
+                        );
+                        return build_proxy_invoke_id_allocation_error_response(error);
+                    }
+                };
             if let Some(target) = capture_target {
                 let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
                 let requester_ip = extract_requester_ip(&headers, peer_ip);
@@ -257,7 +265,7 @@ pub(crate) async fn proxy_openai_v1_common(
                     target,
                     requester_ip.as_deref(),
                     header_sticky_key.as_deref(),
-                    None,
+                    header_prompt_cache_key.as_deref(),
                 )
                 .await;
                 terminalize_proxy_runtime_snapshot_with_error(

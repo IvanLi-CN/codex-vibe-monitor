@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     sync::{
         Arc,
@@ -660,6 +660,7 @@ pub(crate) struct PendingBatch {
     terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
     attempt_progress: HashMap<i64, BatchedAttemptProgress>,
     invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
+    prompt_cache_stats_refresh_keys: BTreeSet<String>,
     account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
     system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
     startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
@@ -711,6 +712,12 @@ impl PendingBatch {
                     .sum::<usize>(),
             )
             .saturating_add(
+                self.prompt_cache_stats_refresh_keys
+                    .iter()
+                    .map(|key| estimated_prompt_cache_stats_refresh_memory_bytes(key))
+                    .sum::<usize>(),
+            )
+            .saturating_add(
                 self.account_selected_touches
                     .values()
                     .map(estimated_account_selected_touch_memory_bytes)
@@ -738,6 +745,7 @@ impl PendingBatch {
         self.terminal_invocations.is_empty()
             && self.attempt_progress.is_empty()
             && self.invocation_derived.is_empty()
+            && self.prompt_cache_stats_refresh_keys.is_empty()
             && self.account_selected_touches.is_empty()
             && self.system_task_finishes.is_empty()
             && self.startup_backfill_wake_tasks.is_empty()
@@ -746,6 +754,7 @@ impl PendingBatch {
     fn has_p2(&self) -> bool {
         !self.attempt_progress.is_empty()
             || !self.invocation_derived.is_empty()
+            || !self.prompt_cache_stats_refresh_keys.is_empty()
             || !self.account_selected_touches.is_empty()
             || !self.system_task_finishes.is_empty()
             || !self.startup_backfill_wake_tasks.is_empty()
@@ -755,6 +764,7 @@ impl PendingBatch {
         self.terminal_invocations.len()
             + self.attempt_progress.len()
             + self.invocation_derived.len()
+            + self.prompt_cache_stats_refresh_keys.len()
             + self.account_selected_touches.len()
             + self.system_task_finishes.len()
             + usize::from(!self.startup_backfill_wake_tasks.is_empty())
@@ -1057,6 +1067,19 @@ impl PendingBatch {
                 self.invocation_derived.insert(key, derived);
             }
         }
+        let prompt_cache_stats_refresh_keys =
+            std::mem::take(&mut self.prompt_cache_stats_refresh_keys);
+        for prompt_cache_key in prompt_cache_stats_refresh_keys {
+            let bytes = estimated_prompt_cache_stats_refresh_memory_bytes(&prompt_cache_key);
+            if should_take(bytes) {
+                chunk
+                    .prompt_cache_stats_refresh_keys
+                    .insert(prompt_cache_key);
+            } else {
+                self.prompt_cache_stats_refresh_keys
+                    .insert(prompt_cache_key);
+            }
+        }
         let account_selected_touches = std::mem::take(&mut self.account_selected_touches);
         for (key, touch) in account_selected_touches {
             let bytes = estimated_account_selected_touch_memory_bytes(&touch);
@@ -1109,6 +1132,8 @@ impl PendingBatch {
     fn merge_p2(&mut self, mut other: Self) {
         self.attempt_progress.extend(other.attempt_progress.drain());
         self.invocation_derived.extend(other.invocation_derived);
+        self.prompt_cache_stats_refresh_keys
+            .extend(other.prompt_cache_stats_refresh_keys);
         self.account_selected_touches
             .extend(other.account_selected_touches.drain());
         self.system_task_finishes
@@ -1271,6 +1296,10 @@ fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedW
                     invoke_id.capacity().saturating_add(occurred_at.capacity())
                 }),
         )
+}
+
+fn estimated_prompt_cache_stats_refresh_memory_bytes(prompt_cache_key: &str) -> usize {
+    std::mem::size_of::<String>().saturating_add(prompt_cache_key.len())
 }
 
 fn estimated_account_selected_touch_memory_bytes(touch: &BatchedAccountSelectedTouch) -> usize {
@@ -3784,7 +3813,11 @@ pub(crate) async fn flush_pending_batch_inner(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Result<PendingBatch> {
     let mut deferred_batch = PendingBatch::default();
-    let mut prompt_cache_keys_to_refresh = HashSet::new();
+    let mut prompt_cache_keys_to_refresh = batch
+        .prompt_cache_stats_refresh_keys
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
     let mut active_prompt_cache_key_releases = Vec::new();
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
@@ -4021,17 +4054,27 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        if !prompt_cache_keys_to_refresh.is_empty() {
-            refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
-                .await
-                .context("refresh prompt-cache conversation statistics after terminal batch")?;
-        }
-        if !prompt_cache_keys_to_refresh.is_empty()
-            && let Some(cache) = prompt_cache_conversation_cache
-        {
-            invalidate_prompt_cache_conversations_cache(cache).await;
+        // The terminal transaction is durable at this point. Release its lease before the
+        // rebuildable statistics refresh so a refresh outage cannot strand the conversation.
+        if let Some(cache) = prompt_cache_conversation_cache {
+            if !prompt_cache_keys_to_refresh.is_empty() {
+                invalidate_prompt_cache_conversations_cache(cache).await;
+            }
             release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases)
                 .await;
+        }
+        if !prompt_cache_keys_to_refresh.is_empty()
+            && let Err(error) =
+                refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
+        {
+            warn!(
+                error = %error,
+                keys = prompt_cache_keys_to_refresh.len(),
+                "failed to refresh prompt-cache conversation statistics after terminal batch; retaining refresh obligation"
+            );
+            deferred_batch
+                .prompt_cache_stats_refresh_keys
+                .extend(prompt_cache_keys_to_refresh.iter().cloned());
         }
         return Ok(deferred_batch);
     }
@@ -4166,14 +4209,22 @@ pub(crate) async fn flush_pending_batch_inner(
 
     tx.commit().await?;
 
-    if !prompt_cache_keys_to_refresh.is_empty() {
-        refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
-            .await
-            .context("refresh prompt-cache conversation statistics after derived batch")?;
-    }
-
     if let Some(cache) = prompt_cache_conversation_cache {
         release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
+    }
+
+    if !prompt_cache_keys_to_refresh.is_empty()
+        && let Err(error) =
+            refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
+    {
+        warn!(
+            error = %error,
+            keys = prompt_cache_keys_to_refresh.len(),
+            "failed to refresh prompt-cache conversation statistics after derived batch; retaining refresh obligation"
+        );
+        deferred_batch
+            .prompt_cache_stats_refresh_keys
+            .extend(prompt_cache_keys_to_refresh.iter().cloned());
     }
 
     if !terminal_overlay_keys.is_empty()

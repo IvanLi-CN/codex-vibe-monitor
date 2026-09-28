@@ -1140,7 +1140,10 @@ async fn capture_targets_reject_non_pool_requests_before_proxying() {
     .fetch_one(&state.pool)
     .await
     .expect("count unauthorized prompt-cache identities");
-    assert_eq!(persisted_count, 0);
+    assert_eq!(
+        persisted_count, 1,
+        "header prompt-cache key should retain the early-error identity"
+    );
 
     let invalid_bearer_response = proxy_openai_v1(
         State(state.clone()),
@@ -1173,7 +1176,10 @@ async fn capture_targets_reject_non_pool_requests_before_proxying() {
     .fetch_one(&state.pool)
     .await
     .expect("count invalid bearer prompt-cache identities");
-    assert_eq!(invalid_bearer_count, 0);
+    assert_eq!(
+        invalid_bearer_count, 1,
+        "header prompt-cache key should retain the invalid-bearer identity"
+    );
 }
 
 #[tokio::test]
