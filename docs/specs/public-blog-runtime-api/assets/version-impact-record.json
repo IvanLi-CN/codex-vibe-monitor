@@ -29,21 +29,21 @@
         "description": "No scope drift; the implementation remains within the endpoint's specified aggregate, coverage, freshness, and failure behavior."
       },
       "reasoning": "The endpoint remains additive and stores its cache and rate-limit state only in process memory.",
-      "reassessed_at": "2026-09-28T10:58:29Z",
+      "reassessed_at": "2026-09-28T11:43:53Z",
       "evidence": [
         "Existing API routes and their CORS configuration remain unchanged.",
-        "The endpoint reads covered aggregate projections and rejects mixed-Shanghai-day refreshes.",
+        "The endpoint reads covered aggregate projections, rejects mixed-Shanghai-day refreshes, and exposes only the required response headers to configured browser origins.",
         "No database schema or migration file changed."
       ]
     },
     "verified": {
       "impact": "minor",
       "reasoning": "The new API contract is additive within the current major line, and no persistent-state compatibility surface was added.",
-      "verified_at": "2026-09-28T10:58:29Z",
+      "verified_at": "2026-09-28T11:43:53Z",
       "evidence": [
-        "cargo test public_blog -- --nocapture passed 17 tests, including endpoint response, CORS, refresh concurrency and cooldown recovery, rate limiting, day-boundary consistency, and complete/missing/incomplete SQLite coverage.",
+        "Candidate cef09175902770cd16eb8969c244abaea74ad3d9 passed cargo test public_blog -- --nocapture (17 tests), including an allowed-origin 429 response that exposes Retry-After.",
         "The readiness regression test passed.",
-        "Rust formatting and the explicit source-quality policy check passed.",
+        "Rust formatting, the explicit source-quality policy check, the public API Spec contract, and Spec drift checks passed on the candidate.",
         "cargo check --locked --all-targets --all-features passed.",
         "cargo clippy --locked --all-targets --all-features -- -D warnings passed."
       ]
