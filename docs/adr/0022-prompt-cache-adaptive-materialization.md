@@ -28,7 +28,10 @@ the latest micro-batch idempotently instead of skipping it.
 
 Prompt-cache materialization checks the existing P1/interactive waiter signal before starting a
 micro-batch and after its commit. If a waiter arrives, the completed batch remains committed and
-the next batch is deferred. Other startup backfills retain the existing P2 cancellation behavior.
+the next batch is deferred. When another adaptive micro-batch remains, the committed boundary also
+includes a 1 ms cooperative scheduler window so foreground readers can acquire SQLite access
+between commits; this wait is outside the transaction and cannot interrupt the active batch. Other
+startup backfills retain the existing P2 cancellation behavior.
 
 The existing migration progress table, unavailable read contract, marker names, queue, and public
 responses do not change. Structured startup-backfill details expose phase, scanned/updated counts,
@@ -38,6 +41,9 @@ batch count, last/max batch size, accumulated batch time, and defer reason.
 
 - Foreground writes can preempt between prompt-cache transactions without rolling back a batch
   that already began.
+- Foreground aggregate readers get a bounded scheduling opportunity between adaptive commits,
+  keeping the representative read p95/p99 within the fixed-400 baseline while retaining shorter
+  write transactions.
 - Quiet SQLite databases can recover close to the 400-key throughput ceiling, while high-latency
   transactions reduce lock duration on the next batch.
 - Adaptive size is intentionally process-local; durable correctness remains in phase, cursor,

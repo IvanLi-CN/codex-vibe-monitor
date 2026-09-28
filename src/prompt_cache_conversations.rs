@@ -28,6 +28,7 @@ const PROMPT_CACHE_CONVERSATION_BATCH_MAX_SIZE: usize =
     PROMPT_CACHE_CONVERSATION_BACKFILL_PAGE_SIZE;
 const PROMPT_CACHE_CONVERSATION_BATCH_LOW_LATENCY_MS: u128 = 50;
 const PROMPT_CACHE_CONVERSATION_BATCH_HIGH_LATENCY_MS: u128 = 200;
+const PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE: Duration = Duration::from_millis(1);
 const PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN: usize = 400;
 
 static PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER: Lazy<
@@ -724,6 +725,13 @@ async fn run_prompt_cache_conversation_adaptive_key_batches(
             result.deferred = true;
             result.defer_reason = Some("coordinator_priority");
             return Ok(result);
+        }
+        if context.policy == PromptCacheConversationBatchPolicy::Adaptive
+            && offset < prompt_cache_keys.len()
+        {
+            // Give interactive readers a scheduler window between adaptive commits. The
+            // transaction above has already committed, so this cannot interrupt a micro-batch.
+            tokio::time::sleep(PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE).await;
         }
     }
     result.page_complete = true;
