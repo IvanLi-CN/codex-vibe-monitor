@@ -363,6 +363,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
     .await
     .map_err(|_| anyhow!("dashboard aggregates are unavailable"))?
     .0;
+    ensure_shanghai_snapshot_hour(refresh_started_at, Utc::now())?;
     let tokens_per_minute = finite_nonnegative(
         dashboard
             .summary
@@ -386,7 +387,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
     .map_err(|_| anyhow!("hourly token aggregates are unavailable"))?
     .0;
 
-    let now = Utc::now();
+    let now = refresh_started_at;
     let today = now.with_timezone(&Shanghai).date_naive();
     let current_hour_start = shanghai_hour_epoch(today, now.with_timezone(&Shanghai).hour())?;
     let recent_start = current_hour_start - 11 * 3_600;
@@ -522,14 +523,14 @@ async fn load_recent_parallel_averages(
     Ok(averages)
 }
 
-fn ensure_shanghai_snapshot_day(
+fn ensure_shanghai_snapshot_hour(
     started_at: DateTime<Utc>,
     completed_at: DateTime<Utc>,
 ) -> Result<()> {
-    let started_day = started_at.with_timezone(&Shanghai).date_naive();
-    let completed_day = completed_at.with_timezone(&Shanghai).date_naive();
-    if started_day != completed_day {
-        bail!("public blog snapshot crossed a Shanghai day boundary");
+    let started = started_at.with_timezone(&Shanghai);
+    let completed = completed_at.with_timezone(&Shanghai);
+    if started.date_naive() != completed.date_naive() || started.hour() != completed.hour() {
+        bail!("public blog snapshot crossed a Shanghai hour boundary");
     }
     Ok(())
 }
@@ -544,7 +545,7 @@ where
     Clock: FnOnce() -> DateTime<Utc>,
 {
     let value = read.await?;
-    ensure_shanghai_snapshot_day(started_at, completed_at())?;
+    ensure_shanghai_snapshot_hour(started_at, completed_at())?;
     Ok(value)
 }
 
@@ -914,16 +915,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_rejects_midnight_crossing_after_final_aggregate_read() {
+    async fn snapshot_rejects_hour_crossing_after_final_aggregate_read() {
         let started_at = Shanghai
-            .with_ymd_and_hms(2026, 9, 28, 23, 59, 59)
+            .with_ymd_and_hms(2026, 9, 28, 9, 59, 59)
             .single()
-            .expect("before midnight")
+            .expect("before the hour")
             .with_timezone(&Utc);
         let completed_at = Shanghai
-            .with_ymd_and_hms(2026, 9, 29, 0, 0, 1)
+            .with_ymd_and_hms(2026, 9, 28, 10, 0, 1)
             .single()
-            .expect("after midnight")
+            .expect("after the hour")
             .with_timezone(&Utc);
         let read_finished = Arc::new(AtomicBool::new(false));
         let read_finished_by_clock = read_finished.clone();
@@ -942,6 +943,22 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_hour_crossing_during_dashboard_read() {
+        let started_at = Shanghai
+            .with_ymd_and_hms(2026, 9, 28, 9, 59, 59)
+            .single()
+            .expect("before the hour")
+            .with_timezone(&Utc);
+        let completed_at = Shanghai
+            .with_ymd_and_hms(2026, 9, 28, 10, 0, 1)
+            .single()
+            .expect("after the hour")
+            .with_timezone(&Utc);
+
+        assert!(ensure_shanghai_snapshot_hour(started_at, completed_at).is_err());
     }
 
     #[test]
@@ -1306,9 +1323,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_keeps_live_metrics_when_long_term_history_is_unavailable() {
+    async fn endpoint_keeps_live_metrics_when_long_term_history_read_fails() {
         let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
         let current_hour_start = Utc::now().timestamp().div_euclid(3_600) * 3_600;
+        sqlx::query("UPDATE long_term_stats_state SET status = 'ready', statistics_start_date = '2000-01-01' WHERE id = 1")
+            .execute(&state.pool)
+            .await
+            .expect("mark long-term history ready");
+        sqlx::query("DROP TABLE long_term_usage_daily")
+            .execute(&state.pool)
+            .await
+            .expect("remove daily source to simulate a history read failure");
         seed_public_blog_parallel_fixture(&state.pool, current_hour_start).await;
 
         let response = build_public_blog_runtime_router(state.clone())

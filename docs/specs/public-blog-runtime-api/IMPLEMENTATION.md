@@ -10,8 +10,8 @@
 
 ## Implementation Coverage
 
-- Requirement coverage: REQ-PBRA-001 through REQ-PBRA-007 are implemented. The endpoint serializes only approved aggregates; recent parallel-hour values require complete minute coverage; 90-day activity reports available, partial, or unavailable coverage with missing values as null; the current-hour daily trend point uses the live daily total; and the Shanghai-day boundary is checked after all aggregate reads.
-- Verification commands: `cargo test public_blog -- --nocapture` (21 passed); `cargo fmt --all -- --check`; `python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json`; `cargo check --locked --all-targets --all-features`; `cargo clippy --locked --all-targets --all-features -- -D warnings`. Spec contract and drift checks, version-impact JSON parsing, and `git diff --check` also passed.
+- Requirement coverage: REQ-PBRA-001 through REQ-PBRA-007 are implemented. The endpoint serializes only approved aggregates; recent parallel-hour values require complete minute coverage; 90-day activity reports available, partial, or unavailable coverage with missing values as null; the current-hour daily trend point uses the live daily total; and the Shanghai hour is checked after dashboard capture and all aggregate reads.
+- Verification commands: `cargo test public_blog -- --nocapture` (22 passed); `cargo fmt --all -- --check`; `python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json`; `cargo check --locked --all-targets --all-features`; `cargo clippy --locked --all-targets --all-features -- -D warnings`. Spec contract and drift checks, version-impact JSON parsing, and `git diff --check` also passed.
 - Rollout facts: The endpoint defaults its independent CORS allowlist to `https://ivanli.cc` and `http://127.0.0.1:12620`; `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS` replaces that list. It reads existing hourly and daily rollups without writing persistent state; no schema migration is planned.
 
 ## Coverage / rollout summary

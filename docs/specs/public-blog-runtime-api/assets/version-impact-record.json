@@ -29,23 +29,23 @@
         "description": "The endpoint reads existing aggregate rollups, reports missing long-term coverage explicitly, and adds no persistent-state writes or serialized state formats."
       },
       "reasoning": "The service-scoped public API is additive within the current major line. Persistent-state impact is not applicable because the endpoint uses existing rollups and adds no persistent writes; the release unit remains minor.",
-      "reassessed_at": "2026-09-28T16:01:01Z",
+      "reassessed_at": "2026-09-28T17:43:02Z",
       "evidence": [
         "The endpoint uses /api/public/metrics/v1/codex-vibe-monitor and the independent PUBLIC_METRICS_CORS_ALLOWED_ORIGINS allowlist.",
-        "Unavailable and partial long-term coverage serialize as null-valued daily points while current metrics remain available; mixed-Shanghai-day refreshes are still rejected.",
+        "Unavailable and partial long-term coverage serialize as null-valued daily points while current metrics remain available; refreshes crossing a Shanghai hour or day are rejected.",
         "The endpoint's fixed today/1h/Asia/Shanghai query uses the existing hourly rollup branch and returns before sub-hour minute-projection logic."
       ]
     },
     "verified": {
       "impact": "minor",
       "reasoning": "The new API contract is additive within the current major line. The endpoint writes no persistent state, so the highest applicable and verified impact is the public API's minor classification.",
-      "verified_at": "2026-09-28T16:01:01Z",
+      "verified_at": "2026-09-28T17:43:02Z",
       "evidence": [
-        "cargo test public_blog -- --nocapture passed 21 tests, including live current-hour trend values, service-scoped CORS, and available, partial, and unavailable daily history.",
+        "cargo test public_blog -- --nocapture passed 22 tests, including current-hour boundary consistency, service-scoped CORS, and available, partial, and unavailable daily history.",
         "Rust formatting, the explicit source-quality policy check, public API Spec contract, Spec drift, and whitespace checks passed on the candidate.",
         "cargo check --locked --all-targets --all-features passed.",
         "cargo clippy --locked --all-targets --all-features -- -D warnings passed.",
-        "Source review confirmed the endpoint's fixed today/1h/Asia/Shanghai request selects hourly rollups and returns before the sub-hour minute-projection fallback."
+        "Source review confirmed the endpoint's fixed today/1h/Asia/Shanghai request selects hourly rollups, and a Shanghai-hour fence keeps the live value on its observed boundary."
       ]
     }
   },
@@ -55,7 +55,7 @@
       "supported_consumer_range": "Consumers on the current major line; existing API paths and response contracts remain compatible.",
       "evidence": [
         "The route is additive at /api/public/metrics/v1/codex-vibe-monitor and follows the shared /api/public/metrics/v1/{service} family.",
-        "The route-level tests verify GET-only behavior, service-scoped CORS, live current-hour trend values, and explicit partial or unavailable long-term history."
+        "The route-level tests verify GET-only behavior, service-scoped CORS, live current-hour trend values, and available, partial, or failed long-term history reads."
       ]
     },
     "persistent_state": {
