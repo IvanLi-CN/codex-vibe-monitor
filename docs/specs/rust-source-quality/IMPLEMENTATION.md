@@ -8,8 +8,8 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 41 current explicit file
-  budgets (23 production and 18 test/helper), and 117 standalone suppression
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 40 current explicit file
+  budgets (22 production and 18 test/helper), and 117 standalone suppression
   declarations. The immutable preparation production/test-helper counts remain
   32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -281,12 +281,31 @@ Validation for this extraction is all 17 moved tests, the stateful SQLite
 backend profile, rustfmt, the source-quality checker and fixture harness,
 all-target Cargo checking, all-target Clippy, and `git diff --check`.
 
+The application runtime-state extraction moves invocation records, terminal and
+projection tombstones, pruning, prompt-cache projections, and memory estimates
+into `src/app_state/invocation_store.rs`, and dashboard current/network/terminal
+projection state, coalescing, publication windows, baselines, captures, and
+topology counters into `src/app_state/dashboard.rs`. The parent retains the
+`RuntimeProjectionHub` coordinator, request-pipeline metrics, lifecycle counters,
+and explicit crate-visible re-exports. Store-before-dashboard lock ordering is
+preserved, no await occurs while either state lock is held, and mutation,
+rollback, prune synchronization, deadline, and revision behavior remain
+unchanged. The summary API slice remains frozen for this extraction.
+
+After rustfmt, `src/app_state.rs` is 1,661 physical lines,
+`src/app_state/dashboard.rs` is 1,266 lines, and
+`src/app_state/invocation_store.rs` is 577 lines. All three are below the
+2,500-line production target, so `src/app_state.rs` is removed from the policy
+inventory. The current inventory is 22 production and 18 test/helper
+candidates (40 entries total); the immutable preparation baseline remains 32
+and 23 and the suppression baseline remains 117.
+
 ## Inventory Contract
 
-The policy has 23 `production` entries above the 2,500-line destination target
+The policy has 22 `production` entries above the 2,500-line destination target
 and 18 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 41 paths; a long path absent from the inventory is
+The checker only reads those 40 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
