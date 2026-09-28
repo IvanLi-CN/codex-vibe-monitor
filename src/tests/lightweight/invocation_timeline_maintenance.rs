@@ -4,6 +4,7 @@ use super::*;
 async fn invocation_timeline_release_is_idempotent_and_deletes_rows_in_background() {
     let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
     reset_timeline_snapshot_cleanup_cursor_for_test();
+    reset_timeline_snapshot_release_queue_for_test();
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
@@ -136,19 +137,34 @@ async fn invocation_timeline_release_is_idempotent_and_deletes_rows_in_backgroun
 async fn invocation_timeline_http_release_reuses_capacity_for_two_clients() {
     let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
     reset_timeline_snapshot_cleanup_cursor_for_test();
+    reset_timeline_snapshot_release_queue_for_test();
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
     let now = Utc::now();
     let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
     let natural_day_end = natural_day_start + chrono::Duration::days(1);
-    let range_start = now - chrono::Duration::minutes(30);
+    let range_start = natural_day_start + chrono::Duration::hours(12);
+    let range_end = range_start + chrono::Duration::hours(1);
+    for (invoke_id, offset_seconds) in [("capacity-fixture-a", 10), ("capacity-fixture-b", 20)] {
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 1000, '{\"upstreamAccountId\":42}', '', 'full')",
+        )
+        .bind(invoke_id)
+        .bind(db_occurred_at_lower_bound(
+            range_start + chrono::Duration::seconds(offset_seconds),
+        ))
+        .execute(&state.pool)
+        .await
+        .expect("insert populated timeline capacity fixture");
+    }
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("naturalDayStart", &format_utc_iso(natural_day_start))
         .append_pair("naturalDayEnd", &format_utc_iso(natural_day_end))
         .append_pair("from", &format_utc_iso(range_start))
-        .append_pair("to", &format_utc_iso(now))
+        .append_pair("to", &format_utc_iso(range_end))
         .append_pair("includeLive", "false")
+        .append_pair("limit", "1")
         .finish();
     let app = build_stats_routes(Router::new()).with_state(state.clone());
     let run_client = |client_id: usize, app: Router, query: String| async move {
@@ -172,15 +188,55 @@ async fn invocation_timeline_http_release_reuses_capacity_for_two_clients() {
             let body = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
                 .expect("read snapshot page response");
-            let page: serde_json::Value =
+            let first_page: serde_json::Value =
                 serde_json::from_slice(&body).expect("decode snapshot page response");
-            assert_eq!(page["hasMore"], false);
-            assert_eq!(page["total"], 0);
-            assert_eq!(page["records"].as_array().map(Vec::len), Some(0));
-            let as_of = page["asOf"]
+            assert_eq!(first_page["hasMore"], true);
+            assert_eq!(first_page["total"], 2);
+            assert_eq!(first_page["records"].as_array().map(Vec::len), Some(1));
+            let as_of = first_page["asOf"]
                 .as_str()
                 .expect("snapshot page should return asOf")
                 .to_string();
+            let cursor = first_page["nextCursor"]
+                .as_str()
+                .expect("first snapshot page should return a cursor");
+            let second_page_query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("naturalDayStart", &format_utc_iso(natural_day_start))
+                .append_pair("naturalDayEnd", &format_utc_iso(natural_day_end))
+                .append_pair("from", &format_utc_iso(range_start))
+                .append_pair("to", &format_utc_iso(range_end))
+                .append_pair("includeLive", "false")
+                .append_pair("limit", "1")
+                .append_pair("asOf", &as_of)
+                .append_pair("cursor", cursor)
+                .finish();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(format!(
+                            "/api/stats/invocation-timeline?{second_page_query}"
+                        ))
+                        .body(Body::empty())
+                        .expect("build second snapshot page request"),
+                )
+                .await
+                .expect("dispatch second snapshot page request");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "client {client_id} traversal {traversal} should complete its second page"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read second snapshot page response");
+            let second_page: serde_json::Value =
+                serde_json::from_slice(&body).expect("decode second snapshot page response");
+            assert_eq!(second_page["asOf"], as_of);
+            assert_eq!(second_page["hasMore"], false);
+            assert_eq!(second_page["total"], 2);
+            assert_eq!(second_page["records"].as_array().map(Vec::len), Some(1));
 
             let response = app
                 .clone()
@@ -202,12 +258,99 @@ async fn invocation_timeline_http_release_reuses_capacity_for_two_clients() {
         run_client(2, app, query),
     );
 
-    for _ in 0..5 {
+    for _ in 0..32 {
         let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
             .await
             .expect("drain bounded snapshot release batches");
         assert!(cleanup.scanned_tokens <= 64);
     }
+    let remaining_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_timeline_snapshot_rows")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count rows after released populated snapshots are reclaimed");
+    assert_eq!(remaining_rows, 0);
+    state.pool.close().await;
+}
+
+#[tokio::test]
+async fn invocation_timeline_cleanup_scans_database_while_release_queue_is_full() {
+    let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
+    reset_timeline_snapshot_cleanup_cursor_for_test();
+    reset_timeline_snapshot_release_queue_for_test();
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let now = Utc::now();
+    let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+    let range_start = natural_day_start + chrono::Duration::hours(12);
+    let range_end = range_start + chrono::Duration::hours(1);
+    let _ = fetch_timeline(
+        State(state.clone()),
+        Query(InvocationTimelineQuery {
+            natural_day_start: Some(format_utc_iso(natural_day_start)),
+            natural_day_end: Some(format_utc_iso(
+                natural_day_start + chrono::Duration::days(1),
+            )),
+            from: format_utc_iso(range_start),
+            to: format_utc_iso(range_end),
+            include_live: Some(false),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("initialize snapshot table before testing cleanup fairness");
+    for index in 0..20 {
+        sqlx::query(
+            "INSERT INTO invocation_timeline_snapshot_rows (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) VALUES (?1, ?2, ?3, 1, 0, 0, '{}')",
+        )
+        .bind(format!("orphan-{index:03}"))
+        .bind(format!("invoke-{index:03}"))
+        .bind(format_utc_iso(range_start))
+        .execute(&state.pool)
+        .await
+        .expect("insert orphan snapshot row");
+    }
+    sqlx::query(
+        "INSERT INTO invocation_timeline_snapshot_rows (snapshot_token, invoke_id, occurred_at, record_id, is_runtime, is_in_flight, payload) VALUES ('overflowed-token', 'overflowed-invocation', ?1, 1, 0, 0, '{}')",
+    )
+    .bind(format_utc_iso(range_start))
+    .execute(&state.pool)
+    .await
+    .expect("insert snapshot row for a release that will overflow the queue");
+    let queue_limit = timeline_snapshot_release_queue_limit_for_test();
+    let queued = seed_timeline_snapshot_release_queue_for_test(
+        (0..queue_limit).map(|index| format!("queued-{index:04}")),
+    );
+    assert_eq!(queued, queue_limit);
+    assert_eq!(
+        seed_timeline_snapshot_release_queue_for_test(["overflowed-token".to_string()]),
+        0,
+        "a full release queue must leave the overflowed row to periodic scanning"
+    );
+
+    let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
+        .await
+        .expect("run bounded cleanup with a saturated explicit-release queue");
+    assert_eq!(cleanup.scanned_tokens, 64);
+    assert_eq!(cleanup.deleted_rows, 16);
+    let followup_cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
+        .await
+        .expect("continue scanning overflowed rows while the release queue remains full");
+    assert_eq!(followup_cleanup.deleted_rows, 5);
+    let remaining_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invocation_timeline_snapshot_rows")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count stale rows after scanning the overflowed release");
+    assert_eq!(remaining_rows, 0);
+    assert_eq!(
+        timeline_snapshot_release_queue_depth_for_test(),
+        queue_limit - 96
+    );
+
+    reset_timeline_snapshot_release_queue_for_test();
+    reset_timeline_snapshot_cleanup_cursor_for_test();
     state.pool.close().await;
 }
 
@@ -215,6 +358,7 @@ async fn invocation_timeline_http_release_reuses_capacity_for_two_clients() {
 async fn invocation_timeline_snapshot_cleanup_runs_off_the_first_page_path_in_bounded_batches() {
     let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
     reset_timeline_snapshot_cleanup_cursor_for_test();
+    reset_timeline_snapshot_release_queue_for_test();
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;

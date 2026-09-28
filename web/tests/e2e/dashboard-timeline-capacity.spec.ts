@@ -11,6 +11,10 @@ const CAPACITY_SCENARIO_DURATION_MS =
 const MINIMUM_TRAVERSALS = Math.max(2, Math.floor(CAPACITY_SCENARIO_DURATION_MS / 15_000) - 1);
 const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 const REVISION_INTERVAL_MS = 1_000;
+const MINIMUM_LIVE_EVENTS = Math.max(
+  10,
+  Math.floor(CAPACITY_SCENARIO_DURATION_MS / REVISION_INTERVAL_MS / 2),
+);
 const MINIMUM_TEST_TIMEOUT_MS = 4 * 60 * 1_000;
 
 type TimelineDiagnostics = {
@@ -271,6 +275,13 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
     const initialDesktopDiagnostics = await page.evaluate(
       () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
     );
+    const initialClientDiagnostics = await Promise.all(
+      pages.map((clientPage) =>
+        clientPage.evaluate(
+          () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
+        ),
+      ),
+    );
     const releaseCountBeforeDelay = initialDesktopDiagnostics?.releasedSnapshots ?? 0;
     const traversalCountBeforeDelay = initialDesktopDiagnostics?.traversalStarts.length ?? 0;
     const liveMessageCountBeforeRevision = initialDesktopDiagnostics?.sseLiveMessageCount ?? 0;
@@ -393,11 +404,19 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
         contentType: "application/json",
       });
     }
-    for (const diagnostics of results) {
+    for (const [index, diagnostics] of results.entries()) {
+      const baseline = initialClientDiagnostics[index];
       expect(diagnostics?.traversalStarts.length).toBeGreaterThanOrEqual(MINIMUM_TRAVERSALS);
       expect(diagnostics?.releasedSnapshots).toBe(diagnostics?.traversalStarts.length);
       expect(diagnostics?.releaseFailures).toBe(0);
       expect(diagnostics?.timelineHttpFailures).toBe(0);
+      expect(diagnostics?.sseErrorCount).toBe(0);
+      expect(
+        (diagnostics?.demoRevisionTriggers ?? 0) - (baseline?.demoRevisionTriggers ?? 0),
+      ).toBeGreaterThanOrEqual(MINIMUM_LIVE_EVENTS);
+      expect(
+        (diagnostics?.sseLiveMessageCount ?? 0) - (baseline?.sseLiveMessageCount ?? 0),
+      ).toBeGreaterThanOrEqual(MINIMUM_LIVE_EVENTS);
       expect(diagnostics?.pageRequests).toBeGreaterThanOrEqual(
         (diagnostics?.traversalStarts.length ?? 0) * 2,
       );

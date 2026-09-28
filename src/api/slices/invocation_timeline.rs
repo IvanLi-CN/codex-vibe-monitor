@@ -26,6 +26,7 @@ const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
 const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE: usize = 100;
 const INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE: i64 = 64;
+const INVOCATION_TIMELINE_CLEANUP_MIN_SCAN_BATCH_SIZE: usize = 16;
 const INVOCATION_TIMELINE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 const INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT: usize = 1_024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
@@ -221,6 +222,40 @@ pub(crate) fn reset_timeline_snapshot_cleanup_cursor_for_test() {
     *INVOCATION_TIMELINE_CLEANUP_CURSOR
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn reset_timeline_snapshot_release_queue_for_test() {
+    let mut queue = INVOCATION_TIMELINE_RELEASE_QUEUE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    queue.pending.clear();
+    queue.queued.clear();
+    queue.overflow_count = 0;
+}
+
+#[cfg(test)]
+pub(crate) fn seed_timeline_snapshot_release_queue_for_test(
+    tokens: impl IntoIterator<Item = String>,
+) -> usize {
+    tokens
+        .into_iter()
+        .filter(|token| enqueue_timeline_snapshot_release(token.clone()))
+        .count()
+}
+
+#[cfg(test)]
+pub(crate) fn timeline_snapshot_release_queue_limit_for_test() -> usize {
+    INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT
+}
+
+#[cfg(test)]
+pub(crate) fn timeline_snapshot_release_queue_depth_for_test() -> usize {
+    INVOCATION_TIMELINE_RELEASE_QUEUE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .pending
+        .len()
 }
 
 #[cfg(test)]
@@ -863,9 +898,10 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let mut tokens =
-        pending_timeline_snapshot_releases(INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE as usize);
-    let scan_limit = INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE as usize - tokens.len();
+    let batch_limit = INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE as usize;
+    let release_limit = batch_limit.saturating_sub(INVOCATION_TIMELINE_CLEANUP_MIN_SCAN_BATCH_SIZE);
+    let mut tokens = pending_timeline_snapshot_releases(release_limit);
+    let scan_limit = batch_limit - tokens.len();
     let scanned_tokens = if scan_limit == 0 {
         Vec::new()
     } else if let Some(cursor) = cursor {
@@ -1847,6 +1883,9 @@ mod tests {
 
     #[tokio::test]
     async fn released_snapshot_reservations_are_idempotent_and_reusable() {
+        let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
+        reset_timeline_snapshot_cleanup_cursor_for_test();
+        reset_timeline_snapshot_release_queue_for_test();
         for index in 0..300_i64 {
             let token = create_timeline_snapshot(
                 index,
