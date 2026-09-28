@@ -33,6 +33,8 @@ type TimelineDiagnostics = {
   nextTraversalDelayMs: number;
   longTasks: Array<{ duration: number; startTime: number }>;
   longTaskObserverSupported: boolean;
+  timelineActivationStartMs: number | null;
+  timelineReadyAtMs: number | null;
   sseOpenCount: number;
   sseMessageCount: number;
   sseLiveMessageCount: number;
@@ -52,8 +54,9 @@ type TimelineDiagnosticsWindow = Window & {
 
 test.use({ video: "off" });
 
-function installDiagnostics(page: Page) {
-  return page.addInitScript(() => {
+function installDiagnostics(page: Page, initialRange: "today" | "yesterday" | "7d" = "today") {
+  return page.addInitScript((range) => {
+    window.localStorage.setItem("dashboard.activityOverview.activeRange.v1", range);
     const diagnostics: TimelineDiagnostics = {
       traversalStarts: [],
       pageRequests: 0,
@@ -65,6 +68,8 @@ function installDiagnostics(page: Page) {
       nextTraversalDelayMs: 0,
       longTasks: [],
       longTaskObserverSupported: PerformanceObserver.supportedEntryTypes.includes("longtask"),
+      timelineActivationStartMs: null,
+      timelineReadyAtMs: null,
       sseOpenCount: 0,
       sseMessageCount: 0,
       sseLiveMessageCount: 0,
@@ -137,7 +142,7 @@ function installDiagnostics(page: Page) {
       });
       observer.observe({ type: "longtask", buffered: true });
     }
-  });
+  }, initialRange);
 }
 
 function expectSustainedEvents(eventTimes: number[], baselineCount: number): void {
@@ -195,17 +200,44 @@ async function instrumentTimelineFetch(page: Page) {
   });
 }
 
-async function startCapacityDashboard(page: Page, viewport: { width: number; height: number }) {
-  await installDiagnostics(page);
+async function startCapacityDashboard(
+  page: Page,
+  viewport: { width: number; height: number },
+  measureInitialTimelineMount = false,
+) {
+  await installDiagnostics(page, measureInitialTimelineMount ? "7d" : "today");
   await page.setViewportSize(viewport);
   await page.goto(CAPACITY_DASHBOARD_URL, { waitUntil: "domcontentloaded" });
   if (viewport.width < 769) {
     const rangeSelect = page.getByTestId("dashboard-activity-range-select");
     const metricSelect = page.getByTestId("dashboard-activity-metric-select");
-    await expect(rangeSelect).toHaveText(/today|今日/i);
     await expect(metricSelect).toHaveText(/count|次数/i);
+    if (measureInitialTimelineMount) {
+      await expect(rangeSelect).toHaveText(/7.?day|7.?天|7.?日|7d/i);
+      await page.evaluate(() => {
+        const diagnostics = (window as TimelineDiagnosticsWindow)
+          .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+        if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+        diagnostics.timelineActivationStartMs = performance.now();
+      });
+      await rangeSelect.click();
+      await page.getByRole("option").first().click();
+    }
+    await expect(rangeSelect).toHaveText(/today|今日/i);
   } else {
     const todayTab = page.locator('[role="tablist"]').first().locator('[role="tab"]').first();
+    if (measureInitialTimelineMount) {
+      await expect(
+        page.locator('[role="tablist"]').first().locator('[role="tab"]').nth(3),
+      ).toHaveAttribute("aria-selected", "true");
+      await expect(todayTab).toHaveAttribute("aria-selected", "false");
+      await page.evaluate(() => {
+        const diagnostics = (window as TimelineDiagnosticsWindow)
+          .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+        if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+        diagnostics.timelineActivationStartMs = performance.now();
+      });
+    }
     await todayTab.click();
     await expect(todayTab).toHaveAttribute("aria-selected", "true");
   }
@@ -220,6 +252,18 @@ async function startCapacityDashboard(page: Page, viewport: { width: number; hei
         .count(),
     )
     .toBeGreaterThan(0);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => {
+          const diagnostics = (window as TimelineDiagnosticsWindow)
+            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+          diagnostics.timelineReadyAtMs = performance.now();
+          resolve();
+        }),
+      ),
+  );
   await expect
     .poll(
       () =>
@@ -491,181 +535,178 @@ test("single-client dense timeline stays below the long-task budget on desktop a
     "Timeline render performance proof is enabled explicitly for testbox validation.",
   );
   test.setTimeout(120_000);
-  const context = await browser.newContext();
-  try {
-    for (const [name, viewport] of [
-      ["desktop", { width: 1440, height: 1000 }],
-      ["mobile", { width: 393, height: 852 }],
-    ] as const) {
-      const warmupPage = await context.newPage();
-      await startCapacityDashboard(warmupPage, viewport);
-      await warmupPage.close();
+  for (const [name, viewport] of [
+    ["desktop", { width: 1440, height: 1000 }],
+    ["mobile", { width: 393, height: 852 }],
+  ] as const) {
+    const context = await browser.newContext({ viewport });
+    const page = await context.newPage();
+    try {
+      await startCapacityDashboard(page, viewport, true);
+      await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
+      await instrumentTimelineFetch(page);
 
-      const page = await context.newPage();
-      try {
-        await startCapacityDashboard(page, viewport);
-        await page.getByTestId("dashboard-invocation-timeline").scrollIntoViewIfNeeded();
-        await instrumentTimelineFetch(page);
+      const initialDiagnostics = await page.evaluate(
+        () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
+      );
+      expect(initialDiagnostics?.longTaskObserverSupported).toBe(true);
+      expect(initialDiagnostics?.timelineActivationStartMs).not.toBeNull();
+      expect(initialDiagnostics?.timelineReadyAtMs).not.toBeNull();
+      const timelineMountStart = initialDiagnostics?.timelineActivationStartMs ?? 0;
+      const timelineReadyAt = initialDiagnostics?.timelineReadyAtMs ?? 0;
+      const timelineMountLongTasks = (initialDiagnostics?.longTasks ?? []).filter(
+        (task) =>
+          task.startTime < timelineReadyAt && task.startTime + task.duration > timelineMountStart,
+      );
+      const timelineMountMaxLongTaskMs = Math.max(
+        0,
+        ...timelineMountLongTasks.map((task) => task.duration),
+      );
 
-        const readyAt = await page.evaluate(() => performance.now());
-        const initialDiagnostics = await page.evaluate(
-          () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
-        );
-        expect(initialDiagnostics?.longTaskObserverSupported).toBe(true);
-        const initialMaxLongTaskMs = Math.max(
-          0,
-          ...(initialDiagnostics?.longTasks ?? [])
-            .filter((task) => task.startTime < readyAt)
-            .map((task) => task.duration),
-        );
-
-        await page.evaluate(() => {
-          const diagnostics = (window as TimelineDiagnosticsWindow)
-            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
-          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-          diagnostics.nextTraversalDelayMs = 20_000;
-        });
-        const beforeRefresh = await page.evaluate(() => {
-          const diagnostics = (window as TimelineDiagnosticsWindow)
-            .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
-          if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
-          return {
-            releaseCount: diagnostics.releasedSnapshots,
-            liveMessages: diagnostics.sseLiveMessageCount,
-            triggerCount: diagnostics.demoRevisionTriggers,
-            refreshStart: performance.now(),
-          };
-        });
-        await page.evaluate(() => {
-          const trigger = (window as TimelineDiagnosticsWindow)
-            .__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__;
-          if (!trigger) throw new Error("Demo live revision trigger is unavailable");
-          trigger();
-        });
-        await expect
-          .poll(() =>
-            page.evaluate(
-              () =>
-                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.demoRevisionTriggers ?? 0,
-            ),
-          )
-          .toBeGreaterThan(beforeRefresh.triggerCount);
-        await expect
-          .poll(() =>
-            page.evaluate(
-              () =>
-                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                  ?.sseLiveMessageCount ?? 0,
-            ),
-          )
-          .toBeGreaterThan(beforeRefresh.liveMessages);
-        await expect
-          .poll(
+      await page.evaluate(() => {
+        const diagnostics = (window as TimelineDiagnosticsWindow)
+          .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+        if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+        diagnostics.nextTraversalDelayMs = 20_000;
+      });
+      const beforeRefresh = await page.evaluate(() => {
+        const diagnostics = (window as TimelineDiagnosticsWindow)
+          .__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__;
+        if (!diagnostics) throw new Error("Timeline diagnostics are unavailable");
+        return {
+          releaseCount: diagnostics.releasedSnapshots,
+          liveMessages: diagnostics.sseLiveMessageCount,
+          triggerCount: diagnostics.demoRevisionTriggers,
+          refreshStart: performance.now(),
+        };
+      });
+      await page.evaluate(() => {
+        const trigger = (window as TimelineDiagnosticsWindow)
+          .__CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__;
+        if (!trigger) throw new Error("Demo live revision trigger is unavailable");
+        trigger();
+      });
+      await expect
+        .poll(() =>
+          page.evaluate(
             () =>
-              page.evaluate(
-                () =>
-                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                    ?.activeTraversals ?? 0,
-              ),
-            { timeout: 45_000 },
-          )
-          .toBe(1);
-
-        const lanes = page.getByTestId("dashboard-invocation-timeline-lanes");
-        await expect(lanes).toBeVisible();
-        await expect(lanes).toHaveAttribute("data-total-calls", "550");
-        await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
-        const visibleCalls = await page
-          .getByTestId("dashboard-invocation-timeline-lane-scroll")
-          .locator("[data-call-value]")
-          .count();
-        expect(visibleCalls).toBeGreaterThan(0);
-        expect(visibleCalls).toBeLessThan(40);
-
-        await expect
-          .poll(
+              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                ?.demoRevisionTriggers ?? 0,
+          ),
+        )
+        .toBeGreaterThan(beforeRefresh.triggerCount);
+      await expect
+        .poll(() =>
+          page.evaluate(
             () =>
-              page.evaluate(
-                () =>
-                  (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
-                    ?.releasedSnapshots ?? 0,
-              ),
-            { timeout: 35_000 },
-          )
-          .toBeGreaterThan(beforeRefresh.releaseCount + 1);
-        await expect
-          .poll(() =>
+              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                ?.sseLiveMessageCount ?? 0,
+          ),
+        )
+        .toBeGreaterThan(beforeRefresh.liveMessages);
+      await expect
+        .poll(
+          () =>
             page.evaluate(
               () =>
                 (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
                   ?.activeTraversals ?? 0,
             ),
-          )
-          .toBe(0);
-        await page.evaluate(
-          () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-        );
-        const refreshEnd = await page.evaluate(() => performance.now());
-        const diagnostics = await page.evaluate(
-          () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
-        );
-        const refreshLongTasks = (diagnostics?.longTasks ?? []).filter(
-          (task) =>
-            task.startTime < refreshEnd &&
-            task.startTime + task.duration > beforeRefresh.refreshStart,
-        );
-        const maxRefreshLongTaskMs = Math.max(0, ...refreshLongTasks.map((task) => task.duration));
-        const screenshot = await page.screenshot();
-        const evidence = {
-          viewport: name,
-          warmupRuns: 1,
-          initialMaxLongTaskMs,
-          refreshMaxLongTaskMs: maxRefreshLongTaskMs,
-          longTasks: diagnostics?.longTasks ?? [],
-          traversalCount: diagnostics?.traversalStarts.length ?? 0,
-          pageRequests: diagnostics?.pageRequests ?? 0,
-          releasedSnapshots: diagnostics?.releasedSnapshots ?? 0,
-          releaseFailures: diagnostics?.releaseFailures ?? 0,
-          timelineHttpFailures: diagnostics?.timelineHttpFailures ?? 0,
-          sseLiveMessages: diagnostics?.sseLiveMessageCount ?? 0,
-        };
-        await writeFile(testInfo.outputPath(`timeline-dense-${name}.png`), screenshot);
-        await writeFile(
-          testInfo.outputPath(`timeline-dense-${name}-diagnostics.json`),
-          JSON.stringify(evidence, null, 2),
-          "utf8",
-        );
-        await testInfo.attach(`timeline-dense-${name}`, {
-          body: screenshot,
-          contentType: "image/png",
-        });
-        await testInfo.attach(`timeline-dense-${name}-diagnostics.json`, {
-          body: JSON.stringify(evidence, null, 2),
-          contentType: "application/json",
-        });
-        expect(diagnostics?.traversalStarts.length).toBeGreaterThanOrEqual(2);
-        expect(diagnostics?.releasedSnapshots).toBe(diagnostics?.traversalStarts.length);
-        expect(diagnostics?.maxActiveTraversals).toBe(1);
-        expect(
-          diagnostics?.traversalStarts.every(
-            (startedAt, index) =>
-              index === 0 ||
-              startedAt - diagnostics.traversalStarts[index - 1]! >= MINIMUM_REFRESH_INTERVAL_MS,
+          { timeout: 45_000 },
+        )
+        .toBe(1);
+
+      const refreshedLanes = page.getByTestId("dashboard-invocation-timeline-lanes");
+      await expect(refreshedLanes).toBeVisible();
+      await expect(refreshedLanes).toHaveAttribute("data-total-calls", "550");
+      await expect(page.getByTestId("dashboard-invocation-timeline-state")).toHaveCount(0);
+      const visibleCalls = await page
+        .getByTestId("dashboard-invocation-timeline-lane-scroll")
+        .locator("[data-call-value]")
+        .count();
+      expect(visibleCalls).toBeGreaterThan(0);
+      expect(visibleCalls).toBeLessThan(40);
+
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () =>
+                (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                  ?.releasedSnapshots ?? 0,
+            ),
+          { timeout: 35_000 },
+        )
+        .toBeGreaterThan(beforeRefresh.releaseCount + 1);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__
+                ?.activeTraversals ?? 0,
           ),
-        ).toBe(true);
-        expect(diagnostics?.pageRequests).toBeGreaterThanOrEqual(
-          (diagnostics?.traversalStarts.length ?? 0) * 2,
-        );
-        expect(diagnostics?.releaseFailures).toBe(0);
-        expect(diagnostics?.timelineHttpFailures).toBe(0);
-        expect(initialMaxLongTaskMs).toBeLessThan(200);
-        expect(maxRefreshLongTaskMs).toBeLessThan(200);
-      } finally {
-        await page.close();
-      }
+        )
+        .toBe(0);
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+      );
+      const refreshEnd = await page.evaluate(() => performance.now());
+      const diagnostics = await page.evaluate(
+        () => (window as TimelineDiagnosticsWindow).__CVM_TIMELINE_CAPACITY_DIAGNOSTICS__,
+      );
+      const refreshLongTasks = (diagnostics?.longTasks ?? []).filter(
+        (task) =>
+          task.startTime < refreshEnd &&
+          task.startTime + task.duration > beforeRefresh.refreshStart,
+      );
+      const maxRefreshLongTaskMs = Math.max(0, ...refreshLongTasks.map((task) => task.duration));
+      const screenshot = await page.screenshot();
+      const evidence = {
+        viewport: name,
+        timelineMountMaxLongTaskMs,
+        refreshMaxLongTaskMs: maxRefreshLongTaskMs,
+        timelineMountLongTasks,
+        longTasks: diagnostics?.longTasks ?? [],
+        traversalCount: diagnostics?.traversalStarts.length ?? 0,
+        pageRequests: diagnostics?.pageRequests ?? 0,
+        releasedSnapshots: diagnostics?.releasedSnapshots ?? 0,
+        releaseFailures: diagnostics?.releaseFailures ?? 0,
+        timelineHttpFailures: diagnostics?.timelineHttpFailures ?? 0,
+        sseLiveMessages: diagnostics?.sseLiveMessageCount ?? 0,
+      };
+      await writeFile(testInfo.outputPath(`timeline-dense-${name}.png`), screenshot);
+      await writeFile(
+        testInfo.outputPath(`timeline-dense-${name}-diagnostics.json`),
+        JSON.stringify(evidence, null, 2),
+        "utf8",
+      );
+      await testInfo.attach(`timeline-dense-${name}`, {
+        body: screenshot,
+        contentType: "image/png",
+      });
+      await testInfo.attach(`timeline-dense-${name}-diagnostics.json`, {
+        body: JSON.stringify(evidence, null, 2),
+        contentType: "application/json",
+      });
+      expect(diagnostics?.traversalStarts.length).toBeGreaterThanOrEqual(2);
+      expect(diagnostics?.releasedSnapshots).toBe(diagnostics?.traversalStarts.length);
+      expect(diagnostics?.maxActiveTraversals).toBe(1);
+      expect(
+        diagnostics?.traversalStarts.every(
+          (startedAt, index) =>
+            index === 0 ||
+            startedAt - diagnostics.traversalStarts[index - 1]! >= MINIMUM_REFRESH_INTERVAL_MS,
+        ),
+      ).toBe(true);
+      expect(diagnostics?.pageRequests).toBeGreaterThanOrEqual(
+        (diagnostics?.traversalStarts.length ?? 0) * 2,
+      );
+      expect(diagnostics?.releaseFailures).toBe(0);
+      expect(diagnostics?.timelineHttpFailures).toBe(0);
+      expect(timelineMountMaxLongTaskMs).toBeLessThan(200);
+      expect(maxRefreshLongTaskMs).toBeLessThan(200);
+    } finally {
+      await context.close();
     }
-  } finally {
-    await context.close();
   }
 });
