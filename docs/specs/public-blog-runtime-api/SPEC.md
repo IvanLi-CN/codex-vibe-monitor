@@ -60,7 +60,7 @@
 
 - The system MUST apply an explicit, deployment-configurable CORS origin allowlist to this endpoint without enabling credentials.
 - Inputs: The configured public blog runtime origins, defaulting to `https://ivanli.cc` and `http://127.0.0.1:12620`.
-- Outputs: Allowed origins may make GET requests and use `If-None-Match`; wildcard origins and credentialed requests are not allowed.
+- Outputs: Allowed origins may make GET requests and use `If-None-Match`; wildcard origins and credentialed requests are not allowed. The response MUST expose `ETag`, `Cache-Control`, and `Retry-After` to allowed browser clients.
 
 ## Verification
 
@@ -80,7 +80,7 @@
 
 - Method: CORS middleware tests with allowed and denied origins and methods.
 - covers: `REQ-PBRA-007`
-- Pass condition: Both configured defaults are allowed, unconfigured origins and non-GET preflights are denied, and credentials are not enabled.
+- Pass condition: Both configured defaults are allowed, unconfigured origins and non-GET preflights are denied, credentials are not enabled, and a cross-origin 429 response exposes its `Retry-After` header.
 
 ### VER-PBRA-004
 

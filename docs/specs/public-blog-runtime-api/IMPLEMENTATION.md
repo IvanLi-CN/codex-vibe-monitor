@@ -16,7 +16,7 @@
 
 ## Coverage / rollout summary
 
-- The dedicated endpoint has a 30-second server snapshot cache, a three-second bounded single-flight refresh, one-second suppression after failure that permits later retry, stale last-good fallback, ETag, and a process-wide token bucket. The public route has a GET-only method guard and isolated CORS configuration. Its response is assembled from existing aggregate read models.
+- The dedicated endpoint has a 30-second server snapshot cache, a three-second bounded single-flight refresh, one-second suppression after failure that permits later retry, stale last-good fallback, ETag, and a process-wide token bucket. The public route has a GET-only method guard and isolated CORS configuration, exposing `ETag`, `Cache-Control`, and `Retry-After` to allowed browser clients. Its response is assembled from existing aggregate read models.
 
 ## Remaining Gaps
 

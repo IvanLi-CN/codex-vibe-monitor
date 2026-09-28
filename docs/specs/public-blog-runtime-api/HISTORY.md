@@ -13,6 +13,7 @@
 ## Related Changes
 
 - The initial implementation is delivered in the current topic PR. Record its live PR reference here after publication.
+- A review follow-up exposes `Retry-After` to allowed browser clients and verifies the cross-origin 429 response. The live PR reference will be recorded after publication.
 
 ## References
 
