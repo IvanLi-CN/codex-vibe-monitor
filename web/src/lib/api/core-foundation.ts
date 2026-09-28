@@ -5807,6 +5807,12 @@ export async function fetchInvocationTimeline(options: {
   return normalizeInvocationTimelineResponse(response);
 }
 
+export async function releaseInvocationTimelineSnapshot(asOf: string): Promise<void> {
+  await fetchJson<void>(`/api/stats/invocation-timeline/${encodeURIComponent(asOf)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function fetchParallelWorkStats(params?: {
   range?: string;
   bucket?: string;

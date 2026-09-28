@@ -4,10 +4,25 @@ import {
   compareRoutingStateVersion,
   fetchSystemStatus,
   normalizePoolRoutingSelectionAudit,
+  releaseInvocationTimelineSnapshot,
 } from "./core-foundation";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("releaseInvocationTimelineSnapshot", () => {
+  it("releases the opaque snapshot token with DELETE and accepts an empty 204 response", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(releaseInvocationTimelineSnapshot("snapshot/with space")).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/stats/invocation-timeline/snapshot%2Fwith%20space",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
 });
 
 describe("fetchSystemStatus retention recovery compatibility", () => {

@@ -4,10 +4,11 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 #[cfg(test)]
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const INVOCATION_TIMELINE_PAGE_SIZE: i64 = 500;
@@ -26,6 +27,7 @@ const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE: usize = 100;
 const INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE: i64 = 64;
 const INVOCATION_TIMELINE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT: usize = 1_024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
@@ -60,6 +62,121 @@ static INVOCATION_TIMELINE_MATERIALIZATION_LOCK: once_cell::sync::Lazy<tokio::sy
     once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
 static INVOCATION_TIMELINE_CLEANUP_CURSOR: once_cell::sync::Lazy<StdMutex<Option<String>>> =
     once_cell::sync::Lazy::new(|| StdMutex::new(None));
+static INVOCATION_TIMELINE_RELEASE_QUEUE: once_cell::sync::Lazy<
+    StdMutex<TimelineSnapshotReleaseQueue>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(TimelineSnapshotReleaseQueue::default()));
+static INVOCATION_TIMELINE_CAPACITY_REJECTIONS: once_cell::sync::Lazy<
+    TimelineSnapshotCapacityRejections,
+> = once_cell::sync::Lazy::new(TimelineSnapshotCapacityRejections::default);
+
+#[derive(Default)]
+struct TimelineSnapshotReleaseQueue {
+    pending: VecDeque<String>,
+    queued: HashSet<String>,
+    overflow_count: u64,
+}
+
+#[derive(Default)]
+struct TimelineSnapshotCapacityRejections {
+    active_token_limit: AtomicU64,
+    snapshot_row_limit: AtomicU64,
+    snapshot_byte_limit: AtomicU64,
+    aggregate_row_limit: AtomicU64,
+    aggregate_byte_limit: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TimelineSnapshotDiagnostics {
+    active_snapshots: usize,
+    active_rows: usize,
+    active_bytes: usize,
+    pending_release_tokens: usize,
+    release_queue_overflows: u64,
+    active_token_limit_rejections: u64,
+    snapshot_row_limit_rejections: u64,
+    snapshot_byte_limit_rejections: u64,
+    aggregate_row_limit_rejections: u64,
+    aggregate_byte_limit_rejections: u64,
+}
+
+fn record_timeline_capacity_rejection(
+    reason: &'static str,
+    active_snapshots: usize,
+    active_rows: usize,
+    active_bytes: usize,
+    snapshot_rows: usize,
+    snapshot_bytes: usize,
+) {
+    let counters = &INVOCATION_TIMELINE_CAPACITY_REJECTIONS;
+    match reason {
+        "active_token_limit" => {
+            counters.active_token_limit.fetch_add(1, Ordering::Relaxed);
+        }
+        "snapshot_row_limit" => {
+            counters.snapshot_row_limit.fetch_add(1, Ordering::Relaxed);
+        }
+        "snapshot_byte_limit" => {
+            counters.snapshot_byte_limit.fetch_add(1, Ordering::Relaxed);
+        }
+        "aggregate_row_limit" => {
+            counters.aggregate_row_limit.fetch_add(1, Ordering::Relaxed);
+        }
+        "aggregate_byte_limit" => {
+            counters
+                .aggregate_byte_limit
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        _ => unreachable!("capacity rejection reason must be a fixed label"),
+    }
+    tracing::warn!(
+        capacity_reason = reason,
+        active_snapshot_count = active_snapshots,
+        active_snapshot_rows = active_rows,
+        active_snapshot_bytes = active_bytes,
+        rejected_snapshot_rows = snapshot_rows,
+        rejected_snapshot_bytes = snapshot_bytes,
+        "invocation timeline snapshot capacity rejected"
+    );
+}
+
+fn timeline_snapshot_diagnostics() -> TimelineSnapshotDiagnostics {
+    let now = Instant::now();
+    let (active_snapshots, active_rows, active_bytes) = {
+        let mut snapshots = INVOCATION_TIMELINE_SNAPSHOTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshots.retain(|_, snapshot| snapshot.expires_at > now);
+        snapshots.values().fold(
+            (snapshots.len(), 0_usize, 0_usize),
+            |(count, rows, bytes), snapshot| {
+                (
+                    count,
+                    rows.saturating_add(snapshot.row_count),
+                    bytes.saturating_add(snapshot.byte_count),
+                )
+            },
+        )
+    };
+    let (pending_release_tokens, release_queue_overflows) = {
+        let queue = INVOCATION_TIMELINE_RELEASE_QUEUE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (queue.pending.len(), queue.overflow_count)
+    };
+    let counters = &INVOCATION_TIMELINE_CAPACITY_REJECTIONS;
+    TimelineSnapshotDiagnostics {
+        active_snapshots,
+        active_rows,
+        active_bytes,
+        pending_release_tokens,
+        release_queue_overflows,
+        active_token_limit_rejections: counters.active_token_limit.load(Ordering::Relaxed),
+        snapshot_row_limit_rejections: counters.snapshot_row_limit.load(Ordering::Relaxed),
+        snapshot_byte_limit_rejections: counters.snapshot_byte_limit.load(Ordering::Relaxed),
+        aggregate_row_limit_rejections: counters.aggregate_row_limit.load(Ordering::Relaxed),
+        aggregate_byte_limit_rejections: counters.aggregate_byte_limit.load(Ordering::Relaxed),
+    }
+}
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -173,31 +290,31 @@ async fn pause_after_timeline_materialization(_: &str, _: &str, _: &str, _: Opti
 
 struct TimelineSnapshotCleanupGuard {
     token: String,
-    pool: Pool<Sqlite>,
     armed: bool,
 }
 
 impl TimelineSnapshotCleanupGuard {
-    fn new(pool: &Pool<Sqlite>, token: String) -> Self {
-        Self {
-            token,
-            pool: pool.clone(),
-            armed: true,
-        }
+    fn new(token: String) -> Self {
+        Self { token, armed: true }
     }
 
     fn disarm(&mut self) {
         self.armed = false;
     }
 
-    async fn cleanup_now(&mut self) {
+    fn cleanup_now(&mut self) {
         if !self.armed {
             return;
         }
         self.armed = false;
-        remove_timeline_snapshot_reservation(&self.token);
-        if let Err(error) = delete_timeline_snapshot_rows(&self.pool, &self.token).await {
-            tracing::warn!(?error, snapshot_token = %self.token, "failed to clean up invocation timeline snapshot");
+        if let Some(snapshot) = remove_timeline_snapshot_reservation(&self.token) {
+            let queued = enqueue_timeline_snapshot_release(self.token.clone());
+            tracing::debug!(
+                queued,
+                snapshot_rows = snapshot.row_count,
+                snapshot_bytes = snapshot.byte_count,
+                "invocation timeline snapshot cleanup queued"
+            );
         }
     }
 }
@@ -207,17 +324,7 @@ impl Drop for TimelineSnapshotCleanupGuard {
         if !self.armed {
             return;
         }
-        self.armed = false;
-        remove_timeline_snapshot_reservation(&self.token);
-        let pool = self.pool.clone();
-        let token = self.token.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                if let Err(error) = delete_timeline_snapshot_rows(&pool, &token).await {
-                    tracing::warn!(?error, snapshot_token = %token, "failed to clean up canceled invocation timeline snapshot");
-                }
-            });
-        }
+        self.cleanup_now();
     }
 }
 
@@ -334,6 +441,23 @@ fn create_timeline_snapshot_for_scope(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     snapshots.retain(|_, snapshot| snapshot.expires_at > now);
     if snapshots.len() >= INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT {
+        let (active_rows, active_bytes) =
+            snapshots
+                .values()
+                .fold((0_usize, 0_usize), |(rows, bytes), snapshot| {
+                    (
+                        rows.saturating_add(snapshot.row_count),
+                        bytes.saturating_add(snapshot.byte_count),
+                    )
+                });
+        record_timeline_capacity_rejection(
+            "active_token_limit",
+            snapshots.len(),
+            active_rows,
+            active_bytes,
+            0,
+            0,
+        );
         return Err(ApiError::unavailable(anyhow!(
             "invocation timeline snapshot capacity exhausted"
         )));
@@ -566,11 +690,30 @@ fn reserve_timeline_snapshot_budget(
     let next_byte_count = current_bytes.checked_add(payload_size).ok_or_else(|| {
         ApiError::unavailable(anyhow!("invocation timeline snapshot is too large"))
     })?;
-    if next_row_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS
-        || next_byte_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES
-        || cache_row_base.saturating_add(next_row_count) > INVOCATION_TIMELINE_MAX_CACHE_ROWS
-        || cache_byte_base.saturating_add(next_byte_count) > INVOCATION_TIMELINE_MAX_CACHE_BYTES
+    let rejection_reason = if next_row_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS {
+        Some("snapshot_row_limit")
+    } else if next_byte_count > INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES {
+        Some("snapshot_byte_limit")
+    } else if cache_row_base.saturating_add(next_row_count) > INVOCATION_TIMELINE_MAX_CACHE_ROWS {
+        Some("aggregate_row_limit")
+    } else if cache_byte_base.saturating_add(next_byte_count) > INVOCATION_TIMELINE_MAX_CACHE_BYTES
     {
+        Some("aggregate_byte_limit")
+    } else {
+        None
+    };
+    if let Some(reason) = rejection_reason {
+        record_timeline_capacity_rejection(
+            reason,
+            INVOCATION_TIMELINE_SNAPSHOTS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            cache_row_base.saturating_add(*row_count),
+            cache_byte_base.saturating_add(*byte_count),
+            next_row_count,
+            next_byte_count,
+        );
         return Err(ApiError::unavailable(anyhow!(
             "invocation timeline snapshot capacity exhausted"
         )));
@@ -604,24 +747,66 @@ async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<(), ApiEr
     Ok(())
 }
 
-fn remove_timeline_snapshot_reservation(token: &str) {
+fn remove_timeline_snapshot_reservation(token: &str) -> Option<TimelineSnapshot> {
     INVOCATION_TIMELINE_SNAPSHOTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(token);
+        .remove(token)
 }
 
-async fn delete_timeline_snapshot_rows(
-    pool: &Pool<Sqlite>,
-    token: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(&format!(
-        "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-    ))
-    .bind(token)
-    .execute(pool)
-    .await?;
-    Ok(())
+fn enqueue_timeline_snapshot_release(token: String) -> bool {
+    let mut queue = INVOCATION_TIMELINE_RELEASE_QUEUE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if queue.queued.contains(&token) {
+        return true;
+    }
+    if queue.pending.len() >= INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT {
+        queue.overflow_count = queue.overflow_count.saturating_add(1);
+        tracing::warn!(
+            release_queue_depth = queue.pending.len(),
+            release_queue_limit = INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT,
+            "invocation timeline release queue is full; periodic cleanup will reclaim the rows"
+        );
+        return false;
+    }
+    queue.queued.insert(token.clone());
+    queue.pending.push_back(token);
+    true
+}
+
+fn pending_timeline_snapshot_releases(limit: usize) -> Vec<String> {
+    INVOCATION_TIMELINE_RELEASE_QUEUE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .pending
+        .iter()
+        .take(limit)
+        .cloned()
+        .collect()
+}
+
+fn acknowledge_timeline_snapshot_release(token: &str) {
+    let mut queue = INVOCATION_TIMELINE_RELEASE_QUEUE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if queue.queued.remove(token) {
+        queue.pending.retain(|pending| pending != token);
+    }
+}
+
+pub(crate) async fn release_timeline_snapshot(AxumPath(as_of): AxumPath<String>) -> StatusCode {
+    if remove_timeline_snapshot_reservation(&as_of).is_some() {
+        let queued = enqueue_timeline_snapshot_release(as_of);
+        let diagnostics = timeline_snapshot_diagnostics();
+        tracing::debug!(
+            queued,
+            pending_release_tokens = diagnostics.pending_release_tokens,
+            release_queue_overflows = diagnostics.release_queue_overflows,
+            "invocation timeline snapshot released"
+        );
+    }
+    StatusCode::NO_CONTENT
 }
 
 #[derive(Debug, Default)]
@@ -678,13 +863,18 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    let tokens = if let Some(cursor) = cursor {
+    let mut tokens =
+        pending_timeline_snapshot_releases(INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE as usize);
+    let scan_limit = INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE as usize - tokens.len();
+    let scanned_tokens = if scan_limit == 0 {
+        Vec::new()
+    } else if let Some(cursor) = cursor {
         sqlx::query_scalar::<_, String>(&format!(
             "SELECT snapshot_token FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} \
              WHERE snapshot_token > ?1 GROUP BY snapshot_token ORDER BY snapshot_token LIMIT ?2"
         ))
         .bind(cursor)
-        .bind(INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE)
+        .bind(scan_limit as i64)
         .fetch_all(pool)
         .await?
     } else {
@@ -692,19 +882,24 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             "SELECT snapshot_token FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} \
              GROUP BY snapshot_token ORDER BY snapshot_token LIMIT ?1"
         ))
-        .bind(INVOCATION_TIMELINE_CLEANUP_TOKEN_BATCH_SIZE)
+        .bind(scan_limit as i64)
         .fetch_all(pool)
         .await?
     };
-    if tokens.is_empty() {
+    if scan_limit > 0 {
         *INVOCATION_TIMELINE_CLEANUP_CURSOR
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = scanned_tokens.last().cloned();
+    }
+    let mut unique_tokens = tokens.iter().cloned().collect::<HashSet<_>>();
+    for token in scanned_tokens {
+        if unique_tokens.insert(token.clone()) {
+            tokens.push(token);
+        }
+    }
+    if tokens.is_empty() {
         return Ok(TimelineSnapshotCleanupResult::default());
     }
-    *INVOCATION_TIMELINE_CLEANUP_CURSOR
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = tokens.last().cloned();
     pause_before_timeline_cleanup_active_tokens().await;
     let now = Instant::now();
     let active_tokens = {
@@ -725,7 +920,7 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         let delete_result = sqlx::query(&format!(
             "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
         ))
-        .bind(token)
+        .bind(&token)
         .execute(pool)
         .await?;
         if delete_result.rows_affected() > 0 {
@@ -734,6 +929,7 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
                 .deleted_rows
                 .saturating_add(delete_result.rows_affected());
         }
+        acknowledge_timeline_snapshot_release(&token);
     }
     Ok(result)
 }
@@ -755,13 +951,38 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
                 _ = state.shutdown.cancelled() => return,
                 result = cleanup => match result {
                     Ok(result) if result.skipped.is_some() => {
-                        tracing::debug!(reason = %result.skipped.as_deref().unwrap_or("unknown"), "invocation timeline cleanup skipped");
+                        let metrics = timeline_snapshot_diagnostics();
+                        tracing::debug!(
+                            reason = %result.skipped.as_deref().unwrap_or("unknown"),
+                            active_snapshots = metrics.active_snapshots,
+                            active_rows = metrics.active_rows,
+                            active_bytes = metrics.active_bytes,
+                            pending_release_tokens = metrics.pending_release_tokens,
+                            release_queue_overflows = metrics.release_queue_overflows,
+                            active_token_limit_rejections = metrics.active_token_limit_rejections,
+                            snapshot_row_limit_rejections = metrics.snapshot_row_limit_rejections,
+                            snapshot_byte_limit_rejections = metrics.snapshot_byte_limit_rejections,
+                            aggregate_row_limit_rejections = metrics.aggregate_row_limit_rejections,
+                            aggregate_byte_limit_rejections = metrics.aggregate_byte_limit_rejections,
+                            "invocation timeline cleanup skipped"
+                        );
                     }
                     Ok(result) => {
+                        let metrics = timeline_snapshot_diagnostics();
                         tracing::info!(
                             scanned_tokens = result.scanned_tokens,
                             deleted_tokens = result.deleted_tokens,
                             deleted_rows = result.deleted_rows,
+                            active_snapshots = metrics.active_snapshots,
+                            active_rows = metrics.active_rows,
+                            active_bytes = metrics.active_bytes,
+                            pending_release_tokens = metrics.pending_release_tokens,
+                            release_queue_overflows = metrics.release_queue_overflows,
+                            active_token_limit_rejections = metrics.active_token_limit_rejections,
+                            snapshot_row_limit_rejections = metrics.snapshot_row_limit_rejections,
+                            snapshot_byte_limit_rejections = metrics.snapshot_byte_limit_rejections,
+                            aggregate_row_limit_rejections = metrics.aggregate_row_limit_rejections,
+                            aggregate_byte_limit_rejections = metrics.aggregate_byte_limit_rejections,
                             "invocation timeline background snapshot cleanup completed"
                         );
                     }
@@ -1214,8 +1435,7 @@ pub(crate) async fn fetch_timeline(
             include_live,
             source_scope,
         )?;
-        let mut snapshot_cleanup_guard =
-            TimelineSnapshotCleanupGuard::new(&state.pool, as_of.clone());
+        let mut snapshot_cleanup_guard = TimelineSnapshotCleanupGuard::new(as_of.clone());
         let materialize_result = materialize_timeline_snapshot(
             state.as_ref(),
             &as_of,
@@ -1234,7 +1454,7 @@ pub(crate) async fn fetch_timeline(
         )
         .await;
         if let Err(error) = materialize_result {
-            snapshot_cleanup_guard.cleanup_now().await;
+            snapshot_cleanup_guard.cleanup_now();
             return Err(error);
         }
         let snapshot = load_timeline_snapshot_with_scope(
@@ -1609,6 +1829,7 @@ mod tests {
         let timeline_record = timeline_record_from_api(&record, false);
         let mut row_count = 0;
         let mut byte_count = 0;
+        let previous_rejections = timeline_snapshot_diagnostics().aggregate_row_limit_rejections;
         let result = reserve_timeline_snapshot_budget(
             &mut row_count,
             &mut byte_count,
@@ -1618,6 +1839,49 @@ mod tests {
             None,
         );
         assert!(matches!(result, Err(ApiError::Unavailable(_))));
+        assert_eq!(
+            timeline_snapshot_diagnostics().aggregate_row_limit_rejections,
+            previous_rejections + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn released_snapshot_reservations_are_idempotent_and_reusable() {
+        for index in 0..300_i64 {
+            let token = create_timeline_snapshot(
+                index,
+                index,
+                format!("release-start-{index}"),
+                format!("release-end-{index}"),
+                None,
+                false,
+                Vec::new(),
+            )
+            .expect("release should keep cache capacity available");
+            assert_eq!(
+                release_timeline_snapshot(AxumPath(token.clone())).await,
+                StatusCode::NO_CONTENT
+            );
+            assert_eq!(
+                release_timeline_snapshot(AxumPath(token.clone())).await,
+                StatusCode::NO_CONTENT
+            );
+            assert!(
+                load_timeline_snapshot(
+                    &token,
+                    &format!("release-start-{index}"),
+                    &format!("release-end-{index}"),
+                    None,
+                    false,
+                )
+                .is_err()
+            );
+            acknowledge_timeline_snapshot_release(&token);
+        }
+        assert_eq!(
+            release_timeline_snapshot(AxumPath("expired-or-unknown-token".to_string())).await,
+            StatusCode::NO_CONTENT
+        );
     }
 
     #[test]
@@ -1658,6 +1922,8 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_snapshot_cleanup_guard_releases_an_in_progress_reservation() {
+        let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
+        reset_timeline_snapshot_cleanup_cursor_for_test();
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -1683,10 +1949,9 @@ mod tests {
         .await
         .expect("insert canceled snapshot row");
 
-        let guard_pool = state.pool.clone();
         let guard_token = token.clone();
         let task = tokio::spawn(async move {
-            let _guard = TimelineSnapshotCleanupGuard::new(&guard_pool, guard_token);
+            let _guard = TimelineSnapshotCleanupGuard::new(guard_token);
             std::future::pending::<()>().await;
         });
         tokio::task::yield_now().await;
@@ -1698,25 +1963,38 @@ mod tests {
             load_timeline_snapshot(&token, "cancellation-start", "cancellation-end", None, true,)
                 .is_err()
         );
-        for _ in 0..20 {
-            let row_count: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-            ))
-            .bind(&token)
-            .fetch_one(&state.pool)
-            .await
-            .expect("count canceled snapshot rows");
-            if row_count == 0 {
-                state.pool.close().await;
-                return;
+        let row_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+        ))
+        .bind(&token)
+        .fetch_one(&state.pool)
+        .await
+        .expect("count canceled snapshot rows");
+        assert_eq!(row_count, 1, "cancellation must not write SQLite rows");
+        for _ in 0..8 {
+            let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .expect("queued cancellation cleanup should use the background cleaner");
+            if cleanup.skipped.is_none() && cleanup.deleted_tokens > 0 {
+                break;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("canceled snapshot rows were not cleaned up");
+        let row_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+        ))
+        .bind(&token)
+        .fetch_one(&state.pool)
+        .await
+        .expect("count cleaned canceled snapshot rows");
+        assert_eq!(row_count, 0);
+        state.pool.close().await;
     }
 
     #[tokio::test]
     async fn aborting_fetch_after_materialization_cleans_up_snapshot() {
+        let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
+        reset_timeline_snapshot_cleanup_cursor_for_test();
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -1779,21 +2057,32 @@ mod tests {
             )
             .is_err()
         );
-        for _ in 0..20 {
-            let row_count: i64 = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-            ))
-            .bind(&token)
-            .fetch_one(&state.pool)
-            .await
-            .expect("count aborted fetch snapshot rows");
-            if row_count == 0 {
-                state.pool.close().await;
-                return;
+        let row_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+        ))
+        .bind(&token)
+        .fetch_one(&state.pool)
+        .await
+        .expect("count aborted fetch snapshot rows before background cleanup");
+        assert_eq!(row_count, 1, "cancellation must not write SQLite rows");
+        for _ in 0..8 {
+            let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .expect("queued aborted fetch cleanup should use the background cleaner");
+            if cleanup.skipped.is_none() && cleanup.deleted_tokens > 0 {
+                break;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("aborted fetch snapshot rows were not cleaned up");
+        let row_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
+        ))
+        .bind(&token)
+        .fetch_one(&state.pool)
+        .await
+        .expect("count aborted fetch rows after background cleanup");
+        assert_eq!(row_count, 0);
+        state.pool.close().await;
     }
 
     #[tokio::test]

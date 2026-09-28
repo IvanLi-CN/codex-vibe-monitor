@@ -7,6 +7,7 @@ import {
   resolveInvocationTimelineLayout,
   resolveInvocationTimelineScrollTop,
   resolveInvocationTimelineTooltipPosition,
+  resolveVisibleInvocationLaneRange,
   shouldAdvanceInvocationTimelineBars,
   shouldShowTimelineUnavailable,
 } from "./DashboardInvocationTimeline";
@@ -41,6 +42,23 @@ describe("assignInvocationTimelineLanes", () => {
 
     expect(lanes.map((item) => item.lane)).toEqual([0, 1, 0]);
     expect(lanes[2].endMs).toBeGreaterThan(lanes[2].startMs);
+  });
+
+  it("assigns dense concurrent calls without losing the lowest available lane", () => {
+    const startMs = Date.parse("2026-03-26T12:00:00.000Z");
+    const records = Array.from({ length: 550 }, (_, index) =>
+      record(`invoke-${index}`, new Date(startMs + index).toISOString(), 120_000),
+    );
+    records.push(record("invoke-after-spike", new Date(startMs + 121_000).toISOString(), 1_000));
+
+    const lanes = assignInvocationTimelineLanes(
+      records,
+      new Date(startMs + 122_000).toISOString(),
+      startMs + 122_000,
+    );
+
+    expect(getInvocationTimelineLaneCount(lanes)).toBe(550);
+    expect(lanes.at(-1)?.lane).toBe(0);
   });
 
   it("extends an in-flight bar to the current clock", () => {
@@ -236,5 +254,32 @@ describe("resolveInvocationTimelineScrollTop", () => {
     expect(resolveInvocationTimelineScrollTop(false, 48, 120)).toBe(120);
     expect(resolveInvocationTimelineScrollTop(true, 48, 120)).toBe(48);
     expect(resolveInvocationTimelineScrollTop(true, 180, 120)).toBe(120);
+  });
+});
+
+describe("resolveVisibleInvocationLaneRange", () => {
+  it("renders only the viewport and overscan while preserving both scroll boundaries", () => {
+    const layout = resolveInvocationTimelineLayout(550, false);
+    const bottom = resolveVisibleInvocationLaneRange(
+      550,
+      layout.laneStep,
+      layout.lanePlotHeight,
+      layout.laneAreaHeightPx,
+      layout.lanePlotHeight - layout.laneAreaHeightPx,
+    );
+    const top = resolveVisibleInvocationLaneRange(
+      550,
+      layout.laneStep,
+      layout.lanePlotHeight,
+      layout.laneAreaHeightPx,
+      0,
+    );
+
+    expect(bottom.firstLane).toBe(0);
+    expect(bottom.lastLane).toBeGreaterThan(layout.laneAreaHeightPx);
+    expect(bottom.lastLane).toBeLessThan(layout.laneAreaHeightPx + 4);
+    expect(top.firstLane).toBeGreaterThan(250);
+    expect(top.lastLane).toBe(549);
+    expect(top.lastLane - top.firstLane + 1).toBeLessThan(layout.laneAreaHeightPx + 4);
   });
 });

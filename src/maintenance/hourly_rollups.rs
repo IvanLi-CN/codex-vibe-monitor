@@ -3538,6 +3538,10 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
         )
         .route("/api/stats/invocation-timeline", get(fetch_timeline))
         .route(
+            "/api/stats/invocation-timeline/:as_of",
+            delete(release_timeline_snapshot),
+        )
+        .route(
             "/api/stats/dashboard-network-timeseries",
             get(fetch_dashboard_network_timeseries),
         )

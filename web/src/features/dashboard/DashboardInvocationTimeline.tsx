@@ -38,6 +38,49 @@ export interface LaneRecord {
   lane: number;
 }
 
+interface LaneEnd {
+  endMs: number;
+  lane: number;
+}
+
+function pushMinHeap<T>(heap: T[], value: T, compare: (left: T, right: T) => number) {
+  let index = heap.length;
+  heap.push(value);
+  while (index > 0) {
+    const parentIndex = Math.floor((index - 1) / 2);
+    const parent = heap[parentIndex];
+    if (parent === undefined || compare(parent, value) <= 0) break;
+    heap[index] = parent;
+    index = parentIndex;
+  }
+  heap[index] = value;
+}
+
+function popMinHeap<T>(heap: T[], compare: (left: T, right: T) => number): T | undefined {
+  const first = heap[0];
+  if (first === undefined) return undefined;
+  const last = heap.pop();
+  if (last === undefined) return first;
+  if (heap.length === 0) return first;
+
+  let index = 0;
+  while (true) {
+    const leftIndex = index * 2 + 1;
+    const rightIndex = leftIndex + 1;
+    if (leftIndex >= heap.length) break;
+    const left = heap[leftIndex];
+    if (left === undefined) break;
+    const right = heap[rightIndex];
+    const childIndex = right !== undefined && compare(right, left) < 0 ? rightIndex : leftIndex;
+    const child = heap[childIndex];
+    if (child === undefined || compare(last, child) <= 0) break;
+    heap[index] = child;
+    index = childIndex;
+  }
+  heap[index] = last;
+  return first;
+}
+
 export function getInvocationTimelineLaneCount(lanes: LaneRecord[]) {
   return Math.max(1, ...lanes.map((item) => item.lane + 1));
 }
@@ -183,6 +226,11 @@ export interface InvocationTimelineLayout {
   visibleLaneCount: number;
 }
 
+export interface InvocationTimelineVisibleLaneRange {
+  firstLane: number;
+  lastLane: number;
+}
+
 export function resolveInvocationTimelineLayout(
   actualLaneCount: number,
   isCompactViewport: boolean,
@@ -255,6 +303,22 @@ export function resolveInvocationTimelineScrollTop(
   return maxScrollTop;
 }
 
+export function resolveVisibleInvocationLaneRange(
+  laneCount: number,
+  laneStep: number,
+  lanePlotHeight: number,
+  laneAreaHeight: number,
+  scrollTop: number,
+  overscan = 2,
+): InvocationTimelineVisibleLaneRange {
+  if (laneCount <= 0 || laneStep <= 0) return { firstLane: 0, lastLane: -1 };
+  const firstVisibleLane = Math.floor((lanePlotHeight - (scrollTop + laneAreaHeight)) / laneStep);
+  const lastVisibleLane = Math.ceil((lanePlotHeight - scrollTop) / laneStep) - 1;
+  return {
+    firstLane: Math.max(0, firstVisibleLane - overscan),
+    lastLane: Math.min(laneCount - 1, lastVisibleLane + overscan),
+  };
+}
 export function assignInvocationTimelineLanes(
   records: InvocationTimelineRecord[],
   asOf: string,
@@ -263,7 +327,9 @@ export function assignInvocationTimelineLanes(
   snapshotAtMs?: number,
 ): LaneRecord[] {
   const referenceNowMs = snapshotAtMs ?? parseEpoch(asOf) ?? nowMs;
-  const laneEnds: number[] = [];
+  const activeLanes: LaneEnd[] = [];
+  const availableLanes: number[] = [];
+  let nextLane = 0;
   return records
     .map((record) => ({ record, startMs: parseEpoch(record.occurredAt) }))
     .filter(
@@ -274,10 +340,21 @@ export function assignInvocationTimelineLanes(
       const endMs = record.isInFlight
         ? Math.max(referenceNowMs, advanceInFlight ? nowMs : referenceNowMs, startMs + 1)
         : Math.max(resolveTerminalEndMs(record, startMs), startMs + 1);
-      const laneEndMs = endMs;
-      let lane = laneEnds.findIndex((laneEnd) => laneEnd <= startMs);
-      if (lane < 0) lane = laneEnds.length;
-      laneEnds[lane] = laneEndMs;
+      while (activeLanes[0]?.endMs !== undefined && activeLanes[0].endMs <= startMs) {
+        const availableLane = popMinHeap(
+          activeLanes,
+          (left, right) => left.endMs - right.endMs || left.lane - right.lane,
+        );
+        if (availableLane) {
+          pushMinHeap(availableLanes, availableLane.lane, (left, right) => left - right);
+        }
+      }
+      const lane = popMinHeap(availableLanes, (left, right) => left - right) ?? nextLane++;
+      pushMinHeap(
+        activeLanes,
+        { lane, endMs },
+        (left, right) => left.endMs - right.endMs || left.lane - right.lane,
+      );
       return { record, startMs, endMs, lane };
     });
 }
@@ -393,6 +470,16 @@ export function DashboardInvocationTimeline({
   const laneCount = getInvocationTimelineLaneCount(lanes);
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
   const tooltipTheme = usePortaledTheme(plotRef.current);
+  const visibleLaneRange = resolveVisibleInvocationLaneRange(
+    laneLayout.visibleLaneCount,
+    laneLayout.laneStep,
+    laneLayout.lanePlotHeight,
+    laneLayout.laneAreaHeightPx,
+    laneScrollTop,
+  );
+  const visibleLanes = lanes.filter(
+    (item) => item.lane >= visibleLaneRange.firstLane && item.lane <= visibleLaneRange.lastLane,
+  );
   const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
   const plotWindow = timeline.window;
   const autoScrollViewKey = `${timeline.bounds?.startMs ?? "empty"}:${closedNaturalDay}:${upstreamAccountId ?? "all"}:${timelineDataOverride ? "override" : "remote"}`;
@@ -562,10 +649,15 @@ export function DashboardInvocationTimeline({
     callAxisTopForValue(0) >= laneScrollTop &&
     callAxisTopForValue(0) <= laneScrollTop + laneAreaHeightPx;
   const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1) + laneGap;
+  const firstCallAxisGridValue = Math.max(1, visibleLaneRange.firstLane);
+  const lastCallAxisGridValue = Math.min(callAxisMaxValue, visibleLaneRange.lastLane + 1);
   const callAxisGridValues =
     callAxisMaxValue <= 20
       ? Array.from({ length: callAxisMaxValue }, (_, index) => index + 1)
-      : [...new Set(callAxisTicks.map((tick) => tick.value).filter((value) => value > 0))];
+      : Array.from(
+          { length: Math.max(0, lastCallAxisGridValue - firstCallAxisGridValue + 1) },
+          (_, index) => firstCallAxisGridValue + index,
+        );
 
   return (
     <div data-testid="dashboard-today-activity-chart">
@@ -655,6 +747,8 @@ export function DashboardInvocationTimeline({
           <div className="min-w-0 p-3">
             <div
               data-testid="dashboard-invocation-timeline-lanes"
+              data-total-calls={renderedData?.total ?? 0}
+              data-total-lanes={laneCount}
               className="relative h-[21rem] overflow-hidden overscroll-contain desktop:h-80"
               style={{ height: `${chartHeightPx}px` }}
             >
@@ -773,7 +867,7 @@ export function DashboardInvocationTimeline({
                     ref={laneScrollRef}
                     className="absolute inset-x-0 top-0 overflow-y-auto overscroll-contain"
                     tabIndex={0}
-                    aria-label={t("dashboard.activityOverview.timelineTitle")}
+                    aria-label={`${t("dashboard.activityOverview.timelineTitle")}, ${t("dashboard.activityOverview.timelineCalls", { count: renderedData?.total ?? 0 })}`}
                     style={{ height: `${laneAreaHeightPx}px` }}
                     onScroll={(event) => {
                       const scrollTop = event.currentTarget.scrollTop;
@@ -801,7 +895,7 @@ export function DashboardInvocationTimeline({
                             }}
                           />
                         ))}
-                        {lanes.map((item) => {
+                        {visibleLanes.map((item) => {
                           const status = resolveStatus(item.record);
                           const left = Math.max(0, Math.min(100, xFor(item.startMs)));
                           const right = Math.max(left, Math.min(100, xFor(item.endMs)));
