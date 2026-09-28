@@ -1931,6 +1931,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_occurred_at_status")?;
 
+    // Detail retention filters on the full-detail tier and then walks the same time/id order.
+    // Keep that candidate scan bounded by the relevant slice instead of scanning every row in
+    // the retention window before applying the success-like status predicate.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_detail_level_occurred_at
+        ON codex_invocations (detail_level, occurred_at, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_detail_level_occurred_at")?;
+
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_source_occurred_at
