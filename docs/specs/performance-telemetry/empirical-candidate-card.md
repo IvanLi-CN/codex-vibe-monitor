@@ -25,6 +25,14 @@
 - 低速率维护压力诊断启用组：`/srv/codex/agents/01a0de1f-0b81-7253-b9c8-58b13776b239/runs/20260928_110548_performance_b9f76d87_43840`
 - 预热后维护压力诊断（关闭遥测）：`/srv/codex/agents/01a0de1f-0b81-7253-b9c8-58b13776b239/runs/20260928_112442_performance_b9f76d87_13389`
 
+## A6 代表性负载诊断（非合并门禁）
+
+A6 仅作为发布后诊断项保留。合并前不把共享测试机上的代理/P1 ACK p95 增量、CPU 或 RSS 差异解释为遥测开销，除非关闭与启用组都在同一稳定窗口完成完整对照。A7 容量、写锁隔离、故障恢复和直接质量门禁仍是交付要求。
+
+当前候选 `0d9cf196` 在共享机恢复后的禁用遥测复跑目录为：
+`/srv/codex/agents/01a0de1f-0b81-7253-b9c8-58b13776b239/runs/20260928_125033_performance_0d9cf196_295`。
+前两轮分别完成 3,000/3,000 请求，P95 为 91.20 ms 和 184.94 ms，P1 ACK P95 为 6 ms 和 8 ms；第三轮出现 13 个 30 秒超时，P95 为 9,897.63 ms。遥测关闭组没有丢弃，健康接口为 `disabled`，但该基线不满足稳定对照条件，因此没有启动对应的启用组，也不改变 A6 的诊断项结论。
+
 ## 50 req/s 业务容量压力（非 A6）
 
 入口为 `scripts/shared-testbox-performance-acceptance --scenario sustained --duration 300 --rounds 3 --rate 50`。
