@@ -1089,6 +1089,11 @@ mod tests {
             }
         }
 
+        let projection_rows_before =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
+                .fetch_one(&state.pool)
+                .await
+                .expect("count minute projection rows before request");
         let router = build_public_blog_runtime_router(state.clone());
         let response = router
             .clone()
@@ -1148,6 +1153,16 @@ mod tests {
             .await
             .expect("conditional response");
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+        sleep(Duration::from_millis(100)).await;
+        let projection_rows_after =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
+                .fetch_one(&state.pool)
+                .await
+                .expect("count minute projection rows after request");
+        assert_eq!(
+            projection_rows_after, projection_rows_before,
+            "public runtime reads must not warm the persistent minute projection"
+        );
         state.shutdown.cancel();
     }
 
