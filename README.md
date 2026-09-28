@@ -262,6 +262,7 @@ bun run worktree:setup -- --force
 | 变量                                                   | 作用                                                                                                                                |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `HTTP_BIND`                                            | 服务监听地址                                                                                                                        |
+| `PUBLIC_BLOG_RUNTIME_CORS_ALLOWED_ORIGINS`              | 博客只读运行指标接口的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                                          |
 | `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                                     |
 | `PERFORMANCE_DATABASE_PATH`                             | 独立性能指标 SQLite 路径；未配置时使用主库同目录的 `<主库名>.performance.sqlite`                                                     |
 | `PERFORMANCE_TELEMETRY_ENABLED`                        | 是否启用性能指标采集，默认 `true`；设为 `false` 只关闭观测，不影响业务请求                                                         |

@@ -316,6 +316,7 @@ pub(crate) struct AppConfig {
     pub(crate) shared_connection_parallelism: usize,
     pub(crate) http_bind: SocketAddr,
     pub(crate) cors_allowed_origins: Vec<String>,
+    pub(crate) public_blog_runtime_cors_allowed_origins: Vec<String>,
     pub(crate) list_limit_max: usize,
     pub(crate) user_agent: String,
     pub(crate) static_dir: Option<PathBuf>,
@@ -547,6 +548,22 @@ impl AppConfig {
                 .unwrap_or_else(|| "127.0.0.1:8080".parse().expect("valid default address"))
         };
         let cors_allowed_origins = parse_cors_allowed_origins_env(ENV_CORS_ALLOWED_ORIGINS)?;
+        let public_blog_runtime_cors_allowed_origins =
+            match env::var(ENV_PUBLIC_BLOG_RUNTIME_CORS_ALLOWED_ORIGINS) {
+                Ok(raw) => parse_cors_allowed_origins_named(
+                    &raw,
+                    ENV_PUBLIC_BLOG_RUNTIME_CORS_ALLOWED_ORIGINS,
+                )?,
+                Err(env::VarError::NotPresent) => vec![
+                    "https://ivanli.cc".to_string(),
+                    "http://127.0.0.1:12620".to_string(),
+                ],
+                Err(err) => {
+                    return Err(anyhow!(
+                        "failed to read {ENV_PUBLIC_BLOG_RUNTIME_CORS_ALLOWED_ORIGINS}: {err}"
+                    ));
+                }
+            };
         let list_limit_max = overrides
             .list_limit_max
             .or_else(|| {
@@ -744,6 +761,7 @@ impl AppConfig {
             shared_connection_parallelism,
             http_bind,
             cors_allowed_origins,
+            public_blog_runtime_cors_allowed_origins,
             list_limit_max,
             user_agent,
             static_dir,

@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add a read-only public runtime aggregate endpoint for the IvanLi blog.",
+    "release_unit_description": "Public Blog Runtime API implementation.",
+    "affected_contracts": [
+      "public-api"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The planned change adds one route without changing existing endpoint contracts or persisted formats.",
+      "assessed_at": "2026-09-28T07:02:10Z",
+      "evidence": [
+        "docs/specs/public-blog-runtime-api/SPEC.md defines one additive GET interface."
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "No scope drift; the implementation adds only the specified endpoint and its independent configuration."
+      },
+      "reasoning": "The endpoint remains additive and stores its cache and rate-limit state only in process memory.",
+      "reassessed_at": "2026-09-28T08:26:56Z",
+      "evidence": [
+        "Existing API routes and their CORS configuration remain unchanged.",
+        "No database schema or migration file changed."
+      ]
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "The new API contract is additive within the current major line, and no persistent-state compatibility surface was added.",
+      "verified_at": "2026-09-28T08:26:56Z",
+      "evidence": [
+        "cargo test public_blog -- --nocapture passed 11 tests, including endpoint response, CORS, cache, and SQLite coverage assertions.",
+        "cargo check --locked --all-targets --all-features passed.",
+        "cargo clippy --locked --all-targets --all-features -- -D warnings passed."
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Consumers on the current major line; existing API paths and response contracts remain compatible.",
+      "evidence": [
+        "The route is additive at /api/public/blog-runtime/v1/codex-vibe-monitor.",
+        "The route-level test verifies GET-only behavior and preserves unrelated CORS configuration."
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "The snapshot cache and rate limiter are process memory; the database schema and durable formats are unchanged.",
+      "source_program_compatibility_range": "Not applicable; this change writes no persistent state.",
+      "evidence": [
+        "No schema or migration files changed.",
+        "The SQLite test reads existing long_term_usage_daily rows without modifying their schema."
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "public-blog-runtime-api"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "The only applicable impact is the additive public API's verified minor classification."
+    ]
+  }
+}

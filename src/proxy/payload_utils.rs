@@ -1630,11 +1630,15 @@ pub(crate) fn parse_cors_allowed_origins_env(name: &str) -> Result<Vec<String>> 
 }
 
 pub(crate) fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>> {
+    parse_cors_allowed_origins_named(raw, ENV_CORS_ALLOWED_ORIGINS)
+}
+
+pub(crate) fn parse_cors_allowed_origins_named(raw: &str, env_name: &str) -> Result<Vec<String>> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for candidate in raw.split(',').map(str::trim).filter(|v| !v.is_empty()) {
         let normalized = normalize_cors_origin(candidate)
-            .ok_or_else(|| anyhow!("invalid {ENV_CORS_ALLOWED_ORIGINS} entry: {candidate}"))?;
+            .ok_or_else(|| anyhow!("invalid {env_name} entry: {candidate}"))?;
         if seen.insert(normalized.clone()) {
             entries.push(normalized);
         }
