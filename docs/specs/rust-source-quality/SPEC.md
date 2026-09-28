@@ -60,7 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 41 explicit file entries: 23
+The policy MUST keep the current inventory as 40 explicit file entries: 22
 production candidates above 2,500 lines and 18 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
 counts for checker compatibility. Each current entry MUST record its exact
@@ -94,7 +94,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 41 entries have
+The current inventory retains no cohesive-module exceptions: all 40 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
@@ -157,6 +157,23 @@ both below the 3,000-line test/helper target. The parent is removed from the
 policy inventory; test names, assertions, fixtures, timing, and resource bucket
 remain unchanged.
 
+The application runtime-state extraction moves invocation records, terminal and
+projection tombstones, pruning, prompt-cache projections, and memory estimates
+into `src/app_state/invocation_store.rs`, and moves dashboard current/network/
+terminal projection state, coalescing, publication windows, baselines, captures,
+and topology counters into `src/app_state/dashboard.rs`. The parent retains the
+`RuntimeProjectionHub` coordinator, request-pipeline metrics, lifecycle counters,
+and explicit crate-visible re-exports. It preserves store-before-dashboard lock
+ordering, does not await while either state lock is held, and keeps mutation,
+rollback, prune synchronization, deadline, and revision behavior unchanged.
+After rustfmt, the parent is 1,661 physical lines, `dashboard.rs` is 1,266
+lines, and `invocation_store.rs` is 577 lines; all are below the 2,500-line
+production target. The parent is removed from the policy inventory, reducing
+the current inventory to 22 production and 18 test/helper entries (40 total).
+The immutable preparation baseline remains 32 and 23, and the suppression
+baseline remains 117. The summary API slice remains unchanged and frozen for
+this extraction.
+
 ## Later Module Rollout
 
 Refactor PRs may split one production or test/helper candidate at a time. Such
@@ -194,7 +211,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 23 production and 18 test/helper entries, with
+Pass condition: the policy has 22 production and 18 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004

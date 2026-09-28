@@ -308,3 +308,22 @@ source-quality inventory, reducing the current inventory to 23 production and
 assertions, fixtures, timing, and resource classification remain unchanged.
 The parent is 2,919 physical lines and the child is 634 lines, both below the
 3,000-line test/helper target.
+
+The application runtime-state extraction moves invocation records, terminal and
+projection tombstones, pruning, prompt-cache projections, and memory estimates
+into `src/app_state/invocation_store.rs`, and dashboard current/network/terminal
+projection state, coalescing, publication windows, baselines, captures, and
+topology counters into `src/app_state/dashboard.rs`. The parent retains the
+`RuntimeProjectionHub` coordinator, request-pipeline metrics, lifecycle counters,
+and explicit crate-visible re-exports. Store-before-dashboard lock ordering is
+preserved, no await occurs while either state lock is held, and mutation,
+rollback, prune synchronization, deadline, and revision behavior remain
+unchanged. The summary API slice remains frozen for this extraction.
+
+After rustfmt, `src/app_state.rs` is 1,661 physical lines,
+`src/app_state/dashboard.rs` is 1,266 lines, and
+`src/app_state/invocation_store.rs` is 577 lines. All three are below the
+2,500-line production target, so `src/app_state.rs` is removed from the policy
+inventory. The current inventory is 22 production and 18 test/helper
+candidates (40 entries total); the immutable preparation baseline remains 32
+and 23 and the suppression baseline remains 117.
