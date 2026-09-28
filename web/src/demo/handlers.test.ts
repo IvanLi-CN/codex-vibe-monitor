@@ -19,6 +19,34 @@ describe("demo MSW handlers", () => {
     await expect(response.json()).resolves.toEqual({ backend: "0.2.0", frontend: "0.2.0" });
   });
 
+  it("keeps performance Demo series inside the fixed backend registry", async () => {
+    const response = await fetch("http://demo.invalid/api/system/performance?range=24h");
+    const payload = (await response.json()) as {
+      series: Array<{ metricId: string; dimension: string }>;
+    };
+    const allowed = new Set([
+      "http.in_flight:other",
+      "telemetry.queue_depth:collector",
+      "telemetry.dropped_samples:collector",
+      "sqlite.write_duration_ms:main",
+      "sqlite.wal_bytes:main",
+      "projection.publish_duration_ms:current",
+      "sse.active_subscribers:dashboard",
+      "maintenance.backlog_age_ms:maintenance",
+      "maintenance.run_duration_ms:maintenance",
+      "process.rss_bytes:process",
+      "process.cpu_percent:process",
+      "browser.data_ready_ms:system:desktop",
+      "browser.update_to_paint_ms:system:desktop",
+    ]);
+    expect(response.ok).toBe(true);
+    expect(payload.series).not.toHaveLength(0);
+    expect(payload.series.every((item) => allowed.has(`${item.metricId}:${item.dimension}`))).toBe(
+      true,
+    );
+    expect(payload.series.some((item) => item.metricId === "http.in_flight")).toBe(true);
+  });
+
   it("treats zero-millisecond TTFT as responding in account attempts", () => {
     expect(demoAttemptPhase("running", 0)).toBe("responding");
     expect(demoAttemptPhase("running", null)).toBe("requesting");

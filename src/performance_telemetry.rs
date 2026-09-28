@@ -607,6 +607,7 @@ pub(crate) struct PerformanceTelemetryRuntime {
     active_http_requests: AtomicU64,
     browser_rate_limiter: Mutex<BrowserRateLimiter>,
     shutdown: CancellationToken,
+    writer_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug)]
@@ -682,6 +683,7 @@ impl PerformanceTelemetryRuntime {
             active_http_requests: AtomicU64::new(0),
             browser_rate_limiter: Mutex::new(BrowserRateLimiter::new()),
             shutdown: CancellationToken::new(),
+            writer_handle: std::sync::Mutex::new(None),
         })
     }
 
@@ -724,6 +726,7 @@ impl PerformanceTelemetryRuntime {
             active_http_requests: AtomicU64::new(0),
             browser_rate_limiter: Mutex::new(BrowserRateLimiter::new()),
             shutdown: shutdown.clone(),
+            writer_handle: std::sync::Mutex::new(None),
         });
         if config.performance_telemetry_enabled {
             let runtime_for_init = runtime.clone();
@@ -734,9 +737,26 @@ impl PerformanceTelemetryRuntime {
             });
         }
         if config.performance_telemetry_enabled {
-            tokio::spawn(run_telemetry_writer(runtime.clone(), receiver, epoch));
+            let writer_handle =
+                tokio::spawn(run_telemetry_writer(runtime.clone(), receiver, epoch));
+            if let Ok(mut slot) = runtime.writer_handle.lock() {
+                *slot = Some(writer_handle);
+            } else {
+                writer_handle.abort();
+            }
         }
         runtime
+    }
+
+    pub(crate) async fn shutdown_and_drain(&self) {
+        let writer_handle = self
+            .writer_handle
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(writer_handle) = writer_handle {
+            let _ = writer_handle.await;
+        }
     }
 
     pub(crate) fn record_counter(
@@ -1188,6 +1208,23 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
         );
     }
     if current_version == TELEMETRY_SCHEMA_VERSION {
+        let unexpected_objects: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master
+             WHERE name NOT LIKE 'sqlite_%'
+               AND name NOT IN (
+                    'performance_meta', 'performance_epochs', 'performance_buckets',
+                    'performance_collector_health', 'idx_performance_buckets_range'
+               )
+             ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await?;
+        if !unexpected_objects.is_empty() {
+            bail!(
+                "unexpected objects in marked performance telemetry schema ({}); recreate the disposable telemetry database",
+                unexpected_objects.join(", ")
+            );
+        }
         let expected_tables: &[TelemetryTableContract] = &[
             (
                 "performance_meta",
@@ -1291,6 +1328,21 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
         {
             bail!(
                 "malformed performance telemetry range index; recreate the disposable telemetry database"
+            );
+        }
+        let health_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'performance_collector_health'",
+        )
+        .fetch_one(pool)
+        .await?;
+        let normalized_health_sql: String = health_sql
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if !normalized_health_sql.contains("CHECK(ID=1)") {
+            bail!(
+                "malformed performance collector health constraint; recreate the disposable telemetry database"
             );
         }
         return Ok(());
@@ -2749,12 +2801,6 @@ async fn query_performance(
             let key = (metric_id.clone(), dimension.clone(), output_bucket);
             let sample_count = row.try_get::<i64, _>("sample_count")?.max(0) as u64;
             let expected_count = row.try_get::<i64, _>("expected_count")?.max(0) as u64;
-            if expected_count > 0 || sample_count > 0 {
-                observed_series.insert((metric_id.clone(), dimension.clone()));
-            }
-            if sample_count > 0 && sample_count >= expected_count {
-                covered_series_buckets.insert(key.clone());
-            }
             epochs.insert(row.try_get::<String, _>("epoch")?);
             let point = grouped.entry(key).or_insert_with(|| PerformancePoint {
                 bucket_start: output_bucket,
@@ -2798,6 +2844,14 @@ async fn query_performance(
                     histogram[index] = histogram[index].saturating_add(value);
                 }
             }
+        }
+    }
+    for ((metric_id, dimension, bucket_start), point) in &grouped {
+        if point.expected_count > 0 || point.sample_count > 0 {
+            observed_series.insert((metric_id.clone(), dimension.clone()));
+        }
+        if point.expected_count > 0 && point.sample_count >= point.expected_count {
+            covered_series_buckets.insert((metric_id.clone(), dimension.clone(), *bucket_start));
         }
     }
     let mut series_map: BTreeMap<(String, String), PerformanceSeries> = METRIC_SPECS
@@ -3103,6 +3157,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn query_coverage_waits_for_all_rows_in_an_output_bucket() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory telemetry database");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        let to = Utc::now().timestamp().div_euclid(300) * 300 + 300;
+        let from = to - 600;
+        for (bucket, sample_count, expected_count) in [(to - 300, 1_i64, 1_i64), (to - 240, 0, 1)] {
+            sqlx::query(
+                "INSERT INTO performance_buckets(
+                    bucket_start, resolution_seconds, metric_id, dimension_code,
+                    sample_count, expected_count, sum_value, min_value, max_value,
+                    last_value, weighted_sum, weighted_seconds, histogram_json, epoch
+                ) VALUES (?, 60, 'http.in_flight', 'other', ?, ?, ?, NULL, NULL, NULL, 0, 0, ?, 'coverage')",
+            )
+            .bind(bucket)
+            .bind(sample_count)
+            .bind(expected_count)
+            .bind(sample_count as f64)
+            .bind("[0,0,0,0,0,0,0,0]")
+            .execute(&pool)
+            .await
+            .expect("insert mixed-coverage source bucket");
+        }
+
+        let response = query_performance(&pool, from, to, 300, None)
+            .await
+            .expect("query mixed-coverage telemetry buckets");
+        assert_eq!(response.coverage, 0.0);
+    }
+
     #[test]
     fn browser_rate_limiter_has_global_and_client_bounds() {
         let mut limiter = BrowserRateLimiter::new();
@@ -3314,6 +3404,59 @@ mod tests {
                 .to_string()
                 .contains("malformed performance telemetry table")
         );
+    }
+
+    #[tokio::test]
+    async fn marked_schema_with_extra_object_is_rejected() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open telemetry database fixture");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        sqlx::query("CREATE TABLE performance_extra (value TEXT)")
+            .execute(&pool)
+            .await
+            .expect("create unexpected telemetry object");
+        let error = ensure_telemetry_schema(&pool)
+            .await
+            .expect_err("unexpected marked-schema object must be rejected");
+        assert!(error.to_string().contains("unexpected objects"));
+    }
+
+    #[tokio::test]
+    async fn marked_schema_without_health_check_is_rejected() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open telemetry database fixture");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        sqlx::query("DROP TABLE performance_collector_health")
+            .execute(&pool)
+            .await
+            .expect("remove valid collector health table");
+        sqlx::query(
+            "CREATE TABLE performance_collector_health (
+                id INTEGER PRIMARY KEY,
+                state TEXT NOT NULL,
+                last_successful_flush TEXT,
+                dropped_samples INTEGER NOT NULL,
+                flush_failure_count INTEGER NOT NULL,
+                last_error TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create malformed collector health table");
+        let error = ensure_telemetry_schema(&pool)
+            .await
+            .expect_err("collector health check must be required");
+        assert!(error.to_string().contains("health constraint"));
     }
 
     #[tokio::test]

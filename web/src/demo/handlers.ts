@@ -1914,6 +1914,14 @@ function forwardProxyLive() {
 
 const DEMO_PERFORMANCE_SERIES = [
   {
+    metricId: "http.in_flight",
+    section: "overview",
+    dimension: "other",
+    kind: "gauge",
+    unit: "count",
+    base: 4,
+  },
+  {
     metricId: "telemetry.queue_depth",
     section: "process",
     dimension: "collector",
@@ -1956,7 +1964,7 @@ const DEMO_PERFORMANCE_SERIES = [
   {
     metricId: "sse.active_subscribers",
     section: "projection",
-    dimension: "all",
+    dimension: "dashboard",
     kind: "gauge",
     unit: "count",
     base: 16,
@@ -1980,7 +1988,7 @@ const DEMO_PERFORMANCE_SERIES = [
   {
     metricId: "process.rss_bytes",
     section: "process",
-    dimension: "all",
+    dimension: "process",
     kind: "gauge",
     unit: "bytes",
     base: 312_000_000,
@@ -1988,7 +1996,7 @@ const DEMO_PERFORMANCE_SERIES = [
   {
     metricId: "process.cpu_percent",
     section: "process",
-    dimension: "all",
+    dimension: "process",
     kind: "gauge",
     unit: "percent",
     base: 21,

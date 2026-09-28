@@ -1083,6 +1083,7 @@ pub(crate) async fn drain_runtime_after_shutdown(
         info!("summary/quota broadcast worker drained");
     }
 
+    state.performance_telemetry.shutdown_and_drain().await;
     state.xray_supervisor.lock().await.shutdown_all().await;
     info!("shutdown complete");
 
