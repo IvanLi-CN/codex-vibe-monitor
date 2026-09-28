@@ -199,6 +199,10 @@ pub(crate) async fn proxy_openai_v1_ws_common(
             return build_proxy_invoke_id_allocation_error_response(err);
         }
     };
+    let prompt_cache_lease_guard = PromptCacheConversationLeaseDropGuard::new(
+        state.prompt_cache_conversation_cache.clone(),
+        header_prompt_cache_key.as_deref(),
+    );
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id,
         occurred_at: shanghai_now_string(),
@@ -216,40 +220,44 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         Some(protocol) => ws.protocols([protocol]),
         None => ws,
     };
-    ws.on_upgrade(move |downstream| async move {
-        if requires_response_create_first_frame {
-            proxy_websocket_tunnel_deferred_prepare(
-                state,
-                downstream,
-                proxy_request_id,
-                original_uri,
-                headers,
-                runtime_timeouts,
-                sticky_key,
-                requested_model,
-                header_prompt_cache_key,
-                downstream_subprotocol,
-                trace,
-                proxy_request_permit,
-            )
-            .await;
-        } else {
-            proxy_websocket_tunnel_immediate_prepare(
-                state,
-                downstream,
-                proxy_request_id,
-                original_uri,
-                headers,
-                runtime_timeouts,
-                sticky_key,
-                requested_model,
-                header_prompt_cache_key,
-                downstream_subprotocol,
-                trace,
-                proxy_request_permit,
-                None,
-            )
-            .await;
+    ws.on_upgrade(move |downstream| {
+        let mut prompt_cache_lease_guard = prompt_cache_lease_guard;
+        async move {
+            prompt_cache_lease_guard.disarm();
+            if requires_response_create_first_frame {
+                proxy_websocket_tunnel_deferred_prepare(
+                    state,
+                    downstream,
+                    proxy_request_id,
+                    original_uri,
+                    headers,
+                    runtime_timeouts,
+                    sticky_key,
+                    requested_model,
+                    header_prompt_cache_key,
+                    downstream_subprotocol,
+                    trace,
+                    proxy_request_permit,
+                )
+                .await;
+            } else {
+                proxy_websocket_tunnel_immediate_prepare(
+                    state,
+                    downstream,
+                    proxy_request_id,
+                    original_uri,
+                    headers,
+                    runtime_timeouts,
+                    sticky_key,
+                    requested_model,
+                    header_prompt_cache_key,
+                    downstream_subprotocol,
+                    trace,
+                    proxy_request_permit,
+                    None,
+                )
+                .await;
+            }
         }
     })
 }
@@ -1662,10 +1670,12 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let terminal_for_message = upstream_text
                             .as_deref()
                             .is_some_and(ws_text_event_is_terminal);
-                        if let Some(text) = upstream_text.as_deref() {
-                            usage_tracker.observe_upstream_text(state.as_ref(), text).await;
-                        }
-                        if terminal_for_message {
+                        let terminal_persisted = if let Some(text) = upstream_text.as_deref() {
+                            usage_tracker.observe_upstream_text(state.as_ref(), text).await
+                        } else {
+                            false
+                        };
+                        if terminal_for_message && terminal_persisted {
                             saw_terminal_upstream_event = true;
                             active_turn_waiting_terminal = false;
                         }
@@ -1772,10 +1782,10 @@ pub(crate) async fn proxy_websocket_tunnel(
                     if let TungsteniteMessage::Text(text) = &message {
                         let text = text.as_str();
                         let terminal_for_message = ws_text_event_is_terminal(text);
-                        usage_tracker
+                        let terminal_persisted = usage_tracker
                             .observe_upstream_text(state.as_ref(), text)
                             .await;
-                        if terminal_for_message {
+                        if terminal_for_message && terminal_persisted {
                             saw_terminal_upstream_event = true;
                             active_turn_waiting_terminal = false;
                             break;
@@ -2462,7 +2472,6 @@ pub(crate) struct WsUsageTracker {
     first_token_ms: Option<f64>,
     usage: WebSocketUsageAccumulator,
     active_prompt_cache_keys: HashSet<String>,
-    terminal_prompt_cache_keys: HashSet<String>,
 }
 
 impl WsUsageTracker {
@@ -2494,7 +2503,6 @@ impl WsUsageTracker {
             first_token_ms: None,
             usage: WebSocketUsageAccumulator::default(),
             active_prompt_cache_keys: HashSet::new(),
-            terminal_prompt_cache_keys: HashSet::new(),
         }
     }
 
@@ -2563,19 +2571,9 @@ impl WsUsageTracker {
         if websocket_effective_prompt_cache_key(self.prompt_cache_key.as_deref())
             == websocket_effective_prompt_cache_key(next_prompt_cache_key.as_deref())
         {
-            let terminal_retain_key =
-                websocket_effective_prompt_cache_key(next_prompt_cache_key.as_deref())
-                    .filter(|prompt_cache_key| {
-                        self.terminal_prompt_cache_keys.remove(*prompt_cache_key)
-                    })
-                    .map(ToOwned::to_owned);
             self.prompt_cache_key = next_prompt_cache_key;
-            if let Some(prompt_cache_key) = terminal_retain_key {
-                retain_active_prompt_cache_conversation(
-                    &state.prompt_cache_conversation_cache,
-                    &prompt_cache_key,
-                )
-                .await;
+            if let Some(prompt_cache_key) = self.prompt_cache_key.clone() {
+                self.retain_prompt_cache_key(state, &prompt_cache_key).await;
             }
             return;
         }
@@ -2583,9 +2581,6 @@ impl WsUsageTracker {
             && self
                 .active_prompt_cache_keys
                 .remove(previous_prompt_cache_key)
-            && !self
-                .terminal_prompt_cache_keys
-                .contains(previous_prompt_cache_key)
         {
             release_active_prompt_cache_conversation(
                 &state.prompt_cache_conversation_cache,
@@ -2610,8 +2605,6 @@ impl WsUsageTracker {
             websocket_effective_prompt_cache_key(self.current_turn_prompt_cache_key())
                 .map(ToOwned::to_owned)
         {
-            self.terminal_prompt_cache_keys
-                .insert(prompt_cache_key.clone());
             // The terminal batch writer now owns this lease and releases it after
             // the terminal row is durable. Keep only non-terminal leases locally.
             self.active_prompt_cache_keys.remove(&prompt_cache_key);
@@ -2619,12 +2612,7 @@ impl WsUsageTracker {
     }
 
     async fn release_unterminal_prompt_cache_keys(&mut self, state: &AppState) {
-        let terminal_prompt_cache_keys = self.terminal_prompt_cache_keys.clone();
-        let active_prompt_cache_keys = self
-            .active_prompt_cache_keys
-            .drain()
-            .filter(|prompt_cache_key| !terminal_prompt_cache_keys.contains(prompt_cache_key))
-            .collect::<Vec<_>>();
+        let active_prompt_cache_keys = self.active_prompt_cache_keys.drain().collect::<Vec<_>>();
         for prompt_cache_key in active_prompt_cache_keys {
             release_active_prompt_cache_conversation(
                 &state.prompt_cache_conversation_cache,
@@ -2657,7 +2645,6 @@ impl WsUsageTracker {
         self.active_turn_invoke_id = Some(invoke_id);
         self.turn_prompt_cache_key = turn_prompt_cache_key.clone();
         if let Some(prompt_cache_key) = turn_prompt_cache_key {
-            self.terminal_prompt_cache_keys.remove(&prompt_cache_key);
             self.retain_prompt_cache_key(state, &prompt_cache_key).await;
         }
         Ok(())

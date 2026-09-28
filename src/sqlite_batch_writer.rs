@@ -4018,6 +4018,15 @@ pub(crate) async fn flush_pending_batch_inner(
         ));
     }
 
+    // The terminal transaction is durable at this point. Release its lease before any
+    // rebuildable P2 work can fail, so a post-commit error cannot strand the conversation.
+    if let Some(cache) = prompt_cache_conversation_cache {
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            invalidate_prompt_cache_conversations_cache(cache).await;
+        }
+        release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
+    }
+
     if !batch.startup_backfill_wake_tasks.is_empty() {
         let pricing_catalog = if let Some(pricing_catalog) = pricing_catalog {
             Some(pricing_catalog.read().await.clone())
@@ -4040,13 +4049,21 @@ pub(crate) async fn flush_pending_batch_inner(
                 available
             })
             .collect::<Vec<_>>();
-        wake_startup_backfill_tasks_with_pricing_catalog(
+        if let Err(error) = wake_startup_backfill_tasks_with_pricing_catalog(
             pool,
             &wake_tasks,
             pricing_catalog.as_ref(),
             "terminal_payload_repair_input",
         )
-        .await?;
+        .await
+        {
+            warn!(
+                error = %error,
+                tasks = wake_tasks.len(),
+                "failed to wake startup backfill tasks after terminal commit; retaining wake obligation"
+            );
+            deferred_batch.add_startup_backfill_wake_tasks(&wake_tasks);
+        }
     }
 
     if batch.attempt_progress.is_empty()
@@ -4054,15 +4071,6 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        // The terminal transaction is durable at this point. Release its lease before the
-        // rebuildable statistics refresh so a refresh outage cannot strand the conversation.
-        if let Some(cache) = prompt_cache_conversation_cache {
-            if !prompt_cache_keys_to_refresh.is_empty() {
-                invalidate_prompt_cache_conversations_cache(cache).await;
-            }
-            release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases)
-                .await;
-        }
         if !prompt_cache_keys_to_refresh.is_empty()
             && let Err(error) =
                 refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
@@ -4208,10 +4216,6 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     tx.commit().await?;
-
-    if let Some(cache) = prompt_cache_conversation_cache {
-        release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
-    }
 
     if !prompt_cache_keys_to_refresh.is_empty()
         && let Err(error) =

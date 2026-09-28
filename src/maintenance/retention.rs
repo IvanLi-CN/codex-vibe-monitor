@@ -8455,25 +8455,6 @@ async fn run_data_retention_maintenance_inner(
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
-    if !dry_run && !invocation_archive.3.is_empty() {
-        match refresh_prompt_cache_conversation_stats(pool, &invocation_archive.3).await {
-            Ok(refreshed) => {
-                if refreshed > 0 {
-                    info!(
-                        refreshed,
-                        "refreshed prompt-cache conversation statistics during retention"
-                    );
-                }
-            }
-            Err(error) => {
-                retention_record_error("prompt_cache_conversation_stats_refresh", &error);
-                warn!(
-                    error = %error,
-                    "failed to refresh prompt-cache conversation statistics during retention"
-                );
-            }
-        }
-    }
     summary.prompt_cache_conversations_released = match prompt_cache_conversation_cache {
         Some(cache) => cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache)
             .await
@@ -10366,6 +10347,16 @@ pub(crate) async fn archive_old_invocations(
             .bind(ids_json)
             .fetch_all(tx.as_mut())
             .await?;
+            let archived_prompt_cache_key_refs = archived_prompt_cache_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            refresh_prompt_cache_conversation_stats_on_connection(
+                tx.as_mut(),
+                &archived_prompt_cache_key_refs,
+            )
+            .await
+            .context("failed to refresh prompt-cache conversation statistics before invocation archive delete")?;
             prompt_cache_keys.extend(archived_prompt_cache_keys);
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
