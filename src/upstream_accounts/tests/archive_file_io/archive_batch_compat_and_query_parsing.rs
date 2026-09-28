@@ -3428,7 +3428,7 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
         shared_connection_parallelism: 1,
         http_bind: "127.0.0.1:0".parse().expect("valid socket address"),
         cors_allowed_origins: Vec::new(),
-        public_blog_runtime_cors_allowed_origins: vec![
+        public_metrics_cors_allowed_origins: vec![
             "https://ivanli.cc".to_string(),
             "http://127.0.0.1:12620".to_string(),
         ],

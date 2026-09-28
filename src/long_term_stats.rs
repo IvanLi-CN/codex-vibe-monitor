@@ -10079,31 +10079,35 @@ pub(crate) async fn load_public_blog_token_activity_90d(
     pool: &Pool<Sqlite>,
     start_date: NaiveDate,
     end_date: NaiveDate,
-) -> Result<Vec<(String, i64)>> {
+) -> Result<Option<Vec<(String, Option<i64>)>>> {
     if (end_date - start_date).num_days() != 89 {
         bail!("public blog token activity requires a 90-day range");
     }
     let state = load_long_term_state(pool).await?;
     if state.status != LONG_TERM_STATUS_READY {
-        bail!("long-term usage read model is not ready");
+        return Ok(None);
     }
-    let covered_start = state
+    let Some(covered_start) = state
         .statistics_start_date
         .as_deref()
         .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-        .ok_or_else(|| anyhow!("long-term usage coverage start is unavailable"))?;
-    if covered_start > start_date {
-        bail!("long-term usage read model does not cover the requested range");
-    }
+    else {
+        return Ok(None);
+    };
 
-    let rows = load_long_term_daily_rows(
-        pool,
-        "overall",
-        None,
-        &start_date.to_string(),
-        &end_date.to_string(),
-    )
-    .await?;
+    let query_start = start_date.max(covered_start);
+    let rows = if query_start <= end_date {
+        load_long_term_daily_rows(
+            pool,
+            "overall",
+            None,
+            &query_start.to_string(),
+            &end_date.to_string(),
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
     let mut tokens_by_date = HashMap::<String, i64>::new();
     for row in rows {
         if row.token_total < 0 {
@@ -10119,15 +10123,17 @@ pub(crate) async fn load_public_blog_token_activity_90d(
     let mut date = start_date;
     while date <= end_date {
         let key = date.to_string();
-        points.push((
-            key.clone(),
-            tokens_by_date.get(&key).copied().unwrap_or_default(),
-        ));
+        let value = if date < query_start {
+            None
+        } else {
+            tokens_by_date.get(&key).copied()
+        };
+        points.push((key, value));
         date = date
             .succ_opt()
             .ok_or_else(|| anyhow!("public blog token activity date overflow"))?;
     }
-    Ok(points)
+    Ok(Some(points))
 }
 
 fn long_term_projection_active_daily_cte() -> &'static str {
@@ -10590,60 +10596,6 @@ fn internal_error_tuple(error: anyhow::Error) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn public_blog_activity_reads_exact_covered_daily_rollups() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("memory pool");
-        crate::schema::ensure_schema(&pool)
-            .await
-            .expect("full schema");
-        let start = NaiveDate::from_ymd_opt(2026, 6, 30).expect("start date");
-        let end = NaiveDate::from_ymd_opt(2026, 9, 27).expect("end date");
-        sqlx::query(
-            "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2 WHERE id = ?3",
-        )
-        .bind(LONG_TERM_STATUS_READY)
-        .bind(start.to_string())
-        .bind(LONG_TERM_STATE_ID)
-        .execute(&pool)
-        .await
-        .expect("set covered long-term state");
-        for offset in 0..90_i64 {
-            let date = start + ChronoDuration::days(offset);
-            sqlx::query(
-                "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, token_total, token_samples) VALUES (?1, 'overall', 'all', 'Overall', ?2, 1)",
-            )
-            .bind(date.to_string())
-            .bind(offset)
-            .execute(&pool)
-            .await
-            .expect("insert daily aggregate");
-        }
-
-        let points = load_public_blog_token_activity_90d(&pool, start, end)
-            .await
-            .expect("read complete 90-day range");
-        assert_eq!(points.len(), 90);
-        assert_eq!(points.first(), Some(&(start.to_string(), 0)));
-        assert_eq!(points.last(), Some(&(end.to_string(), 89)));
-
-        sqlx::query("UPDATE long_term_stats_state SET statistics_start_date = ?1 WHERE id = ?2")
-            .bind((start + ChronoDuration::days(1)).to_string())
-            .bind(LONG_TERM_STATE_ID)
-            .execute(&pool)
-            .await
-            .expect("narrow source coverage");
-        assert!(
-            load_public_blog_token_activity_90d(&pool, start, end)
-                .await
-                .is_err()
-        );
-        pool.close().await;
-    }
 
     #[test]
     fn terminal_and_maintenance_deadlines_defer_expensive_repairs() {

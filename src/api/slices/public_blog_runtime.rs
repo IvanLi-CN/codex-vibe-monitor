@@ -2,7 +2,7 @@ use super::*;
 use chrono::Timelike;
 use std::future::Future;
 
-const PUBLIC_BLOG_RUNTIME_PATH: &str = "/api/public/blog-runtime/v1/codex-vibe-monitor";
+const PUBLIC_BLOG_RUNTIME_PATH: &str = "/api/public/metrics/v1/codex-vibe-monitor";
 const PUBLIC_BLOG_RUNTIME_KIND: &str = "codex-vibe-monitor";
 const PUBLIC_BLOG_SNAPSHOT_TTL: Duration = Duration::from_secs(30);
 const PUBLIC_BLOG_REFRESH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -19,7 +19,7 @@ struct PublicBlogRuntimeResponse {
     tokens_per_minute: PublicBlogStat,
     parallel_calls: PublicBlogStat,
     today_tokens: PublicBlogStat,
-    token_activity90d: Vec<PublicBlogDailyPoint>,
+    token_activity90d: PublicBlogDailySeries,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,10 +41,25 @@ struct PublicBlogTrendPoint {
     value: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PublicBlogDailySeries {
+    status: PublicBlogDailySeriesStatus,
+    points: Vec<PublicBlogDailyPoint>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum PublicBlogDailySeriesStatus {
+    Available,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct PublicBlogDailyPoint {
     date: String,
-    value: i64,
+    value: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -213,8 +228,7 @@ fn build_public_blog_runtime_router_with_cache(
     state: Arc<AppState>,
     cache: Arc<PublicBlogRuntimeCache>,
 ) -> Router {
-    let cors =
-        public_blog_runtime_cors_layer(&state.config.public_blog_runtime_cors_allowed_origins);
+    let cors = public_blog_runtime_cors_layer(&state.config.public_metrics_cors_allowed_origins);
     Router::new()
         .route(PUBLIC_BLOG_RUNTIME_PATH, any(fetch_public_blog_runtime))
         .layer(cors)
@@ -423,20 +437,22 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
     let token_points = build_recent_hour_points(current_hour_start, &token_rates)?;
     let parallel_points = build_recent_hour_points(current_hour_start, &parallel_averages)?;
 
-    let today_points = build_today_token_points(today, now, &timeseries.points)?;
+    let today_points = build_today_token_points(today, now, today_tokens, &timeseries.points)?;
     let yesterday = today
         .pred_opt()
         .ok_or_else(|| anyhow!("Shanghai date underflow"))?;
     let activity_start = yesterday - ChronoDuration::days(89);
-    let activity_points = after_snapshot_final_read(
+    let activity_result = after_snapshot_final_read(
         refresh_started_at,
-        load_public_blog_token_activity_90d(&state.pool, activity_start, yesterday),
+        async {
+            Ok(load_public_blog_token_activity_90d(&state.pool, activity_start, yesterday).await)
+        },
         Utc::now,
     )
     .await?
-    .into_iter()
-    .map(|(date, value)| PublicBlogDailyPoint { date, value })
-    .collect();
+    .unwrap_or(None);
+    let token_activity90d =
+        build_public_blog_daily_series(activity_start, yesterday, activity_result)?;
 
     let response = PublicBlogRuntimeResponse {
         kind: PUBLIC_BLOG_RUNTIME_KIND,
@@ -461,7 +477,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
                 points: today_points,
             },
         },
-        token_activity90d: activity_points,
+        token_activity90d,
     };
     Ok(Bytes::from(serde_json::to_vec(&response)?))
 }
@@ -535,6 +551,7 @@ where
 fn build_today_token_points(
     today: NaiveDate,
     now: DateTime<Utc>,
+    today_tokens: f64,
     hourly_points: &[TimeseriesPoint],
 ) -> Result<Vec<PublicBlogTrendPoint>> {
     let mut hourly_tokens = Vec::with_capacity(hourly_points.len());
@@ -548,10 +565,16 @@ fn build_today_token_points(
         hourly_tokens.push((timestamp, point.total_tokens));
     }
 
+    let current_hour_start = now.timestamp().div_euclid(3_600) * 3_600;
     let mut points = Vec::with_capacity(25);
     for hour in 0..=24 {
         let boundary = shanghai_hour_epoch(today, hour)?;
-        if boundary <= now.timestamp() {
+        if boundary == current_hour_start {
+            points.push(PublicBlogTrendPoint {
+                timestamp: shanghai_timestamp(boundary)?,
+                value: Some(today_tokens),
+            });
+        } else if boundary <= now.timestamp() {
             let cumulative = hourly_tokens
                 .iter()
                 .filter(|(start, _)| *start + 3_600 <= boundary)
@@ -569,6 +592,39 @@ fn build_today_token_points(
         }
     }
     Ok(points)
+}
+
+fn build_public_blog_daily_series(
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    loaded_points: Option<Vec<(String, Option<i64>)>>,
+) -> Result<PublicBlogDailySeries> {
+    if (end_date - start_date).num_days() != 89 {
+        bail!("public blog token activity requires a 90-day range");
+    }
+    let loaded_points = loaded_points
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let mut points = Vec::with_capacity(90);
+    let mut date = start_date;
+    while date <= end_date {
+        let key = date.to_string();
+        points.push(PublicBlogDailyPoint {
+            value: loaded_points.get(&key).copied().flatten(),
+            date: key,
+        });
+        date = date
+            .succ_opt()
+            .ok_or_else(|| anyhow!("public blog token activity date overflow"))?;
+    }
+    let available = points.iter().filter(|point| point.value.is_some()).count();
+    let status = match available {
+        90 => PublicBlogDailySeriesStatus::Available,
+        0 => PublicBlogDailySeriesStatus::Unavailable,
+        _ => PublicBlogDailySeriesStatus::Partial,
+    };
+    Ok(PublicBlogDailySeries { status, points })
 }
 
 fn build_recent_hour_points(
@@ -804,6 +860,15 @@ mod tests {
     }
 
     #[test]
+    fn public_metrics_route_uses_the_shared_service_prefix() {
+        assert_eq!(
+            PUBLIC_BLOG_RUNTIME_PATH,
+            "/api/public/metrics/v1/codex-vibe-monitor"
+        );
+        assert!(PUBLIC_BLOG_RUNTIME_PATH.starts_with("/api/public/metrics/v1/"));
+    }
+
+    #[test]
     fn today_trend_has_25_local_boundaries_and_nulls_future_values() {
         let today = NaiveDate::from_ymd_opt(2026, 9, 28).expect("test date");
         let now = Shanghai
@@ -811,12 +876,41 @@ mod tests {
             .single()
             .expect("test time")
             .with_timezone(&Utc);
-        let points = build_today_token_points(today, now, &[]).expect("today trend");
+        let points = build_today_token_points(today, now, 42.0, &[]).expect("today trend");
         assert_eq!(points.len(), 25);
         assert_eq!(points[0].timestamp, "2026-09-28T00:00:00+08:00");
-        assert_eq!(points[10].value, Some(0.0));
+        assert_eq!(points[10].value, Some(42.0));
+        assert_eq!(
+            points.iter().rev().find_map(|point| point.value),
+            Some(42.0)
+        );
         assert_eq!(points[11].value, None);
         assert_eq!(points[24].value, None);
+    }
+
+    #[test]
+    fn daily_history_marks_missing_points_null_and_reports_partial_coverage() {
+        let end = NaiveDate::from_ymd_opt(2026, 9, 27).expect("end date");
+        let start = end - ChronoDuration::days(89);
+        let loaded = (0..90_i64)
+            .map(|offset| {
+                let value = (offset != 45).then_some(offset);
+                ((start + ChronoDuration::days(offset)).to_string(), value)
+            })
+            .collect();
+
+        let series = build_public_blog_daily_series(start, end, Some(loaded))
+            .expect("build partial daily series");
+        assert_eq!(series.status, PublicBlogDailySeriesStatus::Partial);
+        assert_eq!(series.points.len(), 90);
+        assert_eq!(series.points[45].value, None);
+        let serialized = serde_json::to_value(series).expect("serialize daily series");
+        assert_eq!(serialized["points"][45]["value"], Value::Null);
+
+        let unavailable = build_public_blog_daily_series(start, end, None)
+            .expect("build unavailable daily series");
+        assert_eq!(unavailable.status, PublicBlogDailySeriesStatus::Unavailable);
+        assert!(unavailable.points.iter().all(|point| point.value.is_none()));
     }
 
     #[tokio::test]
@@ -886,15 +980,24 @@ mod tests {
                 value: 3.0,
                 trend: PublicBlogTrend {
                     range: "today",
-                    points: build_today_token_points(today, now, &[]).unwrap(),
+                    points: build_today_token_points(today, now, 3.0, &[]).unwrap(),
                 },
             },
-            token_activity90d: (0..90)
-                .map(|offset| PublicBlogDailyPoint {
-                    date: (today - ChronoDuration::days(i64::from(90 - offset))).to_string(),
-                    value: i64::from(offset),
-                })
-                .collect(),
+            token_activity90d: build_public_blog_daily_series(
+                today - ChronoDuration::days(90),
+                today - ChronoDuration::days(1),
+                Some(
+                    (0..90_i64)
+                        .map(|offset| {
+                            (
+                                (today - ChronoDuration::days(90 - offset)).to_string(),
+                                Some(offset),
+                            )
+                        })
+                        .collect(),
+                ),
+            )
+            .unwrap(),
         };
         let value = serde_json::to_value(response).expect("serialize contract");
         let root = value.as_object().expect("root object");
@@ -917,7 +1020,11 @@ mod tests {
                 if name == "todayTokens" { 25 } else { 12 }
             );
         }
-        assert_eq!(root["tokenActivity90d"].as_array().unwrap().len(), 90);
+        assert_eq!(root["tokenActivity90d"]["status"], "available");
+        assert_eq!(
+            root["tokenActivity90d"]["points"].as_array().unwrap().len(),
+            90
+        );
     }
 
     #[test]
@@ -1064,6 +1171,35 @@ mod tests {
         }
     }
 
+    async fn seed_public_blog_parallel_fixture(pool: &Pool<Sqlite>, current_hour_start: i64) {
+        for index in 0..12_i64 {
+            sqlx::query(
+                "INSERT INTO parallel_work_hourly_coverage (hour_start_epoch, source_scope, minute_keys_complete) VALUES (?1, 'all', 1)",
+            )
+            .bind(current_hour_start - (index + 1) * 3_600)
+            .execute(pool)
+            .await
+            .expect("insert minute coverage");
+        }
+        for hour_start in [current_hour_start - 3_600, current_hour_start] {
+            for (minute_offset, key) in [
+                (60_i64, "parallel-a"),
+                (60, "parallel-b"),
+                (120, "parallel-a"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO parallel_work_minute_key_rollup (minute_start_epoch, source, prompt_cache_key) VALUES (?1, ?2, ?3)",
+                )
+                .bind(hour_start + minute_offset)
+                .bind(SOURCE_PROXY)
+                .bind(key)
+                .execute(pool)
+                .await
+                .expect("insert parallel-work minute key");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn endpoint_serializes_aggregate_snapshot_and_honors_etag() {
         let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
@@ -1092,32 +1228,7 @@ mod tests {
             .await
             .expect("insert daily fixture");
         }
-        for index in 0..12_i64 {
-            sqlx::query(
-                "INSERT INTO parallel_work_hourly_coverage (hour_start_epoch, source_scope, minute_keys_complete) VALUES (?1, 'all', 1)",
-            )
-            .bind(current_hour_start - (index + 1) * 3_600)
-            .execute(&state.pool)
-            .await
-            .expect("insert minute coverage");
-        }
-        for hour_start in [current_hour_start - 3_600, current_hour_start] {
-            for (minute_offset, key) in [
-                (60_i64, "parallel-a"),
-                (60, "parallel-b"),
-                (120, "parallel-a"),
-            ] {
-                sqlx::query(
-                    "INSERT INTO parallel_work_minute_key_rollup (minute_start_epoch, source, prompt_cache_key) VALUES (?1, ?2, ?3)",
-                )
-                .bind(hour_start + minute_offset)
-                .bind(SOURCE_PROXY)
-                .bind(key)
-                .execute(&state.pool)
-                .await
-                .expect("insert parallel-work minute key");
-            }
-        }
+        seed_public_blog_parallel_fixture(&state.pool, current_hour_start).await;
 
         let router = build_public_blog_runtime_router(state.clone());
         let response = router
@@ -1161,10 +1272,23 @@ mod tests {
                 .len(),
             25
         );
-        let activity = root["tokenActivity90d"].as_array().expect("daily points");
+        let activity = root["tokenActivity90d"]["points"]
+            .as_array()
+            .expect("daily points");
+        assert_eq!(root["tokenActivity90d"]["status"], "available");
         assert_eq!(activity.len(), 90);
         assert_eq!(activity.first().unwrap()["date"], start.to_string());
         assert_eq!(activity.last().unwrap()["date"], end.to_string());
+        let today_tokens = root["todayTokens"]["value"].as_f64().expect("today total");
+        assert_eq!(
+            root["todayTokens"]["trend"]["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|point| point["value"].as_f64()),
+            Some(today_tokens)
+        );
 
         let not_modified = router
             .oneshot(
@@ -1178,6 +1302,96 @@ mod tests {
             .await
             .expect("conditional response");
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+        state.shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn endpoint_keeps_live_metrics_when_long_term_history_is_unavailable() {
+        let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
+        let current_hour_start = Utc::now().timestamp().div_euclid(3_600) * 3_600;
+        seed_public_blog_parallel_fixture(&state.pool, current_hour_start).await;
+
+        let response = build_public_blog_runtime_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(PUBLIC_BLOG_RUNTIME_PATH)
+                    .body(Body::empty())
+                    .expect("snapshot request"),
+            )
+            .await
+            .expect("snapshot response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("snapshot body");
+        let value: Value = serde_json::from_slice(&body).expect("snapshot JSON");
+        assert!(value["todayTokens"]["value"].as_f64().is_some());
+        assert!(value["tokensPerMinute"]["value"].as_f64().is_some());
+        assert!(value["parallelCalls"]["value"].as_f64().is_some());
+        assert_eq!(value["tokenActivity90d"]["status"], "unavailable");
+        let points = value["tokenActivity90d"]["points"]
+            .as_array()
+            .expect("daily points");
+        assert_eq!(points.len(), 90);
+        assert!(points.iter().all(|point| point["value"].is_null()));
+        state.shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn endpoint_returns_partial_history_when_coverage_starts_late() {
+        let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
+        let now = Utc::now();
+        let today = now.with_timezone(&Shanghai).date_naive();
+        let end = today.pred_opt().expect("yesterday");
+        let covered_start = end - ChronoDuration::days(1);
+        let current_hour_start = now.timestamp().div_euclid(3_600) * 3_600;
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2 WHERE id = ?3",
+        )
+        .bind("ready")
+        .bind(covered_start.to_string())
+        .bind(1_i64)
+        .execute(&state.pool)
+        .await
+        .expect("set partial long-term fixture ready");
+        for (date, value) in [(covered_start, 12_i64), (end, 13_i64)] {
+            sqlx::query(
+                "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, token_total, token_samples) VALUES (?1, 'overall', 'all', 'Overall', ?2, 1)",
+            )
+            .bind(date.to_string())
+            .bind(value)
+            .execute(&state.pool)
+            .await
+            .expect("insert covered daily aggregate");
+        }
+        seed_public_blog_parallel_fixture(&state.pool, current_hour_start).await;
+
+        let response = build_public_blog_runtime_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(PUBLIC_BLOG_RUNTIME_PATH)
+                    .body(Body::empty())
+                    .expect("snapshot request"),
+            )
+            .await
+            .expect("snapshot response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("snapshot body");
+        let value: Value = serde_json::from_slice(&body).expect("snapshot JSON");
+        let series = &value["tokenActivity90d"];
+        assert_eq!(series["status"], "partial");
+        let points = series["points"].as_array().expect("daily points");
+        assert_eq!(points.len(), 90);
+        assert!(points[..88].iter().all(|point| point["value"].is_null()));
+        assert_eq!(points[88]["date"], covered_start.to_string());
+        assert_eq!(points[88]["value"], 12);
+        assert_eq!(points[89]["date"], end.to_string());
+        assert_eq!(points[89]["value"], 13);
+        assert!(value["todayTokens"]["value"].as_f64().is_some());
         state.shutdown.cancel();
     }
 

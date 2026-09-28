@@ -10,7 +10,8 @@
 
 ## Terms and Interfaces
 
-- Interface: `GET /api/public/blog-runtime/v1/codex-vibe-monitor`.
+- Interface: `GET /api/public/metrics/v1/codex-vibe-monitor`.
+- Shared project-metrics route family: `/api/public/metrics/v1/{service}`. OctoRill uses `/api/public/metrics/v1/octo-rill`; a future Tavily Hikari project-wall metrics endpoint MUST use `/api/public/metrics/v1/tavily-hikari`.
 - Stat: An object with a current numeric `value` and a `trend` containing a range and ordered timestamped points.
 - Shanghai day: A calendar day bounded in `Asia/Shanghai`.
 - Interface discriminator: `kind` is the literal `codex-vibe-monitor`; the only metric fields are `tokensPerMinute`, `parallelCalls`, `todayTokens`, and `tokenActivity90d`.
@@ -27,15 +28,16 @@
 
 - The system MUST serialize every Stat with a finite, non-negative numeric `value` and an ordered trend.
 - Inputs: A same-day Dashboard aggregate snapshot, existing hourly token rollups, and complete minute activity coverage for the recent parallel-work window.
-- Outputs: `tokensPerMinute` and `parallelCalls` trends contain 12 chronologically ordered hourly points with `range="recent-hours"`; `todayTokens` contains 25 hourly boundary positions from local 00:00 through the next local 00:00 with future values set to `null` and `range="today"`.
+- Outputs: `tokensPerMinute` and `parallelCalls` trends contain 12 chronologically ordered hourly points with `range="recent-hours"`; `todayTokens` contains 25 hourly boundary positions from local 00:00 through the next local 00:00 with future values set to `null` and `range="today"`. Its current-hour boundary MUST use the live `todayTokens.value`, while earlier boundaries use completed-hour rollups.
 - Outputs: Each trend timestamp is an RFC 3339 timestamp at the `Asia/Shanghai` hourly boundary.
 - Outputs: Recent completed-hour parallel averages MUST be derived only from complete minute coverage. Missing or incomplete coverage MUST fail the refresh rather than fabricate zero activity.
 
 ### REQ-PBRA-003
 
-- The system MUST return exactly 90 daily token activity points for the 90 completed Shanghai days ending yesterday, in ascending date order.
-- Inputs: The project's ready long-term overall usage read model.
-- Outputs: Each point has only a `date` (`YYYY-MM-DD`) and non-negative numeric `value`; a source-uncovered range MUST NOT be presented as fabricated activity.
+- The system MUST return exactly 90 daily token activity points for the 90 completed Shanghai days ending yesterday, in ascending date order, inside a `tokenActivity90d` object with a `status` and `points`.
+- Inputs: The project's long-term overall usage read model, which may be unready or cover only part of the requested range.
+- Outputs: `status` is `available` when all points are numeric, `partial` when some points are numeric and some are missing, and `unavailable` when no points are numeric. Each point has only a `date` (`YYYY-MM-DD`) and a non-negative numeric `value` or `null`. Missing or source-uncovered dates MUST serialize as `null`, never as a fabricated zero. Unavailable long-term history MUST NOT make otherwise available current metrics fail.
+- Consumer contract: Blog consumers MUST preserve `null` as unavailable historical data and MUST NOT coerce it to zero. Consumers can render current fields regardless of the long-term status.
 
 ### REQ-PBRA-004
 
@@ -59,7 +61,7 @@
 ### REQ-PBRA-007
 
 - The system MUST apply an explicit, deployment-configurable CORS origin allowlist to this endpoint without enabling credentials.
-- Inputs: The configured public blog runtime origins, defaulting to `https://ivanli.cc` and `http://127.0.0.1:12620`.
+- Inputs: The configured public metrics origins, defaulting to `https://ivanli.cc` and `http://127.0.0.1:12620`, through `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`.
 - Outputs: Allowed origins may make GET requests and use `If-None-Match`; wildcard origins and credentialed requests are not allowed. The response MUST expose `ETag`, `Cache-Control`, and `Retry-After` to allowed browser clients.
 
 ## Verification
@@ -86,7 +88,7 @@
 
 - Method: Stateful SQLite aggregate fixture, response inspection, and fixed-query dispatch test.
 - covers: `REQ-PBRA-003`, `REQ-PBRA-004`
-- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, recent parallel-hour values require complete minute coverage and missing or incomplete coverage fails the refresh, the endpoint's fixed timeseries query selects hourly rollups before the minute-projection fallback, and no operational identifiers appear in the body.
+- Pass condition: Exactly 90 ascending completed Shanghai dates are returned; unavailable and late-starting long-term coverage retain current metrics and serialize missing days as `null`; recent parallel-hour values require complete minute coverage and missing or incomplete coverage fails the refresh; the endpoint's fixed timeseries query selects hourly rollups before the minute-projection fallback; and no operational identifiers appear in the body.
 
 ## Related ADRs
 

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add a read-only public runtime aggregate endpoint that reads existing aggregate rollups.",
-    "release_unit_description": "Public Blog Runtime API implementation.",
+    "description": "Add a read-only project metrics endpoint with live trends and explicit long-term history coverage.",
+    "release_unit_description": "Public project metrics API implementation.",
     "affected_contracts": [
       "public-api"
     ]
@@ -16,34 +16,33 @@
     ],
     "planned": {
       "impact": "minor",
-      "reasoning": "The planned change adds one route without changing existing endpoint contracts or persisted formats.",
-      "assessed_at": "2026-09-28T07:02:10Z",
+      "reasoning": "The planned change adds a service-scoped public route within the current major line and does not change persisted formats.",
+      "assessed_at": "2026-09-28T15:22:15Z",
       "evidence": [
-        "docs/specs/public-blog-runtime-api/SPEC.md defines one additive GET interface."
+        "docs/specs/public-blog-runtime-api/SPEC.md defines the shared service route family and this service's GET contract."
       ]
     },
     "current": {
       "impact": "minor",
       "scope_drift": {
         "detected": false,
-        "description": "No functional scope drift; the endpoint reads existing aggregate rollups and adds no persistent-state writes or serialized state formats."
+        "description": "The endpoint reads existing aggregate rollups, reports missing long-term coverage explicitly, and adds no persistent-state writes or serialized state formats."
       },
-      "reasoning": "The additive public API is minor. Persistent-state impact is not applicable because the endpoint uses an hour-aligned rollup path and adds no persistent writes; the release unit remains minor.",
-      "reassessed_at": "2026-09-28T12:36:59Z",
+      "reasoning": "The service-scoped public API is additive within the current major line. Persistent-state impact is not applicable because the endpoint uses existing rollups and adds no persistent writes; the release unit remains minor.",
+      "reassessed_at": "2026-09-28T16:01:01Z",
       "evidence": [
-        "Existing API routes and their CORS configuration remain unchanged.",
-        "The endpoint reads covered aggregate projections, rejects mixed-Shanghai-day refreshes, and exposes only the required response headers to configured browser origins.",
+        "The endpoint uses /api/public/metrics/v1/codex-vibe-monitor and the independent PUBLIC_METRICS_CORS_ALLOWED_ORIGINS allowlist.",
+        "Unavailable and partial long-term coverage serialize as null-valued daily points while current metrics remain available; mixed-Shanghai-day refreshes are still rejected.",
         "The endpoint's fixed today/1h/Asia/Shanghai query uses the existing hourly rollup branch and returns before sub-hour minute-projection logic."
       ]
     },
     "verified": {
       "impact": "minor",
       "reasoning": "The new API contract is additive within the current major line. The endpoint writes no persistent state, so the highest applicable and verified impact is the public API's minor classification.",
-      "verified_at": "2026-09-28T13:24:58Z",
+      "verified_at": "2026-09-28T16:01:01Z",
       "evidence": [
-        "cargo test public_blog -- --nocapture passed 18 tests, including an allowed-origin 429 response that exposes Retry-After and a fixed endpoint query test that selects hourly rollups before minute-projection fallback.",
-        "The readiness regression test passed.",
-        "Rust formatting, the explicit source-quality policy check, the public API Spec contract, and Spec drift checks passed on the candidate.",
+        "cargo test public_blog -- --nocapture passed 21 tests, including live current-hour trend values, service-scoped CORS, and available, partial, and unavailable daily history.",
+        "Rust formatting, the explicit source-quality policy check, public API Spec contract, Spec drift, and whitespace checks passed on the candidate.",
         "cargo check --locked --all-targets --all-features passed.",
         "cargo clippy --locked --all-targets --all-features -- -D warnings passed.",
         "Source review confirmed the endpoint's fixed today/1h/Asia/Shanghai request selects hourly rollups and returns before the sub-hour minute-projection fallback."
@@ -55,8 +54,8 @@
       "change": "compatible",
       "supported_consumer_range": "Consumers on the current major line; existing API paths and response contracts remain compatible.",
       "evidence": [
-        "The route is additive at /api/public/blog-runtime/v1/codex-vibe-monitor.",
-        "The route-level test verifies GET-only behavior and preserves unrelated CORS configuration."
+        "The route is additive at /api/public/metrics/v1/codex-vibe-monitor and follows the shared /api/public/metrics/v1/{service} family.",
+        "The route-level tests verify GET-only behavior, service-scoped CORS, live current-hour trend values, and explicit partial or unavailable long-term history."
       ]
     },
     "persistent_state": {
