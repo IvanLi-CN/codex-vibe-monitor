@@ -33,7 +33,7 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24009,
+      "line_budget": 24011,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {

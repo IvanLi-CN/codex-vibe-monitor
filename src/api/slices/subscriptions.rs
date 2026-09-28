@@ -19963,6 +19963,8 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("persist terminal before runtime overlay acknowledgement");
+        crate::tests::complete_prompt_cache_conversation_materialization_for_test(&state.pool)
+            .await;
 
         let cached = state
             .subscription_hub
