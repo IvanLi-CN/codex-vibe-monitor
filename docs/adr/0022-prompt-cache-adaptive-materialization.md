@@ -1,0 +1,56 @@
+# Prompt-Cache Adaptive Materialization Batches
+
+## Status
+
+Accepted
+
+## Context
+
+The background materialization contract from ADR 0021 removed historical scanning from HTTP
+readiness and moved aggregate refreshes out of online writes. A fixed 400-key transaction still
+holds SQLite's write lock for too long on large databases, while a permanently small batch wastes
+throughput when the database is quiet. Interactive writes also must not cancel a transaction after
+it has started: repeated mid-batch preemption can leave progress permanently starved.
+
+## Decision
+
+Keep 400 keys as the logical page and split its work into in-memory adaptive micro-batches. A new
+process starts at 64 keys, may range from 32 through 400, and observes each committed transaction:
+
+- two consecutive successful transactions at or below 50 ms double the next batch;
+- a transaction at or above 200 ms, a SQLite busy/locked failure, or a priority waiter observed at
+  the boundary halves the next batch;
+- all values remain clamped to 32..400 and the controller is reset on process restart.
+
+Each micro-batch uses one SQLite transaction for identity ensure, aggregate refresh, queue clear,
+the phase cursor checkpoint, and commit. A process exit or transaction failure therefore repeats
+the latest micro-batch idempotently instead of skipping it.
+
+Prompt-cache materialization checks the existing P1/interactive waiter signal before starting a
+micro-batch and after its commit. If a waiter arrives, the completed batch remains committed and
+the next batch is deferred. Other startup backfills retain the existing P2 cancellation behavior.
+
+The existing migration progress table, unavailable read contract, marker names, queue, and public
+responses do not change. Structured startup-backfill details expose phase, scanned/updated counts,
+batch count, last/max batch size, accumulated batch time, and defer reason.
+
+## Consequences
+
+- Foreground writes can preempt between prompt-cache transactions without rolling back a batch
+  that already began.
+- Quiet SQLite databases can recover close to the 400-key throughput ceiling, while high-latency
+  transactions reduce lock duration on the next batch.
+- Adaptive size is intentionally process-local; durable correctness remains in phase, cursor,
+  markers, and the refresh queue.
+- Aggregate reads remain fail-closed until identity coverage, statistics, complete phase, and an
+  empty queue are simultaneously true.
+- The representative 4,000-key/40,000-invocation fixture is an empirical acceptance aid, not a
+  production timing guarantee; operators should use the structured batch and defer fields when
+  assessing a rollout.
+
+## References
+
+- `docs/adr/0021-prompt-cache-background-materialization.md`
+- `docs/specs/proxy-invocation-identity/IMPLEMENTATION.md`
+- `src/prompt_cache_conversations.rs`
+- `src/maintenance/startup_backfill.rs`

@@ -9,7 +9,7 @@
 
 ## Replacements / Background
 
-- The prompt-cache conversation master replaces request-time derivation as the durable owner of conversation identity and delayed aggregate statistics.
+- The prompt-cache conversation master replaces request-time derivation as the durable owner of conversation identity and delayed aggregate statistics. Historical materialization is completed by an ordered background task; its 400-key logical pages use adaptive committed micro-batches and yield only at transaction boundaries.
 - WebSocket pre-upstream and per-turn diagnostics now use the same compact identifier contract as HTTP proxy capture.
 
 ## Related Changes

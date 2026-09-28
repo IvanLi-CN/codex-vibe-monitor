@@ -22,7 +22,17 @@ const PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE: &str = "complete";
 const PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES: i64 = 5;
 const PROMPT_CACHE_CONVERSATION_IDENTITY_CACHE_CAPACITY: usize = 4096;
 const PROMPT_CACHE_CONVERSATION_BACKFILL_PAGE_SIZE: usize = 400;
+const PROMPT_CACHE_CONVERSATION_BATCH_INITIAL_SIZE: usize = 64;
+const PROMPT_CACHE_CONVERSATION_BATCH_MIN_SIZE: usize = 32;
+const PROMPT_CACHE_CONVERSATION_BATCH_MAX_SIZE: usize =
+    PROMPT_CACHE_CONVERSATION_BACKFILL_PAGE_SIZE;
+const PROMPT_CACHE_CONVERSATION_BATCH_LOW_LATENCY_MS: u128 = 50;
+const PROMPT_CACHE_CONVERSATION_BATCH_HIGH_LATENCY_MS: u128 = 200;
 const PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN: usize = 400;
+
+static PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER: Lazy<
+    std::sync::Mutex<PromptCacheConversationBatchController>,
+> = Lazy::new(|| std::sync::Mutex::new(PromptCacheConversationBatchController::default()));
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCacheConversationIdentity {
@@ -82,6 +92,99 @@ pub(crate) struct PromptCacheConversationMaterializationRun {
     pub(crate) updated: u64,
     pub(crate) hit_scan_limit: bool,
     pub(crate) complete: bool,
+    pub(crate) page_complete: bool,
+    pub(crate) deferred: bool,
+    pub(crate) defer_reason: Option<&'static str>,
+    pub(crate) batch_count: u64,
+    pub(crate) last_batch_size: usize,
+    pub(crate) max_batch_size: usize,
+    pub(crate) batch_elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptCacheConversationBatchPolicy {
+    Adaptive,
+    Fixed(usize),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PromptCacheConversationBatchController {
+    batch_size: usize,
+    low_latency_successes: u8,
+}
+
+impl Default for PromptCacheConversationBatchController {
+    fn default() -> Self {
+        Self {
+            batch_size: PROMPT_CACHE_CONVERSATION_BATCH_INITIAL_SIZE,
+            low_latency_successes: 0,
+        }
+    }
+}
+
+impl PromptCacheConversationBatchController {
+    fn for_policy(policy: PromptCacheConversationBatchPolicy) -> Self {
+        match policy {
+            PromptCacheConversationBatchPolicy::Adaptive => {
+                PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER
+                    .lock()
+                    .expect("prompt-cache batch controller mutex")
+                    .to_owned()
+            }
+            PromptCacheConversationBatchPolicy::Fixed(batch_size) => Self {
+                batch_size: batch_size.clamp(
+                    PROMPT_CACHE_CONVERSATION_BATCH_MIN_SIZE,
+                    PROMPT_CACHE_CONVERSATION_BATCH_MAX_SIZE,
+                ),
+                low_latency_successes: 0,
+            },
+        }
+    }
+
+    fn persist_adaptive(self, policy: PromptCacheConversationBatchPolicy) {
+        if policy == PromptCacheConversationBatchPolicy::Adaptive {
+            *PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER
+                .lock()
+                .expect("prompt-cache batch controller mutex") = self;
+        }
+    }
+
+    fn next_batch_size(self, remaining: usize) -> usize {
+        self.batch_size.min(remaining).max(1)
+    }
+
+    fn observe_success(&mut self, elapsed_ms: u128, pressure_waiter: bool) {
+        if pressure_waiter || elapsed_ms >= PROMPT_CACHE_CONVERSATION_BATCH_HIGH_LATENCY_MS {
+            self.batch_size = (self.batch_size / 2).max(PROMPT_CACHE_CONVERSATION_BATCH_MIN_SIZE);
+            self.low_latency_successes = 0;
+        } else if elapsed_ms <= PROMPT_CACHE_CONVERSATION_BATCH_LOW_LATENCY_MS {
+            self.low_latency_successes = self.low_latency_successes.saturating_add(1);
+            if self.low_latency_successes >= 2 {
+                self.batch_size = self
+                    .batch_size
+                    .saturating_mul(2)
+                    .min(PROMPT_CACHE_CONVERSATION_BATCH_MAX_SIZE);
+                self.low_latency_successes = 0;
+            }
+        } else {
+            self.low_latency_successes = 0;
+        }
+    }
+
+    fn observe_failure(&mut self) {
+        self.batch_size = (self.batch_size / 2).max(PROMPT_CACHE_CONVERSATION_BATCH_MIN_SIZE);
+        self.low_latency_successes = 0;
+    }
+}
+
+struct PromptCacheConversationMaterializationContext<'a> {
+    pool: &'a Pool<Sqlite>,
+    page_limit: usize,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+    policy: PromptCacheConversationBatchPolicy,
+    controller: &'a mut PromptCacheConversationBatchController,
+    should_yield: &'a (dyn Fn() -> bool + Send + Sync),
 }
 
 pub(crate) fn prompt_cache_conversation_id_from_invoke_id(invoke_id: &str) -> Option<&str> {
@@ -482,33 +585,6 @@ fn prompt_cache_conversation_materialization_budget_exhausted(
     max_elapsed.is_some_and(|budget| started_at.elapsed() >= budget)
 }
 
-async fn prompt_cache_conversation_materialize_key_page(
-    pool: &Pool<Sqlite>,
-    prompt_cache_keys: &[String],
-) -> Result<(usize, usize)> {
-    let mut identities_created = 0;
-    for prompt_cache_key in prompt_cache_keys {
-        if ensure_prompt_cache_conversation_row(pool, prompt_cache_key).await? {
-            identities_created += 1;
-        }
-    }
-    let prompt_cache_key_refs = prompt_cache_keys
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let mut tx = pool.begin().await?;
-    let refreshed =
-        refresh_prompt_cache_conversation_stats_on_connection(tx.as_mut(), &prompt_cache_key_refs)
-            .await?;
-    clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-        tx.as_mut(),
-        &prompt_cache_key_refs,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok((identities_created, refreshed))
-}
-
 async fn prompt_cache_conversation_invocation_snapshot_max_id(pool: &Pool<Sqlite>) -> Result<i64> {
     Ok(
         sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
@@ -536,19 +612,136 @@ async fn prompt_cache_conversation_identity_repair_needed(pool: &Pool<Sqlite>) -
         != 0)
 }
 
-async fn run_prompt_cache_conversation_identity_backfill_page(
+async fn prompt_cache_conversation_materialize_key_batch(
     pool: &Pool<Sqlite>,
+    phase: &str,
+    source_max_invocation_id: i64,
+    advance_cursor: bool,
+    prompt_cache_keys: &[String],
+) -> Result<(usize, usize, Duration)> {
+    let started_at = Instant::now();
+    let mut tx = pool.begin().await?;
+    let mut identities_created = 0;
+    for prompt_cache_key in prompt_cache_keys {
+        if ensure_prompt_cache_conversation_row_on_connection(tx.as_mut(), prompt_cache_key).await?
+        {
+            identities_created += 1;
+        }
+    }
+    let prompt_cache_key_refs = prompt_cache_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let refreshed =
+        refresh_prompt_cache_conversation_stats_on_connection(tx.as_mut(), &prompt_cache_key_refs)
+            .await?;
+    clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+        tx.as_mut(),
+        &prompt_cache_key_refs,
+    )
+    .await?;
+    if advance_cursor {
+        update_prompt_cache_conversation_migration_progress_on_connection(
+            tx.as_mut(),
+            phase,
+            source_max_invocation_id,
+            prompt_cache_keys.last().map(String::as_str),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok((identities_created, refreshed, started_at.elapsed()))
+}
+
+async fn run_prompt_cache_conversation_adaptive_key_batches(
+    context: &mut PromptCacheConversationMaterializationContext<'_>,
+    phase: &str,
+    source_max_invocation_id: i64,
+    advance_cursor: bool,
+    prompt_cache_keys: &[String],
+) -> Result<PromptCacheConversationMaterializationRun> {
+    let mut result = PromptCacheConversationMaterializationRun {
+        phase: phase.to_string(),
+        hit_scan_limit: true,
+        ..Default::default()
+    };
+    let mut offset = 0;
+    while offset < prompt_cache_keys.len() {
+        if prompt_cache_conversation_materialization_budget_exhausted(
+            context.started_at,
+            context.max_elapsed,
+        ) {
+            return Ok(result);
+        }
+        if (context.should_yield)() {
+            result.deferred = true;
+            result.defer_reason = Some("coordinator_priority");
+            context.controller.persist_adaptive(context.policy);
+            return Ok(result);
+        }
+
+        let batch_size = context
+            .controller
+            .next_batch_size(prompt_cache_keys.len() - offset);
+        let batch_end = (offset + batch_size).min(prompt_cache_keys.len());
+        let batch = &prompt_cache_keys[offset..batch_end];
+        let (identities_created, refreshed, elapsed) =
+            match prompt_cache_conversation_materialize_key_batch(
+                context.pool,
+                phase,
+                source_max_invocation_id,
+                advance_cursor,
+                batch,
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    context.controller.observe_failure();
+                    context.controller.persist_adaptive(context.policy);
+                    return Err(error);
+                }
+            };
+        let priority_waiter = (context.should_yield)();
+        context
+            .controller
+            .observe_success(elapsed.as_millis(), priority_waiter);
+        context.controller.persist_adaptive(context.policy);
+
+        offset = batch_end;
+        result.batch_count = result.batch_count.saturating_add(1);
+        result.last_batch_size = batch.len();
+        result.max_batch_size = result.max_batch_size.max(batch.len());
+        result.batch_elapsed_ms = result
+            .batch_elapsed_ms
+            .saturating_add(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
+        result.scanned = result.scanned.saturating_add(batch.len() as u64);
+        result.updated = result
+            .updated
+            .saturating_add(identities_created.saturating_add(refreshed) as u64);
+
+        if priority_waiter {
+            result.deferred = true;
+            result.defer_reason = Some("coordinator_priority");
+            return Ok(result);
+        }
+    }
+    result.page_complete = true;
+    Ok(result)
+}
+
+async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
+    context: &mut PromptCacheConversationMaterializationContext<'_>,
     progress: &PromptCacheConversationMigrationProgressRow,
-    page_limit: usize,
 ) -> Result<PromptCacheConversationMaterializationRun> {
     let source_max_invocation_id = if progress.source_max_invocation_id == 0 {
-        prompt_cache_conversation_invocation_snapshot_max_id(pool).await?
+        prompt_cache_conversation_invocation_snapshot_max_id(context.pool).await?
     } else {
         progress.source_max_invocation_id
     };
     if source_max_invocation_id != progress.source_max_invocation_id {
         update_prompt_cache_conversation_migration_progress(
-            pool,
+            context.pool,
             PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
             source_max_invocation_id,
             progress.cursor_key.as_deref(),
@@ -580,10 +773,13 @@ async fn run_prompt_cache_conversation_identity_backfill_page(
     if let Some(cursor_key) = progress.cursor_key.as_deref() {
         keys_query = keys_query.bind(cursor_key);
     }
-    let prompt_cache_keys = keys_query.bind(page_limit as i64).fetch_all(pool).await?;
+    let prompt_cache_keys = keys_query
+        .bind(context.page_limit as i64)
+        .fetch_all(context.pool)
+        .await?;
     if prompt_cache_keys.is_empty() {
         update_prompt_cache_conversation_migration_progress(
-            pool,
+            context.pool,
             PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION,
             source_max_invocation_id,
             None,
@@ -593,13 +789,23 @@ async fn run_prompt_cache_conversation_identity_backfill_page(
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION.to_string(),
             updated: 1,
             hit_scan_limit: true,
+            page_complete: true,
             ..Default::default()
         });
     }
 
-    let (identities_created, refreshed) =
-        prompt_cache_conversation_materialize_key_page(pool, &prompt_cache_keys).await?;
-    let next_phase = if prompt_cache_keys.len() < page_limit {
+    let mut result = run_prompt_cache_conversation_adaptive_key_batches(
+        context,
+        PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+        source_max_invocation_id,
+        true,
+        &prompt_cache_keys,
+    )
+    .await?;
+    if !result.page_complete || result.deferred {
+        return Ok(result);
+    }
+    let next_phase = if prompt_cache_keys.len() < context.page_limit {
         PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION
     } else {
         PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL
@@ -612,25 +818,19 @@ async fn run_prompt_cache_conversation_identity_backfill_page(
                 .as_str()
         });
     update_prompt_cache_conversation_migration_progress(
-        pool,
+        context.pool,
         next_phase,
         source_max_invocation_id,
         next_cursor,
     )
     .await?;
-    Ok(PromptCacheConversationMaterializationRun {
-        phase: next_phase.to_string(),
-        scanned: prompt_cache_keys.len() as u64,
-        updated: identities_created.saturating_add(refreshed) as u64,
-        hit_scan_limit: true,
-        ..Default::default()
-    })
+    result.phase = next_phase.to_string();
+    Ok(result)
 }
 
-async fn run_prompt_cache_conversation_identity_reconciliation_page(
-    pool: &Pool<Sqlite>,
+async fn run_prompt_cache_conversation_adaptive_identity_reconciliation_page(
+    context: &mut PromptCacheConversationMaterializationContext<'_>,
     progress: &PromptCacheConversationMigrationProgressRow,
-    page_limit: usize,
 ) -> Result<PromptCacheConversationMaterializationRun> {
     let invocation_key_expr = invocation_prompt_cache_key_expr_sql("i");
     let keys_sql = format!(
@@ -638,7 +838,7 @@ async fn run_prompt_cache_conversation_identity_reconciliation_page(
          FROM codex_invocations AS i \
          WHERE {invocation_key_expr} IS NOT NULL \
            AND {invocation_key_expr} <> '' \
-           AND NOT EXISTS (\
+           AND NOT EXISTS(\
                SELECT 1 FROM prompt_cache_conversations AS c \
                WHERE c.prompt_cache_key = {invocation_key_expr}\
            ) \
@@ -646,11 +846,11 @@ async fn run_prompt_cache_conversation_identity_reconciliation_page(
          LIMIT ?1"
     );
     let prompt_cache_keys = sqlx::query_scalar::<_, String>(&keys_sql)
-        .bind(page_limit as i64)
-        .fetch_all(pool)
+        .bind(context.page_limit as i64)
+        .fetch_all(context.pool)
         .await?;
     if prompt_cache_keys.is_empty() {
-        let mut tx = pool.begin().await?;
+        let mut tx = context.pool.begin().await?;
         sqlx::query(
             "INSERT OR REPLACE INTO schema_refresh_migrations (migration_name) VALUES (?1)",
         )
@@ -670,25 +870,24 @@ async fn run_prompt_cache_conversation_identity_reconciliation_page(
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD.to_string(),
             updated: 1,
             hit_scan_limit: true,
+            page_complete: true,
             ..Default::default()
         });
     }
 
-    let (identities_created, refreshed) =
-        prompt_cache_conversation_materialize_key_page(pool, &prompt_cache_keys).await?;
-    Ok(PromptCacheConversationMaterializationRun {
-        phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION.to_string(),
-        scanned: prompt_cache_keys.len() as u64,
-        updated: identities_created.saturating_add(refreshed) as u64,
-        hit_scan_limit: true,
-        ..Default::default()
-    })
+    run_prompt_cache_conversation_adaptive_key_batches(
+        context,
+        PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION,
+        progress.source_max_invocation_id,
+        false,
+        &prompt_cache_keys,
+    )
+    .await
 }
 
-async fn run_prompt_cache_conversation_stats_rebuild_page(
-    pool: &Pool<Sqlite>,
+async fn run_prompt_cache_conversation_adaptive_stats_rebuild_page(
+    context: &mut PromptCacheConversationMaterializationContext<'_>,
     progress: &PromptCacheConversationMigrationProgressRow,
-    page_limit: usize,
 ) -> Result<PromptCacheConversationMaterializationRun> {
     let (last_key_clause, limit_placeholder) = progress
         .cursor_key
@@ -703,10 +902,13 @@ async fn run_prompt_cache_conversation_stats_rebuild_page(
     if let Some(cursor_key) = progress.cursor_key.as_deref() {
         keys_query = keys_query.bind(cursor_key);
     }
-    let prompt_cache_keys = keys_query.bind(page_limit as i64).fetch_all(pool).await?;
+    let prompt_cache_keys = keys_query
+        .bind(context.page_limit as i64)
+        .fetch_all(context.pool)
+        .await?;
     if prompt_cache_keys.is_empty() {
         update_prompt_cache_conversation_migration_progress(
-            pool,
+            context.pool,
             PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
             progress.source_max_invocation_id,
             None,
@@ -716,13 +918,23 @@ async fn run_prompt_cache_conversation_stats_rebuild_page(
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
             updated: 1,
             hit_scan_limit: true,
+            page_complete: true,
             ..Default::default()
         });
     }
 
-    let (_, refreshed) =
-        prompt_cache_conversation_materialize_key_page(pool, &prompt_cache_keys).await?;
-    let next_phase = if prompt_cache_keys.len() < page_limit {
+    let mut result = run_prompt_cache_conversation_adaptive_key_batches(
+        context,
+        PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD,
+        progress.source_max_invocation_id,
+        true,
+        &prompt_cache_keys,
+    )
+    .await?;
+    if !result.page_complete || result.deferred {
+        return Ok(result);
+    }
+    let next_phase = if prompt_cache_keys.len() < context.page_limit {
         PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN
     } else {
         PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD
@@ -734,35 +946,38 @@ async fn run_prompt_cache_conversation_stats_rebuild_page(
             .as_str()
     });
     update_prompt_cache_conversation_migration_progress(
-        pool,
+        context.pool,
         next_phase,
         progress.source_max_invocation_id,
         next_cursor,
     )
     .await?;
-    Ok(PromptCacheConversationMaterializationRun {
-        phase: next_phase.to_string(),
-        scanned: prompt_cache_keys.len() as u64,
-        updated: refreshed as u64,
-        hit_scan_limit: true,
-        ..Default::default()
-    })
+    result.phase = next_phase.to_string();
+    Ok(result)
 }
 
-async fn run_prompt_cache_conversation_queue_drain_page(
-    pool: &Pool<Sqlite>,
+async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
+    context: &mut PromptCacheConversationMaterializationContext<'_>,
     progress: &PromptCacheConversationMigrationProgressRow,
-    page_limit: usize,
 ) -> Result<PromptCacheConversationMaterializationRun> {
     let prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
         "SELECT prompt_cache_key FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
          ORDER BY prompt_cache_key LIMIT ?1"
     ))
-    .bind(page_limit as i64)
-    .fetch_all(pool)
+    .bind(context.page_limit as i64)
+    .fetch_all(context.pool)
     .await?;
     if prompt_cache_keys.is_empty() {
-        let mut tx = pool.begin().await?;
+        if (context.should_yield)() {
+            return Ok(PromptCacheConversationMaterializationRun {
+                phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
+                hit_scan_limit: true,
+                deferred: true,
+                defer_reason: Some("coordinator_priority"),
+                ..Default::default()
+            });
+        }
+        let mut tx = context.pool.begin().await?;
         let identity_complete = prompt_cache_conversation_marker_exists_on_connection(
             tx.as_mut(),
             PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME,
@@ -783,6 +998,7 @@ async fn run_prompt_cache_conversation_queue_drain_page(
             return Ok(PromptCacheConversationMaterializationRun {
                 phase: PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE.to_string(),
                 complete: true,
+                page_complete: true,
                 ..Default::default()
             });
         }
@@ -798,25 +1014,31 @@ async fn run_prompt_cache_conversation_queue_drain_page(
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL.to_string(),
             updated: 1,
             hit_scan_limit: true,
+            page_complete: true,
             ..Default::default()
         });
     }
 
-    let (_, refreshed) =
-        prompt_cache_conversation_materialize_key_page(pool, &prompt_cache_keys).await?;
-    Ok(PromptCacheConversationMaterializationRun {
-        phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
-        scanned: prompt_cache_keys.len() as u64,
-        updated: refreshed as u64,
-        hit_scan_limit: true,
-        ..Default::default()
-    })
+    run_prompt_cache_conversation_adaptive_key_batches(
+        context,
+        PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
+        progress.source_max_invocation_id,
+        false,
+        &prompt_cache_keys,
+    )
+    .await
 }
 
-pub(crate) async fn run_prompt_cache_conversations_materialization(
+fn prompt_cache_conversation_never_yields() -> bool {
+    false
+}
+
+async fn run_prompt_cache_conversations_materialization_with_policy(
     pool: &Pool<Sqlite>,
     scan_limit: u64,
     max_elapsed: Option<Duration>,
+    policy: PromptCacheConversationBatchPolicy,
+    should_yield: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<PromptCacheConversationMaterializationRun> {
     let started_at = Instant::now();
     let mut progress = load_prompt_cache_conversation_migration_progress(pool).await?;
@@ -829,6 +1051,16 @@ pub(crate) async fn run_prompt_cache_conversations_materialization(
         return Ok(PromptCacheConversationMaterializationRun {
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE.to_string(),
             complete: true,
+            page_complete: true,
+            ..Default::default()
+        });
+    }
+    if should_yield() {
+        return Ok(PromptCacheConversationMaterializationRun {
+            phase: progress.phase,
+            hit_scan_limit: true,
+            deferred: true,
+            defer_reason: Some("coordinator_priority"),
             ..Default::default()
         });
     }
@@ -866,20 +1098,34 @@ pub(crate) async fn run_prompt_cache_conversations_materialization(
         });
     }
     let page_limit = PROMPT_CACHE_CONVERSATION_BACKFILL_PAGE_SIZE.min(remaining_scan_limit);
+    let mut controller = PromptCacheConversationBatchController::for_policy(policy);
+    let mut context = PromptCacheConversationMaterializationContext {
+        pool,
+        page_limit,
+        started_at,
+        max_elapsed,
+        policy,
+        controller: &mut controller,
+        should_yield,
+    };
     let mut result = match progress.phase.as_str() {
         PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL => {
-            run_prompt_cache_conversation_identity_backfill_page(pool, &progress, page_limit)
+            run_prompt_cache_conversation_adaptive_identity_backfill_page(&mut context, &progress)
                 .await?
         }
         PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION => {
-            run_prompt_cache_conversation_identity_reconciliation_page(pool, &progress, page_limit)
-                .await?
+            run_prompt_cache_conversation_adaptive_identity_reconciliation_page(
+                &mut context,
+                &progress,
+            )
+            .await?
         }
         PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD => {
-            run_prompt_cache_conversation_stats_rebuild_page(pool, &progress, page_limit).await?
+            run_prompt_cache_conversation_adaptive_stats_rebuild_page(&mut context, &progress)
+                .await?
         }
         PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN => {
-            run_prompt_cache_conversation_queue_drain_page(pool, &progress, page_limit).await?
+            run_prompt_cache_conversation_adaptive_queue_drain_page(&mut context, &progress).await?
         }
         _ => {
             update_prompt_cache_conversation_migration_progress(
@@ -893,6 +1139,7 @@ pub(crate) async fn run_prompt_cache_conversations_materialization(
                 phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL.to_string(),
                 updated: 1,
                 hit_scan_limit: true,
+                page_complete: true,
                 ..Default::default()
             }
         }
@@ -903,6 +1150,80 @@ pub(crate) async fn run_prompt_cache_conversations_materialization(
         result.hit_scan_limit = true;
     }
     Ok(result)
+}
+
+pub(crate) async fn run_prompt_cache_conversations_materialization_with_pressure(
+    pool: &Pool<Sqlite>,
+    scan_limit: u64,
+    max_elapsed: Option<Duration>,
+    should_yield: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<PromptCacheConversationMaterializationRun> {
+    run_prompt_cache_conversations_materialization_with_policy(
+        pool,
+        scan_limit,
+        max_elapsed,
+        PromptCacheConversationBatchPolicy::Adaptive,
+        should_yield,
+    )
+    .await
+}
+
+pub(crate) async fn run_prompt_cache_conversations_materialization(
+    pool: &Pool<Sqlite>,
+    scan_limit: u64,
+    max_elapsed: Option<Duration>,
+) -> Result<PromptCacheConversationMaterializationRun> {
+    run_prompt_cache_conversations_materialization_with_policy(
+        pool,
+        scan_limit,
+        max_elapsed,
+        PromptCacheConversationBatchPolicy::Adaptive,
+        &prompt_cache_conversation_never_yields,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_prompt_cache_conversations_materialization_with_test_batch_size(
+    pool: &Pool<Sqlite>,
+    scan_limit: u64,
+    max_elapsed: Option<Duration>,
+    batch_size: usize,
+) -> Result<PromptCacheConversationMaterializationRun> {
+    run_prompt_cache_conversations_materialization_with_policy(
+        pool,
+        scan_limit,
+        max_elapsed,
+        PromptCacheConversationBatchPolicy::Fixed(batch_size),
+        &prompt_cache_conversation_never_yields,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_prompt_cache_conversations_materialization_with_test_batch_size_and_pressure(
+    pool: &Pool<Sqlite>,
+    scan_limit: u64,
+    max_elapsed: Option<Duration>,
+    batch_size: usize,
+    should_yield: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<PromptCacheConversationMaterializationRun> {
+    run_prompt_cache_conversations_materialization_with_policy(
+        pool,
+        scan_limit,
+        max_elapsed,
+        PromptCacheConversationBatchPolicy::Fixed(batch_size),
+        should_yield,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) fn reset_prompt_cache_conversation_batch_controller_for_test() {
+    *PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER
+        .lock()
+        .expect("prompt-cache batch controller mutex") =
+        PromptCacheConversationBatchController::default();
 }
 
 async fn load_prompt_cache_conversation_row(
@@ -933,12 +1254,54 @@ pub(crate) async fn ensure_prompt_cache_conversation_row(
     Ok(true)
 }
 
+async fn load_prompt_cache_conversation_row_on_connection(
+    connection: &mut SqliteConnection,
+    prompt_cache_key: &str,
+) -> Result<Option<(String, i64)>> {
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT conversation_id, last_invoke_sequence \
+         FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_optional(&mut *connection)
+    .await
+    .context("failed to load prompt-cache conversation identity")
+}
+
+async fn ensure_prompt_cache_conversation_row_on_connection(
+    connection: &mut SqliteConnection,
+    prompt_cache_key: &str,
+) -> Result<bool> {
+    if load_prompt_cache_conversation_row_on_connection(connection, prompt_cache_key)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let (_, created) =
+        create_prompt_cache_conversation_row_on_connection(connection, prompt_cache_key).await?;
+    Ok(created)
+}
+
 async fn conversation_id_exists(pool: &Pool<Sqlite>, conversation_id: &str) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE conversation_id = ?1)",
     )
     .bind(conversation_id)
     .fetch_one(pool)
+    .await?
+        != 0)
+}
+
+async fn conversation_id_exists_on_connection(
+    connection: &mut SqliteConnection,
+    conversation_id: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE conversation_id = ?1)",
+    )
+    .bind(conversation_id)
+    .fetch_one(&mut *connection)
     .await?
         != 0)
 }
@@ -964,6 +1327,27 @@ async fn conversation_prefix_conflicts_with_live_invocation(
         != 0)
 }
 
+async fn conversation_prefix_conflicts_with_live_invocation_on_connection(
+    connection: &mut SqliteConnection,
+    conversation_id: &str,
+) -> Result<bool> {
+    // The generated suffix alphabet is A-Z followed by digits. '[' is the
+    // first byte after that alphabet in SQLite's BINARY collation.
+    let upper_bound = format!("{conversation_id}[");
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(\
+            SELECT 1 FROM codex_invocations \
+            WHERE invoke_id >= ?1 AND invoke_id < ?2 AND length(invoke_id) = ?3
+        )",
+    )
+    .bind(conversation_id)
+    .bind(upper_bound)
+    .bind(PROXY_INVOKE_ID_LENGTH as i64)
+    .fetch_one(&mut *connection)
+    .await?
+        != 0)
+}
+
 async fn create_prompt_cache_conversation_row(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
@@ -974,6 +1358,82 @@ async fn create_prompt_cache_conversation_row(
         generate_prompt_cache_conversation_id,
     )
     .await
+}
+
+async fn create_prompt_cache_conversation_row_on_connection(
+    connection: &mut SqliteConnection,
+    prompt_cache_key: &str,
+) -> Result<(PromptCacheConversationIdentity, bool)> {
+    for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
+        let conversation_id = generate_prompt_cache_conversation_id();
+        if conversation_id_exists_on_connection(connection, &conversation_id).await?
+            || conversation_prefix_conflicts_with_live_invocation_on_connection(
+                connection,
+                &conversation_id,
+            )
+            .await?
+        {
+            debug!(
+                attempt,
+                conversation_id = %conversation_id,
+                prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                "prompt-cache conversation id candidate rejected"
+            );
+            continue;
+        }
+
+        let insert_result = sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO prompt_cache_conversations (
+                conversation_id,
+                prompt_cache_key
+            ) VALUES (?1, ?2)
+            "#,
+        )
+        .bind(&conversation_id)
+        .bind(prompt_cache_key)
+        .execute(&mut *connection)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to persist prompt-cache conversation identity for key fingerprint {}",
+                prompt_cache_key_fingerprint(prompt_cache_key)
+            )
+        })?;
+
+        if insert_result.rows_affected() == 0 {
+            if let Some((conversation_id, last_invoke_sequence)) =
+                load_prompt_cache_conversation_row_on_connection(connection, prompt_cache_key)
+                    .await?
+            {
+                return Ok((
+                    PromptCacheConversationIdentity {
+                        conversation_id,
+                        next_sequence: last_invoke_sequence.max(0) as u32,
+                    },
+                    false,
+                ));
+            }
+            continue;
+        }
+
+        info!(
+            conversation_id = %conversation_id,
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            "prompt-cache conversation identity created"
+        );
+        return Ok((
+            PromptCacheConversationIdentity {
+                conversation_id,
+                next_sequence: 0,
+            },
+            true,
+        ));
+    }
+
+    bail!(
+        "failed to allocate prompt-cache conversation id after {PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS} attempts"
+    )
 }
 
 async fn create_prompt_cache_conversation_row_with_generator<F>(
@@ -2049,5 +2509,58 @@ mod tests {
             Some("ABCDEF")
         );
         assert_eq!(prompt_cache_conversation_id_from_invoke_id("proxy-1"), None);
+    }
+
+    #[test]
+    fn adaptive_batch_controller_respects_latency_and_pressure_bounds() {
+        let mut controller = PromptCacheConversationBatchController::default();
+        assert_eq!(controller.batch_size, 64);
+
+        controller.observe_success(50, false);
+        assert_eq!(controller.batch_size, 64);
+        controller.observe_success(50, false);
+        assert_eq!(controller.batch_size, 128);
+
+        controller.observe_success(49, false);
+        controller.observe_success(49, false);
+        assert_eq!(controller.batch_size, 256);
+        controller.observe_success(49, false);
+        controller.observe_success(49, false);
+        assert_eq!(controller.batch_size, 400);
+
+        controller.observe_success(200, false);
+        assert_eq!(controller.batch_size, 200);
+        controller.observe_success(1, true);
+        assert_eq!(controller.batch_size, 100);
+        controller.observe_failure();
+        assert_eq!(controller.batch_size, 50);
+        controller.observe_failure();
+        assert_eq!(controller.batch_size, 32);
+        controller.observe_failure();
+        assert_eq!(controller.batch_size, 32);
+    }
+
+    #[test]
+    fn adaptive_batch_controller_never_exceeds_logical_page_or_minimum() {
+        let mut controller = PromptCacheConversationBatchController::default();
+        for _ in 0..20 {
+            controller.observe_success(1, false);
+            controller.observe_success(1, false);
+        }
+        assert_eq!(
+            controller.batch_size,
+            PROMPT_CACHE_CONVERSATION_BATCH_MAX_SIZE
+        );
+        assert_eq!(controller.next_batch_size(7), 7);
+
+        controller.observe_success(200, false);
+        for _ in 0..10 {
+            controller.observe_failure();
+        }
+        assert_eq!(
+            controller.batch_size,
+            PROMPT_CACHE_CONVERSATION_BATCH_MIN_SIZE
+        );
+        assert_eq!(controller.next_batch_size(7), 7);
     }
 }

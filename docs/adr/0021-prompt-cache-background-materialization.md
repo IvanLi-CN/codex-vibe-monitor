@@ -27,8 +27,8 @@ Historical materialization is an ordered startup backfill task named
 `prompt_cache_conversations_materialization_v1`. Its durable phases are:
 
 1. `identity_backfill` snapshots `MAX(codex_invocations.id)` and paginates distinct prompt-cache
-   keys in key order. The snapshot bounds the initial scan, and `cursor_key` advances only after
-   the page's identity/statistics work has committed.
+   keys in key order. The snapshot bounds the initial scan, and `cursor_key` advances in the same
+   transaction as each committed identity/statistics batch.
 2. `identity_reconciliation` performs an uncursored, bounded search for missing identities so
    keys created or changed while the snapshot scan was running are included.
 3. `stats_rebuild` paginates existing conversation keys and refreshes their aggregates.
@@ -44,10 +44,12 @@ startup materialization task owns the historical aggregate refresh so foreground
 never synchronously scan retained invocation payloads.
 
 The startup backfill scheduler owns pressure admission, P2 write coordination, cancellation,
-failure backoff, and task wake-up. Page data is committed before its progress cursor is advanced,
-so process exit or cancellation repeats only an idempotent page. A later run can forward-repair
-missing identities, stale markers, or pending queue entries without rewriting existing conversation
-IDs. WebSocket behavior is outside this decision.
+failure backoff, and task wake-up. Each micro-batch commits its data and progress cursor together,
+so process exit or transaction failure repeats only an idempotent micro-batch. Prompt-cache
+materialization may refine a page into smaller committed transactions and yields only between those transactions;
+the shared cancellation behavior for other startup backfills is unchanged. A later run can
+forward-repair missing identities, stale markers, or pending queue entries without rewriting
+existing conversation IDs. WebSocket behavior is outside this decision.
 
 ## Consequences
 
@@ -64,3 +66,4 @@ IDs. WebSocket behavior is outside this decision.
 
 - `docs/specs/proxy-invocation-identity/IMPLEMENTATION.md`
 - `docs/specs/proxy-invocation-identity/assets/persistent-state-migration-record.json`
+- `docs/adr/0022-prompt-cache-adaptive-materialization.md`
