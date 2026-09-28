@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { translations } from "./translations";
 
 describe("translations", () => {
+  it("uses concurrent-call terminology for the invocation timeline axis", () => {
+    expect(translations.en["dashboard.activityOverview.timelineCallsAxis"]).toBe(
+      "Concurrent calls",
+    );
+    expect(translations.zh["dashboard.activityOverview.timelineCallsAxis"]).toBe("并发调用数");
+  });
+
   it("localizes chart non-success labels per locale", () => {
     expect(translations.en["chart.nonSuccess"]).toBe("Non-success");
     expect(translations.zh["chart.nonSuccess"]).toBe("非成功");
