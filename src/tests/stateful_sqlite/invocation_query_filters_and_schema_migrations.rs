@@ -11,6 +11,14 @@ use crate::upstream_accounts::{
 use serde_json::{Value, json};
 use tokio::time::{Duration, sleep};
 
+async fn fetch_prompt_cache_conversations(
+    State(state): State<Arc<AppState>>,
+    query: Query<PromptCacheConversationsQuery>,
+) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
+    crate::fetch_prompt_cache_conversations(State(state), query).await
+}
+
 #[tokio::test]
 async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invocations() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -51,7 +59,7 @@ async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invoc
 }
 
 #[tokio::test]
-async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats() {
+async fn ensure_schema_defers_prompt_cache_conversation_materialization_to_startup_backfill() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -85,7 +93,16 @@ async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats(
 
     ensure_schema(&pool)
         .await
-        .expect("backfill prompt-cache conversation identities");
+        .expect("install prompt-cache conversation structure");
+
+    let rows_after_schema: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+            .fetch_one(&pool)
+            .await
+            .expect("count prompt-cache conversations after schema installation");
+    assert_eq!(rows_after_schema, 0);
+
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
 
     let row = sqlx::query_as::<_, (String, String, i64, i64, i64, i64, f64)>(
         r#"
@@ -128,7 +145,8 @@ async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats(
         .expect("remove backfilled identity to exercise marker recovery");
     ensure_schema(&pool)
         .await
-        .expect("rerun prompt-cache conversation migration");
+        .expect("rerun prompt-cache conversation structure migration");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
     let row_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'conversation-backfill-key'",
     )
@@ -136,6 +154,253 @@ async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats(
     .await
     .expect("count backfilled prompt-cache conversations");
     assert_eq!(row_count, 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_new_keys() {
+    let temp_dir = make_temp_test_dir("prompt-cache-conversation-materialization-restart");
+    let db_path = temp_dir.join("state.db");
+    let db_url = test_sqlite_url_for_path(&db_path);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(
+            build_sqlite_connect_options(&db_url, Duration::from_secs(5))
+                .expect("build sqlite options"),
+        )
+        .await
+        .expect("file-backed sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache conversation structure");
+
+    async fn insert_invocation(pool: &Pool<Sqlite>, invoke_id: &str, prompt_cache_key: &str) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, '2026-09-01 00:00:00', ?2, 'success', 7, 0.07, ?3, '{}')
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": prompt_cache_key}).to_string())
+        .execute(pool)
+        .await
+        .expect("insert checkpoint invocation");
+    }
+
+    insert_invocation(&pool, "checkpoint-a", "checkpoint-a").await;
+    insert_invocation(&pool, "checkpoint-b", "checkpoint-b").await;
+
+    let first_page = run_prompt_cache_conversations_materialization(&pool, 1, None)
+        .await
+        .expect("run first identity page");
+    assert_eq!(first_page.phase, "identity_backfill");
+    assert_eq!(first_page.scanned, 1);
+    assert!(!first_page.complete);
+    let checkpoint = sqlx::query_as::<_, (String, i64, Option<String>)>(
+        "SELECT phase, source_max_invocation_id, cursor_key \
+         FROM prompt_cache_conversation_migration_progress \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load materialization checkpoint");
+    assert_eq!(checkpoint.0, "identity_backfill");
+    assert!(checkpoint.1 > 0);
+    assert_eq!(checkpoint.2.as_deref(), Some("checkpoint-a"));
+
+    pool.close().await;
+    let resumed_pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(
+            build_sqlite_connect_options(&db_url, Duration::from_secs(5))
+                .expect("build resumed sqlite options"),
+        )
+        .await
+        .expect("reopen file-backed sqlite after checkpoint");
+    ensure_schema(&resumed_pool)
+        .await
+        .expect("restart should preserve prompt-cache structure");
+    insert_invocation(&resumed_pool, "checkpoint-c", "checkpoint-c").await;
+    for _ in 0..24 {
+        let outcome = run_prompt_cache_conversations_materialization(&resumed_pool, 1, None)
+            .await
+            .expect("resume prompt-cache materialization");
+        if outcome.complete {
+            break;
+        }
+    }
+
+    assert!(
+        prompt_cache_conversation_materialization_is_complete(&resumed_pool)
+            .await
+            .expect("check completed materialization")
+    );
+    let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+        .fetch_one(&resumed_pool)
+        .await
+        .expect("count materialized identities");
+    assert_eq!(identity_count, 3);
+    let total_requests: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
+    )
+    .fetch_one(&resumed_pool)
+    .await
+    .expect("sum materialized statistics");
+    assert_eq!(total_requests, 3);
+    let queue_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue")
+            .fetch_one(&resumed_pool)
+            .await
+            .expect("count drained refresh queue");
+    assert_eq!(queue_count, 0);
+    let resumed = run_prompt_cache_conversations_materialization(&resumed_pool, 1, None)
+        .await
+        .expect("rerun completed materialization");
+    assert!(resumed.complete);
+    resumed_pool.close().await;
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_read_snapshot_keeps_completeness_with_aggregate_reads() {
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "prompt-cache-conversation-read-snapshot",
+        Duration::from_secs(5),
+    )
+    .await;
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
+
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .expect("begin prompt-cache aggregate read snapshot");
+    assert!(
+        prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+            .await
+            .expect("check prompt-cache completeness in read transaction")
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('snapshot-new-invocation', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "snapshot-new-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("commit concurrent prompt-cache invocation");
+
+    assert!(
+        prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+            .await
+            .expect("recheck completeness on the aggregate read snapshot")
+    );
+    let snapshot_queue_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue")
+            .fetch_one(transaction.as_mut())
+            .await
+            .expect("read prompt-cache queue on the aggregate snapshot");
+    assert_eq!(snapshot_queue_count, 0);
+    transaction
+        .rollback()
+        .await
+        .expect("rollback prompt-cache read snapshot");
+
+    assert!(
+        !prompt_cache_conversation_materialization_is_complete(&state.pool)
+            .await
+            .expect("check post-write prompt-cache completeness")
+    );
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn prompt_cache_subscription_baseline_fails_closed_while_refresh_queue_is_pending() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('pending-subscription-read', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "pending-subscription-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert pending subscription invocation");
+
+    let descriptor = SubscriptionTopicDescriptor {
+        topic: "dashboard.working-conversations.current".to_string(),
+        params: BTreeMap::from([
+            ("pageSize".to_string(), "20".to_string()),
+            ("recentInvocationLimit".to_string(), "16".to_string()),
+        ]),
+    };
+    let prepared = state
+        .subscription_hub
+        .prepare_connection(state.clone(), vec![descriptor], Vec::new())
+        .await
+        .expect("prepare subscription unavailable envelope");
+    assert_eq!(prepared.outcomes.len(), 1);
+    assert_eq!(
+        prepared.outcomes[0].disposition,
+        TopicInitDisposition::Unavailable
+    );
+    assert_eq!(prepared.initial.len(), 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_reads_fail_closed_while_refresh_queue_is_pending() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('pending-read-1', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "pending-read-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert pending prompt-cache invocation");
+
+    let error = crate::fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: None,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        }),
+    )
+    .await
+    .expect_err("aggregate read should fail closed while migration coverage is incomplete");
+    assert!(matches!(error, ApiError::Unavailable(_)));
 }
 
 #[tokio::test]
@@ -162,7 +427,8 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
 
     ensure_schema(&pool)
         .await
-        .expect("complete initial prompt-cache conversation migration");
+        .expect("install initial prompt-cache conversation structure");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
     sqlx::query(
         r#"
         UPDATE prompt_cache_conversations
@@ -185,7 +451,8 @@ async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missin
 
     ensure_schema(&pool)
         .await
-        .expect("recover prompt-cache statistics during startup");
+        .expect("rerun prompt-cache conversation structure migration");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
 
     let stats = sqlx::query_as::<_, (i64, i64, i64, i64, f64)>(
         r#"
@@ -235,7 +502,8 @@ async fn ensure_schema_recovers_prompt_cache_identity_after_invocation_payload_u
 
     ensure_schema(&pool)
         .await
-        .expect("complete initial prompt-cache conversation migration");
+        .expect("install initial prompt-cache conversation structure");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
     sqlx::query(
         r#"
         UPDATE codex_invocations
@@ -257,7 +525,8 @@ async fn ensure_schema_recovers_prompt_cache_identity_after_invocation_payload_u
 
     ensure_schema(&pool)
         .await
-        .expect("recover prompt-cache identity after invocation update");
+        .expect("rerun prompt-cache conversation structure migration");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
 
     let stats = sqlx::query_as::<_, (i64, i64, f64)>(
         r#"
@@ -4955,6 +5224,7 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before count-mode prompt-cache read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
@@ -5072,6 +5342,7 @@ async fn prompt_cache_last24h_requests_keep_null_status_rows_neutral() {
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before neutral status read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -5143,6 +5414,7 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_failure_class_as_
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before running failure read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -5213,6 +5485,7 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_fai
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before running error-text read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -5290,6 +5563,7 @@ async fn prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_f
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before pending failure-kind read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -5360,6 +5634,7 @@ async fn prompt_cache_last24h_requests_keep_status_only_http_failures_marked_as_
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before http-status-only read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),

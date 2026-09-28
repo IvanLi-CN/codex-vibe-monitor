@@ -13,7 +13,7 @@
 - `REQ-DIT-001`, `REQ-DIT-004`: `src/api/slices/invocations_and_summary.rs`, `src/maintenance/hourly_rollups.rs`.
 - `REQ-DIT-002`, `REQ-DIT-003`, `REQ-DIT-005`, `REQ-DIT-006`: `web/src/hooks/useInvocationTimeline.ts`, `web/src/features/dashboard/DashboardInvocationTimeline.tsx`, `web/src/features/dashboard/DashboardActivityOverview.tsx`.
 - API normalization: `web/src/lib/api/core-foundation.ts`, `web/src/lib/api/feature-clients.ts`, `web/src/lib/api/types.ts`.
-- Verification: Rust overlap and background-cleanup tests, web timeline snapshot/window-state tests, web API normalization tests, web lane assignment tests, typecheck, Rust check, and responsive visual evidence.
+- Verification: Rust overlap and background-cleanup tests, web timeline snapshot/window-state tests, web API normalization tests, web lane assignment and layout tests, Storybook interaction coverage, web typecheck, lint and production build, Rust check, and responsive visual evidence.
 
 ## Coverage / rollout summary
 
@@ -30,11 +30,11 @@
 ## Remaining Gaps
 
 - Full CI and formal review convergence are delivery gates after the topic branch is published.
-- The local Storybook review covers representative sparse, dense, empty, unavailable, desktop, and mobile states, with TTFT overlaid in the invocation plot, the X-axis at the bottom, at least 4 visual lanes, adaptive 8–16px lane heights, and a 1 CSS pixel gap between adjacent lanes. Pagination removes the former global 2,000-record cutoff; a failed traversal remains an explicit unavailable or stale state inside the new chart surface.
-- User-facing axis labels are `调用` / `Calls` and `TTFT`; internal coordinate labels are excluded from the rendered surface.
+- The local Storybook review covers representative sparse, dense, empty, unavailable, desktop, and mobile states, with TTFT overlaid in the invocation plot, the X-axis at the bottom, at least 4 visual lanes, adaptive 1–16px lane heights, no gap at 1px or 2px, and a 1 CSS pixel gap above 2px. Pagination removes the former global 2,000-record cutoff; a failed traversal remains an explicit unavailable or stale state inside the new chart surface.
+- User-facing axis labels are `并发调用数` / `Concurrent calls` and `TTFT`; internal coordinate labels are excluded from the rendered surface. The timeline header no longer displays the visible-window Invocation total.
 - Invocation bars render without embedded text; per-invocation TTFT remains available in the bar title/ARIA label without an extra visual marker. Short and unknown-duration calls use an 8px minimum click width so the invocation remains a horizontal bar.
-- High-concurrency layout keeps the 320px desktop / 336px compact frame fixed, scrolls only the lane body, and pins the X-axis and TTFT scale so 190 lanes do not enlarge the chart.
-- Normal concurrency maps each invocation row to its numeric call-count value (`lane + 1`) on the linear Y axis; the first assigned row is closest to the zero baseline, with the existing 1px row gap preserved rather than stretched.
+- The chart frame remains 320px on desktop and 336px on compact viewports. Lane height adapts before overflow; only the lane body scrolls once 1px lanes still exceed the available plot, while the calls axis stays pinned and scroll-synchronized with the lane body. First load of an overflowing view starts at the bottom, and a same-view refresh preserves the user's scroll position within the updated bounds.
+- Normal concurrency maps each invocation row to its numeric concurrent-call value (`lane + 1`) on the linear Y axis; the first assigned row is closest to the zero baseline. The hover line carries a chart-local floating tooltip with time, parallel, running, and queued counts; the tooltip does not add a layout row.
 
 ## Related Changes
 

@@ -5,6 +5,8 @@ import {
   getInvocationTimelineLaneCount,
   hasInvocationTimelineRefreshError,
   resolveInvocationTimelineLayout,
+  resolveInvocationTimelineScrollTop,
+  resolveInvocationTimelineTooltipPosition,
   shouldAdvanceInvocationTimelineBars,
   shouldShowTimelineUnavailable,
 } from "./DashboardInvocationTimeline";
@@ -167,22 +169,72 @@ describe("resolveInvocationTimelineLayout", () => {
     expect(layout.lanePlotHeight).toBe(292);
   });
 
-  it("adapts lane height while respecting the 8px and 16px bounds", () => {
+  it("adapts lane height and uses one-pixel gaps only above two pixels", () => {
     expect(resolveInvocationTimelineLayout(20, false).laneHeight).toBe(13);
-    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(8);
+    expect(resolveInvocationTimelineLayout(20, false).laneGap).toBe(1);
+    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(2);
+    expect(resolveInvocationTimelineLayout(100, true).laneGap).toBe(0);
+    expect(resolveInvocationTimelineLayout(300, false).laneHeight).toBe(1);
+    expect(resolveInvocationTimelineLayout(300, false).laneGap).toBe(0);
     expect(resolveInvocationTimelineLayout(2, true).laneHeight).toBe(16);
     expect(resolveInvocationTimelineLayout(2, true).chartHeightPx).toBe(336);
   });
 
-  it("keeps a 190-lane workload inside the fixed chart viewport", () => {
+  it("compresses 190 lanes into the fixed chart viewport before scrolling", () => {
     const layout = resolveInvocationTimelineLayout(190, false);
 
     expect(layout.visibleLaneCount).toBe(190);
     expect(layout.chartHeightPx).toBe(320);
     expect(layout.laneAreaHeightPx).toBe(292);
-    expect(layout.laneHeight).toBe(8);
-    expect(layout.laneStep).toBe(9);
-    expect(layout.lanePlotHeight).toBe(1_733);
+    expect(layout.laneHeight).toBe(1);
+    expect(layout.laneGap).toBe(0);
+    expect(layout.lanePlotHeight).toBe(layout.laneAreaHeightPx);
+  });
+
+  it("uses internal scrolling only after one-pixel lanes still exceed the plot", () => {
+    const layout = resolveInvocationTimelineLayout(360, false);
+
+    expect(layout.chartHeightPx).toBe(320);
+    expect(layout.laneHeight).toBe(1);
+    expect(layout.laneGap).toBe(0);
     expect(layout.lanePlotHeight).toBeGreaterThan(layout.laneAreaHeightPx);
+  });
+});
+
+describe("resolveInvocationTimelineTooltipPosition", () => {
+  it("places the tooltip beside a central pointer", () => {
+    expect(
+      resolveInvocationTimelineTooltipPosition(
+        { x: 100, y: 80 },
+        { width: 400, height: 280 },
+        { width: 150, height: 72 },
+      ),
+    ).toEqual({ x: 112, y: 92 });
+  });
+
+  it("flips and clamps the tooltip inside the plot at its edges", () => {
+    expect(
+      resolveInvocationTimelineTooltipPosition(
+        { x: 390, y: 275 },
+        { width: 400, height: 280 },
+        { width: 150, height: 72 },
+      ),
+    ).toEqual({ x: 228, y: 191 });
+    expect(
+      resolveInvocationTimelineTooltipPosition(
+        { x: 0, y: 0 },
+        { width: 400, height: 280 },
+        { width: 150, height: 72 },
+      ),
+    ).toEqual({ x: 12, y: 12 });
+  });
+});
+
+describe("resolveInvocationTimelineScrollTop", () => {
+  it("starts dense views at the bottom and preserves manual position on refresh", () => {
+    expect(resolveInvocationTimelineScrollTop(false, 0, 120)).toBe(120);
+    expect(resolveInvocationTimelineScrollTop(false, 48, 120)).toBe(120);
+    expect(resolveInvocationTimelineScrollTop(true, 48, 120)).toBe(48);
+    expect(resolveInvocationTimelineScrollTop(true, 180, 120)).toBe(120);
   });
 });

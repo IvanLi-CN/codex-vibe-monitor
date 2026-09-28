@@ -5835,6 +5835,16 @@ impl SubscriptionHub {
         } = topic
         {
             let mut transaction = state.pool.begin().await?;
+            if !prompt_cache_conversation_materialization_is_complete_on_connection(
+                transaction.as_mut(),
+            )
+            .await
+            .map_err(ApiError::from)?
+            {
+                return Err(ApiError::unavailable(anyhow!(
+                    "prompt-cache conversation history is still materializing"
+                )));
+            }
             let baseline_row_id =
                 sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                     .fetch_one(transaction.as_mut())
@@ -19955,6 +19965,8 @@ mod tests {
         .execute(&state.pool)
         .await
         .expect("persist terminal before runtime overlay acknowledgement");
+        crate::tests::complete_prompt_cache_conversation_materialization_for_test(&state.pool)
+            .await;
 
         let cached = state
             .subscription_hub

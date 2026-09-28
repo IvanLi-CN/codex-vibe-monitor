@@ -1675,6 +1675,20 @@ pub(crate) async fn test_state_from_config(
     .await
 }
 
+pub(crate) async fn complete_prompt_cache_conversation_materialization_for_test(
+    pool: &Pool<Sqlite>,
+) {
+    for _ in 0..32 {
+        let outcome = run_prompt_cache_conversations_materialization(pool, 2_000, None)
+            .await
+            .expect("complete prompt-cache conversation materialization");
+        if outcome.complete {
+            return;
+        }
+    }
+    panic!("prompt-cache conversation materialization did not complete in the test budget");
+}
+
 fn immediate_test_pool_no_available_wait_settings() -> PoolNoAvailableWaitSettings {
     PoolNoAvailableWaitSettings {
         timeout: Duration::ZERO,
@@ -1762,6 +1776,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     restore_stateful_schema_template(&pool)
         .await
         .expect("schema should initialize from the stateful template");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
     // Ordinary stateful tests model a process that has already completed the one-time startup
     // warming pass. Dedicated recovery tests use `test_current_schema_pool` to observe the
     // migration's pending marker before it is consumed.
@@ -2284,6 +2299,7 @@ pub(crate) async fn test_state_from_existing_pool(
     ensure_schema(&pool)
         .await
         .expect("schema should initialize for existing pool");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));

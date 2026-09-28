@@ -1,6 +1,8 @@
 // biome-ignore-all lint/a11y/noNoninteractiveTabindex: the scroll viewport must be focusable
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
+import { floatingSurfaceStyle } from "../../components/ui/floating-surface";
+import { usePortaledTheme } from "../../components/ui/use-portaled-theme";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { useInvocationTimeline } from "../../hooks/useInvocationTimeline";
 import useSseStatus from "../../hooks/useSseStatus";
@@ -164,7 +166,7 @@ const INVOCATION_MIN_VISIBLE_LANES = 4;
 const INVOCATION_CHART_HEIGHT_COMPACT_PX = 336;
 const INVOCATION_CHART_HEIGHT_DESKTOP_PX = 320;
 const INVOCATION_X_AXIS_HEIGHT_PX = 28;
-const INVOCATION_LANE_MIN_HEIGHT_PX = 8;
+const INVOCATION_LANE_MIN_HEIGHT_PX = 1;
 const INVOCATION_LANE_MAX_HEIGHT_PX = 16;
 const INVOCATION_LANE_GAP_PX = 1;
 const INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX = 16;
@@ -174,6 +176,7 @@ export interface InvocationTimelineLayout {
   chartHeightPx: number;
   laneAreaHeightPx: number;
   laneHeight: number;
+  laneGap: number;
   laneStep: number;
   lanePlotHeight: number;
   laneContentHeight: number;
@@ -189,28 +192,67 @@ export function resolveInvocationTimelineLayout(
     ? INVOCATION_CHART_HEIGHT_COMPACT_PX
     : INVOCATION_CHART_HEIGHT_DESKTOP_PX;
   const laneAreaHeightPx = chartHeightPx - INVOCATION_X_AXIS_HEIGHT_PX;
-  const laneHeight = Math.max(
-    INVOCATION_LANE_MIN_HEIGHT_PX,
-    Math.min(
-      INVOCATION_LANE_MAX_HEIGHT_PX,
-      Math.floor(
-        (laneAreaHeightPx - (visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX) / visibleLaneCount,
-      ),
-    ),
+  const heightWithGap = Math.floor(
+    (laneAreaHeightPx - (visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX) / visibleLaneCount,
   );
-  const laneStep = laneHeight + INVOCATION_LANE_GAP_PX;
+  const laneHeight =
+    heightWithGap > 2
+      ? Math.min(INVOCATION_LANE_MAX_HEIGHT_PX, heightWithGap)
+      : Math.max(
+          INVOCATION_LANE_MIN_HEIGHT_PX,
+          Math.min(2, Math.floor(laneAreaHeightPx / visibleLaneCount)),
+        );
+  const laneGap = laneHeight > 2 ? INVOCATION_LANE_GAP_PX : 0;
+  const laneStep = laneHeight + laneGap;
   const laneContentHeight =
-    visibleLaneCount * laneHeight + Math.max(0, visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX;
+    visibleLaneCount * laneHeight + Math.max(0, visibleLaneCount - 1) * laneGap;
   const lanePlotHeight = Math.max(laneAreaHeightPx, laneContentHeight + 24);
   return {
     chartHeightPx,
     laneAreaHeightPx,
     laneHeight,
+    laneGap,
     laneStep,
     lanePlotHeight,
     laneContentHeight,
     visibleLaneCount,
   };
+}
+
+export interface InvocationTimelineTooltipPosition {
+  x: number;
+  y: number;
+}
+
+export function resolveInvocationTimelineTooltipPosition(
+  anchor: { x: number; y: number },
+  bounds: { width: number; height: number },
+  tooltip: { width: number; height: number },
+): InvocationTimelineTooltipPosition {
+  const offset = 12;
+  const padding = 8;
+  let x = anchor.x + offset;
+  let y = anchor.y + offset;
+  if (x + tooltip.width > bounds.width - padding) {
+    x = anchor.x - tooltip.width - offset;
+  }
+  if (y + tooltip.height > bounds.height - padding) {
+    y = anchor.y - tooltip.height - offset;
+  }
+  return {
+    x: Math.min(Math.max(x, padding), Math.max(padding, bounds.width - tooltip.width - padding)),
+    y: Math.min(Math.max(y, padding), Math.max(padding, bounds.height - tooltip.height - padding)),
+  };
+}
+
+export function resolveInvocationTimelineScrollTop(
+  sameView: boolean,
+  rememberedScrollTop: number,
+  maxScrollTop: number,
+) {
+  const clampScrollTop = (value: number) => Math.min(maxScrollTop, Math.max(0, value));
+  if (sameView) return clampScrollTop(rememberedScrollTop);
+  return maxScrollTop;
 }
 
 export function assignInvocationTimelineLanes(
@@ -290,11 +332,15 @@ export function DashboardInvocationTimeline({
     closedNaturalDay || !["reconnecting", "disabled"].includes(sseStatus.phase);
   const liveConnected = closedNaturalDay || sseStatus.phase === "connected";
   const [hoverMs, setHoverMs] = useState<number | null>(null);
+  const [hoverAnchor, setHoverAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState<{ x: number; y: number } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [laneScrollTop, setLaneScrollTop] = useState(0);
   const lastHoverUpdateMs = useRef(0);
   const laneScrollRef = useRef<HTMLDivElement | null>(null);
   const callsAxisScrollRef = useRef<HTMLDivElement | null>(null);
+  const plotRef = useRef<HTMLDivElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
   const lastLaneScrollTopRef = useRef(0);
   const autoScrollViewKeyRef = useRef<string | null>(null);
   const timeline = useInvocationTimeline({
@@ -346,6 +392,7 @@ export function DashboardInvocationTimeline({
   );
   const laneCount = getInvocationTimelineLaneCount(lanes);
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
+  const tooltipTheme = usePortaledTheme(plotRef.current);
   const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
   const plotWindow = timeline.window;
   const autoScrollViewKey = `${timeline.bounds?.startMs ?? "empty"}:${closedNaturalDay}:${upstreamAccountId ?? "all"}:${timelineDataOverride ? "override" : "remote"}`;
@@ -359,24 +406,57 @@ export function DashboardInvocationTimeline({
     const scrollElement = laneScrollRef.current;
     const callsAxisScrollElement = callsAxisScrollRef.current;
     if (!scrollElement || !callsAxisScrollElement || !renderedData) return;
-    const maxScrollTop = Math.max(0, laneLayout.lanePlotHeight - laneLayout.laneAreaHeightPx);
-    if (autoScrollViewKeyRef.current === autoScrollViewKey) {
-      const restoredScrollTop = Math.min(maxScrollTop, Math.max(0, lastLaneScrollTopRef.current));
-      if (scrollElement.scrollTop !== restoredScrollTop) {
-        scrollElement.scrollTop = restoredScrollTop;
-        callsAxisScrollElement.scrollTop = restoredScrollTop;
-        setLaneScrollTop(restoredScrollTop);
-      }
-      return;
+    const visibleHeightPx = Math.min(
+      scrollElement.clientHeight,
+      laneLayout.chartHeightPx - INVOCATION_X_AXIS_HEIGHT_PX,
+    );
+    const maxScrollTop = Math.max(0, scrollElement.scrollHeight - visibleHeightPx);
+    const sameView = autoScrollViewKeyRef.current === autoScrollViewKey;
+    const nextScrollTop = resolveInvocationTimelineScrollTop(
+      sameView,
+      lastLaneScrollTopRef.current,
+      maxScrollTop,
+    );
+    if (!sameView) autoScrollViewKeyRef.current = autoScrollViewKey;
+    if (scrollElement.scrollTop !== nextScrollTop) scrollElement.scrollTop = nextScrollTop;
+    if (callsAxisScrollElement.scrollTop !== nextScrollTop) {
+      callsAxisScrollElement.scrollTop = nextScrollTop;
     }
-    if (maxScrollTop > 0 && scrollElement.scrollTop === 0) {
-      scrollElement.scrollTop = maxScrollTop;
-      callsAxisScrollElement.scrollTop = maxScrollTop;
-      lastLaneScrollTopRef.current = maxScrollTop;
-      setLaneScrollTop(maxScrollTop);
+    lastLaneScrollTopRef.current = nextScrollTop;
+    setLaneScrollTop((current) => (current === nextScrollTop ? current : nextScrollTop));
+  }, [autoScrollViewKey, laneLayout.chartHeightPx, renderedData]);
+
+  useLayoutEffect(() => {
+    const plot = plotRef.current;
+    const tooltip = tooltipRef.current;
+    if (hoverMs == null || !hoverAnchor || !plot || !tooltip) {
+      setTooltipPosition(null);
+      return undefined;
     }
-    autoScrollViewKeyRef.current = autoScrollViewKey;
-  }, [autoScrollViewKey, laneLayout.laneAreaHeightPx, laneLayout.lanePlotHeight, renderedData]);
+
+    const updatePosition = () => {
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const next = resolveInvocationTimelineTooltipPosition(
+        hoverAnchor,
+        { width: plot.clientWidth, height: laneLayout.laneAreaHeightPx },
+        { width: tooltipRect.width, height: tooltipRect.height },
+      );
+      setTooltipPosition((current) =>
+        current?.x === next.x && current.y === next.y ? current : next,
+      );
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updatePosition);
+    observer?.observe(plot);
+    observer?.observe(tooltip);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      observer?.disconnect();
+    };
+  }, [hoverAnchor, hoverMs, laneLayout.laneAreaHeightPx]);
 
   const ttft = useMemo(
     () =>
@@ -437,6 +517,7 @@ export function DashboardInvocationTimeline({
     chartHeightPx,
     laneAreaHeightPx,
     laneHeight,
+    laneGap,
     laneStep,
     lanePlotHeight,
     visibleLaneCount,
@@ -480,11 +561,11 @@ export function DashboardInvocationTimeline({
   const zeroIsVisible =
     callAxisTopForValue(0) >= laneScrollTop &&
     callAxisTopForValue(0) <= laneScrollTop + laneAreaHeightPx;
-  const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1) + INVOCATION_LANE_GAP_PX;
+  const laneTopFor = (lane: number) => callAxisTopForValue(lane + 1) + laneGap;
   const callAxisGridValues =
     callAxisMaxValue <= 20
       ? Array.from({ length: callAxisMaxValue }, (_, index) => index + 1)
-      : Array.from({ length: visibleLaneCount }, (_, index) => index + 1);
+      : [...new Set(callAxisTicks.map((tick) => tick.value).filter((value) => value > 0))];
 
   return (
     <div data-testid="dashboard-today-activity-chart">
@@ -493,11 +574,6 @@ export function DashboardInvocationTimeline({
           <div className="flex items-center gap-3">
             <span className="font-semibold text-base-content">
               {t("dashboard.activityOverview.timelineTitle")}
-            </span>
-            <span>
-              {t("dashboard.activityOverview.timelineCalls", {
-                count: renderedData?.total ?? 0,
-              })}
             </span>
             {timelineIsRefreshing ? (
               <span className="text-info">{t("dashboard.activityOverview.timelineLive")}</span>
@@ -575,8 +651,8 @@ export function DashboardInvocationTimeline({
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-lg border border-base-content/10 bg-base-300/20">
-          <div className="min-w-0 p-3 sm:min-w-[680px]">
+        <div className="min-w-0 rounded-lg border border-base-content/10 bg-base-300/20">
+          <div className="min-w-0 p-3">
             <div
               data-testid="dashboard-invocation-timeline-lanes"
               className="relative h-[21rem] overflow-hidden overscroll-contain desktop:h-80"
@@ -584,27 +660,35 @@ export function DashboardInvocationTimeline({
             >
               <div
                 className="relative flex"
+                data-testid="dashboard-invocation-timeline-interaction-area"
                 style={{ height: `${chartHeightPx}px` }}
                 onPointerMove={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  const ratio = Math.min(
-                    1,
-                    Math.max(0, (event.clientX - rect.left - 48) / Math.max(1, rect.width - 112)),
-                  );
+                  const plot = plotRef.current;
+                  if (!plot) return;
+                  const rect = plot.getBoundingClientRect();
+                  const plotWidth = Math.max(1, rect.width);
+                  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / plotWidth));
                   const hoverStepMs = Math.max(1_000, Math.min(15_000, windowSpan / 240));
                   const nextHoverMs =
                     plotWindow.startMs +
                     Math.round((ratio * windowSpan) / hoverStepMs) * hoverStepMs;
+                  setHoverAnchor({
+                    x: Math.min(rect.width, Math.max(0, event.clientX - rect.left)),
+                    y: Math.min(laneAreaHeightPx, Math.max(0, event.clientY - rect.top)),
+                  });
                   const now = performance.now();
-                  if (now - lastHoverUpdateMs.current < 50) return;
+                  if (hoverMs != null && now - lastHoverUpdateMs.current < 50) return;
                   lastHoverUpdateMs.current = now;
                   setHoverMs((current) => (current === nextHoverMs ? current : nextHoverMs));
                 }}
-                onPointerLeave={() => setHoverMs(null)}
+                onPointerLeave={() => {
+                  setHoverMs(null);
+                  setHoverAnchor(null);
+                }}
               >
                 <div
                   data-testid="dashboard-invocation-timeline-calls-axis"
-                  className="relative w-12 shrink-0 text-[10px] text-base-content/50"
+                  className="relative w-16 shrink-0 text-[10px] text-base-content/50"
                   style={{ height: `${laneAreaHeightPx}px` }}
                 >
                   <span className="pointer-events-none absolute left-0 top-0 z-20 leading-4">
@@ -660,7 +744,12 @@ export function DashboardInvocationTimeline({
                     </div>
                   </div>
                 </div>
-                <div className="relative min-w-0 flex-1" style={{ height: `${chartHeightPx}px` }}>
+                <div
+                  ref={plotRef}
+                  data-testid="dashboard-invocation-timeline-plot"
+                  className="relative min-w-0 flex-1"
+                  style={{ height: `${chartHeightPx}px` }}
+                >
                   <svg
                     data-testid="dashboard-invocation-timeline-ttft-overlay"
                     className="pointer-events-none absolute inset-x-0 top-0 z-0 w-full overflow-visible"
@@ -755,7 +844,7 @@ export function DashboardInvocationTimeline({
                               role="img"
                               key={`${item.record.invokeId}:${item.record.occurredAt}`}
                               data-call-value={item.lane + 1}
-                              className={`absolute flex appearance-none items-center overflow-visible rounded border shadow-sm ${statusClass(status)}`}
+                              className={`absolute flex appearance-none items-center overflow-visible ${laneHeight > 2 ? "rounded border shadow-sm" : "rounded-sm"} ${statusClass(status)}`}
                               aria-label={accessibleLabel}
                               style={{
                                 left: `${left}%`,
@@ -763,6 +852,7 @@ export function DashboardInvocationTimeline({
                                 width: `${width}%`,
                                 minWidth: "8px",
                                 height: `${laneHeight}px`,
+                                borderWidth: laneHeight > 2 ? undefined : 0,
                               }}
                               title={accessibleLabel}
                             />
@@ -779,6 +869,44 @@ export function DashboardInvocationTimeline({
                         left: `calc(${xFor(hoverMs)}% - 0.5px)`,
                       }}
                     />
+                  ) : null}
+                  {hoverMs != null && hoverStats != null && hoverAnchor ? (
+                    <div
+                      ref={tooltipRef}
+                      role="tooltip"
+                      data-testid="dashboard-invocation-timeline-hover-tooltip"
+                      data-hover-time-ms={hoverMs}
+                      aria-hidden={tooltipPosition == null}
+                      className="pointer-events-none absolute z-30 w-max min-w-0 max-w-[14rem] rounded-xl border px-3 py-2 text-[11px] leading-tight text-base-content transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none sm:min-w-[11rem]"
+                      style={{
+                        ...floatingSurfaceStyle("neutral", tooltipTheme),
+                        left: tooltipPosition?.x ?? 8,
+                        top: tooltipPosition?.y ?? 8,
+                        maxWidth: "calc(100% - 16px)",
+                        visibility: tooltipPosition ? "visible" : "hidden",
+                      }}
+                    >
+                      <div className="font-semibold text-base-content">
+                        {formatInvocationTime(hoverMs, locale)}
+                      </div>
+                      <div className="mt-1.5 space-y-1 text-base-content/75">
+                        <div>
+                          {t("dashboard.activityOverview.timelineParallel", {
+                            count: hoverStats.total,
+                          })}
+                        </div>
+                        <div>
+                          {t("dashboard.activityOverview.timelineRunning", {
+                            count: hoverStats.running,
+                          })}
+                        </div>
+                        <div>
+                          {t("dashboard.activityOverview.timelineQueued", {
+                            count: hoverStats.queued,
+                          })}
+                        </div>
+                      </div>
+                    </div>
                   ) : null}
                   <div
                     data-testid="dashboard-invocation-timeline-x-axis"
@@ -854,22 +982,6 @@ export function DashboardInvocationTimeline({
             </span>
           ))}
         </div>
-        {hoverStats ? (
-          <div className="text-xs text-base-content/70">
-            {new Date(hoverMs ?? 0).toLocaleTimeString()} ·{" "}
-            {t("dashboard.activityOverview.timelineParallel", {
-              count: hoverStats.total,
-            })}{" "}
-            ·{" "}
-            {t("dashboard.activityOverview.timelineRunning", {
-              count: hoverStats.running,
-            })}{" "}
-            ·{" "}
-            {t("dashboard.activityOverview.timelineQueued", {
-              count: hoverStats.queued,
-            })}
-          </div>
-        ) : null}
         {renderedData?.total === 0 && !loading ? (
           <Alert variant="info">{t("dashboard.activityOverview.timelineEmpty")}</Alert>
         ) : null}

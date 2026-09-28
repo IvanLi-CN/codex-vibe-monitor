@@ -3822,6 +3822,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("materialize prompt cache rollups before sticky-only prompt-cache read");
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
