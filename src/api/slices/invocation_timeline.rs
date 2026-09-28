@@ -32,6 +32,20 @@ const INVOCATION_TIMELINE_RELEASE_QUEUE_LIMIT: usize = 1_024;
 const TIMELINE_SAFE_ACCOUNT_ID_EXCLUSIVE: i64 = 9_007_199_254_740_992;
 const INVOCATION_TIMELINE_SNAPSHOT_TABLE: &str = "invocation_timeline_snapshot_rows";
 
+pub(crate) fn register_invocation_timeline_routes(
+    router: axum::Router<Arc<AppState>>,
+) -> axum::Router<Arc<AppState>> {
+    router
+        .route(
+            "/api/stats/invocation-timeline",
+            axum::routing::get(fetch_timeline),
+        )
+        .route(
+            "/api/stats/invocation-timeline/:as_of",
+            axum::routing::delete(release_timeline_snapshot),
+        )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TimelineCursor {
     as_of: String,

@@ -5,6 +5,8 @@ const DASHBOARD_PERFORMANCE_URL =
 const MEASURED_RUN_COUNT = 5;
 const SUSTAINED_UPDATE_COUNT = 6;
 const LONG_TASK_LIMIT_MS = 200;
+const TIMELINE_REFRESH_INTERVAL_MS = 15_000;
+const TIMELINE_REFRESH_TIMER_GUARD_MS = 50;
 
 type LongTaskEntry = {
   startTime: number;
@@ -21,6 +23,7 @@ type DashboardPerformanceWindow = Window & {
     todayChartDataCommitCount: number;
     todayChartRenderCount: number;
   };
+  __advanceTimelineRefreshClock__?: () => void;
 };
 
 type LongTaskState = {
@@ -217,8 +220,22 @@ test.describe("Dashboard render performance", () => {
             readDashboardDiagnostics(runPage).then((value) => value.todayChartRenderCount),
           )
           .toBe(0);
+        // The capacity E2E checks real cadence; this suite keeps render measurements fast.
+        await runPage.evaluate(
+          (advanceByMs) => {
+            let now = Date.now();
+            Date.now = () => now;
+            const performanceWindow = window as DashboardPerformanceWindow;
+            performanceWindow.__advanceTimelineRefreshClock__ = () => {
+              now += advanceByMs;
+            };
+          },
+          TIMELINE_REFRESH_INTERVAL_MS + TIMELINE_REFRESH_TIMER_GUARD_MS + 1,
+        );
         const updateStart = await runPage.evaluate(() => performance.now());
         await runPage.evaluate(() => {
+          const performanceWindow = window as DashboardPerformanceWindow;
+          performanceWindow.__advanceTimelineRefreshClock__?.();
           const trigger = (
             window as Window & {
               __CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__?: () => void;
@@ -243,6 +260,8 @@ test.describe("Dashboard render performance", () => {
         for (let update = 0; update < SUSTAINED_UPDATE_COUNT; update += 1) {
           const before = await readDashboardDiagnostics(runPage);
           await runPage.evaluate(() => {
+            const performanceWindow = window as DashboardPerformanceWindow;
+            performanceWindow.__advanceTimelineRefreshClock__?.();
             const trigger = (
               window as Window & {
                 __CVM_DEMO_TRIGGER_TIMESERIES_UPDATE__?: () => void;
