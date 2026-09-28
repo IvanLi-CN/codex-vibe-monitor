@@ -115,10 +115,6 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     headers: HeaderMap,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
-    let invoke_id = format!(
-        "proxy-ws-{proxy_request_id}-{}",
-        Utc::now().timestamp_millis()
-    );
     info!(
         proxy_request_id,
         method = %method,
@@ -128,31 +124,36 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     );
 
     if method != Method::GET {
-        return build_proxy_error_response(
-            ProxyErrorResponse {
-                status: StatusCode::METHOD_NOT_ALLOWED,
-                message: "websocket proxy requires GET".to_string(),
-                cvm_id: None,
-                retry_after_secs: None,
-                code: None,
-                blocked_binding: None,
-            },
-            &invoke_id,
-        );
+        return build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+            status: StatusCode::METHOD_NOT_ALLOWED,
+            message: "websocket proxy requires GET".to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
+        });
     }
 
     if extract_bearer_token(&headers).is_none() {
-        return build_proxy_error_response(
-            ProxyErrorResponse {
-                status: StatusCode::UNAUTHORIZED,
-                message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
-                cvm_id: None,
-                retry_after_secs: None,
-                code: None,
-                blocked_binding: None,
-            },
-            &invoke_id,
-        );
+        return build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
+        });
+    }
+
+    if prompt_cache_key_headers_are_oversized(&headers) {
+        return build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "prompt-cache key exceeds the supported 512-byte limit".to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+            code: None,
+            blocked_binding: None,
+        });
     }
 
     let runtime_timeouts = match resolve_proxy_route_context_for_request(
@@ -165,7 +166,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     .await
     {
         Ok(timeouts) => timeouts,
-        Err(err) => return build_proxy_error_response(err, &invoke_id),
+        Err(err) => return build_proxy_error_response_without_invoke_id(err),
     };
 
     let proxy_request_permit = acquire_proxy_request_concurrency_permit(
@@ -179,8 +180,31 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     let (sticky_key, header_prompt_cache_key) = websocket_routing_keys_from_headers(&headers);
     let requested_model = extract_requested_model_from_websocket_uri(&original_uri);
     let requester_ip = extract_requester_ip(&headers, peer_ip);
+    let invoke_id = match allocate_proxy_invoke_id_with_active_lease(
+        state.as_ref(),
+        header_prompt_cache_key.as_deref(),
+    )
+    .await
+    {
+        Ok(invoke_id) => invoke_id,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                prompt_cache_key_fingerprint = header_prompt_cache_key
+                    .as_deref()
+                    .map(prompt_cache_key_fingerprint),
+                error = %err,
+                "failed to allocate websocket proxy invoke id; rejecting request"
+            );
+            return build_proxy_invoke_id_allocation_error_response(err);
+        }
+    };
+    let prompt_cache_lease_guard = PromptCacheConversationLeaseDropGuard::new(
+        state.prompt_cache_conversation_cache.clone(),
+        header_prompt_cache_key.as_deref(),
+    );
     let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: format!("pool-ws-{proxy_request_id}"),
+        invoke_id,
         occurred_at: shanghai_now_string(),
         endpoint: original_uri.path().to_string(),
         sticky_key: sticky_key.clone(),
@@ -196,40 +220,44 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         Some(protocol) => ws.protocols([protocol]),
         None => ws,
     };
-    ws.on_upgrade(move |downstream| async move {
-        if requires_response_create_first_frame {
-            proxy_websocket_tunnel_deferred_prepare(
-                state,
-                downstream,
-                proxy_request_id,
-                original_uri,
-                headers,
-                runtime_timeouts,
-                sticky_key,
-                requested_model,
-                header_prompt_cache_key,
-                downstream_subprotocol,
-                trace,
-                proxy_request_permit,
-            )
-            .await;
-        } else {
-            proxy_websocket_tunnel_immediate_prepare(
-                state,
-                downstream,
-                proxy_request_id,
-                original_uri,
-                headers,
-                runtime_timeouts,
-                sticky_key,
-                requested_model,
-                header_prompt_cache_key,
-                downstream_subprotocol,
-                trace,
-                proxy_request_permit,
-                None,
-            )
-            .await;
+    ws.on_upgrade(move |downstream| {
+        let mut prompt_cache_lease_guard = prompt_cache_lease_guard;
+        async move {
+            prompt_cache_lease_guard.disarm();
+            if requires_response_create_first_frame {
+                proxy_websocket_tunnel_deferred_prepare(
+                    state,
+                    downstream,
+                    proxy_request_id,
+                    original_uri,
+                    headers,
+                    runtime_timeouts,
+                    sticky_key,
+                    requested_model,
+                    header_prompt_cache_key,
+                    downstream_subprotocol,
+                    trace,
+                    proxy_request_permit,
+                )
+                .await;
+            } else {
+                proxy_websocket_tunnel_immediate_prepare(
+                    state,
+                    downstream,
+                    proxy_request_id,
+                    original_uri,
+                    headers,
+                    runtime_timeouts,
+                    sticky_key,
+                    requested_model,
+                    header_prompt_cache_key,
+                    downstream_subprotocol,
+                    trace,
+                    proxy_request_permit,
+                    None,
+                )
+                .await;
+            }
         }
     })
 }
@@ -255,6 +283,7 @@ pub(crate) struct PreparedUpstreamWebSocket {
     reservation_guard: PoolRoutingReservationGuard,
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
+    header_prompt_cache_key: Option<String>,
     prompt_cache_key: Option<String>,
     connect_latency_ms: f64,
     requires_response_create_first_frame: bool,
@@ -393,6 +422,7 @@ pub(crate) async fn prepare_upstream_websocket(
     sticky_key: Option<&str>,
     requested_model: Option<&str>,
     prompt_cache_key: Option<&str>,
+    header_prompt_cache_key: Option<&str>,
     binding_constraint: Option<PromptCacheConversationBindingConstraint>,
     conversation_override: Option<ConversationRoutingOverride>,
     owner_auto_guard_active: bool,
@@ -726,6 +756,7 @@ pub(crate) async fn prepare_upstream_websocket(
             .2,
             trace,
             prompt_cache_key,
+            header_prompt_cache_key,
             reservation_guard,
             account,
             ws_retry_account_ids.len() + 1,
@@ -795,6 +826,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
+    header_prompt_cache_key: Option<&str>,
     mut reservation_guard: PoolRoutingReservationGuard,
     account: PoolResolvedAccount,
     attempt_index: usize,
@@ -1237,6 +1269,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         reservation_guard,
         account,
         trace: trace.clone(),
+        header_prompt_cache_key: header_prompt_cache_key.map(str::to_string),
         prompt_cache_key: prompt_cache_key.map(str::to_string),
         connect_latency_ms: elapsed_ms(connect_started),
         requires_response_create_first_frame: websocket_requires_response_create_first_frame(
@@ -1277,6 +1310,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         mut reservation_guard,
         account,
         trace,
+        header_prompt_cache_key,
         prompt_cache_key,
         connect_latency_ms,
         requires_response_create_first_frame,
@@ -1291,7 +1325,8 @@ pub(crate) async fn proxy_websocket_tunnel(
     let mut usage_tracker = WsUsageTracker::new(
         account,
         trace,
-        prompt_cache_key,
+        prompt_cache_key.clone(),
+        header_prompt_cache_key.clone(),
         pending_attempt_record
             .as_ref()
             .and_then(|pending| pending.attempt_id),
@@ -1299,6 +1334,9 @@ pub(crate) async fn proxy_websocket_tunnel(
             parse_to_utc_datetime(&pending.started_at).map(|started| started.to_rfc3339())
         }),
     );
+    if let Some(prompt_cache_key) = prompt_cache_key.as_deref() {
+        usage_tracker.track_prompt_cache_key(prompt_cache_key);
+    }
     let mut active_turn_waiting_terminal = false;
     let mut saw_terminal_upstream_event = false;
     let mut drain_upstream_after_downstream_close = false;
@@ -1313,7 +1351,8 @@ pub(crate) async fn proxy_websocket_tunnel(
                 received_at_rfc3339,
             } = timestamped_message;
             let close_seen = matches!(message, AxumWsMessage::Close(_));
-            if ws_message_starts_response_create_turn(&message) {
+            let starts_new_turn = ws_message_starts_response_create_turn(&message);
+            if starts_new_turn {
                 if active_turn_waiting_terminal {
                     usage_tracker
                         .persist_interrupted_turn(
@@ -1325,6 +1364,26 @@ pub(crate) async fn proxy_websocket_tunnel(
                 active_turn_waiting_terminal = true;
                 saw_terminal_upstream_event = false;
                 usage_tracker.start_turn_at(received_at, received_at_rfc3339);
+                if let Some(prompt_cache_key) = ws_message_payload_bytes(&message)
+                    .and_then(inspect_ws_request_payload)
+                    .and_then(|inspection| inspection.prompt_cache_key)
+                {
+                    usage_tracker
+                        .set_turn_prompt_cache_key(state.as_ref(), prompt_cache_key)
+                        .await;
+                }
+                if let Err(err) = usage_tracker.ensure_turn_invoke_id(state.as_ref()).await {
+                    failure = Some(format!(
+                        "failed to allocate websocket turn invoke id: {err}"
+                    ));
+                    let _ = downstream_tx
+                        .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                            code: axum::extract::ws::close_code::ERROR,
+                            reason: "proxy invoke id allocation failed".into(),
+                        })))
+                        .await;
+                    break;
+                }
             }
             if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                 match apply_ws_downstream_payload_guard(
@@ -1432,7 +1491,8 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let timestamped_message = TimestampedWsDownstreamMessage::now(message);
                         let mut message = timestamped_message.message;
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
-                        if ws_message_starts_response_create_turn(&message) {
+                        let starts_new_turn = ws_message_starts_response_create_turn(&message);
+                        if starts_new_turn {
                             if active_turn_waiting_terminal {
                                 usage_tracker
                                     .persist_interrupted_turn(
@@ -1447,6 +1507,30 @@ pub(crate) async fn proxy_websocket_tunnel(
                                 timestamped_message.received_at,
                                 timestamped_message.received_at_rfc3339,
                             );
+                            if let Some(prompt_cache_key) = ws_message_payload_bytes(&message)
+                                .and_then(inspect_ws_request_payload)
+                                .and_then(|inspection| inspection.prompt_cache_key)
+                            {
+                                usage_tracker
+                                    .set_turn_prompt_cache_key(state.as_ref(), prompt_cache_key)
+                                    .await;
+                            }
+                            if let Err(err) =
+                                usage_tracker.ensure_turn_invoke_id(state.as_ref()).await
+                            {
+                                failure = Some(format!(
+                                    "failed to allocate websocket turn invoke id: {err}"
+                                ));
+                                let _ = downstream_tx
+                                    .send(AxumWsMessage::Close(Some(
+                                        axum::extract::ws::CloseFrame {
+                                            code: axum::extract::ws::close_code::ERROR,
+                                            reason: "proxy invoke id allocation failed".into(),
+                                        },
+                                    )))
+                                    .await;
+                                break;
+                            }
                         }
                         if let Some(payload_bytes) = ws_message_payload_bytes(&message) {
                             match apply_ws_downstream_payload_guard(
@@ -1586,10 +1670,12 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let terminal_for_message = upstream_text
                             .as_deref()
                             .is_some_and(ws_text_event_is_terminal);
-                        if let Some(text) = upstream_text.as_deref() {
-                            usage_tracker.observe_upstream_text(state.as_ref(), text).await;
-                        }
-                        if terminal_for_message {
+                        let terminal_persisted = if let Some(text) = upstream_text.as_deref() {
+                            usage_tracker.observe_upstream_text(state.as_ref(), text).await
+                        } else {
+                            false
+                        };
+                        if terminal_for_message && terminal_persisted {
                             saw_terminal_upstream_event = true;
                             active_turn_waiting_terminal = false;
                         }
@@ -1696,10 +1782,10 @@ pub(crate) async fn proxy_websocket_tunnel(
                     if let TungsteniteMessage::Text(text) = &message {
                         let text = text.as_str();
                         let terminal_for_message = ws_text_event_is_terminal(text);
-                        usage_tracker
+                        let terminal_persisted = usage_tracker
                             .observe_upstream_text(state.as_ref(), text)
                             .await;
-                        if terminal_for_message {
+                        if terminal_for_message && terminal_persisted {
                             saw_terminal_upstream_event = true;
                             active_turn_waiting_terminal = false;
                             break;
@@ -1808,6 +1894,9 @@ pub(crate) async fn proxy_websocket_tunnel(
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
     reservation_guard.release();
+    usage_tracker
+        .release_unterminal_prompt_cache_keys(state.as_ref())
+        .await;
 }
 
 pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
@@ -1835,9 +1924,11 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     error = %message,
                     "downstream websocket closed before deferred upstream prepare"
                 );
-                record_ws_pre_upstream_failure(
+                let _ = record_ws_pre_upstream_failure(
                     state.as_ref(),
                     &trace,
+                    header_prompt_cache_key.as_deref(),
+                    StatusCode::BAD_GATEWAY,
                     PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     message.as_str(),
                 )
@@ -1849,6 +1940,13 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     proxy_request_id,
                     "downstream websocket closed before first response.create frame"
                 );
+                if let Some(prompt_cache_key) = header_prompt_cache_key.as_deref() {
+                    release_active_prompt_cache_conversation(
+                        &state.prompt_cache_conversation_cache,
+                        prompt_cache_key,
+                    )
+                    .await;
+                }
                 return;
             }
             Err(_) => {
@@ -1858,9 +1956,11 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     timeout_secs = runtime_timeouts.request_read_timeout.as_secs_f64(),
                     "websocket first response.create timed out"
                 );
-                record_ws_pre_upstream_failure(
+                let _ = record_ws_pre_upstream_failure(
                     state.as_ref(),
                     &trace,
+                    header_prompt_cache_key.as_deref(),
+                    StatusCode::REQUEST_TIMEOUT,
                     PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     message,
                 )
@@ -1875,12 +1975,45 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
             }
         };
     if matches!(first_downstream_message.message, AxumWsMessage::Close(_)) {
+        if let Some(prompt_cache_key) = header_prompt_cache_key.as_deref() {
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                prompt_cache_key,
+            )
+            .await;
+        }
         return;
     }
 
-    let payload_inspection = match inspect_ws_request_payload(
+    let inspected_payload = inspect_ws_request_payload(
         ws_message_payload_bytes(&first_downstream_message.message).unwrap_or_default(),
-    ) {
+    );
+    if inspected_payload
+        .as_ref()
+        .is_some_and(|inspection| inspection.prompt_cache_key_invalid)
+    {
+        let reason = "prompt-cache key exceeds the supported 512-byte limit";
+        let _ = record_ws_pre_upstream_failure(
+            state.as_ref(),
+            &trace,
+            header_prompt_cache_key.as_deref(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+            reason,
+        )
+        .await;
+        let _ = downstream
+            .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                code: axum::extract::ws::close_code::ERROR,
+                reason: reason.into(),
+            })))
+            .await;
+        return;
+    }
+    let invalid_prompt_cache_key = inspected_payload
+        .as_ref()
+        .and_then(|inspection| inspection.prompt_cache_key.clone());
+    let payload_inspection = match inspected_payload {
         Some(inspection) if inspection.event_type.as_deref() == Some("response.create") => {
             inspection
         }
@@ -1912,9 +2045,50 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 proxy_request_id,
                 reason, "websocket first downstream frame rejected"
             );
-            record_ws_pre_upstream_failure(
+            let candidate_prompt_cache_key = invalid_prompt_cache_key
+                .as_deref()
+                .or(header_prompt_cache_key.as_deref());
+            let mut failure_prompt_cache_key = header_prompt_cache_key.clone();
+            if websocket_effective_prompt_cache_key(candidate_prompt_cache_key)
+                != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+            {
+                match allocate_proxy_invoke_id_with_active_lease(
+                    state.as_ref(),
+                    candidate_prompt_cache_key,
+                )
+                .await
+                {
+                    Ok(invoke_id) => {
+                        trace.invoke_id = invoke_id;
+                        if let Some(prompt_cache_key) =
+                            websocket_effective_prompt_cache_key(candidate_prompt_cache_key)
+                        {
+                            failure_prompt_cache_key = Some(prompt_cache_key.to_string());
+                        }
+                        if let Some(header_prompt_cache_key) = header_prompt_cache_key.as_deref() {
+                            release_active_prompt_cache_conversation(
+                                &state.prompt_cache_conversation_cache,
+                                header_prompt_cache_key,
+                            )
+                            .await;
+                        }
+                    }
+                    Err(error) => {
+                        warn!(
+                            proxy_request_id,
+                            error = %error,
+                            prompt_cache_key_fingerprint = candidate_prompt_cache_key
+                                .map(prompt_cache_key_fingerprint),
+                            "failed to bind invalid websocket first frame to its prompt-cache identity"
+                        );
+                    }
+                }
+            }
+            let _ = record_ws_pre_upstream_failure(
                 state.as_ref(),
                 &trace,
+                failure_prompt_cache_key.as_deref(),
+                StatusCode::BAD_REQUEST,
                 PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                 reason,
             )
@@ -1937,7 +2111,55 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     let prompt_cache_key = payload_inspection
         .prompt_cache_key
         .clone()
-        .or(header_prompt_cache_key);
+        .or_else(|| header_prompt_cache_key.clone());
+    if websocket_effective_prompt_cache_key(prompt_cache_key.as_deref())
+        != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+    {
+        trace.invoke_id = match allocate_proxy_invoke_id_with_active_lease(
+            state.as_ref(),
+            prompt_cache_key.as_deref(),
+        )
+        .await
+        {
+            Ok(invoke_id) => {
+                if websocket_effective_prompt_cache_key(prompt_cache_key.as_deref())
+                    != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+                    && let Some(header_prompt_cache_key) = header_prompt_cache_key.as_deref()
+                {
+                    release_active_prompt_cache_conversation(
+                        &state.prompt_cache_conversation_cache,
+                        header_prompt_cache_key,
+                    )
+                    .await;
+                }
+                invoke_id
+            }
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "failed to allocate deferred websocket prompt-cache invoke id; closing tunnel"
+                );
+                let reason = "proxy invoke id allocation failed";
+                let _ = record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    header_prompt_cache_key.as_deref(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    reason,
+                )
+                .await;
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+    }
     let request_contains_encrypted_content = payload_inspection.contains_encrypted_content;
     debug!(
         proxy_request_id,
@@ -1956,7 +2178,16 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
         .await
         {
             Ok(result) => result,
-            Err((_status, message)) => {
+            Err((status, message)) => {
+                let _ = record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    prompt_cache_key.as_deref(),
+                    status,
+                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                    &message,
+                )
+                .await;
                 let _ = downstream
                     .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
                         code: axum::extract::ws::close_code::ERROR,
@@ -1975,6 +2206,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
         sticky_key.as_deref(),
         requested_model.as_deref(),
         prompt_cache_key.as_deref(),
+        header_prompt_cache_key.as_deref(),
         binding_constraint,
         conversation_override,
         owner_auto_guard_active,
@@ -1985,6 +2217,15 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     {
         Ok(prepared) => prepared,
         Err(err) => {
+            let _ = record_ws_pre_upstream_failure(
+                state.as_ref(),
+                &trace,
+                prompt_cache_key.as_deref(),
+                err.status,
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                &err.message,
+            )
+            .await;
             let close_frame = if err.message == ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE {
                 axum::extract::ws::CloseFrame {
                     code: axum::extract::ws::close_code::AGAIN,
@@ -2015,12 +2256,30 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
 pub(crate) async fn record_ws_pre_upstream_failure(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
+    status: StatusCode,
     failure_kind: &'static str,
     message: &str,
-) {
-    let _ = (state, trace, failure_kind, message);
-    // Pre-upstream WebSocket failures never started a real upstream dispatch. They should surface
-    // through invocation-level adjudication only, not as synthetic attempt rows.
+) -> Result<()> {
+    let result = persist_websocket_pre_upstream_failure(
+        state,
+        trace,
+        prompt_cache_key,
+        status,
+        failure_kind,
+        message,
+    )
+    .await;
+    if result.is_err()
+        && let Some(prompt_cache_key) = prompt_cache_key
+    {
+        release_active_prompt_cache_conversation(
+            &state.prompt_cache_conversation_cache,
+            prompt_cache_key,
+        )
+        .await;
+    }
+    result
 }
 
 pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
@@ -2049,7 +2308,55 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     let prompt_cache_key = initial_inspection
         .as_ref()
         .and_then(|inspection| inspection.prompt_cache_key.clone())
-        .or(header_prompt_cache_key);
+        .or_else(|| header_prompt_cache_key.clone());
+    if websocket_effective_prompt_cache_key(prompt_cache_key.as_deref())
+        != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+    {
+        trace.invoke_id = match allocate_proxy_invoke_id_with_active_lease(
+            state.as_ref(),
+            prompt_cache_key.as_deref(),
+        )
+        .await
+        {
+            Ok(invoke_id) => {
+                if websocket_effective_prompt_cache_key(prompt_cache_key.as_deref())
+                    != websocket_effective_prompt_cache_key(header_prompt_cache_key.as_deref())
+                    && let Some(header_prompt_cache_key) = header_prompt_cache_key.as_deref()
+                {
+                    release_active_prompt_cache_conversation(
+                        &state.prompt_cache_conversation_cache,
+                        header_prompt_cache_key,
+                    )
+                    .await;
+                }
+                invoke_id
+            }
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    error = %err,
+                    "failed to allocate immediate websocket prompt-cache invoke id; closing tunnel"
+                );
+                let reason = "proxy invoke id allocation failed";
+                let _ = record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    header_prompt_cache_key.as_deref(),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    reason,
+                )
+                .await;
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: reason.into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+    }
     let request_contains_encrypted_content = initial_inspection
         .as_ref()
         .is_some_and(|inspection| inspection.contains_encrypted_content);
@@ -2070,7 +2377,16 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
         .await
         {
             Ok(result) => result,
-            Err((_status, message)) => {
+            Err((status, message)) => {
+                let _ = record_ws_pre_upstream_failure(
+                    state.as_ref(),
+                    &trace,
+                    prompt_cache_key.as_deref(),
+                    status,
+                    PROXY_FAILURE_POOL_ROUTING_BLOCKED,
+                    &message,
+                )
+                .await;
                 let _ = downstream
                     .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
                         code: axum::extract::ws::close_code::ERROR,
@@ -2089,6 +2405,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
         sticky_key.as_deref(),
         requested_model.as_deref(),
         prompt_cache_key.as_deref(),
+        header_prompt_cache_key.as_deref(),
         binding_constraint,
         conversation_override,
         owner_auto_guard_active,
@@ -2099,6 +2416,15 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     {
         Ok(prepared) => prepared,
         Err(err) => {
+            let _ = record_ws_pre_upstream_failure(
+                state.as_ref(),
+                &trace,
+                prompt_cache_key.as_deref(),
+                err.status,
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                &err.message,
+            )
+            .await;
             let close_frame = if err.message == ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE {
                 axum::extract::ws::CloseFrame {
                     code: axum::extract::ws::close_code::AGAIN,
@@ -2129,21 +2455,23 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
 pub(crate) struct WsUsageTracker {
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
+    header_prompt_cache_key: Option<String>,
     prompt_cache_key: Option<String>,
-    ordinal: u64,
     request_contains_encrypted_content: bool,
     attempt_id: Option<i64>,
     request_started_at: Option<String>,
     turn_started_at: Option<Instant>,
     turn_stream_started_at: Option<Instant>,
     turn_occurred_at: Option<String>,
-    turn_index: u64,
+    active_turn_invoke_id: Option<String>,
+    turn_prompt_cache_key: Option<String>,
     response_id: Option<String>,
     service_tier: Option<String>,
     runtime_snapshot_published: bool,
     runtime_snapshot_invoke_id: Option<String>,
     first_token_ms: Option<f64>,
     usage: WebSocketUsageAccumulator,
+    active_prompt_cache_keys: HashSet<String>,
 }
 
 impl WsUsageTracker {
@@ -2151,27 +2479,30 @@ impl WsUsageTracker {
         account: PoolResolvedAccount,
         trace: PoolUpstreamAttemptTraceContext,
         prompt_cache_key: Option<String>,
+        header_prompt_cache_key: Option<String>,
         attempt_id: Option<i64>,
         request_started_at: Option<String>,
     ) -> Self {
         Self {
             account,
             trace,
+            header_prompt_cache_key,
             prompt_cache_key,
-            ordinal: 0,
             request_contains_encrypted_content: false,
             attempt_id,
             request_started_at,
             turn_started_at: None,
             turn_stream_started_at: None,
             turn_occurred_at: None,
-            turn_index: 0,
+            active_turn_invoke_id: None,
+            turn_prompt_cache_key: None,
             response_id: None,
             service_tier: None,
             runtime_snapshot_published: false,
             runtime_snapshot_invoke_id: None,
             first_token_ms: None,
             usage: WebSocketUsageAccumulator::default(),
+            active_prompt_cache_keys: HashSet::new(),
         }
     }
 
@@ -2180,7 +2511,8 @@ impl WsUsageTracker {
         self.turn_started_at = Some(received_at);
         self.turn_stream_started_at = None;
         self.turn_occurred_at = Some(shanghai_now_string());
-        self.turn_index = self.ordinal.saturating_add(1);
+        self.active_turn_invoke_id = None;
+        self.turn_prompt_cache_key = None;
         self.response_id = None;
         self.service_tier = None;
         self.runtime_snapshot_published = false;
@@ -2194,10 +2526,128 @@ impl WsUsageTracker {
     }
 
     fn turn_invoke_id(&self) -> String {
-        self.response_id
+        self.active_turn_invoke_id
+            .clone()
+            .unwrap_or_else(|| self.trace.invoke_id.clone())
+    }
+
+    fn current_turn_prompt_cache_key(&self) -> Option<&str> {
+        self.turn_prompt_cache_key
             .as_deref()
-            .map(|response_id| format!("{}-{response_id}", self.trace.invoke_id))
-            .unwrap_or_else(|| format!("{}-turn-{}", self.trace.invoke_id, self.turn_index))
+            .or(self.header_prompt_cache_key.as_deref())
+    }
+
+    async fn retain_prompt_cache_key(&mut self, state: &AppState, prompt_cache_key: &str) {
+        let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(Some(prompt_cache_key))
+        else {
+            return;
+        };
+        if !self
+            .active_prompt_cache_keys
+            .insert(prompt_cache_key.to_string())
+        {
+            return;
+        }
+        retain_active_prompt_cache_conversation(
+            &state.prompt_cache_conversation_cache,
+            prompt_cache_key,
+        )
+        .await;
+    }
+
+    fn track_prompt_cache_key(&mut self, prompt_cache_key: &str) {
+        if let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(Some(prompt_cache_key))
+        {
+            self.active_prompt_cache_keys
+                .insert(prompt_cache_key.to_string());
+        }
+    }
+
+    async fn set_prompt_cache_key(&mut self, state: &AppState, prompt_cache_key: Option<String>) {
+        let next_prompt_cache_key = prompt_cache_key.and_then(|value| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        });
+        if websocket_effective_prompt_cache_key(self.prompt_cache_key.as_deref())
+            == websocket_effective_prompt_cache_key(next_prompt_cache_key.as_deref())
+        {
+            self.prompt_cache_key = next_prompt_cache_key;
+            if let Some(prompt_cache_key) = self.prompt_cache_key.clone() {
+                self.retain_prompt_cache_key(state, &prompt_cache_key).await;
+            }
+            return;
+        }
+        if let Some(previous_prompt_cache_key) = self.prompt_cache_key.as_deref()
+            && self
+                .active_prompt_cache_keys
+                .remove(previous_prompt_cache_key)
+        {
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                previous_prompt_cache_key,
+            )
+            .await;
+        }
+        self.prompt_cache_key = next_prompt_cache_key;
+        if let Some(prompt_cache_key) = self.prompt_cache_key.clone() {
+            self.retain_prompt_cache_key(state, &prompt_cache_key).await;
+        }
+    }
+
+    async fn set_turn_prompt_cache_key(&mut self, state: &AppState, prompt_cache_key: String) {
+        self.set_prompt_cache_key(state, Some(prompt_cache_key))
+            .await;
+        self.turn_prompt_cache_key = self.prompt_cache_key.clone();
+    }
+
+    fn mark_terminal_prompt_cache_key(&mut self) {
+        if let Some(prompt_cache_key) =
+            websocket_effective_prompt_cache_key(self.current_turn_prompt_cache_key())
+                .map(ToOwned::to_owned)
+        {
+            // The terminal batch writer now owns this lease and releases it after
+            // the terminal row is durable. Keep only non-terminal leases locally.
+            self.active_prompt_cache_keys.remove(&prompt_cache_key);
+        }
+    }
+
+    async fn release_unterminal_prompt_cache_keys(&mut self, state: &AppState) {
+        let active_prompt_cache_keys = self.active_prompt_cache_keys.drain().collect::<Vec<_>>();
+        for prompt_cache_key in active_prompt_cache_keys {
+            release_active_prompt_cache_conversation(
+                &state.prompt_cache_conversation_cache,
+                &prompt_cache_key,
+            )
+            .await;
+        }
+    }
+
+    async fn ensure_turn_invoke_id(&mut self, state: &AppState) -> Result<()> {
+        if self.active_turn_invoke_id.is_some() {
+            return Ok(());
+        }
+        let turn_prompt_cache_key = self.current_turn_prompt_cache_key().map(ToOwned::to_owned);
+        let invoke_id =
+            match allocate_proxy_invoke_id(state, turn_prompt_cache_key.as_deref()).await {
+                Ok(invoke_id) => invoke_id,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        trace_invoke_id = %self.trace.invoke_id,
+                        prompt_cache_key_fingerprint = self
+                            .current_turn_prompt_cache_key()
+                            .map(prompt_cache_key_fingerprint),
+                        "failed to allocate websocket turn invoke id"
+                    );
+                    return Err(err);
+                }
+            };
+        self.active_turn_invoke_id = Some(invoke_id);
+        self.turn_prompt_cache_key = turn_prompt_cache_key.clone();
+        if let Some(prompt_cache_key) = turn_prompt_cache_key {
+            self.retain_prompt_cache_key(state, &prompt_cache_key).await;
+        }
+        Ok(())
     }
 
     fn observe_first_token_text(&mut self, text: &str) -> bool {
@@ -2217,7 +2667,7 @@ impl WsUsageTracker {
         true
     }
 
-    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
+    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) -> bool {
         if self.turn_stream_started_at.is_none() {
             self.turn_stream_started_at = Some(Instant::now());
         }
@@ -2260,7 +2710,7 @@ impl WsUsageTracker {
                     );
                 }
             }
-            return;
+            return ws_text_event_is_terminal(text);
         };
         if let Some(service_tier) = event.service_tier.as_ref() {
             self.service_tier = Some(service_tier.clone());
@@ -2270,11 +2720,11 @@ impl WsUsageTracker {
         let (usage, usage_changed) = self.usage.update_with_change(event.usage);
         event.usage = usage;
         if !websocket_event_is_terminal(event.event_type.as_str()) {
-            return;
+            return false;
         }
-        self.ordinal = self.ordinal.saturating_add(1);
         let response_id_override = self.response_id.clone();
         let invoke_id_override = self.runtime_snapshot_invoke_id.clone();
+        let turn_invoke_id = self.turn_invoke_id();
         let stream_duration_ms = websocket_event_is_terminal(event.event_type.as_str())
             .then(|| self.stream_duration_ms())
             .flatten();
@@ -2282,15 +2732,16 @@ impl WsUsageTracker {
             state,
             &self.account,
             &self.trace,
-            self.prompt_cache_key.as_deref(),
-            self.ordinal,
+            self.current_turn_prompt_cache_key(),
             event,
             self.request_contains_encrypted_content,
             text,
             self.attempt_id,
             self.request_started_at.as_deref(),
             self.turn_occurred_at.as_deref(),
-            invoke_id_override.as_deref(),
+            invoke_id_override
+                .as_deref()
+                .or(Some(turn_invoke_id.as_str())),
             response_id_override.as_deref(),
             self.first_token_ms,
             stream_duration_ms,
@@ -2304,7 +2755,10 @@ impl WsUsageTracker {
                 error = %err,
                 "failed to persist websocket usage event"
             );
+            return false;
         }
+        self.mark_terminal_prompt_cache_key();
+        true
     }
 
     async fn publish_first_token_runtime_snapshot(&mut self, state: &AppState) {
@@ -2323,10 +2777,9 @@ impl WsUsageTracker {
             is_stream: true,
             ..RequestCaptureInfo::default()
         };
-        request_info.prompt_cache_key = self.prompt_cache_key.clone();
+        request_info.prompt_cache_key = self.current_turn_prompt_cache_key().map(ToOwned::to_owned);
         request_info.prompt_cache_key_attribution_source = self
-            .prompt_cache_key
-            .as_ref()
+            .current_turn_prompt_cache_key()
             .map(|_| "websocket_trace".to_string());
         let invoke_id = self.turn_invoke_id();
         let mut record = build_running_proxy_capture_record(
@@ -2336,7 +2789,7 @@ impl WsUsageTracker {
             &request_info,
             self.trace.requester_ip.as_deref(),
             self.trace.sticky_key.as_deref(),
-            self.prompt_cache_key.as_deref(),
+            self.current_turn_prompt_cache_key(),
             true,
             Some(self.account.account_id),
             Some(self.account.display_name.as_str()),
@@ -2366,9 +2819,11 @@ impl WsUsageTracker {
     }
 
     async fn persist_interrupted_turn(&mut self, state: &AppState, reason: &str) {
-        let Some(first_token_ms) = self.first_token_ms else {
+        if self.active_turn_invoke_id.is_none() && self.runtime_snapshot_invoke_id.is_none() {
             return;
-        };
+        }
+        let active_turn_invoke_id = self.active_turn_invoke_id.clone();
+        let first_token_ms = self.first_token_ms;
         let event = WsUsageEvent {
             event_type: "response.failed".to_string(),
             response_id: None,
@@ -2384,22 +2839,22 @@ impl WsUsageTracker {
             "error": reason,
         })
         .to_string();
-        let ordinal = self.ordinal.saturating_add(1);
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
             &self.trace,
-            self.prompt_cache_key.as_deref(),
-            ordinal,
+            self.current_turn_prompt_cache_key(),
             event,
             self.request_contains_encrypted_content,
             &raw_event,
             self.attempt_id,
             self.request_started_at.as_deref(),
             self.turn_occurred_at.as_deref(),
-            self.runtime_snapshot_invoke_id.as_deref(),
+            self.runtime_snapshot_invoke_id
+                .as_deref()
+                .or(active_turn_invoke_id.as_deref()),
             self.response_id.as_deref(),
-            Some(first_token_ms),
+            first_token_ms,
             self.stream_duration_ms(),
             false,
         )
@@ -2410,6 +2865,8 @@ impl WsUsageTracker {
                 error = %err,
                 "failed to persist websocket interrupted turn with observed first token"
             );
+        } else {
+            self.mark_terminal_prompt_cache_key();
         }
         self.first_token_ms = None;
     }
@@ -2431,6 +2888,7 @@ pub(crate) struct WsRequestPayloadInspection {
     requested_model: Option<String>,
     previous_response_id: Option<String>,
     prompt_cache_key: Option<String>,
+    prompt_cache_key_invalid: bool,
     contains_encrypted_content: bool,
 }
 
@@ -2669,6 +3127,7 @@ pub(crate) fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloa
             ],
         ),
         prompt_cache_key: extract_prompt_cache_key_from_request_body(&value),
+        prompt_cache_key_invalid: request_body_has_invalid_prompt_cache_key(&value),
         contains_encrypted_content: value_contains_encrypted_content(&value),
     })
 }
@@ -2684,6 +3143,12 @@ pub(crate) async fn inspect_ws_request_payload_guard(
     bytes: &[u8],
 ) -> Result<WsRequestPayloadGuardOutcome> {
     let inspection = inspect_ws_request_payload(bytes);
+    if inspection
+        .as_ref()
+        .is_some_and(|value| value.prompt_cache_key_invalid)
+    {
+        bail!("websocket prompt-cache key exceeds the supported 512-byte limit");
+    }
     let prompt_cache_key = inspection
         .as_ref()
         .and_then(|value| value.prompt_cache_key.clone())
@@ -2784,12 +3249,14 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
     let outcome = inspect_ws_request_payload_guard(
         state,
         &usage_tracker.account,
-        websocket_effective_prompt_cache_key(usage_tracker.prompt_cache_key.as_deref()),
+        websocket_effective_prompt_cache_key(usage_tracker.current_turn_prompt_cache_key()),
         payload_bytes,
     )
     .await?;
     if let Some(prompt_cache_key) = outcome.prompt_cache_key {
-        usage_tracker.prompt_cache_key = Some(prompt_cache_key);
+        usage_tracker
+            .set_prompt_cache_key(state, Some(prompt_cache_key))
+            .await;
     }
     if outcome.contains_encrypted_content {
         usage_tracker.request_contains_encrypted_content = true;
@@ -2919,7 +3386,6 @@ pub(crate) async fn persist_ws_usage_event(
     account: &PoolResolvedAccount,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
-    ordinal: u64,
     event: WsUsageEvent,
     request_contains_encrypted_content: bool,
     raw_event: &str,
@@ -2955,11 +3421,9 @@ pub(crate) async fn persist_ws_usage_event(
         .map(str::to_string)
         .unwrap_or_else(shanghai_now_string);
     let response_id = event.response_id.as_deref().or(response_id_override);
-    let invoke_id = invoke_id_override.map(str::to_string).unwrap_or_else(|| {
-        response_id
-            .map(|id| format!("{}-{id}", trace.invoke_id))
-            .unwrap_or_else(|| format!("{}-turn-{ordinal}", trace.invoke_id))
-    });
+    let invoke_id = invoke_id_override
+        .map(str::to_string)
+        .unwrap_or_else(|| trace.invoke_id.clone());
     let payload = build_proxy_payload_summary(ProxyPayloadSummary {
         target: ProxyCaptureTarget::Responses,
         status: StatusCode::OK,
@@ -4485,7 +4949,7 @@ mod websocket_tests {
     #[test]
     fn websocket_ttft_resets_for_each_response_create_turn() {
         let trace = PoolUpstreamAttemptTraceContext {
-            invoke_id: "pool-ws-ttft".to_string(),
+            invoke_id: "ABCDEFABCD".to_string(),
             occurred_at: shanghai_now_string(),
             endpoint: "/v1/responses".to_string(),
             sticky_key: None,
@@ -4496,6 +4960,7 @@ mod websocket_tests {
         let mut tracker = WsUsageTracker::new(
             api_key_account(Url::parse("https://api.example.test").expect("valid base")),
             trace,
+            None,
             None,
             None,
             None,
@@ -4533,6 +4998,151 @@ mod websocket_tests {
     }
 
     #[test]
+    fn websocket_turn_prompt_cache_key_falls_back_to_header_only() {
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: "BCDEFGBCDE".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+            upstream_base_url_host: None,
+            request_model: Some("gpt-5.6".to_string()),
+        };
+        let mut tracker = WsUsageTracker::new(
+            api_key_account(Url::parse("https://api.example.test").expect("valid base")),
+            trace,
+            Some("payload-turn-one".to_string()),
+            Some("header-conversation".to_string()),
+            None,
+            None,
+        );
+
+        tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
+        assert_eq!(
+            tracker.current_turn_prompt_cache_key(),
+            Some("header-conversation")
+        );
+        tracker.turn_prompt_cache_key = Some("payload-turn-one".to_string());
+        assert_eq!(
+            tracker.current_turn_prompt_cache_key(),
+            Some("payload-turn-one")
+        );
+
+        tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
+        assert_eq!(
+            tracker.current_turn_prompt_cache_key(),
+            Some("header-conversation")
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_turn_allocator_uses_prompt_cache_conversation_identity() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: "ABCDEFABCD".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+            upstream_base_url_host: None,
+            request_model: Some("gpt-5.6".to_string()),
+        };
+        let mut tracker = WsUsageTracker::new(
+            api_key_account(Url::parse("https://api.example.test").expect("valid base")),
+            trace,
+            Some("websocket-bound-allocator".to_string()),
+            Some("websocket-bound-allocator".to_string()),
+            None,
+            None,
+        );
+        tracker.start_turn_at(Instant::now(), Utc::now().to_rfc3339());
+        tracker
+            .ensure_turn_invoke_id(&state)
+            .await
+            .expect("websocket turn invoke id allocation");
+        tracker
+            .set_prompt_cache_key(&state, Some("websocket-next-turn".to_string()))
+            .await;
+        assert_eq!(
+            tracker.current_turn_prompt_cache_key(),
+            Some("websocket-bound-allocator")
+        );
+
+        let invoke_id = tracker.turn_invoke_id();
+        let conversation_id: String = sqlx::query_scalar(
+            "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = 'websocket-bound-allocator'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load websocket prompt-cache conversation identity");
+        assert_eq!(
+            &invoke_id[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
+            conversation_id.as_str()
+        );
+        assert_eq!(&invoke_id[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
+    }
+
+    #[tokio::test]
+    async fn websocket_pre_upstream_failure_releases_prompt_cache_lease_after_persistence() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base"),
+        )
+        .await;
+        let prompt_cache_key = "websocket-pre-upstream-failure";
+        let invoke_id = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
+            .await
+            .expect("allocate websocket pre-upstream failure invoke id");
+        let _second_invoke_id =
+            allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
+                .await
+                .expect("allocate second websocket pre-upstream failure invoke id");
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: invoke_id.clone(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: None,
+            requester_ip: None,
+            upstream_base_url_host: Some("api.openai.com".to_string()),
+            request_model: Some("gpt-5.6".to_string()),
+        };
+
+        record_ws_pre_upstream_failure(
+            &state,
+            &trace,
+            Some(prompt_cache_key),
+            StatusCode::BAD_GATEWAY,
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            "test pre-upstream failure",
+        )
+        .await
+        .expect("persist websocket pre-upstream failure");
+
+        state
+            .sqlite_batch_writer
+            .flush_buffered_for_test(&state.pool)
+            .await;
+        let cache = state.prompt_cache_conversation_cache.lock().await;
+        assert_eq!(
+            cache
+                .identity_cache
+                .active_prompt_cache_keys
+                .get(prompt_cache_key),
+            Some(&1)
+        );
+        drop(cache);
+        let persisted_status: String =
+            sqlx::query_scalar("SELECT status FROM codex_invocations WHERE invoke_id = ?1")
+                .bind(invoke_id)
+                .fetch_one(&state.pool)
+                .await
+                .expect("load persisted websocket pre-upstream failure");
+        assert_eq!(persisted_status, "http_502");
+    }
+
+    #[test]
     fn realtime_without_query_model_waits_for_initial_model_but_query_model_stays_live() {
         assert!(websocket_should_wait_for_initial_model(
             "/v1/realtime",
@@ -4551,7 +5161,7 @@ mod websocket_tests {
     #[test]
     fn websocket_effective_prompt_cache_key_ignores_sticky_only_context() {
         let trace = PoolUpstreamAttemptTraceContext {
-            invoke_id: "pool-ws-sticky-only".to_string(),
+            invoke_id: "GHIJKLGHIJ".to_string(),
             occurred_at: shanghai_now_string(),
             endpoint: "/v1/realtime".to_string(),
             sticky_key: Some("sticky-only-key".to_string()),
@@ -4565,10 +5175,11 @@ mod websocket_tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(
-            websocket_effective_prompt_cache_key(usage_tracker.prompt_cache_key.as_deref()),
+            websocket_effective_prompt_cache_key(usage_tracker.current_turn_prompt_cache_key()),
             None
         );
     }

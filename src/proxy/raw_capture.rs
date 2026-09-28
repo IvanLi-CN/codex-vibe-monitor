@@ -1226,6 +1226,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             record_flush_deferred_or_failed = "raw_terminal_invocation_enqueue_failed",
             "raw proxy capture record dropped by sqlite write controller"
         );
+        return Err(anyhow!(
+            "raw proxy capture terminal record could not be queued"
+        ));
     } else {
         debug!(
             invoke_id = %invoke_id,

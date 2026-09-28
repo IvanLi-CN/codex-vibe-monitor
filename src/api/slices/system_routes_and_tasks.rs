@@ -1883,16 +1883,17 @@ pub(crate) fn summarize_retention_run_for_system_task(
     summary: &RetentionRunSummary,
 ) -> (String, String) {
     let brief = format!(
-        "compressed={} archived_invocations={} pruned_details={} model_routes_pruned={} task_runs_pruned={} orphan_raw_removed={}",
+        "compressed={} archived_invocations={} released_prompt_cache_conversations={} pruned_details={} model_routes_pruned={} task_runs_pruned={} orphan_raw_removed={}",
         summary.raw_files_compressed,
         summary.invocation_rows_archived,
+        summary.prompt_cache_conversations_released,
         summary.invocation_details_pruned,
         summary.model_route_rows_pruned,
         summary.system_task_run_rows_pruned,
         summary.orphan_raw_files_removed
     );
     let detail = format!(
-        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={} orphan_raw_files_removed={}",
+        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} released_prompt_cache_conversations={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={} orphan_raw_files_removed={}",
         summary.dry_run,
         summary.raw_files_compression_candidates,
         summary.raw_files_compressed,
@@ -1900,6 +1901,7 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.raw_bytes_after,
         summary.invocation_details_pruned,
         summary.invocation_rows_archived,
+        summary.prompt_cache_conversations_released,
         summary.forward_proxy_attempt_rows_archived,
         summary.pool_upstream_request_attempt_rows_archived,
         summary.quota_snapshot_rows_archived,

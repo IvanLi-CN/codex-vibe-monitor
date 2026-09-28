@@ -199,6 +199,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
             entries: HashMap::new(),
             in_flight: HashMap::new(),
             generation: 0,
+            identity_cache: PromptCacheConversationIdentityCache::default(),
         })),
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),

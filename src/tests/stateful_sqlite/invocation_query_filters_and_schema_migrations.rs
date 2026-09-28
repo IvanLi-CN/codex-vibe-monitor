@@ -8,7 +8,7 @@ use crate::upstream_accounts::{
     record_pool_route_success_with_affinity_generation_for_attempt, upsert_sticky_route,
     upsert_sticky_route_for_model_if_current,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::time::{Duration, sleep};
 
 #[tokio::test]
@@ -48,6 +48,828 @@ async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invoc
     .await
     .expect("load legacy reported cache-write value");
     assert_eq!(legacy_value, None);
+}
+
+#[tokio::test]
+async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    for (invoke_id, status, tokens, cost) in [
+        ("LEGACY0001", "success", 12_i64, 0.25_f64),
+        ("LEGACY0002", "failed", 8_i64, 0.15_f64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-09-01 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(tokens)
+        .bind(cost)
+        .bind(json!({"promptCacheKey": "conversation-backfill-key"}).to_string())
+        .bind("{}")
+        .execute(&pool)
+        .await
+        .expect("insert legacy invocation");
+    }
+
+    ensure_schema(&pool)
+        .await
+        .expect("backfill prompt-cache conversation identities");
+
+    let row = sqlx::query_as::<_, (String, String, i64, i64, i64, i64, f64)>(
+        r#"
+        SELECT conversation_id, prompt_cache_key, request_count, success_count,
+               failure_count, total_tokens, cost
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = 'conversation-backfill-key'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled prompt-cache conversation");
+    assert_eq!(row.0.len(), PROMPT_CACHE_CONVERSATION_ID_LENGTH);
+    assert!(
+        row.0
+            .chars()
+            .all(|character| PROXY_INVOKE_ID_ALPHABET.contains(&character))
+    );
+    assert_eq!(row.1, "conversation-backfill-key");
+    assert_eq!(row.2, 2);
+    assert_eq!(row.3, 1);
+    assert_eq!(row.4, 1);
+    assert_eq!(row.5, 20);
+    assert!((row.6 - 0.4).abs() < 1e-9);
+
+    let invalid_conversation_id = sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (
+            conversation_id, prompt_cache_key
+        ) VALUES ('ABC!2A', 'invalid-conversation-id-key')
+        "#,
+    )
+    .execute(&pool)
+    .await;
+    assert!(invalid_conversation_id.is_err());
+
+    sqlx::query("DELETE FROM prompt_cache_conversations")
+        .execute(&pool)
+        .await
+        .expect("remove backfilled identity to exercise marker recovery");
+    ensure_schema(&pool)
+        .await
+        .expect("rerun prompt-cache conversation migration");
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'conversation-backfill-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count backfilled prompt-cache conversations");
+    assert_eq!(row_count, 1);
+}
+
+#[tokio::test]
+async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missing() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('LEGACYRECOVER1', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "conversation-stats-recovery-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert invocation for statistics recovery");
+
+    ensure_schema(&pool)
+        .await
+        .expect("complete initial prompt-cache conversation migration");
+    sqlx::query(
+        r#"
+        UPDATE prompt_cache_conversations
+        SET request_count = 99,
+            success_count = 0,
+            total_tokens = 999,
+            cost = 99.0
+        WHERE prompt_cache_key = 'conversation-stats-recovery-key'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("make prompt-cache statistics stale");
+    sqlx::query(
+        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
+    )
+    .execute(&pool)
+    .await
+    .expect("remove statistics freshness marker");
+
+    ensure_schema(&pool)
+        .await
+        .expect("recover prompt-cache statistics during startup");
+
+    let stats = sqlx::query_as::<_, (i64, i64, i64, i64, f64)>(
+        r#"
+        SELECT request_count, success_count, failure_count, total_tokens, cost
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = 'conversation-stats-recovery-key'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered prompt-cache statistics");
+    assert_eq!(stats.0, 1);
+    assert_eq!(stats.1, 1);
+    assert_eq!(stats.2, 0);
+    assert_eq!(stats.3, 12);
+    assert!((stats.4 - 0.25).abs() < 1e-9);
+
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count recovered statistics marker");
+    assert_eq!(marker_count, 1);
+}
+
+#[tokio::test]
+async fn ensure_schema_recovers_prompt_cache_identity_after_invocation_payload_update() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('LEGACYKEY0001', '2026-09-01 00:00:00', ?1, 'success', 8, 0.5, '{}', '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("insert invocation without prompt-cache key");
+
+    ensure_schema(&pool)
+        .await
+        .expect("complete initial prompt-cache conversation migration");
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET payload = '{"promptCacheKey":"backfilled-prompt-cache-key"}'
+        WHERE invoke_id = 'LEGACYKEY0001'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("update invocation prompt-cache metadata");
+
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = 'backfilled-prompt-cache-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count queued prompt-cache refresh");
+    assert_eq!(queued, 1);
+
+    ensure_schema(&pool)
+        .await
+        .expect("recover prompt-cache identity after invocation update");
+
+    let stats = sqlx::query_as::<_, (i64, i64, f64)>(
+        r#"
+        SELECT request_count, total_tokens, cost
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = 'backfilled-prompt-cache-key'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered prompt-cache identity");
+    assert_eq!(stats.0, 1);
+    assert_eq!(stats.1, 8);
+    assert!((stats.2 - 0.5).abs() < 1e-9);
+
+    let remaining_queue: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining prompt-cache refresh queue");
+    assert_eq!(remaining_queue, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let first = allocate_proxy_invoke_id(&state, Some("allocator-key"))
+        .await
+        .expect("allocate first conversation invoke id");
+    let second = allocate_proxy_invoke_id(&state, Some("allocator-key"))
+        .await
+        .expect("allocate second conversation invoke id");
+    assert_eq!(first.len(), PROXY_INVOKE_ID_LENGTH);
+    assert_eq!(&first[..6], &second[..6]);
+    assert_eq!(&first[6..], "AAAA");
+    assert_eq!(&second[6..], "AAAB");
+
+    for invoke_id in [&first, &second] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response
+            ) VALUES (?1, ?2, ?3, 'success', ?4, '{}')
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-09-01 00:00:00")
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": "allocator-key"}).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist allocated conversation invocation");
+    }
+    {
+        let mut cache = state.prompt_cache_conversation_cache.lock().await;
+        cache.identity_cache.conversations.clear();
+    }
+    let recovered = allocate_proxy_invoke_id(&state, Some("allocator-key"))
+        .await
+        .expect("recover conversation invoke sequence from database");
+    assert_eq!(&recovered[..6], &first[..6]);
+    assert_eq!(&recovered[6..], "AAAC");
+
+    let unbound_first = allocate_proxy_invoke_id(&state, None)
+        .await
+        .expect("allocate first unbound invoke id");
+    let unbound_second = allocate_proxy_invoke_id(&state, None)
+        .await
+        .expect("allocate second unbound invoke id");
+    assert_eq!(&unbound_first[6..], "AAAA");
+    if unbound_first[..6] == unbound_second[..6] {
+        assert_eq!(&unbound_second[6..], "AAAB");
+    } else {
+        assert_eq!(&unbound_second[6..], "AAAA");
+    }
+
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'allocator-key'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count allocated conversation identity");
+    assert_eq!(row_count, 1);
+
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00', updated_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = 'allocator-key'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark conversation as having historical activity");
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id IN (?1, ?2, ?3)")
+        .bind(&first)
+        .bind(&second)
+        .bind(&recovered)
+        .execute(&state.pool)
+        .await
+        .expect("remove live allocator invocations");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (
+            conversation_id, prompt_cache_key, created_at, updated_at
+        ) VALUES ('ABCD23', 'orphan-without-refreshed-stats', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert orphan prompt-cache conversation without refreshed stats");
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations(&state.pool, true)
+            .await
+            .expect("count releasable prompt-cache conversation"),
+        2
+    );
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations(&state.pool, false)
+            .await
+            .expect("release orphan prompt-cache conversation"),
+        2
+    );
+    let row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'allocator-key'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count released conversation identity");
+    assert_eq!(row_count, 0);
+    let orphan_queue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key IN ('allocator-key', 'orphan-without-refreshed-stats')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count released prompt-cache refresh obligations");
+    assert_eq!(orphan_queue_count, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_retention_preserves_active_and_live_identities() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let active_key = "active-retention-key";
+    let live_key = "live-retention-key";
+    allocate_proxy_invoke_id(&state, Some(active_key))
+        .await
+        .expect("allocate active prompt-cache identity");
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET created_at = '2020-01-01T00:00:00.000Z', updated_at = '2020-01-01T00:00:00.000Z' WHERE prompt_cache_key = ?1",
+    )
+    .bind(active_key)
+    .execute(&state.pool)
+    .await
+    .expect("age active prompt-cache identity");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (
+            conversation_id, prompt_cache_key, created_at, updated_at
+        ) VALUES ('ABCD23', ?1, '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')
+        "#,
+    )
+    .bind(live_key)
+    .execute(&state.pool)
+    .await
+    .expect("insert live prompt-cache identity");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        ) VALUES ('ABCD23AAAA', '2026-09-01 00:00:00', ?1, 'running', ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": live_key}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert live prompt-cache invocation");
+
+    retain_active_prompt_cache_conversation(&state.prompt_cache_conversation_cache, active_key)
+        .await;
+    retain_active_prompt_cache_conversation(&state.prompt_cache_conversation_cache, active_key)
+        .await;
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &state.prompt_cache_conversation_cache,
+        )
+        .await
+        .expect("retain active and live prompt-cache identities"),
+        0
+    );
+    let preserved_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key IN (?1, ?2)",
+    )
+    .bind(active_key)
+    .bind(live_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count preserved prompt-cache identities");
+    assert_eq!(preserved_count, 2);
+
+    release_active_prompt_cache_conversation(&state.prompt_cache_conversation_cache, active_key)
+        .await;
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &state.prompt_cache_conversation_cache,
+        )
+        .await
+        .expect("release inactive prompt-cache identity"),
+        0
+    );
+    release_active_prompt_cache_conversation(&state.prompt_cache_conversation_cache, active_key)
+        .await;
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &state.prompt_cache_conversation_cache,
+        )
+        .await
+        .expect("release fully inactive prompt-cache identity"),
+        1
+    );
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+    )
+    .bind(active_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count released active prompt-cache identity");
+    assert_eq!(active_count, 0);
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = 'ABCD23AAAA'")
+        .execute(&state.pool)
+        .await
+        .expect("remove live invocation");
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &state.prompt_cache_conversation_cache,
+        )
+        .await
+        .expect("release orphaned live identity"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_stats_refresh_after_terminal_batch() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let prompt_cache_key = "delayed-stats-refresh-key";
+    let first_invoke_id = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate first stats invoke id");
+    let second_invoke_id = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate second stats invoke id");
+    let first_occurred_at = "2026-09-01 00:00:01";
+    let second_occurred_at = "2026-09-01 00:00:02";
+
+    let mut success = test_proxy_capture_record(&first_invoke_id, first_occurred_at);
+    success.usage.input_tokens = Some(10);
+    success.usage.output_tokens = Some(4);
+    success.usage.total_tokens = Some(14);
+    success.cost = Some(0.25);
+    let mut success_payload: Value =
+        serde_json::from_str(success.payload.as_deref().expect("test payload"))
+            .expect("decode success payload");
+    success_payload["promptCacheKey"] = json!(prompt_cache_key);
+    success.payload = Some(success_payload.to_string());
+
+    let mut failure = test_proxy_capture_record(&second_invoke_id, second_occurred_at);
+    failure.status = "failed".to_string();
+    failure.error_message = Some("[test_failure] terminal failure".to_string());
+    failure.failure_kind = Some("test_failure".to_string());
+    failure.usage.input_tokens = Some(20);
+    failure.usage.output_tokens = Some(6);
+    failure.usage.total_tokens = Some(26);
+    failure.cost = Some(0.75);
+    let mut failure_payload: Value =
+        serde_json::from_str(failure.payload.as_deref().expect("test payload"))
+            .expect("decode failure payload");
+    failure_payload["promptCacheKey"] = json!(prompt_cache_key);
+    failure_payload["statusCode"] = json!(502);
+    failure.payload = Some(failure_payload.to_string());
+
+    retain_active_prompt_cache_conversation(
+        &state.prompt_cache_conversation_cache,
+        prompt_cache_key,
+    )
+    .await;
+    retain_active_prompt_cache_conversation(
+        &state.prompt_cache_conversation_cache,
+        prompt_cache_key,
+    )
+    .await;
+    persist_and_broadcast_proxy_capture_terminal_record(&state, success, false)
+        .await
+        .expect("queue successful terminal record");
+    persist_and_broadcast_proxy_capture_terminal_record(&state, failure, false)
+        .await
+        .expect("queue failed terminal record");
+    state
+        .sqlite_batch_writer
+        .flush_buffered_for_test(&state.pool)
+        .await;
+
+    let stats = sqlx::query_as::<_, (i64, i64, i64, i64, i64, f64, String, String)>(
+        r#"
+        SELECT request_count, success_count, failure_count, input_tokens, output_tokens,
+               cost, first_invocation_at, last_invocation_at
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = ?1
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load delayed prompt-cache aggregate");
+    assert_eq!(stats.0, 2);
+    assert_eq!(stats.1, 1);
+    assert_eq!(stats.2, 1);
+    assert_eq!(stats.3, 30);
+    assert_eq!(stats.4, 10);
+    assert!((stats.5 - 1.0).abs() < 1e-9);
+    assert_eq!(stats.6, first_occurred_at);
+    assert_eq!(stats.7, second_occurred_at);
+    assert!(
+        !state
+            .prompt_cache_conversation_cache
+            .lock()
+            .await
+            .identity_cache
+            .active_prompt_cache_keys
+            .contains_key(prompt_cache_key)
+    );
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind(&second_invoke_id)
+        .execute(&state.pool)
+        .await
+        .expect("delete archived prompt-cache invocation");
+    refresh_all_prompt_cache_conversation_stats(&state.pool)
+        .await
+        .expect("refresh prompt-cache aggregate after archive deletion");
+    let refreshed_stats = sqlx::query_as::<_, (i64, i64, i64, i64, i64, f64, String, String)>(
+        r#"
+        SELECT request_count, success_count, failure_count, input_tokens, output_tokens,
+               cost, first_invocation_at, last_invocation_at
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = ?1
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load refreshed prompt-cache aggregate");
+    assert_eq!(refreshed_stats.0, 1);
+    assert_eq!(refreshed_stats.1, 1);
+    assert_eq!(refreshed_stats.2, 0);
+    assert_eq!(refreshed_stats.3, 10);
+    assert_eq!(refreshed_stats.4, 4);
+    assert!((refreshed_stats.5 - 0.25).abs() < 1e-9);
+    assert_eq!(refreshed_stats.6, first_occurred_at);
+    assert_eq!(refreshed_stats.7, first_occurred_at);
+
+    let last_invoke_sequence: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load prompt-cache conversation sequence high-water mark");
+    assert_eq!(last_invoke_sequence, 1);
+
+    clear_prompt_cache_conversation_identity_cache(&state.prompt_cache_conversation_cache).await;
+    let next_invoke_id = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate after prompt-cache archive deletion");
+    assert_ne!(next_invoke_id, second_invoke_id);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_recovers_same_key_database_race() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let second_state = test_state_from_existing_pool(state.pool.clone(), test_config(), true).await;
+
+    let (first, second) = tokio::join!(
+        allocate_proxy_invoke_id(&state, Some("concurrent-allocator-key")),
+        allocate_proxy_invoke_id(&second_state, Some("concurrent-allocator-key")),
+    );
+    let first = first.expect("first concurrent allocation");
+    let second = second.expect("second concurrent allocation");
+    assert_eq!(
+        &first[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
+        &second[..PROMPT_CACHE_CONVERSATION_ID_LENGTH]
+    );
+    let mut suffixes = [
+        &first[PROMPT_CACHE_CONVERSATION_ID_LENGTH..],
+        &second[PROMPT_CACHE_CONVERSATION_ID_LENGTH..],
+    ];
+    suffixes.sort_unstable();
+    assert_eq!(suffixes, ["AAAA", "AAAB"]);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'concurrent-allocator-key'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("count raced prompt-cache conversation rows"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_recovers_after_cross_state_cleanup() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let cleanup_state =
+        test_state_from_existing_pool(state.pool.clone(), test_config(), true).await;
+    let prompt_cache_key = "cross-state-cleanup-key";
+    let first = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate initial prompt-cache invoke id");
+
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET last_invocation_at = '2026-09-01 00:00:00', updated_at = '2026-09-01 00:00:00' WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .execute(&state.pool)
+    .await
+    .expect("mark prompt-cache identity as historically active");
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &cleanup_state.prompt_cache_conversation_cache,
+        )
+        .await
+        .expect("remove prompt-cache identity from another state"),
+        1
+    );
+
+    let recovered = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
+        .await
+        .expect("recover stale prompt-cache identity cache");
+    assert_eq!(recovered.len(), PROXY_INVOKE_ID_LENGTH);
+    assert_eq!(&recovered[PROMPT_CACHE_CONVERSATION_ID_LENGTH..], "AAAA");
+    assert_ne!(
+        &recovered[..PROMPT_CACHE_CONVERSATION_ID_LENGTH],
+        &first[..PROMPT_CACHE_CONVERSATION_ID_LENGTH]
+    );
+    let persisted_conversation_id: String = sqlx::query_scalar(
+        "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recreated prompt-cache identity");
+    assert_eq!(
+        persisted_conversation_id,
+        recovered[..PROMPT_CACHE_CONVERSATION_ID_LENGTH].to_string()
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_rejects_sequence_exhaustion() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    {
+        let mut cache = state.prompt_cache_conversation_cache.lock().await;
+        cache.identity_cache.conversations.insert(
+            "exhausted-allocator-key".to_string(),
+            PromptCacheConversationIdentity {
+                conversation_id: "ABCDEF".to_string(),
+                next_sequence: PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY,
+            },
+        );
+    }
+
+    let error = allocate_proxy_invoke_id(&state, Some("exhausted-allocator-key"))
+        .await
+        .expect_err("exhausted prompt-cache sequence should fail explicitly");
+    assert!(error.to_string().contains("sequence overflow"));
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_retries_colliding_candidates() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key)
+        VALUES ('ABCDEF', 'existing-collision-key')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert colliding prompt-cache conversation");
+
+    let identity = create_prompt_cache_conversation_row_with_test_candidates(
+        &state.pool,
+        "collision-retry-key",
+        &["ABCDEF", "ABCDEF", "ZZZZZZ"],
+    )
+    .await
+    .expect("allocator should retry a colliding candidate");
+    assert_eq!(identity.conversation_id, "ZZZZZZ");
+    assert_eq!(identity.next_sequence, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_rejects_invocation_only_prefix_collision() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        ) VALUES ('ABCDEFZAAA', '2026-09-01 00:00:00', ?1, 'running', '{}', '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("insert invocation-only prefix collision");
+
+    let identity = create_prompt_cache_conversation_row_with_test_candidates(
+        &state.pool,
+        "invocation-only-collision-key",
+        &["ABCDEF", "ZZZZZZ"],
+    )
+    .await
+    .expect("allocator should reject invocation-only prefix collision");
+    assert_eq!(identity.conversation_id, "ZZZZZZ");
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_allocator_bounds_colliding_candidate_retries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key)
+        VALUES ('ABCDEF', 'existing-exhaustion-key')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert exhausted prompt-cache conversation");
+
+    let error = create_prompt_cache_conversation_row_with_test_candidates(
+        &state.pool,
+        "collision-exhaustion-key",
+        &["ABCDEF", "ABCDEF", "ABCDEF", "ABCDEF", "ABCDEF"],
+    )
+    .await
+    .expect_err("allocator should stop after bounded collision retries");
+    assert!(error.to_string().contains("after 5 attempts"));
+}
+
+#[tokio::test]
+async fn dropped_pool_invocation_recovery_releases_prompt_cache_lease() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let prompt_cache_key = "dropped-recovery-lease-key";
+    let invoke_id = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
+        .await
+        .expect("allocate active prompt-cache invoke id");
+
+    recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
+        &state,
+        InvocationRecoverySelector::new(invoke_id, "2026-09-28 00:00:00".to_string()),
+        "test_recovery",
+        Some(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("recover dropped invocation without a persisted row");
+
+    let cache = state.prompt_cache_conversation_cache.lock().await;
+    assert_eq!(
+        cache
+            .identity_cache
+            .active_prompt_cache_keys
+            .get(prompt_cache_key),
+        None
+    );
 }
 
 #[tokio::test]

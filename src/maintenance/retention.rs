@@ -95,10 +95,30 @@ pub(crate) async fn run_data_retention_maintenance_with_circuit(
     shutdown: Option<&CancellationToken>,
     circuit: Arc<RawCaptureCircuitBreaker>,
 ) -> Result<RetentionRunSummary> {
+    run_data_retention_maintenance_with_circuit_and_prompt_cache(
+        pool, config, dry_run, shutdown, circuit, None,
+    )
+    .await
+}
+
+pub(crate) async fn run_data_retention_maintenance_with_circuit_and_prompt_cache(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+    circuit: Arc<RawCaptureCircuitBreaker>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+) -> Result<RetentionRunSummary> {
     RETENTION_RAW_CAPTURE_CIRCUIT
         .scope(
             RefCell::new(Some(circuit)),
-            run_data_retention_maintenance(pool, config, dry_run, shutdown),
+            run_data_retention_maintenance_with_prompt_cache(
+                pool,
+                config,
+                dry_run,
+                shutdown,
+                prompt_cache_conversation_cache,
+            ),
         )
         .await
 }
@@ -1285,6 +1305,7 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) raw_bytes_after_estimated: u64,
     pub(crate) invocation_details_pruned: usize,
     pub(crate) invocation_rows_archived: usize,
+    pub(crate) prompt_cache_conversations_released: usize,
     pub(crate) forward_proxy_attempt_rows_archived: usize,
     pub(crate) pool_upstream_request_attempt_rows_archived: usize,
     pub(crate) quota_snapshot_rows_archived: usize,
@@ -1302,6 +1323,7 @@ impl RetentionRunSummary {
             || self.raw_files_compressed > 0
             || self.invocation_details_pruned > 0
             || self.invocation_rows_archived > 0
+            || self.prompt_cache_conversations_released > 0
             || self.forward_proxy_attempt_rows_archived > 0
             || self.pool_upstream_request_attempt_rows_archived > 0
             || self.quota_snapshot_rows_archived > 0
@@ -2461,6 +2483,14 @@ async fn retention_recovery_update_detail_rows_tx(
     ids: &[i64],
     candidates: &[InvocationArchiveCandidate],
 ) -> Result<()> {
+    let prompt_cache_keys = load_prompt_cache_keys_for_invocation_ids_tx(tx, ids).await?;
+    let prompt_cache_key_refs = prompt_cache_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !prompt_cache_key_refs.is_empty() {
+        mark_prompt_cache_conversation_stats_stale_on_connection(tx).await?;
+    }
     let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let mut query = QueryBuilder::<Sqlite>::new(
         "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
@@ -2480,6 +2510,19 @@ async fn retention_recovery_update_detail_rows_tx(
     }
     query.push(")");
     query.build().execute(&mut *tx).await?;
+    refresh_prompt_cache_conversation_stats_on_connection(tx, &prompt_cache_key_refs)
+        .await
+        .context(
+            "failed to refresh prompt-cache conversation statistics after recovered detail prune",
+        )?;
+    if !prompt_cache_key_refs.is_empty() {
+        clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+            tx,
+            &prompt_cache_key_refs,
+        )
+        .await?;
+        mark_prompt_cache_conversation_stats_fresh_on_connection(tx).await?;
+    }
     if let Some(latest) = candidates
         .iter()
         .map(|candidate| candidate.occurred_at.as_str())
@@ -2488,6 +2531,27 @@ async fn retention_recovery_update_detail_rows_tx(
         record_parallel_work_unrecoverable_detail_tx(&mut *tx, latest).await?;
     }
     Ok(())
+}
+
+async fn load_prompt_cache_keys_for_invocation_ids_tx(
+    tx: &mut sqlx::SqliteConnection,
+    ids: &[i64],
+) -> Result<Vec<String>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids_json = serde_json::to_string(ids)?;
+    sqlx::query_scalar::<_, String>(&format!(
+        "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
+         FROM codex_invocations \
+         WHERE id IN (SELECT value FROM json_each(?1)) \
+           AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
+           AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
+    ))
+    .bind(ids_json)
+    .fetch_all(&mut *tx)
+    .await
+    .context("failed to load prompt-cache keys before invocation detail prune")
 }
 
 async fn retention_recovery_finalize_published(
@@ -2595,7 +2659,41 @@ async fn retention_recovery_finalize_published(
         )
         .await?;
         retention_recovery_verify_publication_tx(tx.as_mut(), descriptor, artifact_sha256).await?;
+        let ids_json = serde_json::to_string(&source_ids)?;
+        let archived_prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
+             FROM codex_invocations \
+             WHERE id IN (SELECT value FROM json_each(?1)) \
+               AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
+               AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
+        ))
+        .bind(ids_json)
+        .fetch_all(tx.as_mut())
+        .await?;
+        let archived_prompt_cache_key_refs = archived_prompt_cache_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !archived_prompt_cache_key_refs.is_empty() {
+            mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
+        }
         delete_rows_by_ids(tx.as_mut(), descriptor.dataset, &source_ids).await?;
+        refresh_prompt_cache_conversation_stats_on_connection(
+            tx.as_mut(),
+            &archived_prompt_cache_key_refs,
+        )
+        .await
+        .context(
+            "failed to refresh prompt-cache conversation statistics after recovered archive delete",
+        )?;
+        if !archived_prompt_cache_key_refs.is_empty() {
+            clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+                tx.as_mut(),
+                &archived_prompt_cache_key_refs,
+            )
+            .await?;
+            mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
+        }
         mark_retention_archived_hourly_rollup_targets_tx(
             tx.as_mut(),
             descriptor.dataset,
@@ -7978,12 +8076,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
-    match run_data_retention_maintenance_with_circuit(
+    match run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &state.pool,
         &state.config,
         None,
         Some(cancel),
         state.raw_capture_circuit.clone(),
+        Some(&state.prompt_cache_conversation_cache),
     )
     .await
     {
@@ -8026,11 +8125,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                             trigger,
                             "system raw metrics inventory reset deferred; preserving retry schedule"
                         );
-                        invalidate_system_status_cache(state.as_ref()).await;
                     }
                     Err(error) => {
-                        warn!(error = %error, "failed to reset system raw metrics inventory after retention");
-                        invalidate_system_status_cache(state.as_ref()).await;
+                        warn!(
+                            trigger,
+                            error = %error,
+                            "failed to reset system raw metrics inventory"
+                        );
                     }
                 }
             }
@@ -8063,10 +8164,10 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             invalidate_system_status_cache(state.as_ref()).await;
             touched_anything
         }
-        Err(err) => {
+        Err(error) => {
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
-                .record_error("data_retention_maintenance", &err);
-            retention_record_error("data_retention_maintenance", &err);
+                .record_error("data_retention_maintenance", &error);
+            retention_record_error("data_retention_maintenance", &error);
             if !state.config.retention_dry_run {
                 let task_run = tokio::select! {
                     biased;
@@ -8088,7 +8189,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         Some("retention maintenance failed".to_string()),
                         Some(format!(
                             "failure_fingerprint:{}",
-                            retention_error_fingerprint(&err)
+                            retention_error_fingerprint(&error)
                         )),
                     )
                     .await;
@@ -8096,19 +8197,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             warn!(
                 trigger,
-                error_fingerprint = %retention_error_fingerprint(&err),
+                error_fingerprint = %retention_error_fingerprint(&error),
                 retry_soon = pressure_error,
                 "failed to run retention maintenance"
             );
-            return !pressure_error;
+            !pressure_error
         }
-    };
-
-    // Hourly rollups run through their own P2 scheduler. Retention used to invoke a
-    // full refresh here after every committed batch, creating an uncoordinated long
-    // write immediately after the maintenance micro-transaction released its permit.
-    // Archive materialization already wakes the targeted repair path above.
-    true
+    }
 }
 
 pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
@@ -8127,6 +8222,17 @@ pub(crate) async fn run_data_retention_maintenance(
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
+    run_data_retention_maintenance_with_prompt_cache(pool, config, dry_run_override, shutdown, None)
+        .await
+}
+
+async fn run_data_retention_maintenance_with_prompt_cache(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+) -> Result<RetentionRunSummary> {
     let defer_generation = retention_defer_generation();
     let run = async {
         if let Some(shutdown) = shutdown {
@@ -8138,12 +8244,19 @@ pub(crate) async fn run_data_retention_maintenance(
                         config,
                         dry_run_override,
                         Some(shutdown),
+                        prompt_cache_conversation_cache,
                     ),
                 )
                 .await
         } else {
-            run_data_retention_maintenance_with_task_run_prune(pool, config, dry_run_override, None)
-                .await
+            run_data_retention_maintenance_with_task_run_prune(
+                pool,
+                config,
+                dry_run_override,
+                None,
+                prompt_cache_conversation_cache,
+            )
+            .await
         }
     };
     let result = RETENTION_CURRENT_PREPARED_KEY
@@ -8160,10 +8273,17 @@ async fn run_data_retention_maintenance_with_task_run_prune(
     config: &AppConfig,
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
-    let result =
-        run_data_retention_maintenance_inner(pool, config, dry_run_override, shutdown).await;
+    let result = run_data_retention_maintenance_inner(
+        pool,
+        config,
+        dry_run_override,
+        shutdown,
+        prompt_cache_conversation_cache,
+    )
+    .await;
     // This janitor must run even when an earlier archive stage fails. Otherwise every
     // failed pass adds a task-run record while the retention policy that bounds those
     // records is unreachable until the unrelated failure clears.
@@ -8192,6 +8312,7 @@ async fn run_data_retention_maintenance_inner(
     config: &AppConfig,
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
+    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
@@ -8396,7 +8517,7 @@ async fn run_data_retention_maintenance_inner(
                     "invocation_archive",
                     "invocation archive stage failed; continuing independent retention stages",
                 );
-                (0, 0, 0)
+                (0, 0, 0, std::collections::HashSet::new())
             }
         }
     } else {
@@ -8404,12 +8525,33 @@ async fn run_data_retention_maintenance_inner(
             payload_loss_days,
             "invocation archival deferred until parallel-work minute coverage catches up"
         );
-        (0, 0, 0)
+        (0, 0, 0, std::collections::HashSet::new())
     };
     retention_recovery_clear_current_prepared_key();
     summary.invocation_rows_archived += invocation_archive.0;
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
+    summary.prompt_cache_conversations_released = match prompt_cache_conversation_cache {
+        Some(cache) => cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache)
+            .await
+            .inspect_err(|error| {
+                retention_record_error("prompt_cache_conversation_cleanup", error);
+            })
+            .context("failed to release orphan prompt-cache conversation identities")?,
+        None => cleanup_orphan_prompt_cache_conversations(pool, dry_run)
+            .await
+            .inspect_err(|error| {
+                retention_record_error("prompt_cache_conversation_cleanup", error);
+            })
+            .context("failed to release orphan prompt-cache conversation identities")?,
+    };
+    if summary.prompt_cache_conversations_released > 0 {
+        info!(
+            dry_run,
+            released = summary.prompt_cache_conversations_released,
+            "prompt-cache conversation identity retention completed"
+        );
+    }
     if !dry_run {
         let preserve_recovery_stage = matches!(
             retention_recovery_health_snapshot().stage.as_deref(),
@@ -9810,6 +9952,15 @@ pub(crate) async fn prune_old_invocation_details(
                 &archive_outcome.sha256,
             )
             .await?;
+            let prompt_cache_keys =
+                load_prompt_cache_keys_for_invocation_ids_tx(tx.as_mut(), &ids).await?;
+            let prompt_cache_key_refs = prompt_cache_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !prompt_cache_key_refs.is_empty() {
+                mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
+            }
             let mut query = QueryBuilder::<Sqlite>::new(
                 "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
             );
@@ -9828,6 +9979,20 @@ pub(crate) async fn prune_old_invocation_details(
             }
             query.push(")");
             query.build().execute(tx.as_mut()).await?;
+            refresh_prompt_cache_conversation_stats_on_connection(
+                tx.as_mut(),
+                &prompt_cache_key_refs,
+            )
+            .await
+            .context("failed to refresh prompt-cache conversation statistics after detail prune")?;
+            if !prompt_cache_key_refs.is_empty() {
+                clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+                    tx.as_mut(),
+                    &prompt_cache_key_refs,
+                )
+                .await?;
+                mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
+            }
             if let Some(latest) = group
                 .iter()
                 .map(|candidate| candidate.occurred_at.as_str())
@@ -9882,7 +10047,7 @@ pub(crate) async fn archive_old_invocations(
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
-) -> Result<(usize, usize, usize)> {
+) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let spec = archive_table_spec("codex_invocations");
     let candidate_limit = retention_candidate_limit(config, "invocation_archive");
@@ -9942,12 +10107,14 @@ pub(crate) async fn archive_old_invocations(
             candidates.len(),
             by_group.len(),
             count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
+            std::collections::HashSet::new(),
         ));
     }
 
     let mut rows_archived = 0usize;
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
+    let mut prompt_cache_keys = std::collections::HashSet::new();
 
     loop {
         let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
@@ -10019,7 +10186,12 @@ pub(crate) async fn archive_old_invocations(
             if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("preparing");
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    return Ok((
+                        rows_archived,
+                        archive_batches,
+                        raw_files_removed,
+                        prompt_cache_keys,
+                    ));
                 }
                 if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("preparing", &error);
@@ -10063,7 +10235,12 @@ pub(crate) async fn archive_old_invocations(
                 Ok(outcome) => Some(outcome),
                 Err(error) if is_retention_write_deferred(&error) => {
                     retention_recovery_record_deferred("preparing");
-                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                    return Ok((
+                        rows_archived,
+                        archive_batches,
+                        raw_files_removed,
+                        prompt_cache_keys,
+                    ));
                 }
                 Err(error) => {
                     retention_recovery_persist_failure(
@@ -10079,7 +10256,12 @@ pub(crate) async fn archive_old_invocations(
                     ));
                 }
             }) else {
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                return Ok((
+                    rows_archived,
+                    archive_batches,
+                    raw_files_removed,
+                    prompt_cache_keys,
+                ));
             };
             if archive_outcome.source_identity_sha256.as_deref()
                 != Some(descriptor.source_identity_sha256.as_str())
@@ -10136,7 +10318,12 @@ pub(crate) async fn archive_old_invocations(
                     "prepared_reconcile",
                 )
                 .await?;
-                return Ok((rows_archived, archive_batches, raw_files_removed));
+                return Ok((
+                    rows_archived,
+                    archive_batches,
+                    raw_files_removed,
+                    prompt_cache_keys,
+                ));
             };
             let execute_started = Instant::now();
             let mut tx = pool.begin().await?;
@@ -10248,7 +10435,40 @@ pub(crate) async fn archive_old_invocations(
                 &archive_outcome.sha256,
             )
             .await?;
+            let ids_json = serde_json::to_string(&ids)?;
+            let archived_prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
+                "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
+                 FROM codex_invocations \
+                 WHERE id IN (SELECT value FROM json_each(?1)) \
+                   AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
+                   AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
+            ))
+            .bind(ids_json)
+            .fetch_all(tx.as_mut())
+            .await?;
+            let archived_prompt_cache_key_refs = archived_prompt_cache_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !archived_prompt_cache_key_refs.is_empty() {
+                mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
+            }
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+            refresh_prompt_cache_conversation_stats_on_connection(
+                tx.as_mut(),
+                &archived_prompt_cache_key_refs,
+            )
+            .await
+            .context("failed to refresh prompt-cache conversation statistics after invocation archive delete")?;
+            if !archived_prompt_cache_key_refs.is_empty() {
+                clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+                    tx.as_mut(),
+                    &archived_prompt_cache_key_refs,
+                )
+                .await?;
+                mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
+            }
+            prompt_cache_keys.extend(archived_prompt_cache_keys);
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),
                 spec.dataset,
@@ -10315,7 +10535,12 @@ pub(crate) async fn archive_old_invocations(
         }
     }
 
-    Ok((rows_archived, archive_batches, raw_files_removed))
+    Ok((
+        rows_archived,
+        archive_batches,
+        raw_files_removed,
+        prompt_cache_keys,
+    ))
 }
 
 pub(crate) async fn archive_timestamped_dataset(
