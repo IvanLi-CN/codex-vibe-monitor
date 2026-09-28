@@ -3927,6 +3927,9 @@ pub(crate) async fn flush_pending_batch_inner(
                 SummarySourceChangeDescriptor::terminal_batch(source_revision, descriptor_entries)?;
             append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
         }
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            mark_prompt_cache_conversation_stats_stale_on_connection(terminal_tx.as_mut()).await?;
+        }
         terminal_tx.commit().await?;
     }
 
@@ -4071,18 +4074,25 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        if !prompt_cache_keys_to_refresh.is_empty()
-            && let Err(error) =
-                refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
-        {
-            warn!(
-                error = %error,
-                keys = prompt_cache_keys_to_refresh.len(),
-                "failed to refresh prompt-cache conversation statistics after terminal batch; retaining refresh obligation"
-            );
-            deferred_batch
-                .prompt_cache_stats_refresh_keys
-                .extend(prompt_cache_keys_to_refresh.iter().cloned());
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            let refresh_result = async {
+                let refreshed =
+                    refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
+                        .await?;
+                mark_prompt_cache_conversation_stats_fresh(pool).await?;
+                Ok::<_, anyhow::Error>(refreshed)
+            }
+            .await;
+            if let Err(error) = refresh_result {
+                warn!(
+                    error = %error,
+                    keys = prompt_cache_keys_to_refresh.len(),
+                    "failed to refresh prompt-cache conversation statistics after terminal batch; retaining refresh obligation"
+                );
+                deferred_batch
+                    .prompt_cache_stats_refresh_keys
+                    .extend(prompt_cache_keys_to_refresh.iter().cloned());
+            }
         }
         return Ok(deferred_batch);
     }
@@ -4217,18 +4227,25 @@ pub(crate) async fn flush_pending_batch_inner(
 
     tx.commit().await?;
 
-    if !prompt_cache_keys_to_refresh.is_empty()
-        && let Err(error) =
-            refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh).await
-    {
-        warn!(
-            error = %error,
-            keys = prompt_cache_keys_to_refresh.len(),
-            "failed to refresh prompt-cache conversation statistics after derived batch; retaining refresh obligation"
-        );
-        deferred_batch
-            .prompt_cache_stats_refresh_keys
-            .extend(prompt_cache_keys_to_refresh.iter().cloned());
+    if !prompt_cache_keys_to_refresh.is_empty() {
+        let refresh_result = async {
+            let refreshed =
+                refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
+                    .await?;
+            mark_prompt_cache_conversation_stats_fresh(pool).await?;
+            Ok::<_, anyhow::Error>(refreshed)
+        }
+        .await;
+        if let Err(error) = refresh_result {
+            warn!(
+                error = %error,
+                keys = prompt_cache_keys_to_refresh.len(),
+                "failed to refresh prompt-cache conversation statistics after derived batch; retaining refresh obligation"
+            );
+            deferred_batch
+                .prompt_cache_stats_refresh_keys
+                .extend(prompt_cache_keys_to_refresh.iter().cloned());
+        }
     }
 
     if !terminal_overlay_keys.is_empty()

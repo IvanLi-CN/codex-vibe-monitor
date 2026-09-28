@@ -7,8 +7,8 @@
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations.",
-    "storage_implementation": "SQLite prompt_cache_conversations table and schema_refresh_migrations marker.",
+    "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable freshness marker for restart recovery.",
+    "storage_implementation": "SQLite prompt_cache_conversations table and schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness.",
     "source_compatibility_range": {
       "from_program_versions": "0.2.x without prompt_cache_conversations",
       "to_program_version": "next minor release",
@@ -29,7 +29,7 @@
     "dml_changes": [
       {
         "id": "dml-prompt-cache-conversation-statistics",
-        "description": "Materialize aggregate fields from retained codex_invocations after identity rows exist.",
+        "description": "Materialize aggregate fields from retained codex_invocations after identity rows exist and record a freshness marker only after the rebuild succeeds.",
         "order": 2,
         "depends_on": [
           "ddl-prompt-cache-conversation-master"
@@ -61,11 +61,13 @@
     ],
     "progress_signals": [
       "Structured migration start/completion logs with candidate and backfilled counts.",
-      "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs."
+      "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
+      "The prompt_cache_conversations_stats_v1 marker identifies a completed aggregate refresh; its absence triggers a paged startup rebuild."
     ],
     "pause_points": [
       "Backfill may re-enter before the schema marker is written; existing identities are recognized and remaining keys continue.",
-      "Statistics refresh runs after terminal or derived batch commit and can be retried independently."
+      "Statistics refresh runs after terminal or derived batch commit and can be retried independently.",
+      "A terminal/archive transaction removes the freshness marker before changing source rows; startup recovery can rebuild aggregates after a stopped release."
     ]
   },
   "recovery": {
@@ -79,6 +81,7 @@
       "required_test_evidence": [
         "Legacy codex_invocations without a master table backfill successfully.",
         "Backfill rerun recognizes the marker and does not duplicate identities.",
+        "A missing prompt-cache statistics marker rebuilds aggregates during the next schema startup.",
         "A cache miss recovers the next sequence from retained invocation IDs.",
         "Retention releases orphan masters without a permanent ID blacklist."
       ]

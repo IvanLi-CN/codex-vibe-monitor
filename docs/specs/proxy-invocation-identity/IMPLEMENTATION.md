@@ -13,7 +13,7 @@
 - `REQ-PII-001`: `src/prompt_cache_conversations.rs` owns the six-character conversation prefix, four-character base-31 sequence, hourly unbound prefix, overflow handling, and cache recovery; HTTP capture and WebSocket preparation use the allocator.
 - `REQ-PII-002`: `prompt_cache_conversations` stores identity and delayed aggregate statistics; `src/schema.rs` invokes its idempotent schema/backfill path.
 - `REQ-PII-003`: `AppState` cache state carries conversation identities; allocator recovery scans retained invocation IDs after cache misses and handles concurrent unique-key races.
-- `REQ-PII-004`: `src/sqlite_batch_writer.rs` refreshes touched keys after terminal/derived batches; `src/maintenance/retention.rs` releases orphan masters and clears released identities from memory.
+- `REQ-PII-004`: `src/sqlite_batch_writer.rs` refreshes touched keys after terminal/derived batches and records a durable freshness marker; `src/maintenance/retention.rs` deletes archived invocations before refreshing affected aggregates, releases orphan masters, and clears released identities from memory.
 - `REQ-PII-005`: Allocation, migration, recovery, statistics, retention, collision, and exhaustion paths emit structured diagnostic events using prompt-key fingerprints.
 
 ## Verification
@@ -25,7 +25,7 @@
 
 ## Coverage / rollout summary
 
-- The backfill creates the master table and records `prompt_cache_conversations_v1` only after identity creation and aggregate refresh complete.
+- The backfill creates the master table and records `prompt_cache_conversations_v1` only after identity creation and aggregate refresh complete. The separate `prompt_cache_conversations_stats_v1` marker is removed in source-row transactions and restored only after aggregate refresh; a missing marker triggers paged startup recovery.
 - Existing invocation IDs remain readable as historical rows; only new proxy capture and WebSocket IDs use the compact contract.
 - PR2 public response fields and frontend consumers are intentionally deferred.
 

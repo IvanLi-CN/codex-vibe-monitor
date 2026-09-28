@@ -139,6 +139,80 @@ async fn ensure_schema_backfills_prompt_cache_conversation_identities_and_stats(
 }
 
 #[tokio::test]
+async fn ensure_schema_recovers_prompt_cache_stats_when_refresh_marker_is_missing() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('LEGACYRECOVER1', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "conversation-stats-recovery-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert invocation for statistics recovery");
+
+    ensure_schema(&pool)
+        .await
+        .expect("complete initial prompt-cache conversation migration");
+    sqlx::query(
+        r#"
+        UPDATE prompt_cache_conversations
+        SET request_count = 99,
+            success_count = 0,
+            total_tokens = 999,
+            cost = 99.0
+        WHERE prompt_cache_key = 'conversation-stats-recovery-key'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("make prompt-cache statistics stale");
+    sqlx::query(
+        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("remove statistics freshness marker");
+
+    ensure_schema(&pool)
+        .await
+        .expect("recover prompt-cache statistics during startup");
+
+    let stats = sqlx::query_as::<_, (i64, i64, i64, i64, f64)>(
+        r#"
+        SELECT request_count, success_count, failure_count, total_tokens, cost
+        FROM prompt_cache_conversations
+        WHERE prompt_cache_key = 'conversation-stats-recovery-key'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recovered prompt-cache statistics");
+    assert_eq!(stats.0, 1);
+    assert_eq!(stats.1, 1);
+    assert_eq!(stats.2, 0);
+    assert_eq!(stats.3, 12);
+    assert!((stats.4 - 0.25).abs() < 1e-9);
+
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count recovered statistics marker");
+    assert_eq!(marker_count, 1);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

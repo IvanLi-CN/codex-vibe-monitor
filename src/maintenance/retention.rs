@@ -10351,14 +10351,20 @@ pub(crate) async fn archive_old_invocations(
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>();
+            if !archived_prompt_cache_key_refs.is_empty() {
+                mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
+            }
+            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             refresh_prompt_cache_conversation_stats_on_connection(
                 tx.as_mut(),
                 &archived_prompt_cache_key_refs,
             )
             .await
-            .context("failed to refresh prompt-cache conversation statistics before invocation archive delete")?;
+            .context("failed to refresh prompt-cache conversation statistics after invocation archive delete")?;
+            if !archived_prompt_cache_key_refs.is_empty() {
+                mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
+            }
             prompt_cache_keys.extend(archived_prompt_cache_keys);
-            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),
                 spec.dataset,
