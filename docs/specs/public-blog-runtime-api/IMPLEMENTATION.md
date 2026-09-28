@@ -17,6 +17,7 @@
 ## Coverage / rollout summary
 
 - The dedicated endpoint has a 30-second server snapshot cache, a three-second bounded single-flight refresh, one-second suppression after failure that permits later retry, stale last-good fallback, ETag, and a process-wide token bucket. The public route has a GET-only method guard and isolated CORS configuration, exposing `ETag`, `Cache-Control`, and `Retry-After` to allowed browser clients. Its response is assembled from existing aggregate read models.
+- The shared timeseries reader may asynchronously warm the existing `timeseries_minute_projection_v2` derived cache after an eligible exact fallback. This is an existing disposable projection format; the response does not wait for the write, and this change adds no schema or migration.
 
 ## Remaining Gaps
 

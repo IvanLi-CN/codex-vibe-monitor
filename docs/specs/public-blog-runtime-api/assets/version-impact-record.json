@@ -2,10 +2,11 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add a read-only public runtime aggregate endpoint for the IvanLi blog.",
+    "description": "Add a read-only public runtime aggregate endpoint that reuses the existing derived timeseries cache path.",
     "release_unit_description": "Public Blog Runtime API implementation.",
     "affected_contracts": [
-      "public-api"
+      "public-api",
+      "persistent-state"
     ]
   },
   "classification": {
@@ -26,22 +27,22 @@
       "impact": "minor",
       "scope_drift": {
         "detected": false,
-        "description": "No scope drift; the implementation remains within the endpoint's specified aggregate, coverage, freshness, and failure behavior."
+        "description": "No functional scope drift; the existing shared timeseries path may asynchronously warm its v2 derived projection on eligible exact fallback, without adding a schema or serialized state format."
       },
-      "reasoning": "The endpoint remains additive and stores its cache and rate-limit state only in process memory.",
-      "reassessed_at": "2026-09-28T11:43:53Z",
+      "reasoning": "Public API impact is minor. Persistent-state impact is patch-compatible reuse of the existing v2 derived projection; the release unit remains minor.",
+      "reassessed_at": "2026-09-28T12:15:41Z",
       "evidence": [
         "Existing API routes and their CORS configuration remain unchanged.",
         "The endpoint reads covered aggregate projections, rejects mixed-Shanghai-day refreshes, and exposes only the required response headers to configured browser origins.",
-        "No database schema or migration file changed."
+        "The shared timeseries writer and timeseries_minute_projection_v2 schema already exist in the base; this change adds no schema or migration."
       ]
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "The new API contract is additive within the current major line, and no persistent-state compatibility surface was added.",
-      "verified_at": "2026-09-28T11:43:53Z",
+      "reasoning": "The new API contract is additive within the current major line. Eligible exact fallback uses the established v2 derived projection format; the highest verified impact remains the public API's minor classification.",
+      "verified_at": "2026-09-28T12:15:41Z",
       "evidence": [
-        "Candidate cef09175902770cd16eb8969c244abaea74ad3d9 passed cargo test public_blog -- --nocapture (17 tests), including an allowed-origin 429 response that exposes Retry-After.",
+        "Candidate be12a7d610dfb6dd0246f073e9fa6a1dd75f5be3 passed cargo test public_blog -- --nocapture (17 tests), including an allowed-origin 429 response that exposes Retry-After.",
         "The readiness regression test passed.",
         "Rust formatting, the explicit source-quality policy check, the public API Spec contract, and Spec drift checks passed on the candidate.",
         "cargo check --locked --all-targets --all-features passed.",
@@ -59,12 +60,13 @@
       ]
     },
     "persistent_state": {
-      "applicable": false,
-      "state_description": "The snapshot cache and rate limiter are process memory; the database schema and durable formats are unchanged.",
-      "source_program_compatibility_range": "Not applicable; this change writes no persistent state.",
+      "applicable": true,
+      "state_description": "An eligible exact fallback may asynchronously warm the existing timeseries_minute_projection_v2 derived cache; the snapshot cache and rate limiter remain process memory.",
+      "source_program_compatibility_range": "Current Minor line; the v2 projection schema and writer are already present in the base, and this change adds no columns, tables, migrations, or serialized formats.",
       "evidence": [
-        "No schema or migration files changed.",
-        "The SQLite test reads existing long_term_usage_daily rows without modifying their schema."
+        "origin/main already creates timeseries_minute_projection_v2 in src/schema.rs and uses the same asynchronous exact-fallback writer in src/api/slices/prompt_cache_and_timeseries/timeseries.rs.",
+        "No schema, migration, or projection writer file changed in this PR.",
+        "The response uses the existing timeseries reader and does not wait for its eligible background projection warm-up."
       ]
     }
   },
@@ -74,7 +76,7 @@
     ],
     "maximum_verified_impact": "minor",
     "calculation_evidence": [
-      "The only applicable impact is the additive public API's verified minor classification."
+      "Public API impact is minor; persistent-state impact is patch-compatible reuse of the existing v2 derived projection; release unit=max(minor,patch)=minor."
     ]
   }
 }

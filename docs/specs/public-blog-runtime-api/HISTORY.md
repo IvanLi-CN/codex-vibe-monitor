@@ -13,6 +13,7 @@
 ## Related Changes
 
 - The implementation and its cross-origin `Retry-After` follow-up are delivered by [PR #1049](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1049).
+- The shared timeseries reader may asynchronously warm its existing derived minute projection on eligible exact fallback; this PR adds no projection schema or migration.
 
 ## References
 
