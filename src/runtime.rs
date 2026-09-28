@@ -773,7 +773,60 @@ where
         .await;
     }
 
-    flush_terminal_journal_replay_before_startup(state.as_ref()).await?;
+    let replay_state = state.clone();
+    let replay_flush_result = tokio::select! {
+        biased;
+        _ = shutdown_signal.clone() => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+                startup_hot_read_hydration_handle,
+            )
+            .await;
+        }
+        _ = cancel.cancelled() => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+                startup_hot_read_hydration_handle,
+            )
+            .await;
+        }
+        result = flush_terminal_journal_replay_before_startup(replay_state.as_ref()) => result,
+    };
+    if let Err(err) = replay_flush_result {
+        if cancel.is_cancelled() {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+                startup_hot_read_hydration_handle,
+            )
+            .await;
+        }
+        return Err(err);
+    }
 
     let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
         Some(spawn_data_retention_maintenance(
