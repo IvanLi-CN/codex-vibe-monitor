@@ -39,9 +39,9 @@
     "verified": {
       "impact": "minor",
       "reasoning": "The new API contract is additive within the current major line. The endpoint writes no persistent state, so the highest applicable and verified impact is the public API's minor classification.",
-      "verified_at": "2026-09-28T13:05:08Z",
+      "verified_at": "2026-09-28T13:24:58Z",
       "evidence": [
-        "cargo test public_blog -- --nocapture passed 17 tests, including an allowed-origin 429 response that exposes Retry-After and an endpoint assertion that minute-projection row count is unchanged.",
+        "cargo test public_blog -- --nocapture passed 18 tests, including an allowed-origin 429 response that exposes Retry-After and a fixed endpoint query test that selects hourly rollups before minute-projection fallback.",
         "The readiness regression test passed.",
         "Rust formatting, the explicit source-quality policy check, the public API Spec contract, and Spec drift checks passed on the candidate.",
         "cargo check --locked --all-targets --all-features passed.",

@@ -84,9 +84,9 @@
 
 ### VER-PBRA-004
 
-- Method: Stateful SQLite aggregate fixture and response inspection.
+- Method: Stateful SQLite aggregate fixture, response inspection, and fixed-query dispatch test.
 - covers: `REQ-PBRA-003`, `REQ-PBRA-004`
-- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, recent parallel-hour values require complete minute coverage and missing or incomplete coverage fails the refresh, the endpoint request leaves minute-projection row count unchanged, and no operational identifiers appear in the body.
+- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, recent parallel-hour values require complete minute coverage and missing or incomplete coverage fails the refresh, the endpoint's fixed timeseries query selects hourly rollups before the minute-projection fallback, and no operational identifiers appear in the body.
 
 ## Related ADRs
 

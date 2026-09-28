@@ -992,7 +992,7 @@ fn add_pending_timeseries_deltas(
     Ok(applied)
 }
 
-fn timeseries_topic_uses_hourly_rollup_baseline(
+pub(crate) fn timeseries_topic_uses_hourly_rollup_baseline(
     _params: &TimeseriesQuery,
     reporting_tz: Tz,
     range_window: &RangeWindow,

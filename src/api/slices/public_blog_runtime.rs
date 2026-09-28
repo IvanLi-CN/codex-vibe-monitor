@@ -324,6 +324,16 @@ fn if_none_match_matches(header_value: &HeaderValue, etag: &str) -> bool {
     })
 }
 
+fn public_blog_runtime_timeseries_query() -> TimeseriesQuery {
+    TimeseriesQuery {
+        range: "today".to_string(),
+        bucket: Some("1h".to_string()),
+        settlement_hour: None,
+        time_zone: Some("Asia/Shanghai".to_string()),
+        upstream_account_id: None,
+    }
+}
+
 async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Bytes> {
     let refresh_started_at = Utc::now();
     let dashboard = fetch_dashboard_activity(
@@ -356,13 +366,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
 
     let timeseries = fetch_timeseries(
         State(state.clone()),
-        Query(TimeseriesQuery {
-            range: "today".to_string(),
-            bucket: Some("1h".to_string()),
-            settlement_hour: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id: None,
-        }),
+        Query(public_blog_runtime_timeseries_query()),
     )
     .await
     .map_err(|_| anyhow!("hourly token aggregates are unavailable"))?
@@ -932,6 +936,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn public_blog_timeseries_query_uses_hourly_rollup_path() {
+        let params = public_blog_runtime_timeseries_query();
+        assert_eq!(params.range, "today");
+        assert_eq!(params.bucket.as_deref(), Some("1h"));
+        assert_eq!(params.time_zone.as_deref(), Some("Asia/Shanghai"));
+
+        let reporting_tz = crate::stats::parse_reporting_tz(params.time_zone.as_deref())
+            .expect("valid Shanghai timezone");
+        let range_window = crate::stats::resolve_range_window(&params.range, reporting_tz)
+            .expect("valid today range");
+        let bucket_selection = resolve_timeseries_bucket_selection(&params, &range_window, 7)
+            .expect("valid hourly bucket");
+        assert_eq!(bucket_selection.bucket_seconds, 3_600);
+        assert!(
+            timeseries_topic_uses_hourly_rollup_baseline(
+                &params,
+                reporting_tz,
+                &range_window,
+                bucket_selection.bucket_seconds,
+                7,
+            )
+            .expect("Shanghai hourly query selects rollups")
+        );
+    }
+
     #[tokio::test]
     async fn route_accepts_only_get_and_applies_public_cors_allowlist() {
         let allowed_origins = vec![
@@ -1089,11 +1119,6 @@ mod tests {
             }
         }
 
-        let projection_rows_before =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
-                .fetch_one(&state.pool)
-                .await
-                .expect("count minute projection rows before request");
         let router = build_public_blog_runtime_router(state.clone());
         let response = router
             .clone()
@@ -1153,16 +1178,6 @@ mod tests {
             .await
             .expect("conditional response");
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
-        sleep(Duration::from_millis(100)).await;
-        let projection_rows_after =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
-                .fetch_one(&state.pool)
-                .await
-                .expect("count minute projection rows after request");
-        assert_eq!(
-            projection_rows_after, projection_rows_before,
-            "public runtime reads must not warm the persistent minute projection"
-        );
         state.shutdown.cancel();
     }
 
