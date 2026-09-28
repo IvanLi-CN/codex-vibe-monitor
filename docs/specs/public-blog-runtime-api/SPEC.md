@@ -51,7 +51,7 @@
 - The system MUST serve a cached aggregate snapshot, coalesce concurrent refreshes, bound refresh work to three seconds, and return the last successful snapshot when a later refresh fails.
 - Inputs: Requests arriving before or after the 30-second server snapshot freshness interval.
 - Outputs: A failed initial refresh returns a sanitized service-unavailable response; it MUST NOT return partial aggregates or internal failure details. A failed refresh attempt MUST be shared with queued concurrent waiters and retries MUST be suppressed for a one-second cooldown.
-- Outputs: All aggregate values in one snapshot MUST belong to the same Shanghai calendar day and hour. The system MUST compare the Shanghai day and hour at refresh start with the day and hour after dashboard capture and all aggregate source reads complete; a refresh that crosses either boundary MUST fail instead of publishing mixed-period values.
+- Outputs: All aggregate values in one snapshot MUST belong to the same Shanghai calendar day and hour. The system MUST verify the Shanghai day and hour immediately after dashboard capture and again after the final aggregate source read; a refresh that crosses either boundary MUST fail instead of publishing mixed-period values.
 
 ### REQ-PBRA-006
 
