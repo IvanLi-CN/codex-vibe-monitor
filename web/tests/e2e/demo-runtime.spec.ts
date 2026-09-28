@@ -30,6 +30,7 @@ const allRoutes: RouteCase[] = [
   { path: "/#/account-pool/groups", expectedPath: "/account-pool/groups" },
   { path: "/#/system", expectedPath: "/system/status" },
   { path: "/#/system/status", expectedPath: "/system/status" },
+  { path: "/#/system/performance", expectedPath: "/system/performance" },
   { path: "/#/system/tasks", expectedPath: "/system/tasks" },
   { path: "/#/system/settings", expectedPath: "/system/settings" },
   { path: "/#/system/proxy", expectedPath: "/system/proxy" },

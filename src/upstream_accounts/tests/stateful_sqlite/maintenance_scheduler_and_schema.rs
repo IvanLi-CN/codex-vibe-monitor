@@ -172,6 +172,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
+        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),
@@ -199,6 +200,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
             entries: HashMap::new(),
             in_flight: HashMap::new(),
             generation: 0,
+            identity_cache: PromptCacheConversationIdentityCache::default(),
         })),
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),

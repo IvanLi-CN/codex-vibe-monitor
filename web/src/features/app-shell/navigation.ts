@@ -71,6 +71,11 @@ export const topLevelNavItems: AppNavigationGroup[] = [
         matchPrefixes: ["/system/status"],
       },
       {
+        to: "/system/performance",
+        labelKey: "system.nav.performance",
+        matchPrefixes: ["/system/performance"],
+      },
+      {
         to: "/system/tasks",
         labelKey: "system.nav.tasks",
         matchPrefixes: ["/system/tasks"],

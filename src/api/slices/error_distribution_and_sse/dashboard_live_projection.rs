@@ -406,6 +406,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
+            let reconcile_started = Instant::now();
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let _pressure_permit = match pressure_gate
                 .try_begin_background("dashboard_runtime_projection_reconcile")
@@ -423,6 +424,11 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                     state
                         .proxy_runtime_invocations
                         .record_reconcile_deferred(reason);
+                    state.performance_telemetry.record_counter(
+                        "projection.reconcile_defer_count",
+                        reason,
+                        1,
+                    );
                     tracing::debug!(
                         projection = "dashboard_current",
                         defer_reason = reason,
@@ -433,6 +439,16 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
             };
             match reconcile_dashboard_runtime_projection_once(state.as_ref()).await {
                 Ok(capture) => {
+                    state.performance_telemetry.record_counter(
+                        "projection.reconcile_count",
+                        "dashboard",
+                        1,
+                    );
+                    state.performance_telemetry.record_duration_ms(
+                        "projection.reconcile_duration_ms",
+                        "dashboard",
+                        reconcile_started.elapsed().as_secs_f64() * 1000.0,
+                    );
                     state
                         .subscription_hub
                         .reconcile_dashboard_terminal_window_bases(state.clone())
@@ -460,6 +476,16 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                     }
                 }
                 Err(err) => {
+                    state.performance_telemetry.record_counter(
+                        "projection.reconcile_failure_count",
+                        "dashboard",
+                        1,
+                    );
+                    state.performance_telemetry.record_duration_ms(
+                        "projection.reconcile_duration_ms",
+                        "dashboard",
+                        reconcile_started.elapsed().as_secs_f64() * 1000.0,
+                    );
                     let pressure_error = match &err {
                         ApiError::BadRequest(err)
                         | ApiError::Unavailable(err)
@@ -470,6 +496,11 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                         state
                             .proxy_runtime_invocations
                             .record_reconcile_deferred("writer_pressure");
+                        state.performance_telemetry.record_counter(
+                            "projection.reconcile_defer_count",
+                            "writer_pressure",
+                            1,
+                        );
                     } else {
                         state
                             .proxy_runtime_invocations
@@ -880,6 +911,7 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
     let dashboard_network_speed_cache = state.dashboard_network_speed_cache.clone();
     let subscription_hub = state.subscription_hub.clone();
     let broadcaster = state.broadcaster.clone();
+    let telemetry = state.performance_telemetry.clone();
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
         let mut delivered_seq = latest_seq.load(Ordering::Acquire).saturating_sub(1);
@@ -934,6 +966,7 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
             else {
                 continue;
             };
+            let publish_started = Instant::now();
 
             let sent_seq = latest_seq.load(Ordering::Acquire);
             let has_active_subscribers = subscription_hub
@@ -952,6 +985,19 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                         {
                             Ok(capture) if capture.changed => {
                                 let revision = capture.snapshot.revision;
+                                let snapshot_bytes = serde_json::to_vec(&capture.snapshot)
+                                    .map(|bytes| bytes.len() as f64)
+                                    .unwrap_or_default();
+                                telemetry.record_gauge(
+                                    "projection.snapshot_bytes",
+                                    "current",
+                                    snapshot_bytes,
+                                );
+                                telemetry.record_counter(
+                                    "sse.frame_bytes",
+                                    "current",
+                                    snapshot_bytes as u64,
+                                );
                                 let payload = match proxy_runtime_invocations.mode() {
                                     RuntimeProjectionMode::Auto => {
                                         BroadcastPayload::DashboardCurrentSlice {
@@ -970,6 +1016,11 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                                     }
                                 };
                                 if let Err(err) = broadcaster.send(payload) {
+                                    telemetry.record_counter(
+                                        "sse.publish_error_count",
+                                        "current",
+                                        1,
+                                    );
                                     warn!(
                                         ?err,
                                         revision, "failed to broadcast dashboard current slice"
@@ -998,11 +1049,29 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                             match proxy_runtime_invocations.capture_network_slice() {
                                 Ok(capture) if capture.changed => {
                                     let revision = capture.slice.revision;
+                                    let snapshot_bytes = serde_json::to_vec(&capture.slice)
+                                        .map(|bytes| bytes.len() as f64)
+                                        .unwrap_or_default();
+                                    telemetry.record_gauge(
+                                        "projection.snapshot_bytes",
+                                        "network",
+                                        snapshot_bytes,
+                                    );
+                                    telemetry.record_counter(
+                                        "sse.frame_bytes",
+                                        "network",
+                                        snapshot_bytes as u64,
+                                    );
                                     if let Err(err) =
                                         broadcaster.send(BroadcastPayload::DashboardNetworkSlice {
                                             slice: Box::new(capture.slice),
                                         })
                                     {
+                                        telemetry.record_counter(
+                                            "sse.publish_error_count",
+                                            "network",
+                                            1,
+                                        );
                                         warn!(
                                             ?err,
                                             revision, "failed to broadcast dashboard network slice"
@@ -1024,6 +1093,22 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                                 proxy_runtime_invocations.capture_terminal_slice()
                         {
                             let revision = capture.revision;
+                            let snapshot_bytes = capture
+                                .deltas
+                                .iter()
+                                .map(|delta| delta.estimated_bytes)
+                                .sum::<usize>()
+                                as f64;
+                            telemetry.record_gauge(
+                                "projection.snapshot_bytes",
+                                "terminal",
+                                snapshot_bytes,
+                            );
+                            telemetry.record_counter(
+                                "sse.frame_bytes",
+                                "terminal",
+                                snapshot_bytes as u64,
+                            );
                             if let Err(err) =
                                 broadcaster.send(BroadcastPayload::DashboardTerminalSlice {
                                     slice: Box::new(DashboardTerminalProjectionSlice {
@@ -1032,6 +1117,7 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                                     }),
                                 })
                             {
+                                telemetry.record_counter("sse.publish_error_count", "terminal", 1);
                                 warn!(
                                     ?err,
                                     revision, "failed to broadcast dashboard terminal slice"
@@ -1047,6 +1133,23 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
                 proxy_runtime_invocations.as_ref(),
                 window,
                 has_active_subscribers,
+            );
+            let slice_dimension = match window.slice {
+                DashboardProjectionSlice::Current => "current",
+                DashboardProjectionSlice::Network => "network",
+                DashboardProjectionSlice::Terminal => "terminal",
+            };
+            let publish_duration_ms = publish_started.elapsed().as_secs_f64() * 1000.0;
+            telemetry.record_counter("projection.publish_count", slice_dimension, 1);
+            telemetry.record_duration_ms(
+                "projection.publish_duration_ms",
+                slice_dimension,
+                publish_duration_ms,
+            );
+            telemetry.record_duration_ms(
+                "sse.publish_duration_ms",
+                slice_dimension,
+                publish_duration_ms,
             );
             delivered_seq = sent_seq;
         }

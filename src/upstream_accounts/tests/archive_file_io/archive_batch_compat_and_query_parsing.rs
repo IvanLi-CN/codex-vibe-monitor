@@ -3386,6 +3386,8 @@ pub(crate) fn usage_snapshot_test_config(base_url: &str, user_agent: &str) -> Ap
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
+        performance_database_path: PathBuf::from(":memory:").join("performance.sqlite"),
+        performance_telemetry_enabled: false,
         poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(5),
         pool_upstream_responses_attempt_timeout: Duration::from_secs(
@@ -4146,6 +4148,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
+        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),
@@ -4173,6 +4176,7 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
             entries: HashMap::new(),
             in_flight: HashMap::new(),
             generation: 0,
+            identity_cache: PromptCacheConversationIdentityCache::default(),
         })),
         dashboard_activity_snapshot_cache: Arc::new(Mutex::new(
             DashboardActivitySnapshotCacheState::default(),

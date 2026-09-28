@@ -298,6 +298,8 @@ pub(crate) async fn run() -> Result<()> {
     let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
     let process_started_at_utc = Utc::now();
+    let performance_telemetry =
+        PerformanceTelemetryRuntime::start(&config, process_started_at_utc, shutdown.clone());
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
@@ -332,6 +334,7 @@ pub(crate) async fn run() -> Result<()> {
         config: config.clone(),
         pool,
         process_started_at_utc,
+        performance_telemetry,
         sqlite_batch_writer,
         pool_account_selection_runtime,
         proxy_runtime_invocations,
@@ -403,6 +406,7 @@ pub(crate) async fn run() -> Result<()> {
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
+    spawn_performance_telemetry_sampler(state.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     run_runtime_until_shutdown(
@@ -569,6 +573,33 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
         startup_hot_read_hydration_handle,
     )
     .await
+}
+
+async fn flush_terminal_journal_replay_before_startup(state: &AppState) -> Result<()> {
+    let mut remaining = state
+        .sqlite_batch_writer
+        .terminal_journal_stats()
+        .replay_count;
+    while remaining > 0 {
+        info!(
+            replay_count = remaining,
+            "flushing terminal journal replay before retention startup"
+        );
+        state
+            .sqlite_batch_writer
+            .flush_now(&state.pool)
+            .await
+            .context("failed to flush terminal journal replay before retention startup")?;
+        let next_remaining = state
+            .sqlite_batch_writer
+            .terminal_journal_stats()
+            .replay_count;
+        if next_remaining >= remaining {
+            bail!("terminal journal replay made no progress: remaining={remaining}");
+        }
+        remaining = next_remaining;
+    }
+    Ok(())
 }
 
 pub(crate) async fn run_runtime_until_shutdown<F>(
@@ -740,6 +771,61 @@ where
             startup_hot_read_hydration_handle,
         )
         .await;
+    }
+
+    let replay_state = state.clone();
+    let replay_flush_result = tokio::select! {
+        biased;
+        _ = shutdown_signal.clone() => {
+            begin_runtime_shutdown(&cancel);
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+                startup_hot_read_hydration_handle,
+            )
+            .await;
+        }
+        _ = cancel.cancelled() => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+                startup_hot_read_hydration_handle,
+            )
+            .await;
+        }
+        result = flush_terminal_journal_replay_before_startup(replay_state.as_ref()) => result,
+    };
+    if let Err(err) = replay_flush_result {
+        if cancel.is_cancelled() {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+                startup_hot_read_hydration_handle,
+            )
+            .await;
+        }
+        return Err(err);
     }
 
     let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
@@ -1079,6 +1165,7 @@ pub(crate) async fn drain_runtime_after_shutdown(
         info!("summary/quota broadcast worker drained");
     }
 
+    state.performance_telemetry.shutdown_and_drain().await;
     state.xray_supervisor.lock().await.shutdown_all().await;
     info!("shutdown complete");
 

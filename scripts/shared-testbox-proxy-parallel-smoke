@@ -14,6 +14,7 @@ Options:
   --testbox HOST       SSH host alias (default: codex-testbox)
   --reuse-image TAG    Skip docker build and reuse an existing remote image tag
   --cleanup            Remove this run directory and image after success
+  PERFORMANCE_TELEMETRY_ENABLED=true|false  Toggle telemetry for the run
   CODEX_THREAD_ID      Required Agent Directory identifier for the testbox run
   -h, --help           Show this help message
 USAGE
@@ -22,6 +23,7 @@ USAGE
 TESTBOX="codex-testbox"
 REUSE_IMAGE_TAG=""
 CLEANUP=0
+PERFORMANCE_TELEMETRY_ENABLED="${PERFORMANCE_TELEMETRY_ENABLED:-true}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -152,6 +154,7 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   REMOTE_RUN="$REMOTE_RUN" \
   IMAGE_TAG="$IMAGE_TAG" \
   REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
+  PERFORMANCE_TELEMETRY_ENABLED="$PERFORMANCE_TELEMETRY_ENABLED" \
   CLEANUP="$CLEANUP" \
   COMPOSE_PROJECT="$COMPOSE_PROJECT" \
   GIT_SHA="$GIT_SHA" \
@@ -247,6 +250,7 @@ chmod +x "$MOCK_SCRIPT"
 cat > "$LOADGEN_SCRIPT" <<'PY'
 #!/usr/bin/env python3
 import json
+import math
 import sys
 import threading
 import time
@@ -297,8 +301,7 @@ def seed():
     create_payload = {
         'displayName': 'Shared Testbox Primary',
         'apiKey': ACCOUNT_KEY,
-        'groupName': GROUP_NAME,
-        'groupBoundProxyKeys': [DIRECT_PROXY_KEY],
+        'boundProxyKeys': [DIRECT_PROXY_KEY],
         'upstreamBaseUrl': 'http://mock-upstream:18080/',
     }
     status, payload = request_json('POST', '/api/pool/upstream-accounts/api-keys', create_payload)
@@ -325,6 +328,7 @@ def run_stage(stage_name, requests):
             },
         )
         start_barrier.wait()
+        started = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=90) as resp:
                 body = resp.read().decode(errors='replace')
@@ -332,18 +336,21 @@ def run_stage(stage_name, requests):
                     'path': item['path'],
                     'status': resp.status,
                     'body': body,
+                    'duration_ms': (time.perf_counter() - started) * 1000,
                 }
         except urllib.error.HTTPError as err:
             result = {
                 'path': item['path'],
                 'status': err.code,
                 'body': err.read().decode(errors='replace'),
+                'duration_ms': (time.perf_counter() - started) * 1000,
             }
         except Exception as exc:
             result = {
                 'path': item['path'],
                 'status': 'exception',
                 'body': str(exc),
+                'duration_ms': (time.perf_counter() - started) * 1000,
             }
         with lock:
             results.append(result)
@@ -365,6 +372,14 @@ def run_stage(stage_name, requests):
         'bad_count': len(bad),
         'bad_examples': bad[:5],
     }
+    durations = sorted(item['duration_ms'] for item in results)
+    if durations:
+        p95_index = min(len(durations) - 1, math.ceil(len(durations) * 0.95) - 1)
+        summary.update({
+            'p50_ms': round(durations[len(durations) // 2], 2),
+            'p95_ms': round(durations[p95_index], 2),
+            'max_ms': round(durations[-1], 2),
+        })
     print(json.dumps(summary, ensure_ascii=False))
     if bad:
         raise SystemExit(f'{stage_name} failed with {len(bad)} bad responses')
@@ -419,6 +434,7 @@ services:
       RUST_LOG: info
       PROXY_RAW_MAX_BYTES: "65536"
       UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: "$ENCRYPTION_SECRET"
+      PERFORMANCE_TELEMETRY_ENABLED: "$PERFORMANCE_TELEMETRY_ENABLED"
     volumes:
       - "$DATA_DIR:/srv/app/data"
   mock-upstream:
@@ -480,6 +496,9 @@ docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run 
 
 printf '== collect logs ==\n'
 docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$APP_LOG"
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" ps app
+docker stats --no-stream --format '{{json .}}' "${COMPOSE_PROJECT}-app-1" > "$LOG_DIR/container-stats.json"
+cat "$LOG_DIR/container-stats.json"
 python3 - <<'PY' "$APP_LOG"
 import pathlib
 import re

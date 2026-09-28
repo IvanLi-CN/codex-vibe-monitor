@@ -332,14 +332,25 @@ pub(crate) fn extract_prompt_cache_key_from_request_body(value: &Value) -> Optio
         "/prompt_cache_key",
         "/promptCacheKey",
     ] {
-        if let Some(prompt_cache_key) = value.pointer(pointer).and_then(|v| v.as_str()) {
-            let normalized = prompt_cache_key.trim();
-            if !normalized.is_empty() {
-                return Some(normalized.to_string());
-            }
+        if let Some(prompt_cache_key) = value.pointer(pointer).and_then(|v| v.as_str())
+            && let Some(normalized) = bounded_prompt_cache_key(prompt_cache_key)
+        {
+            return Some(normalized);
         }
     }
     None
+}
+
+pub(crate) fn request_body_has_invalid_prompt_cache_key(value: &Value) -> bool {
+    [
+        "/metadata/prompt_cache_key",
+        "/metadata/promptCacheKey",
+        "/prompt_cache_key",
+        "/promptCacheKey",
+    ]
+    .into_iter()
+    .filter_map(|pointer| value.pointer(pointer))
+    .any(|value| value.as_str().is_none_or(prompt_cache_key_is_oversized))
 }
 
 pub(crate) fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<String> {

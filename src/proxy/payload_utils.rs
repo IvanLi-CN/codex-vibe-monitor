@@ -831,7 +831,6 @@ pub(crate) fn next_proxy_request_id() -> u64 {
 }
 
 pub(crate) const PROXY_INVOKE_ID_LENGTH: usize = 10;
-pub(crate) const PROXY_INVOKE_ID_GENERATION_ATTEMPTS: usize = 5;
 pub(crate) const PROXY_INVOKE_ID_ALPHABET: [char; 31] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
     'W', 'X', 'Y', 'Z', '2', '3', '4', '5', '6', '7', '8', '9',
@@ -847,48 +846,6 @@ pub(crate) fn proxy_invoke_id_has_short_format(value: &str) -> bool {
         && value
             .chars()
             .all(|ch| PROXY_INVOKE_ID_ALPHABET.contains(&ch))
-}
-
-pub(crate) async fn proxy_invoke_id_exists(pool: &Pool<Sqlite>, invoke_id: &str) -> Result<bool> {
-    let exists = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT EXISTS(
-            SELECT 1
-            FROM codex_invocations
-            WHERE invoke_id = ?1
-            LIMIT 1
-        )
-        "#,
-    )
-    .bind(invoke_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(exists != 0)
-}
-
-pub(crate) async fn generate_unique_proxy_invoke_id(pool: &Pool<Sqlite>) -> String {
-    for _ in 0..PROXY_INVOKE_ID_GENERATION_ATTEMPTS {
-        let candidate = generate_proxy_invoke_id();
-        match proxy_invoke_id_exists(pool, &candidate).await {
-            Ok(false) => return candidate,
-            Ok(true) => continue,
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "failed to check generated proxy invoke id uniqueness; using generated id"
-                );
-                return candidate;
-            }
-        }
-    }
-
-    let fallback = generate_proxy_invoke_id();
-    warn!(
-        attempts = PROXY_INVOKE_ID_GENERATION_ATTEMPTS,
-        fallback_invoke_id = %fallback,
-        "generated proxy invoke id collided repeatedly; using final fallback id"
-    );
-    fallback
 }
 
 #[derive(Debug, Clone)]
@@ -2042,6 +1999,7 @@ pub(crate) fn header_value_as_str<'a>(
 
 pub(crate) const PROMPT_CACHE_ATTRIBUTION_TTL: Duration = Duration::from_secs(15 * 60);
 pub(crate) const CLIENT_ATTRIBUTION_FINGERPRINT_VERSION: &str = "v1";
+pub(crate) const PROMPT_CACHE_KEY_MAX_BYTES: usize = REQUEST_CHAIN_METADATA_MAX_BYTES;
 
 pub(crate) static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<
     std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionBucket>>,
@@ -2302,18 +2260,44 @@ pub(crate) fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Opti
         "x-openai-prompt-cache-key",
     ] {
         if let Some(raw_value) = header_value_as_str(headers, header_name) {
-            let candidate = raw_value
-                .split(',')
-                .next()
-                .map(str::trim)
-                .unwrap_or(raw_value.trim())
-                .trim_matches('"');
-            if !candidate.is_empty() {
-                return Some(candidate.to_string());
+            let candidate = prompt_cache_key_header_candidate(raw_value);
+            if let Some(candidate) = bounded_prompt_cache_key(candidate) {
+                return Some(candidate);
             }
         }
     }
     None
+}
+
+pub(crate) fn prompt_cache_key_headers_are_oversized(headers: &HeaderMap) -> bool {
+    [
+        "x-prompt-cache-key",
+        "prompt-cache-key",
+        "x-openai-prompt-cache-key",
+    ]
+    .into_iter()
+    .filter_map(|header_name| header_value_as_str(headers, header_name))
+    .map(prompt_cache_key_header_candidate)
+    .any(prompt_cache_key_is_oversized)
+}
+
+fn prompt_cache_key_header_candidate(raw_value: &str) -> &str {
+    raw_value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .unwrap_or(raw_value.trim())
+        .trim_matches('"')
+}
+
+pub(crate) fn bounded_prompt_cache_key(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (!value.is_empty() && value.len() <= PROMPT_CACHE_KEY_MAX_BYTES).then(|| value.to_string())
+}
+
+pub(crate) fn prompt_cache_key_is_oversized(raw: &str) -> bool {
+    let value = raw.trim();
+    !value.is_empty() && value.len() > PROMPT_CACHE_KEY_MAX_BYTES
 }
 
 pub(crate) fn extract_first_ip_from_x_forwarded_for(raw: &str) -> Option<String> {

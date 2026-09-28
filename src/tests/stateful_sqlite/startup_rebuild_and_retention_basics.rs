@@ -4027,7 +4027,9 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
         &occurred_at,
         SOURCE_XY,
         "success",
-        Some("{\"endpoint\":\"/v1/responses\",\"requestCompressionAlgorithm\":\"zstd\"}"),
+        Some(
+            "{\"endpoint\":\"/v1/responses\",\"promptCacheKey\":\"detail-prune-key\",\"requestCompressionAlgorithm\":\"zstd\"}",
+        ),
         "{\"ok\":true}",
         Some(&request_missing),
         Some(&response_raw),
@@ -4035,6 +4037,14 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
         Some(1.23),
     )
     .await;
+
+    crate::ensure_prompt_cache_conversation_row(&pool, "detail-prune-key")
+        .await
+        .expect("create detail-prune prompt-cache conversation");
+    let prompt_cache_keys = std::collections::HashSet::from(["detail-prune-key".to_owned()]);
+    crate::refresh_prompt_cache_conversation_stats(&pool, &prompt_cache_keys)
+        .await
+        .expect("seed detail-prune prompt-cache statistics");
 
     let before_pruned_at = Utc::now() - ChronoDuration::seconds(5);
     let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
@@ -4099,6 +4109,23 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
         row.get::<Option<String>, _>("status").as_deref(),
         Some("success")
     );
+
+    let prompt_cache_stats: (i64, i64, f64) = sqlx::query_as(
+        "SELECT request_count, total_tokens, cost FROM prompt_cache_conversations WHERE prompt_cache_key = 'detail-prune-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load detail-prune prompt-cache statistics");
+    assert_eq!(prompt_cache_stats.0, 0);
+    assert_eq!(prompt_cache_stats.1, 0);
+    assert_f64_close(prompt_cache_stats.2, 0.0);
+    let refresh_queue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = 'detail-prune-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count detail-prune prompt-cache refresh queue");
+    assert_eq!(refresh_queue_count, 0);
 
     let detail_pruned_at = row
         .get::<Option<String>, _>("detail_pruned_at")
@@ -4184,7 +4211,9 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .expect("load archived pre-prune invocation");
     assert_eq!(
         archived.get::<Option<String>, _>("payload").as_deref(),
-        Some("{\"endpoint\":\"/v1/responses\",\"requestCompressionAlgorithm\":\"zstd\"}")
+        Some(
+            "{\"endpoint\":\"/v1/responses\",\"promptCacheKey\":\"detail-prune-key\",\"requestCompressionAlgorithm\":\"zstd\"}",
+        )
     );
     assert_eq!(archived.get::<String, _>("raw_response"), "{\"ok\":true}");
     assert_eq!(archived.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);

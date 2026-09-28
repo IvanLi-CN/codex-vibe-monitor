@@ -34,4 +34,4 @@
 - 上游 handshake failure 在同一 downstream session 内 failover 到下一候选，并发送保留首帧。
 - downstream subprotocol 与 upstream subprotocol 不匹配时不发送保留首帧，记录 attempt failure 并返回 retryable close。
 - `/v1/realtime` passthrough 建连后不等待 downstream 首帧即可 relay 上游 `session.created`。
-- `/v1/responses` 首帧协议拒绝会关闭 downstream，并留下 `pool-ws-*` pre-upstream attempt failure。
+- `/v1/responses` 首帧协议拒绝会关闭 downstream，并留下 compact ten-character pre-upstream attempt failure ID。

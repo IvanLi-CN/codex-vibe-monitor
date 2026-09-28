@@ -3594,6 +3594,16 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
     router
         .route("/api/system/status", get(fetch_system_status))
         .route("/api/system/tasks", get(list_system_task_runs))
+        .route("/api/system/performance", get(fetch_performance_metrics))
+        .route(
+            "/api/system/performance/health",
+            get(fetch_performance_health),
+        )
+        .route(
+            "/api/system/performance/browser",
+            post(ingest_browser_performance)
+                .layer(DefaultBodyLimit::max(TELEMETRY_BROWSER_MAX_BYTES)),
+        )
 }
 
 pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
@@ -3872,6 +3882,10 @@ pub(crate) async fn spawn_http_server(
 ) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
     let mut router = build_app_router(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            performance_http_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(cors_layer);
 

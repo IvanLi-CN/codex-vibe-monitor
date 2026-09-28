@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     sync::{
         Arc,
@@ -252,13 +252,21 @@ pub(crate) struct PendingQueueAccountingSnapshot {
     pub(crate) state: String,
     pub(crate) pending_depth: usize,
     pub(crate) pending_bytes: usize,
+    pub(crate) p1_ack_sequence: u64,
+    pub(crate) p1_ack_duration_ms: u64,
     pub(crate) transfer_bytes: usize,
     pub(crate) retry_count: u64,
+    pub(crate) p1_retry_count: u64,
+    pub(crate) p2_retry_count: u64,
     pub(crate) p2_flush_attempt_count: u64,
     pub(crate) p2_pressure_defer_count: u64,
     pub(crate) p2_lock_retry_count: u64,
     pub(crate) p2_next_attempt_in_ms: u64,
     pub(crate) p2_deferred_age_ms: u64,
+    pub(crate) write_batch_count: u64,
+    pub(crate) write_rows: u64,
+    pub(crate) write_bytes: u64,
+    pub(crate) write_duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) p2_wake_reason: Option<String>,
     pub(crate) invariant_violation_count: u64,
@@ -272,13 +280,21 @@ pub(crate) struct PendingQueueAccountingSnapshot {
 pub(crate) struct PendingQueueAccounting {
     pending_depth: AtomicUsize,
     pending_bytes: AtomicUsize,
+    p1_ack_sequence: AtomicU64,
+    p1_ack_duration_ms: AtomicU64,
     transfer_bytes: AtomicUsize,
     retry_count: AtomicU64,
+    p1_retry_count: AtomicU64,
+    p2_retry_count: AtomicU64,
     p2_flush_attempt_count: AtomicU64,
     p2_pressure_defer_count: AtomicU64,
     p2_lock_retry_count: AtomicU64,
     p2_next_attempt_in_ms: AtomicU64,
     p2_deferred_age_ms: AtomicU64,
+    write_batch_count: AtomicU64,
+    write_rows: AtomicU64,
+    write_bytes: AtomicU64,
+    write_duration_ms: AtomicU64,
     p2_wake_reason: std::sync::Mutex<Option<String>>,
     invariant_violation_count: AtomicU64,
     last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
@@ -330,8 +346,33 @@ impl PendingQueueAccounting {
         );
     }
 
+    pub(crate) fn record_p1_ack_duration(&self, duration_ms: u64) {
+        self.p1_ack_duration_ms
+            .store(duration_ms, Ordering::Relaxed);
+        self.p1_ack_sequence.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_write_batch(&self, rows: usize, bytes: usize, duration_ms: u64) {
+        self.write_batch_count.fetch_add(1, Ordering::Relaxed);
+        self.write_rows
+            .fetch_add(rows.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+        self.write_bytes
+            .fetch_add(bytes.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+        self.write_duration_ms.store(duration_ms, Ordering::Relaxed);
+    }
+
     pub(crate) fn retry_deferred(&self) {
         self.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn retry_p1_deferred(&self) {
+        self.retry_deferred();
+        self.p1_retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn retry_p2_deferred(&self) {
+        self.retry_deferred();
+        self.p2_retry_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn p2_attempted(&self) {
@@ -409,13 +450,21 @@ impl PendingQueueAccounting {
             },
             pending_depth: self.pending_depth.load(Ordering::Relaxed),
             pending_bytes: self.pending_bytes.load(Ordering::Relaxed),
+            p1_ack_sequence: self.p1_ack_sequence.load(Ordering::Relaxed),
+            p1_ack_duration_ms: self.p1_ack_duration_ms.load(Ordering::Relaxed),
             transfer_bytes: self.transfer_bytes.load(Ordering::Relaxed),
             retry_count: self.retry_count.load(Ordering::Relaxed),
+            p1_retry_count: self.p1_retry_count.load(Ordering::Relaxed),
+            p2_retry_count: self.p2_retry_count.load(Ordering::Relaxed),
             p2_flush_attempt_count: self.p2_flush_attempt_count.load(Ordering::Relaxed),
             p2_pressure_defer_count: self.p2_pressure_defer_count.load(Ordering::Relaxed),
             p2_lock_retry_count: self.p2_lock_retry_count.load(Ordering::Relaxed),
             p2_next_attempt_in_ms: self.p2_next_attempt_in_ms.load(Ordering::Relaxed),
             p2_deferred_age_ms: self.p2_deferred_age_ms.load(Ordering::Relaxed),
+            write_batch_count: self.write_batch_count.load(Ordering::Relaxed),
+            write_rows: self.write_rows.load(Ordering::Relaxed),
+            write_bytes: self.write_bytes.load(Ordering::Relaxed),
+            write_duration_ms: self.write_duration_ms.load(Ordering::Relaxed),
             p2_wake_reason: self
                 .p2_wake_reason
                 .lock()
@@ -660,6 +709,7 @@ pub(crate) struct PendingBatch {
     terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
     attempt_progress: HashMap<i64, BatchedAttemptProgress>,
     invocation_derived: BTreeMap<i64, BatchedInvocationDerivedWrites>,
+    prompt_cache_stats_refresh_keys: BTreeSet<String>,
     account_selected_touches: HashMap<i64, BatchedAccountSelectedTouch>,
     system_task_finishes: HashMap<i64, BatchedSystemTaskFinish>,
     startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
@@ -711,6 +761,12 @@ impl PendingBatch {
                     .sum::<usize>(),
             )
             .saturating_add(
+                self.prompt_cache_stats_refresh_keys
+                    .iter()
+                    .map(|key| estimated_prompt_cache_stats_refresh_memory_bytes(key))
+                    .sum::<usize>(),
+            )
+            .saturating_add(
                 self.account_selected_touches
                     .values()
                     .map(estimated_account_selected_touch_memory_bytes)
@@ -738,6 +794,7 @@ impl PendingBatch {
         self.terminal_invocations.is_empty()
             && self.attempt_progress.is_empty()
             && self.invocation_derived.is_empty()
+            && self.prompt_cache_stats_refresh_keys.is_empty()
             && self.account_selected_touches.is_empty()
             && self.system_task_finishes.is_empty()
             && self.startup_backfill_wake_tasks.is_empty()
@@ -746,6 +803,7 @@ impl PendingBatch {
     fn has_p2(&self) -> bool {
         !self.attempt_progress.is_empty()
             || !self.invocation_derived.is_empty()
+            || !self.prompt_cache_stats_refresh_keys.is_empty()
             || !self.account_selected_touches.is_empty()
             || !self.system_task_finishes.is_empty()
             || !self.startup_backfill_wake_tasks.is_empty()
@@ -755,6 +813,7 @@ impl PendingBatch {
         self.terminal_invocations.len()
             + self.attempt_progress.len()
             + self.invocation_derived.len()
+            + self.prompt_cache_stats_refresh_keys.len()
             + self.account_selected_touches.len()
             + self.system_task_finishes.len()
             + usize::from(!self.startup_backfill_wake_tasks.is_empty())
@@ -1057,6 +1116,19 @@ impl PendingBatch {
                 self.invocation_derived.insert(key, derived);
             }
         }
+        let prompt_cache_stats_refresh_keys =
+            std::mem::take(&mut self.prompt_cache_stats_refresh_keys);
+        for prompt_cache_key in prompt_cache_stats_refresh_keys {
+            let bytes = estimated_prompt_cache_stats_refresh_memory_bytes(&prompt_cache_key);
+            if should_take(bytes) {
+                chunk
+                    .prompt_cache_stats_refresh_keys
+                    .insert(prompt_cache_key);
+            } else {
+                self.prompt_cache_stats_refresh_keys
+                    .insert(prompt_cache_key);
+            }
+        }
         let account_selected_touches = std::mem::take(&mut self.account_selected_touches);
         for (key, touch) in account_selected_touches {
             let bytes = estimated_account_selected_touch_memory_bytes(&touch);
@@ -1109,6 +1181,8 @@ impl PendingBatch {
     fn merge_p2(&mut self, mut other: Self) {
         self.attempt_progress.extend(other.attempt_progress.drain());
         self.invocation_derived.extend(other.invocation_derived);
+        self.prompt_cache_stats_refresh_keys
+            .extend(other.prompt_cache_stats_refresh_keys);
         self.account_selected_touches
             .extend(other.account_selected_touches.drain());
         self.system_task_finishes
@@ -1271,6 +1345,10 @@ fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedW
                     invoke_id.capacity().saturating_add(occurred_at.capacity())
                 }),
         )
+}
+
+fn estimated_prompt_cache_stats_refresh_memory_bytes(prompt_cache_key: &str) -> usize {
+    std::mem::size_of::<String>().saturating_add(prompt_cache_key.len())
 }
 
 fn estimated_account_selected_touch_memory_bytes(touch: &BatchedAccountSelectedTouch) -> usize {
@@ -1750,6 +1828,10 @@ impl SqliteBatchWriter {
 
     pub(crate) fn accounting_snapshot(&self) -> PendingQueueAccountingSnapshot {
         self.accounting.snapshot()
+    }
+
+    pub(crate) fn queued_p1_count(&self) -> usize {
+        self.queued_p1_count.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn flush_now(&self, _pool: &Pool<Sqlite>) -> Result<()> {
@@ -2949,7 +3031,7 @@ fn drain_terminal_journal_deferred_writes(
             decrement_queued_p1_count(queued_p1_count);
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
             accounting.enqueue(write.estimated_memory_bytes());
-            accounting.retry_deferred();
+            accounting.retry_p1_deferred();
             pending.push_accounted(write, accounting);
         }
         for finish in
@@ -2957,7 +3039,7 @@ fn drain_terminal_journal_deferred_writes(
         {
             let write = SqliteBatchWrite::SystemTaskFinish(finish);
             accounting.enqueue(write.estimated_memory_bytes());
-            accounting.retry_deferred();
+            accounting.retry_p2_deferred();
             pending.push_accounted(write, accounting);
         }
     }
@@ -3024,6 +3106,7 @@ async fn flush_pending_batch_accounted(
         .collect::<Vec<_>>();
     let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
+    let flush_started = Instant::now();
     let result = flush_pending_batch(
         accounting,
         pool,
@@ -3039,6 +3122,11 @@ async fn flush_pending_batch_accounted(
         terminal_journal,
     )
     .await;
+    accounting.record_write_batch(
+        submitted_depth,
+        submitted_bytes,
+        flush_started.elapsed().as_millis() as u64,
+    );
     let completed_system_task_ids =
         successfully_flushed_system_task_ids(&submitted_system_task_ids, result.as_ref());
     if !completed_system_task_ids.is_empty()
@@ -3072,8 +3160,13 @@ async fn flush_pending_batch_accounted(
             "discarded non-retryable P2 batch after deterministic failure; durable source remains authoritative"
         );
     }
-    if was_retained_retry && result.as_ref().is_some_and(|retained| retained.failed) {
-        accounting.retry_deferred();
+    if was_retained_retry && let Some(retained) = result.as_ref().filter(|retained| retained.failed)
+    {
+        if retained.batch.terminal_invocations.is_empty() {
+            accounting.retry_p2_deferred();
+        } else {
+            accounting.retry_p1_deferred();
+        }
     }
     let retained_bytes = result
         .as_ref()
@@ -3370,6 +3463,9 @@ pub(crate) async fn flush_pending_batch(
             }
             result => result,
         };
+        accounting.record_p1_ack_duration(
+            lock_wait_ms.saturating_add(execute_started.elapsed().as_millis() as u64),
+        );
         match p1_result {
             Ok(deferred) => {
                 debug!(
@@ -3784,7 +3880,12 @@ pub(crate) async fn flush_pending_batch_inner(
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Result<PendingBatch> {
     let mut deferred_batch = PendingBatch::default();
-    let mut should_invalidate_prompt_cache_conversations = false;
+    let mut prompt_cache_keys_to_refresh = batch
+        .prompt_cache_stats_refresh_keys
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut active_prompt_cache_key_releases = Vec::new();
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
@@ -3810,13 +3911,6 @@ pub(crate) async fn flush_pending_batch_inner(
                 .with_context(|| "flush terminal runtime proxy invocation")?
             };
             let derived_identity = if let Some(persisted) = persisted.as_ref() {
-                if persisted
-                    .prompt_cache_key
-                    .as_deref()
-                    .is_some_and(|key| !key.trim().is_empty())
-                {
-                    should_invalidate_prompt_cache_conversations = true;
-                }
                 Some((persisted.id, persisted.occurred_at.clone()))
             } else {
                 let identity = load_persisted_invocation_identity_tx(
@@ -3842,6 +3936,14 @@ pub(crate) async fn flush_pending_batch_inner(
                         upstream_account_id: record.upstream_account_id,
                         request_model: None,
                     });
+            if let Some(prompt_cache_key) = payload_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.prompt_cache_key.as_deref())
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+            {
+                prompt_cache_keys_to_refresh.insert(prompt_cache_key.to_string());
+            }
             let summary_delta = terminal.dashboard_terminal_sequence.and_then(|sequence| {
                 persisted.as_ref().map(|record| {
                     let mut delta = crate::persisted_dashboard_activity_terminal_delta(record);
@@ -3891,6 +3993,9 @@ pub(crate) async fn flush_pending_batch_inner(
             let descriptor =
                 SummarySourceChangeDescriptor::terminal_batch(source_revision, descriptor_entries)?;
             append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
+        }
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            mark_prompt_cache_conversation_stats_stale_on_connection(terminal_tx.as_mut()).await?;
         }
         terminal_tx.commit().await?;
     }
@@ -3961,12 +4066,14 @@ pub(crate) async fn flush_pending_batch_inner(
         let payload_metadata = payload_metadata.unwrap_or_else(|| {
             crate::terminal_payload_metadata(terminal.record.payload.as_deref())
         });
-        if payload_metadata
+        if let Some(prompt_cache_key) = payload_metadata
             .prompt_cache_key
             .as_deref()
-            .is_some_and(|key| !key.trim().is_empty())
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
         {
-            should_invalidate_prompt_cache_conversations = true;
+            prompt_cache_keys_to_refresh.insert(prompt_cache_key.to_string());
+            active_prompt_cache_key_releases.push(prompt_cache_key.to_string());
         }
         deferred_batch.push(SqliteBatchWrite::InvocationDerived(
             BatchedInvocationDerivedWrites {
@@ -3979,6 +4086,15 @@ pub(crate) async fn flush_pending_batch_inner(
                 )),
             },
         ));
+    }
+
+    // The terminal transaction is durable at this point. Release its lease before any
+    // rebuildable P2 work can fail, so a post-commit error cannot strand the conversation.
+    if let Some(cache) = prompt_cache_conversation_cache {
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            invalidate_prompt_cache_conversations_cache(cache).await;
+        }
+        release_active_prompt_cache_conversations(cache, &active_prompt_cache_key_releases).await;
     }
 
     if !batch.startup_backfill_wake_tasks.is_empty() {
@@ -4003,13 +4119,21 @@ pub(crate) async fn flush_pending_batch_inner(
                 available
             })
             .collect::<Vec<_>>();
-        wake_startup_backfill_tasks_with_pricing_catalog(
+        if let Err(error) = wake_startup_backfill_tasks_with_pricing_catalog(
             pool,
             &wake_tasks,
             pricing_catalog.as_ref(),
             "terminal_payload_repair_input",
         )
-        .await?;
+        .await
+        {
+            warn!(
+                error = %error,
+                tasks = wake_tasks.len(),
+                "failed to wake startup backfill tasks after terminal commit; retaining wake obligation"
+            );
+            deferred_batch.add_startup_backfill_wake_tasks(&wake_tasks);
+        }
     }
 
     if batch.attempt_progress.is_empty()
@@ -4017,10 +4141,25 @@ pub(crate) async fn flush_pending_batch_inner(
         && batch.account_selected_touches.is_empty()
         && batch.system_task_finishes.is_empty()
     {
-        if should_invalidate_prompt_cache_conversations
-            && let Some(cache) = prompt_cache_conversation_cache
-        {
-            invalidate_prompt_cache_conversations_cache(cache).await;
+        if !prompt_cache_keys_to_refresh.is_empty() {
+            let refresh_result = async {
+                let refreshed =
+                    refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
+                        .await?;
+                mark_prompt_cache_conversation_stats_fresh(pool).await?;
+                Ok::<_, anyhow::Error>(refreshed)
+            }
+            .await;
+            if let Err(error) = refresh_result {
+                warn!(
+                    error = %error,
+                    keys = prompt_cache_keys_to_refresh.len(),
+                    "failed to refresh prompt-cache conversation statistics after terminal batch; retaining refresh obligation"
+                );
+                deferred_batch
+                    .prompt_cache_stats_refresh_keys
+                    .extend(prompt_cache_keys_to_refresh.iter().cloned());
+            }
         }
         return Ok(deferred_batch);
     }
@@ -4155,6 +4294,27 @@ pub(crate) async fn flush_pending_batch_inner(
 
     tx.commit().await?;
 
+    if !prompt_cache_keys_to_refresh.is_empty() {
+        let refresh_result = async {
+            let refreshed =
+                refresh_prompt_cache_conversation_stats(pool, &prompt_cache_keys_to_refresh)
+                    .await?;
+            mark_prompt_cache_conversation_stats_fresh(pool).await?;
+            Ok::<_, anyhow::Error>(refreshed)
+        }
+        .await;
+        if let Err(error) = refresh_result {
+            warn!(
+                error = %error,
+                keys = prompt_cache_keys_to_refresh.len(),
+                "failed to refresh prompt-cache conversation statistics after derived batch; retaining refresh obligation"
+            );
+            deferred_batch
+                .prompt_cache_stats_refresh_keys
+                .extend(prompt_cache_keys_to_refresh.iter().cloned());
+        }
+    }
+
     if !terminal_overlay_keys.is_empty()
         && let Some(runtime_store) = terminal_runtime_store
             .lock()
@@ -4172,7 +4332,7 @@ pub(crate) async fn flush_pending_batch_inner(
         }
     }
 
-    if should_invalidate_prompt_cache_conversations
+    if !prompt_cache_keys_to_refresh.is_empty()
         && let Some(cache) = prompt_cache_conversation_cache
     {
         invalidate_prompt_cache_conversations_cache(cache).await;
