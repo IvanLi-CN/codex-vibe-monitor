@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.75.5",
+  "base_stable_version": "2.75.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-28T08:31:18Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.75.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7fae877c815898dd202e742c8acdb572fe13805f",
+  "pr_number": 1047,
+  "pr_title": "feat(proxy): add durable conversation invoke identity",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.75.5",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.75.5",
+  "target_sha": "74c384b3efe67da4ba7ebc119ed12e8239e9a2bb",
+  "type_label": "type:patch"
+}
