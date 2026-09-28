@@ -26,9 +26,10 @@
 ### REQ-PBRA-002
 
 - The system MUST serialize every Stat with a finite, non-negative numeric `value` and an ordered trend.
-- Inputs: Current Dashboard aggregate state and existing hourly aggregate read models.
+- Inputs: A same-day Dashboard aggregate snapshot, existing hourly token rollups, and complete minute activity coverage for the recent parallel-work window.
 - Outputs: `tokensPerMinute` and `parallelCalls` trends contain 12 chronologically ordered hourly points with `range="recent-hours"`; `todayTokens` contains 25 hourly boundary positions from local 00:00 through the next local 00:00 with future values set to `null` and `range="today"`.
 - Outputs: Each trend timestamp is an RFC 3339 timestamp at the `Asia/Shanghai` hourly boundary.
+- Outputs: Recent completed-hour parallel averages MUST be derived only from complete minute coverage. Missing or incomplete coverage MUST fail the refresh rather than fabricate zero activity.
 
 ### REQ-PBRA-003
 
@@ -39,14 +40,15 @@
 ### REQ-PBRA-004
 
 - The system MUST assemble the response from project-owned aggregate runtime read models and MUST NOT expose request records, prompts, account or user identifiers, API keys, IP addresses, URLs, error details, or unrelated operational fields.
-- Inputs: Dashboard live summary, hourly token and parallel-work rollups, and long-term daily usage rollups.
+- Inputs: Dashboard live summary, hourly token rollups, minute activity coverage, and long-term daily usage rollups.
 - Outputs: Only the aggregate contract in `REQ-PBRA-001` is serialized.
 
 ### REQ-PBRA-005
 
 - The system MUST serve a cached aggregate snapshot, coalesce concurrent refreshes, bound refresh work to three seconds, and return the last successful snapshot when a later refresh fails.
 - Inputs: Requests arriving before or after the 30-second server snapshot freshness interval.
-- Outputs: A failed initial refresh returns a sanitized service-unavailable response; it MUST NOT return partial aggregates or internal failure details.
+- Outputs: A failed initial refresh returns a sanitized service-unavailable response; it MUST NOT return partial aggregates or internal failure details. A failed refresh attempt MUST be shared with queued concurrent waiters and retries MUST be suppressed for a one-second cooldown.
+- Outputs: All aggregate values in one snapshot MUST belong to the same Shanghai calendar day. A refresh that crosses the Shanghai day boundary MUST fail instead of publishing mixed-day values.
 
 ### REQ-PBRA-006
 
@@ -72,7 +74,7 @@
 
 - Method: Cache, validator, rate-limit, and refresh-failure tests.
 - covers: `REQ-PBRA-005`, `REQ-PBRA-006`
-- Pass condition: Fresh snapshots avoid a refresh, concurrent requests share one refresh, timeout/failure returns last-known-good data, ETags produce 304, and request limits produce 429.
+- Pass condition: Fresh snapshots avoid a refresh, concurrent requests share one refresh (including a failed attempt), the cooldown suppresses retries, a refresh crossing Shanghai midnight is rejected, timeout/failure returns last-known-good data, ETags produce 304, and request limits produce 429.
 
 ### VER-PBRA-003
 
@@ -84,7 +86,7 @@
 
 - Method: Stateful SQLite aggregate fixture and response inspection.
 - covers: `REQ-PBRA-003`, `REQ-PBRA-004`
-- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, with no operational identifiers in the body.
+- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, recent parallel-hour values require complete minute coverage, and no operational identifiers appear in the body.
 
 ## Related ADRs
 

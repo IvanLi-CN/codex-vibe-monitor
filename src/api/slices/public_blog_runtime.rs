@@ -6,6 +6,7 @@ const PUBLIC_BLOG_RUNTIME_PATH: &str = "/api/public/blog-runtime/v1/codex-vibe-m
 const PUBLIC_BLOG_RUNTIME_KIND: &str = "codex-vibe-monitor";
 const PUBLIC_BLOG_SNAPSHOT_TTL: Duration = Duration::from_secs(30);
 const PUBLIC_BLOG_REFRESH_TIMEOUT: Duration = Duration::from_secs(3);
+const PUBLIC_BLOG_REFRESH_FAILURE_COOLDOWN: Duration = Duration::from_secs(1);
 const PUBLIC_BLOG_RATE_CAPACITY: f64 = 120.0;
 const PUBLIC_BLOG_RATE_PER_SECOND: f64 = 10.0;
 const PUBLIC_BLOG_CACHE_CONTROL: &str =
@@ -90,6 +91,7 @@ impl PublicBlogRateLimiter {
 struct PublicBlogRuntimeCache {
     snapshot: RwLock<Option<Arc<CachedPublicBlogSnapshot>>>,
     refresh_lock: Mutex<()>,
+    refresh_retry_after: std::sync::Mutex<Instant>,
     limiter: std::sync::Mutex<PublicBlogRateLimiter>,
 }
 
@@ -98,6 +100,7 @@ impl Default for PublicBlogRuntimeCache {
         Self {
             snapshot: RwLock::new(None),
             refresh_lock: Mutex::new(()),
+            refresh_retry_after: std::sync::Mutex::new(Instant::now()),
             limiter: std::sync::Mutex::new(PublicBlogRateLimiter::default()),
         }
     }
@@ -124,6 +127,22 @@ impl PublicBlogRuntimeCache {
         self.snapshot.read().await.clone()
     }
 
+    fn refresh_is_cooled_down(&self, now: Instant) -> bool {
+        *self
+            .refresh_retry_after
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            > now
+    }
+
+    fn cool_down_failed_refresh(&self) {
+        *self
+            .refresh_retry_after
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Instant::now() + PUBLIC_BLOG_REFRESH_FAILURE_COOLDOWN;
+    }
+
     #[cfg(test)]
     async fn expire_snapshot(&self) {
         let mut snapshot = self.snapshot.write().await;
@@ -144,6 +163,9 @@ impl PublicBlogRuntimeCache {
         if let Some(snapshot) = self.fresh_snapshot().await {
             return Some(snapshot);
         }
+        if self.refresh_is_cooled_down(Instant::now()) {
+            return self.last_snapshot().await;
+        }
 
         let deadline = Instant::now() + PUBLIC_BLOG_REFRESH_TIMEOUT;
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -153,6 +175,9 @@ impl PublicBlogRuntimeCache {
         };
         if let Some(snapshot) = self.fresh_snapshot().await {
             return Some(snapshot);
+        }
+        if self.refresh_is_cooled_down(Instant::now()) {
+            return self.last_snapshot().await;
         }
 
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -168,18 +193,28 @@ impl PublicBlogRuntimeCache {
                 *self.snapshot.write().await = Some(snapshot.clone());
                 Some(snapshot)
             }
-            Ok(Err(_)) | Err(_) => self.last_snapshot().await,
+            Ok(Err(_)) | Err(_) => {
+                self.cool_down_failed_refresh();
+                self.last_snapshot().await
+            }
         }
     }
 }
 
 pub(crate) fn build_public_blog_runtime_router(state: Arc<AppState>) -> Router {
+    build_public_blog_runtime_router_with_cache(state, Arc::new(PublicBlogRuntimeCache::default()))
+}
+
+fn build_public_blog_runtime_router_with_cache(
+    state: Arc<AppState>,
+    cache: Arc<PublicBlogRuntimeCache>,
+) -> Router {
     let cors =
         public_blog_runtime_cors_layer(&state.config.public_blog_runtime_cors_allowed_origins);
     Router::new()
         .route(PUBLIC_BLOG_RUNTIME_PATH, any(fetch_public_blog_runtime))
         .layer(cors)
-        .layer(Extension(Arc::new(PublicBlogRuntimeCache::default())))
+        .layer(Extension(cache))
         .with_state(state)
 }
 
@@ -285,6 +320,7 @@ fn if_none_match_matches(header_value: &HeaderValue, etag: &str) -> bool {
 }
 
 async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Bytes> {
+    let refresh_started_at = Utc::now();
     let dashboard = fetch_dashboard_activity(
         State(state.clone()),
         Query(DashboardActivityQuery {
@@ -328,7 +364,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
     .0;
 
     let now = Utc::now();
-    let today = now.with_timezone(&Shanghai).date_naive();
+    let today = consistent_shanghai_snapshot_day(refresh_started_at, now)?;
     let current_hour_start = shanghai_hour_epoch(today, now.with_timezone(&Shanghai).hour())?;
     let recent_start = current_hour_start - 11 * 3_600;
     let recent_end = current_hour_start + 3_600;
@@ -352,31 +388,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
         tokens_by_hour.insert(hour, tokens);
     }
 
-    let parallel_rows = sqlx::query(
-        "SELECT hour_start_epoch, active_minute_count, parallel_count_sum \
-         FROM parallel_work_hourly_rollup \
-         WHERE source_scope = 'all' AND hour_start_epoch >= ?1 AND hour_start_epoch < ?2 \
-         ORDER BY hour_start_epoch",
-    )
-    .bind(recent_start)
-    .bind(recent_end)
-    .fetch_all(&state.pool)
-    .await?;
-    let mut parallel_by_hour = HashMap::new();
-    for row in parallel_rows {
-        let hour = row.try_get::<i64, _>("hour_start_epoch")?;
-        let active_minutes = row.try_get::<i64, _>("active_minute_count")?;
-        let parallel_sum = row.try_get::<i64, _>("parallel_count_sum")?;
-        if active_minutes < 0 || parallel_sum < 0 {
-            bail!("hourly parallel aggregate is negative");
-        }
-        let average = if active_minutes == 0 {
-            0.0
-        } else {
-            parallel_sum as f64 / active_minutes as f64
-        };
-        parallel_by_hour.insert(hour, finite_nonnegative(average)?);
-    }
+    let parallel_by_hour = load_recent_parallel_averages(&state.pool, recent_start).await?;
 
     let mut token_rates = HashMap::new();
     let mut parallel_averages = HashMap::new();
@@ -440,6 +452,58 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
         token_activity90d: activity_points,
     };
     Ok(Bytes::from(serde_json::to_vec(&response)?))
+}
+
+async fn load_recent_parallel_averages(
+    pool: &Pool<Sqlite>,
+    recent_start: i64,
+) -> Result<HashMap<i64, f64>> {
+    let mut averages = HashMap::with_capacity(11);
+    for index in 0..11 {
+        let hour_start = recent_start + index * 3_600;
+        let start = Utc
+            .timestamp_opt(hour_start, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work hour start"))?;
+        let end = Utc
+            .timestamp_opt(hour_start + 3_600, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work hour end"))?;
+        let stats = query_parallel_work_active_minute_stats(
+            pool,
+            start,
+            end,
+            InvocationSourceScope::All,
+            None,
+            None,
+        )
+        .await?;
+        let active_minutes = stats
+            .active_minute_count
+            .ok_or_else(|| anyhow!("recent parallel-work minute coverage is unavailable"))?;
+        if active_minutes < 0 || stats.parallel_count_sum < 0 {
+            bail!("hourly parallel aggregate is negative");
+        }
+        let average = if active_minutes == 0 {
+            0.0
+        } else {
+            stats.parallel_count_sum as f64 / active_minutes as f64
+        };
+        averages.insert(hour_start, finite_nonnegative(average)?);
+    }
+    Ok(averages)
+}
+
+fn consistent_shanghai_snapshot_day(
+    started_at: DateTime<Utc>,
+    completed_at: DateTime<Utc>,
+) -> Result<NaiveDate> {
+    let started_day = started_at.with_timezone(&Shanghai).date_naive();
+    let completed_day = completed_at.with_timezone(&Shanghai).date_naive();
+    if started_day != completed_day {
+        bail!("public blog snapshot crossed a Shanghai day boundary");
+    }
+    Ok(completed_day)
 }
 
 fn build_today_token_points(
@@ -579,6 +643,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_refresh_is_shared_with_concurrent_waiters() {
+        let cache = Arc::new(PublicBlogRuntimeCache::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tasks = (0..8)
+            .map(|_| {
+                let cache = cache.clone();
+                let calls = calls.clone();
+                tokio::spawn(async move {
+                    cache
+                        .snapshot_or_refresh(|| async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            sleep(Duration::from_millis(25)).await;
+                            Err(anyhow!("temporary read failure"))
+                        })
+                        .await
+                })
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            assert!(task.await.expect("refresh task").is_none());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn refresh_failure_returns_last_successful_snapshot() {
         let cache = PublicBlogRuntimeCache::default();
         let successful = cache
@@ -652,6 +741,21 @@ mod tests {
         assert_eq!(points[10].value, Some(0.0));
         assert_eq!(points[11].value, None);
         assert_eq!(points[24].value, None);
+    }
+
+    #[test]
+    fn snapshot_rejects_a_refresh_crossing_shanghai_midnight() {
+        let started_at = Shanghai
+            .with_ymd_and_hms(2026, 9, 28, 23, 59, 59)
+            .single()
+            .expect("before midnight")
+            .with_timezone(&Utc);
+        let completed_at = Shanghai
+            .with_ymd_and_hms(2026, 9, 29, 0, 0, 1)
+            .single()
+            .expect("after midnight")
+            .with_timezone(&Utc);
+        assert!(consistent_shanghai_snapshot_day(started_at, completed_at).is_err());
     }
 
     #[test]
@@ -845,7 +949,9 @@ mod tests {
     #[tokio::test]
     async fn endpoint_serializes_aggregate_snapshot_and_honors_etag() {
         let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
-        let today = Utc::now().with_timezone(&Shanghai).date_naive();
+        let fixture_now = Utc::now();
+        let today = fixture_now.with_timezone(&Shanghai).date_naive();
+        let current_hour_start = fixture_now.timestamp().div_euclid(3_600) * 3_600;
         let end = today.pred_opt().expect("yesterday");
         let start = end - ChronoDuration::days(89);
         sqlx::query(
@@ -867,6 +973,32 @@ mod tests {
             .execute(&state.pool)
             .await
             .expect("insert daily fixture");
+        }
+        for index in 0..12_i64 {
+            sqlx::query(
+                "INSERT INTO parallel_work_hourly_coverage (hour_start_epoch, source_scope, minute_keys_complete) VALUES (?1, 'all', 1)",
+            )
+            .bind(current_hour_start - (index + 1) * 3_600)
+            .execute(&state.pool)
+            .await
+            .expect("insert minute coverage");
+        }
+        for hour_start in [current_hour_start - 3_600, current_hour_start] {
+            for (minute_offset, key) in [
+                (60_i64, "parallel-a"),
+                (60, "parallel-b"),
+                (120, "parallel-a"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO parallel_work_minute_key_rollup (minute_start_epoch, source, prompt_cache_key) VALUES (?1, ?2, ?3)",
+                )
+                .bind(hour_start + minute_offset)
+                .bind(SOURCE_PROXY)
+                .bind(key)
+                .execute(&state.pool)
+                .await
+                .expect("insert parallel-work minute key");
+            }
         }
 
         let router = build_public_blog_runtime_router(state.clone());
@@ -903,6 +1035,7 @@ mod tests {
                 .len(),
             12
         );
+        assert_eq!(root["parallelCalls"]["trend"]["points"][10]["value"], 1.5);
         assert_eq!(
             root["todayTokens"]["trend"]["points"]
                 .as_array()
@@ -927,6 +1060,37 @@ mod tests {
             .await
             .expect("conditional response");
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+        state.shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn endpoint_returns_rate_limit_status_and_retry_after_header() {
+        let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
+        let cache = Arc::new(PublicBlogRuntimeCache::default());
+        {
+            let mut limiter = cache.limiter.lock().expect("limiter lock");
+            limiter.tokens = 0.0;
+            limiter.last_refill = Instant::now();
+        }
+        let router = build_public_blog_runtime_router_with_cache(state.clone(), cache);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(PUBLIC_BLOG_RUNTIME_PATH)
+                    .body(Body::empty())
+                    .expect("rate-limited request"),
+            )
+            .await
+            .expect("rate-limited response");
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "1");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("rate-limit body");
+        let value: Value = serde_json::from_slice(&body).expect("rate-limit JSON");
+        assert_eq!(value, json!({ "error": "rate_limited" }));
         state.shutdown.cancel();
     }
 }
