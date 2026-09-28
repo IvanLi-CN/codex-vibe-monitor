@@ -29,7 +29,7 @@
         "description": "No scope drift; the implementation remains within the endpoint's specified aggregate, coverage, freshness, and failure behavior."
       },
       "reasoning": "The endpoint remains additive and stores its cache and rate-limit state only in process memory.",
-      "reassessed_at": "2026-09-28T10:25:41Z",
+      "reassessed_at": "2026-09-28T10:58:29Z",
       "evidence": [
         "Existing API routes and their CORS configuration remain unchanged.",
         "The endpoint reads covered aggregate projections and rejects mixed-Shanghai-day refreshes.",
@@ -39,9 +39,9 @@
     "verified": {
       "impact": "minor",
       "reasoning": "The new API contract is additive within the current major line, and no persistent-state compatibility surface was added.",
-      "verified_at": "2026-09-28T10:25:41Z",
+      "verified_at": "2026-09-28T10:58:29Z",
       "evidence": [
-        "cargo test public_blog -- --nocapture passed 14 tests, including endpoint response, CORS, refresh concurrency, rate limiting, day-boundary consistency, and SQLite coverage assertions.",
+        "cargo test public_blog -- --nocapture passed 17 tests, including endpoint response, CORS, refresh concurrency and cooldown recovery, rate limiting, day-boundary consistency, and complete/missing/incomplete SQLite coverage.",
         "The readiness regression test passed.",
         "Rust formatting and the explicit source-quality policy check passed.",
         "cargo check --locked --all-targets --all-features passed.",

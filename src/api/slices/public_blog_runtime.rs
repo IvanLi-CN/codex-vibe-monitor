@@ -136,11 +136,15 @@ impl PublicBlogRuntimeCache {
     }
 
     fn cool_down_failed_refresh(&self) {
+        self.cool_down_failed_refresh_at(Instant::now());
+    }
+
+    fn cool_down_failed_refresh_at(&self, failed_at: Instant) {
         *self
             .refresh_retry_after
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Instant::now() + PUBLIC_BLOG_REFRESH_FAILURE_COOLDOWN;
+            failed_at + PUBLIC_BLOG_REFRESH_FAILURE_COOLDOWN;
     }
 
     #[cfg(test)]
@@ -364,7 +368,7 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
     .0;
 
     let now = Utc::now();
-    let today = consistent_shanghai_snapshot_day(refresh_started_at, now)?;
+    let today = now.with_timezone(&Shanghai).date_naive();
     let current_hour_start = shanghai_hour_epoch(today, now.with_timezone(&Shanghai).hour())?;
     let recent_start = current_hour_start - 11 * 3_600;
     let recent_end = current_hour_start + 3_600;
@@ -419,12 +423,15 @@ async fn build_public_blog_runtime_snapshot(state: Arc<AppState>) -> Result<Byte
         .pred_opt()
         .ok_or_else(|| anyhow!("Shanghai date underflow"))?;
     let activity_start = yesterday - ChronoDuration::days(89);
-    let activity_points =
-        load_public_blog_token_activity_90d(&state.pool, activity_start, yesterday)
-            .await?
-            .into_iter()
-            .map(|(date, value)| PublicBlogDailyPoint { date, value })
-            .collect();
+    let activity_points = after_snapshot_final_read(
+        refresh_started_at,
+        load_public_blog_token_activity_90d(&state.pool, activity_start, yesterday),
+        Utc::now,
+    )
+    .await?
+    .into_iter()
+    .map(|(date, value)| PublicBlogDailyPoint { date, value })
+    .collect();
 
     let response = PublicBlogRuntimeResponse {
         kind: PUBLIC_BLOG_RUNTIME_KIND,
@@ -494,16 +501,30 @@ async fn load_recent_parallel_averages(
     Ok(averages)
 }
 
-fn consistent_shanghai_snapshot_day(
+fn ensure_shanghai_snapshot_day(
     started_at: DateTime<Utc>,
     completed_at: DateTime<Utc>,
-) -> Result<NaiveDate> {
+) -> Result<()> {
     let started_day = started_at.with_timezone(&Shanghai).date_naive();
     let completed_day = completed_at.with_timezone(&Shanghai).date_naive();
     if started_day != completed_day {
         bail!("public blog snapshot crossed a Shanghai day boundary");
     }
-    Ok(completed_day)
+    Ok(())
+}
+
+async fn after_snapshot_final_read<T, Read, Clock>(
+    started_at: DateTime<Utc>,
+    read: Read,
+    completed_at: Clock,
+) -> Result<T>
+where
+    Read: Future<Output = Result<T>>,
+    Clock: FnOnce() -> DateTime<Utc>,
+{
+    let value = read.await?;
+    ensure_shanghai_snapshot_day(started_at, completed_at())?;
+    Ok(value)
 }
 
 fn build_today_token_points(
@@ -595,7 +616,7 @@ fn finite_nonnegative(value: f64) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn refresh_cache_coalesces_concurrent_requests_and_serves_fresh_snapshot() {
@@ -664,6 +685,56 @@ mod tests {
         for task in tasks {
             assert!(task.await.expect("refresh task").is_none());
         }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_refresh_cooldown_expires_after_one_second() {
+        let cache = PublicBlogRuntimeCache::default();
+        let failed_at = Instant::now();
+        cache.cool_down_failed_refresh_at(failed_at);
+
+        assert!(cache.refresh_is_cooled_down(failed_at + Duration::from_millis(999)));
+        assert!(!cache.refresh_is_cooled_down(failed_at + PUBLIC_BLOG_REFRESH_FAILURE_COOLDOWN));
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_cooldown_suppresses_retry_then_resumes() {
+        let cache = PublicBlogRuntimeCache::default();
+        assert!(
+            cache
+                .snapshot_or_refresh(|| async { Err(anyhow!("temporary read failure")) })
+                .await
+                .is_none()
+        );
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cooled_down_calls = calls.clone();
+        assert!(
+            cache
+                .snapshot_or_refresh(|| async move {
+                    cooled_down_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Bytes::from_static(b"too early"))
+                })
+                .await
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        *cache
+            .refresh_retry_after
+            .lock()
+            .expect("refresh cooldown lock") = Instant::now();
+        let resumed_calls = calls.clone();
+        assert!(
+            cache
+                .snapshot_or_refresh(|| async move {
+                    resumed_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Bytes::from_static(b"recovered"))
+                })
+                .await
+                .is_some()
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -743,8 +814,8 @@ mod tests {
         assert_eq!(points[24].value, None);
     }
 
-    #[test]
-    fn snapshot_rejects_a_refresh_crossing_shanghai_midnight() {
+    #[tokio::test]
+    async fn snapshot_rejects_midnight_crossing_after_final_aggregate_read() {
         let started_at = Shanghai
             .with_ymd_and_hms(2026, 9, 28, 23, 59, 59)
             .single()
@@ -755,7 +826,23 @@ mod tests {
             .single()
             .expect("after midnight")
             .with_timezone(&Utc);
-        assert!(consistent_shanghai_snapshot_day(started_at, completed_at).is_err());
+        let read_finished = Arc::new(AtomicBool::new(false));
+        let read_finished_by_clock = read_finished.clone();
+        let read_finished_by_query = read_finished.clone();
+        let result = after_snapshot_final_read(
+            started_at,
+            async move {
+                tokio::task::yield_now().await;
+                read_finished_by_query.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            move || {
+                assert!(read_finished_by_clock.load(Ordering::SeqCst));
+                completed_at
+            },
+        )
+        .await;
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1060,6 +1147,33 @@ mod tests {
             .await
             .expect("conditional response");
         assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+        state.shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn recent_parallel_averages_reject_missing_or_incomplete_coverage() {
+        let state = crate::tests::test_state_from_config(crate::tests::test_config(), true).await;
+        let current_hour_start = Utc::now().timestamp().div_euclid(3_600) * 3_600;
+        let recent_start = current_hour_start - 11 * 3_600;
+
+        assert!(
+            load_recent_parallel_averages(&state.pool, recent_start)
+                .await
+                .is_err()
+        );
+
+        sqlx::query(
+            "INSERT INTO parallel_work_hourly_coverage (hour_start_epoch, source_scope, minute_keys_complete) VALUES (?1, 'all', 0)",
+        )
+        .bind(recent_start)
+        .execute(&state.pool)
+        .await
+        .expect("insert incomplete minute coverage");
+        assert!(
+            load_recent_parallel_averages(&state.pool, recent_start)
+                .await
+                .is_err()
+        );
         state.shutdown.cancel();
     }
 

@@ -48,7 +48,7 @@
 - The system MUST serve a cached aggregate snapshot, coalesce concurrent refreshes, bound refresh work to three seconds, and return the last successful snapshot when a later refresh fails.
 - Inputs: Requests arriving before or after the 30-second server snapshot freshness interval.
 - Outputs: A failed initial refresh returns a sanitized service-unavailable response; it MUST NOT return partial aggregates or internal failure details. A failed refresh attempt MUST be shared with queued concurrent waiters and retries MUST be suppressed for a one-second cooldown.
-- Outputs: All aggregate values in one snapshot MUST belong to the same Shanghai calendar day. A refresh that crosses the Shanghai day boundary MUST fail instead of publishing mixed-day values.
+- Outputs: All aggregate values in one snapshot MUST belong to the same Shanghai calendar day. The system MUST compare the Shanghai day at refresh start with the day after all aggregate source reads complete; a refresh that crosses the boundary MUST fail instead of publishing mixed-day values.
 
 ### REQ-PBRA-006
 
@@ -74,7 +74,7 @@
 
 - Method: Cache, validator, rate-limit, and refresh-failure tests.
 - covers: `REQ-PBRA-005`, `REQ-PBRA-006`
-- Pass condition: Fresh snapshots avoid a refresh, concurrent requests share one refresh (including a failed attempt), the cooldown suppresses retries, a refresh crossing Shanghai midnight is rejected, timeout/failure returns last-known-good data, ETags produce 304, and request limits produce 429.
+- Pass condition: Fresh snapshots avoid a refresh, concurrent requests share one refresh (including a failed attempt), the one-second cooldown suppresses retries and later permits refresh, a refresh crossing Shanghai midnight during aggregate reads is rejected, timeout/failure returns last-known-good data, ETags produce 304, and request limits produce 429.
 
 ### VER-PBRA-003
 
@@ -86,7 +86,7 @@
 
 - Method: Stateful SQLite aggregate fixture and response inspection.
 - covers: `REQ-PBRA-003`, `REQ-PBRA-004`
-- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, recent parallel-hour values require complete minute coverage, and no operational identifiers appear in the body.
+- Pass condition: Exactly 90 ascending completed Shanghai dates are returned from the long-term overall rollup, recent parallel-hour values require complete minute coverage and missing or incomplete coverage fails the refresh, and no operational identifiers appear in the body.
 
 ## Related ADRs
 
