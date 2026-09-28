@@ -1084,19 +1084,39 @@ fn telemetry_paths_conflict(main_path: &Path, telemetry_path: &Path) -> bool {
         normalized
     }
 
-    if normalize_path(main_path) == normalize_path(telemetry_path) {
+    fn sqlite_path_family(path: &Path) -> [PathBuf; 3] {
+        let mut wal = path.to_path_buf();
+        let mut shm = path.to_path_buf();
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        wal.set_file_name(format!("{file_name}-wal"));
+        shm.set_file_name(format!("{file_name}-shm"));
+        [path.to_path_buf(), wal, shm]
+    }
+
+    let main_family = sqlite_path_family(main_path).map(|path| normalize_path(&path));
+    let telemetry_family = sqlite_path_family(telemetry_path).map(|path| normalize_path(&path));
+    if main_family
+        .iter()
+        .any(|main| telemetry_family.iter().any(|telemetry| main == telemetry))
+    {
         return true;
     }
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if let (Ok(main_metadata), Ok(telemetry_metadata)) = (
-            std::fs::metadata(main_path),
-            std::fs::metadata(telemetry_path),
-        ) {
-            return main_metadata.dev() == telemetry_metadata.dev()
-                && main_metadata.ino() == telemetry_metadata.ino();
+        for main in sqlite_path_family(main_path) {
+            for telemetry in sqlite_path_family(telemetry_path) {
+                if let (Ok(main_metadata), Ok(telemetry_metadata)) =
+                    (std::fs::metadata(&main), std::fs::metadata(&telemetry))
+                {
+                    if main_metadata.dev() == telemetry_metadata.dev()
+                        && main_metadata.ino() == telemetry_metadata.ino()
+                    {
+                        return true;
+                    }
+                }
+            }
         }
     }
     false
@@ -1167,6 +1187,24 @@ async fn initialize_telemetry_runtime(
         return;
     }
     if runtime.shutdown.is_cancelled() {
+        return;
+    }
+    let epoch = runtime.health.lock().await.epoch.clone();
+    if let Err(error) = sqlx::query(
+        "INSERT INTO performance_epochs(epoch, started_at) VALUES (?, ?)
+         ON CONFLICT(epoch) DO NOTHING",
+    )
+    .bind(&epoch)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&pool)
+    .await
+    {
+        runtime
+            .update_health(|health| {
+                health.state = "unavailable".to_string();
+                health.last_error = Some(error.to_string());
+            })
+            .await;
         return;
     }
     if runtime.pool.set(pool).is_err() {
@@ -1758,7 +1796,7 @@ async fn flush_accumulators(
         for ((bucket_start, metric_id, dimension), accumulator) in accumulators.iter() {
             let existing = sqlx::query(
                 "SELECT sample_count, expected_count, sum_value, min_value, max_value, last_value,
-                        weighted_sum, weighted_seconds, histogram_json
+                        weighted_sum, weighted_seconds, histogram_json, epoch
                  FROM performance_buckets
                  WHERE bucket_start = ? AND resolution_seconds = 60 AND metric_id = ? AND dimension_code = ?",
             )
@@ -1777,12 +1815,16 @@ async fn flush_accumulators(
                 mut weighted_sum,
                 mut weighted_seconds,
                 mut histogram,
+                mut epochs,
             ) = if let Some(row) = existing {
                     let parsed = serde_json::from_str::<Vec<u64>>(row.try_get::<String, _>("histogram_json")?.as_str()).unwrap_or_else(|_| vec![0; 8]);
-                    (row.try_get::<i64, _>("sample_count")? as u64, row.try_get::<i64, _>("expected_count")? as u64, row.try_get::<f64, _>("sum_value")?, row.try_get::<Option<f64>, _>("min_value")?, row.try_get::<Option<f64>, _>("max_value")?, row.try_get::<Option<f64>, _>("last_value")?, row.try_get::<f64, _>("weighted_sum")?, row.try_get::<f64, _>("weighted_seconds")?, parsed)
+                    let mut epochs = BTreeSet::new();
+                    record_epoch_values(&mut epochs, row.try_get::<String, _>("epoch")?.as_str());
+                    (row.try_get::<i64, _>("sample_count")? as u64, row.try_get::<i64, _>("expected_count")? as u64, row.try_get::<f64, _>("sum_value")?, row.try_get::<Option<f64>, _>("min_value")?, row.try_get::<Option<f64>, _>("max_value")?, row.try_get::<Option<f64>, _>("last_value")?, row.try_get::<f64, _>("weighted_sum")?, row.try_get::<f64, _>("weighted_seconds")?, parsed, epochs)
                 } else {
-                    (0, 0, 0.0, None, None, None, 0.0, 0.0, vec![0; 8])
+                    (0, 0, 0.0, None, None, None, 0.0, 0.0, vec![0; 8], BTreeSet::new())
                 };
+            epochs.insert(epoch.to_string());
             count = count.saturating_add(accumulator.count);
             expected = expected.saturating_add(accumulator.expected_count);
             sum += accumulator.sum;
@@ -1797,6 +1839,11 @@ async fn flush_accumulators(
                 if index < histogram.len() { histogram[index] = histogram[index].saturating_add(*value); }
             }
             let histogram_json = serde_json::to_string(&histogram)?;
+            let encoded_epoch = if epochs.len() == 1 {
+                epochs.into_iter().next().expect("epoch set is non-empty")
+            } else {
+                serde_json::to_string(&epochs.into_iter().collect::<Vec<_>>())?
+            };
             sqlx::query(
                 "INSERT INTO performance_buckets(
                     bucket_start, resolution_seconds, metric_id, dimension_code,
@@ -1823,7 +1870,7 @@ async fn flush_accumulators(
             .bind(weighted_sum)
             .bind(weighted_seconds)
             .bind(histogram_json)
-            .bind(epoch)
+            .bind(encoded_epoch)
             .execute(&mut *transaction)
             .await?;
         }
@@ -3616,6 +3663,26 @@ mod tests {
         std::fs::remove_dir(&root).expect("remove path test directory");
     }
 
+    #[test]
+    fn sqlite_sidecar_paths_are_rejected_as_conflicts() {
+        let root = std::env::temp_dir().join(format!(
+            "cvm-performance-sidecar-test-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).expect("create sidecar test directory");
+        let main_path = root.join("main.sqlite");
+        assert!(telemetry_paths_conflict(
+            &main_path,
+            &root.join("main.sqlite-wal")
+        ));
+        assert!(telemetry_paths_conflict(
+            &main_path,
+            &root.join("main.sqlite-shm")
+        ));
+        std::fs::remove_dir(&root).expect("remove sidecar test directory");
+    }
+
     #[tokio::test]
     async fn flush_persists_weighted_stock_values() {
         let pool = SqlitePoolOptions::new()
@@ -3661,6 +3728,52 @@ mod tests {
                 .await
                 .expect("load persisted collector health");
         assert_eq!(persisted_state, "healthy");
+    }
+
+    #[tokio::test]
+    async fn flush_merges_epoch_provenance_for_existing_minute_bucket() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory telemetry database");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        let runtime = PerformanceTelemetryRuntime::disabled_for_tests();
+        runtime
+            .pool
+            .set(pool.clone())
+            .expect("install test telemetry pool");
+
+        for epoch in ["epoch-a", "epoch-b"] {
+            let mut accumulators = HashMap::new();
+            assert!(add_event(
+                &mut accumulators,
+                TelemetryEvent {
+                    metric_id: "p1.queue_depth",
+                    dimension: "p1",
+                    kind: EventKind::Gauge,
+                    value: 3.0,
+                    weight_seconds: 10.0,
+                    at: Utc::now(),
+                },
+            ));
+            flush_accumulators(&runtime, &mut accumulators, epoch)
+                .await
+                .expect("flush epoch sample");
+        }
+
+        let encoded_epoch: String = sqlx::query_scalar(
+            "SELECT epoch FROM performance_buckets
+             WHERE metric_id = 'p1.queue_depth' AND dimension_code = 'p1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load merged epoch provenance");
+        let epochs: Vec<String> =
+            serde_json::from_str(&encoded_epoch).expect("decode merged epoch provenance");
+        assert_eq!(epochs, vec!["epoch-a", "epoch-b"]);
     }
 
     #[tokio::test]
