@@ -637,6 +637,14 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
     state: &AppState,
     request: PromptCacheConversationsRequest,
 ) -> Result<PromptCacheConversationsResponse, ApiError> {
+    if !prompt_cache_conversation_materialization_is_complete(&state.pool)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "prompt-cache conversation history is still materializing"
+        )));
+    }
     if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none() {
         let response = build_prompt_cache_conversations_response_with_recent_limit(
             state,
@@ -877,6 +885,11 @@ pub(crate) async fn build_prompt_cache_conversations_response(
     state: &AppState,
     selection: PromptCacheConversationSelection,
 ) -> Result<PromptCacheConversationsResponse> {
+    if !prompt_cache_conversation_materialization_is_complete(&state.pool).await? {
+        return Err(anyhow!(
+            "prompt-cache conversation history is still materializing"
+        ));
+    }
     build_prompt_cache_conversations_response_with_recent_limit(state, selection, None).await
 }
 

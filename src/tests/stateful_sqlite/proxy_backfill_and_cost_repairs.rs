@@ -1954,6 +1954,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
         "dashboard-lock-read",
     )
     .await;
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let summary_query = SummaryQuery {
         window: Some("today".to_string()),

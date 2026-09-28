@@ -5827,6 +5827,14 @@ impl SubscriptionHub {
         state: Arc<AppState>,
         topic: &SubscriptionTopic,
     ) -> Result<(BuiltSubscriptionTopicPayload, PromptCacheBaselineBuild), ApiError> {
+        if !prompt_cache_conversation_materialization_is_complete(&state.pool)
+            .await
+            .map_err(ApiError::from)?
+        {
+            return Err(ApiError::unavailable(anyhow!(
+                "prompt-cache conversation history is still materializing"
+            )));
+        }
         if let SubscriptionTopic::DashboardWorkingConversationsCurrent {
             page_size,
             recent_invocation_limit,
