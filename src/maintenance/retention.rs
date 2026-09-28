@@ -1318,6 +1318,16 @@ pub(crate) struct RetentionRunSummary {
 }
 
 impl RetentionRunSummary {
+    fn processed_row_count(&self) -> u64 {
+        self.invocation_details_pruned as u64
+            + self.invocation_rows_archived as u64
+            + self.forward_proxy_attempt_rows_archived as u64
+            + self.pool_upstream_request_attempt_rows_archived as u64
+            + self.quota_snapshot_rows_archived as u64
+            + self.model_route_rows_pruned as u64
+            + self.system_task_run_rows_pruned as u64
+    }
+
     fn touched_anything(&self) -> bool {
         self.raw_files_compression_candidates > 0
             || self.raw_files_compressed > 0
@@ -8076,6 +8086,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
+    let started_at = Instant::now();
     match run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &state.pool,
         &state.config,
@@ -8087,6 +8098,44 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     .await
     {
         Ok(summary) => {
+            state.performance_telemetry.record_duration_ms(
+                "maintenance.run_duration_ms",
+                "maintenance",
+                started_at.elapsed().as_secs_f64() * 1000.0,
+            );
+            state.performance_telemetry.record_counter(
+                "maintenance.processed_rows",
+                "maintenance",
+                summary.processed_row_count(),
+            );
+            state.performance_telemetry.record_gauge(
+                "maintenance.raw_bytes_before",
+                "maintenance",
+                summary.raw_bytes_before as f64,
+            );
+            state.performance_telemetry.record_gauge(
+                "maintenance.raw_bytes_after",
+                "maintenance",
+                summary.raw_bytes_after as f64,
+            );
+            state.performance_telemetry.record_counter(
+                "maintenance.compressed_file_count",
+                "maintenance",
+                summary.raw_files_compressed as u64,
+            );
+            state.performance_telemetry.record_counter(
+                "maintenance.removed_file_count",
+                "maintenance",
+                (summary.raw_files_removed + summary.orphan_raw_files_removed) as u64,
+            );
+            state.performance_telemetry.record_counter(
+                "maintenance.archived_rows",
+                "maintenance",
+                (summary.invocation_rows_archived
+                    + summary.forward_proxy_attempt_rows_archived
+                    + summary.pool_upstream_request_attempt_rows_archived
+                    + summary.quota_snapshot_rows_archived) as u64,
+            );
             if summary.deferred {
                 debug!(
                     trigger,
@@ -8164,10 +8213,15 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             invalidate_system_status_cache(state.as_ref()).await;
             touched_anything
         }
-        Err(error) => {
+        Err(err) => {
+            state.performance_telemetry.record_duration_ms(
+                "maintenance.run_duration_ms",
+                "maintenance",
+                started_at.elapsed().as_secs_f64() * 1000.0,
+            );
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
-                .record_error("data_retention_maintenance", &error);
-            retention_record_error("data_retention_maintenance", &error);
+                .record_error("data_retention_maintenance", &err);
+            retention_record_error("data_retention_maintenance", &err);
             if !state.config.retention_dry_run {
                 let task_run = tokio::select! {
                     biased;
@@ -8189,7 +8243,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                         Some("retention maintenance failed".to_string()),
                         Some(format!(
                             "failure_fingerprint:{}",
-                            retention_error_fingerprint(&error)
+                            retention_error_fingerprint(&err)
                         )),
                     )
                     .await;
@@ -8197,7 +8251,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             warn!(
                 trigger,
-                error_fingerprint = %retention_error_fingerprint(&error),
+                error_fingerprint = %retention_error_fingerprint(&err),
                 retry_soon = pressure_error,
                 "failed to run retention maintenance"
             );

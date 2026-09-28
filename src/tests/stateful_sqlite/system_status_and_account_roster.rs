@@ -1804,6 +1804,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
+        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),
@@ -2152,6 +2153,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
             .dashboard_activity_live_broadcast_running
             .clone(),
         process_started_at_utc: state.process_started_at_utc,
+        performance_telemetry: state.performance_telemetry.clone(),
         dashboard_network_speed_cache: state.dashboard_network_speed_cache.clone(),
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
@@ -2216,6 +2218,7 @@ fn clone_state_with_retry_delay_overrides(
             .dashboard_activity_live_broadcast_running
             .clone(),
         process_started_at_utc: state.process_started_at_utc,
+        performance_telemetry: state.performance_telemetry.clone(),
         dashboard_network_speed_cache: state.dashboard_network_speed_cache.clone(),
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
@@ -2306,6 +2309,7 @@ pub(crate) async fn test_state_from_existing_pool(
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
+        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),

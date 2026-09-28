@@ -46,6 +46,8 @@ services:
 | ------------------------------------------------------ | ---------------------------------------- | -------------------------------------------- |
 | `HTTP_BIND`                                            | 服务监听地址                             | 容器部署或网关拓扑不同的时候                 |
 | `DATABASE_PATH`                                        | SQLite 主库路径                          | 想把数据库放在持久化卷时                     |
+| `PERFORMANCE_DATABASE_PATH`                            | 独立性能指标 SQLite 路径                 | 想把指标文件与主库分开管理时                 |
+| `PERFORMANCE_TELEMETRY_ENABLED`                        | 性能指标采集开关，默认 `true`            | 压测 A/B 或指标库故障时关闭观测              |
 | `PUBLIC_ORIGIN`                                        | 对外公开入口基址，用于社交预览等绝对 URL | 有稳定域名、要给 README / 分享卡片正确出图时 |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                      | 不是转发到默认 OpenAI 上游时                 |
 | `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定首次初始化默认值         | 想让新库第一次启动时默认打开该开关时         |
@@ -91,6 +93,7 @@ healthcheck:
 ## 持久化、归档与备份
 
 - `DATABASE_PATH` 决定主库位置，建议直接挂载到持久化卷。
+- 性能指标默认写入 `DATABASE_PATH` 同目录的独立文件；指标库只保存有界聚合数据，可按备份策略排除。指标库初始化或写入失败时，代理与 `/health` 不依赖它继续工作。
 - `ARCHIVE_DIR` 与 `PROXY_RAW_DIR` 使用相对路径时，会锚定到 `DATABASE_PATH` 同级目录。
 - 如果你开启 retention / archive，备份时不要只看主库，还要把 archive 目录一起纳入。
 - 镜像本身是无状态的，真正需要你保住的是 SQLite 与相关落盘目录。

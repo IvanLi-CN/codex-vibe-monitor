@@ -263,6 +263,8 @@ bun run worktree:setup -- --force
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `HTTP_BIND`                                            | 服务监听地址                                                                                                                        |
 | `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                                     |
+| `PERFORMANCE_DATABASE_PATH`                             | 独立性能指标 SQLite 路径；未配置时使用主库同目录的 `<主库名>.performance.sqlite`                                                     |
+| `PERFORMANCE_TELEMETRY_ENABLED`                        | 是否启用性能指标采集，默认 `true`；设为 `false` 只关闭观测，不影响业务请求                                                         |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                                 |
 | `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
 | `OPENAI_PROXY_WEBSOCKET_ENABLED`                       | 是否允许下游连接 `/v1/*` WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准                                           |
