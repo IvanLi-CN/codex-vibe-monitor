@@ -2483,6 +2483,14 @@ async fn retention_recovery_update_detail_rows_tx(
     ids: &[i64],
     candidates: &[InvocationArchiveCandidate],
 ) -> Result<()> {
+    let prompt_cache_keys = load_prompt_cache_keys_for_invocation_ids_tx(tx, ids).await?;
+    let prompt_cache_key_refs = prompt_cache_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !prompt_cache_key_refs.is_empty() {
+        mark_prompt_cache_conversation_stats_stale_on_connection(tx).await?;
+    }
     let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let mut query = QueryBuilder::<Sqlite>::new(
         "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
@@ -2502,6 +2510,19 @@ async fn retention_recovery_update_detail_rows_tx(
     }
     query.push(")");
     query.build().execute(&mut *tx).await?;
+    refresh_prompt_cache_conversation_stats_on_connection(tx, &prompt_cache_key_refs)
+        .await
+        .context(
+            "failed to refresh prompt-cache conversation statistics after recovered detail prune",
+        )?;
+    if !prompt_cache_key_refs.is_empty() {
+        clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+            tx,
+            &prompt_cache_key_refs,
+        )
+        .await?;
+        mark_prompt_cache_conversation_stats_fresh_on_connection(tx).await?;
+    }
     if let Some(latest) = candidates
         .iter()
         .map(|candidate| candidate.occurred_at.as_str())
@@ -2510,6 +2531,27 @@ async fn retention_recovery_update_detail_rows_tx(
         record_parallel_work_unrecoverable_detail_tx(&mut *tx, latest).await?;
     }
     Ok(())
+}
+
+async fn load_prompt_cache_keys_for_invocation_ids_tx(
+    tx: &mut sqlx::SqliteConnection,
+    ids: &[i64],
+) -> Result<Vec<String>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids_json = serde_json::to_string(ids)?;
+    sqlx::query_scalar::<_, String>(&format!(
+        "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
+         FROM codex_invocations \
+         WHERE id IN (SELECT value FROM json_each(?1)) \
+           AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
+           AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
+    ))
+    .bind(ids_json)
+    .fetch_all(&mut *tx)
+    .await
+    .context("failed to load prompt-cache keys before invocation detail prune")
 }
 
 async fn retention_recovery_finalize_published(
@@ -9910,6 +9952,15 @@ pub(crate) async fn prune_old_invocation_details(
                 &archive_outcome.sha256,
             )
             .await?;
+            let prompt_cache_keys =
+                load_prompt_cache_keys_for_invocation_ids_tx(tx.as_mut(), &ids).await?;
+            let prompt_cache_key_refs = prompt_cache_keys
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if !prompt_cache_key_refs.is_empty() {
+                mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
+            }
             let mut query = QueryBuilder::<Sqlite>::new(
                 "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
             );
@@ -9928,6 +9979,20 @@ pub(crate) async fn prune_old_invocation_details(
             }
             query.push(")");
             query.build().execute(tx.as_mut()).await?;
+            refresh_prompt_cache_conversation_stats_on_connection(
+                tx.as_mut(),
+                &prompt_cache_key_refs,
+            )
+            .await
+            .context("failed to refresh prompt-cache conversation statistics after detail prune")?;
+            if !prompt_cache_key_refs.is_empty() {
+                clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+                    tx.as_mut(),
+                    &prompt_cache_key_refs,
+                )
+                .await?;
+                mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
+            }
             if let Some(latest) = group
                 .iter()
                 .map(|candidate| candidate.occurred_at.as_str())

@@ -388,6 +388,13 @@ async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
     .await
     .expect("count released conversation identity");
     assert_eq!(row_count, 0);
+    let orphan_queue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key IN ('allocator-key', 'orphan-without-refreshed-stats')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count released prompt-cache refresh obligations");
+    assert_eq!(orphan_queue_count, 0);
 }
 
 #[tokio::test]

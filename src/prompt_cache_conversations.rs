@@ -1309,6 +1309,7 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
         if dry_run {
             result.released = result.released.saturating_add(eligible_keys.len());
         } else if !eligible_keys.is_empty() {
+            let mut tx = pool.begin().await?;
             let placeholders = std::iter::repeat_n("?", eligible_keys.len())
                 .collect::<Vec<_>>()
                 .join(",");
@@ -1319,9 +1320,7 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
             for prompt_cache_key in &eligible_keys {
                 delete_query = delete_query.bind(*prompt_cache_key);
             }
-            result.released = result
-                .released
-                .saturating_add(delete_query.execute(pool).await?.rows_affected() as usize);
+            let released = delete_query.execute(&mut *tx).await?.rows_affected() as usize;
             let remaining_placeholders = std::iter::repeat_n("?", candidate_keys.len())
                 .collect::<Vec<_>>()
                 .join(",");
@@ -1333,15 +1332,32 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
                 remaining_query = remaining_query.bind(prompt_cache_key);
             }
             let remaining_keys = remaining_query
-                .fetch_all(pool)
+                .fetch_all(&mut *tx)
                 .await?
                 .into_iter()
                 .collect::<HashSet<_>>();
-            result.deleted_prompt_cache_keys.extend(
-                candidate_keys
-                    .into_iter()
-                    .filter(|prompt_cache_key| !remaining_keys.contains(prompt_cache_key)),
-            );
+            let deleted_prompt_cache_keys = candidate_keys
+                .into_iter()
+                .filter(|prompt_cache_key| !remaining_keys.contains(prompt_cache_key))
+                .collect::<Vec<_>>();
+            if !deleted_prompt_cache_keys.is_empty() {
+                let queue_placeholders = std::iter::repeat_n("?", deleted_prompt_cache_keys.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let queue_delete_sql = format!(
+                    "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key IN ({queue_placeholders})"
+                );
+                let mut queue_delete_query = sqlx::query(&queue_delete_sql);
+                for prompt_cache_key in &deleted_prompt_cache_keys {
+                    queue_delete_query = queue_delete_query.bind(prompt_cache_key);
+                }
+                queue_delete_query.execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+            result.released = result.released.saturating_add(released);
+            result
+                .deleted_prompt_cache_keys
+                .extend(deleted_prompt_cache_keys);
         }
         if candidate_key_count < PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN
             || scanned_candidates >= PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN
