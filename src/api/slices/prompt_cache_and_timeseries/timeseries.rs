@@ -4915,6 +4915,17 @@ pub(crate) async fn fetch_parallel_work_stats(
         .map(Json)
 }
 
+#[cfg(test)]
+pub(crate) async fn fetch_parallel_work_stats_at(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ParallelWorkStatsQuery>,
+    now: DateTime<Utc>,
+) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
+    load_parallel_work_stats_response_at(&state, params, now)
+        .await
+        .map(Json)
+}
+
 pub(crate) async fn fetch_parallel_work_stats_cached(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -4973,7 +4984,15 @@ pub(crate) async fn load_parallel_work_stats_response(
     state: &Arc<AppState>,
     params: ParallelWorkStatsQuery,
 ) -> Result<ParallelWorkStatsResponse, ApiError> {
-    load_parallel_work_projection_baseline(state, params)
+    load_parallel_work_stats_response_at(state, params, Utc::now()).await
+}
+
+pub(crate) async fn load_parallel_work_stats_response_at(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+    now: DateTime<Utc>,
+) -> Result<ParallelWorkStatsResponse, ApiError> {
+    load_parallel_work_projection_baseline_at(state, params, now)
         .await
         .map(|baseline| baseline.response)
 }
@@ -4982,10 +5001,19 @@ pub(crate) async fn load_parallel_work_projection_baseline(
     state: &Arc<AppState>,
     params: ParallelWorkStatsQuery,
 ) -> Result<ParallelWorkProjectionBaseline, ApiError> {
+    load_parallel_work_projection_baseline_at(state, params, Utc::now()).await
+}
+
+pub(crate) async fn load_parallel_work_projection_baseline_at(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+    now: DateTime<Utc>,
+) -> Result<ParallelWorkProjectionBaseline, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
-    let requested_range_window = resolve_range_window(&params.range, requested_reporting_tz)?;
+    let requested_range_window =
+        resolve_range_window_at(&params.range, requested_reporting_tz, now)?;
     let bucket_params = TimeseriesQuery {
         range: params.range.clone(),
         bucket: params.bucket.clone(),
@@ -5005,7 +5033,7 @@ pub(crate) async fn load_parallel_work_projection_baseline(
         (requested_reporting_tz, false)
     };
     let range_window = if time_zone_fallback {
-        resolve_range_window(&params.range, reporting_tz)?
+        resolve_range_window_at(&params.range, reporting_tz, now)?
     } else {
         requested_range_window
     };

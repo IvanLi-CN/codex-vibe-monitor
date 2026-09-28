@@ -548,6 +548,7 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
         parallelism: null,
       },
       models: [],
+      modelGroups: [],
     };
   }
   const includedIndexes = [...new Set(modelIndexes)].sort((left, right) => left - right);
@@ -565,6 +566,52 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
       model.cumulativeUsageDurationMs,
     ),
   }));
+  const modelGroups = [...new Set(models.map((model) => model.model))].map((modelName) => {
+    const entries = models.filter((model) => model.model === modelName);
+    const cumulativeUsageDurationMs = entries.reduce(
+      (total, model) => total + model.cumulativeUsageDurationMs,
+      0,
+    );
+    const wallClockUsageDurationMs = Math.max(
+      0,
+      entries.reduce((total, model) => total + model.wallClockUsageDurationMs, 0) -
+        DEMO_MODEL_PERFORMANCE_PAIR_OVERLAPS_MS.reduce(
+          (total, [left, right, pairOverlapMs]) =>
+            includedIndexes.includes(left) &&
+            includedIndexes.includes(right) &&
+            DEMO_MODEL_PERFORMANCE_MODELS[left]?.model === modelName &&
+            DEMO_MODEL_PERFORMANCE_MODELS[right]?.model === modelName
+              ? total + pairOverlapMs
+              : total,
+          0,
+        ),
+    );
+    const weightedAverage = (select: (model: (typeof entries)[number]) => number) =>
+      cumulativeUsageDurationMs > 0
+        ? entries.reduce(
+            (total, model) => total + select(model) * model.cumulativeUsageDurationMs,
+            0,
+          ) / cumulativeUsageDurationMs
+        : null;
+    return {
+      model: modelName,
+      reasoningEffort: null,
+      tokensPerMinute: entries.reduce((total, model) => total + model.tokensPerMinute, 0),
+      streamingResponseRate:
+        cumulativeUsageDurationMs > 0
+          ? entries.reduce(
+              (total, model) =>
+                total + model.streamingResponseRate * model.cumulativeUsageDurationMs,
+              0,
+            ) / cumulativeUsageDurationMs
+          : null,
+      avgResponseMs: weightedAverage((model) => model.avgResponseMs),
+      avgFirstTokenMs: weightedAverage((model) => model.avgFirstTokenMs),
+      wallClockUsageDurationMs,
+      cumulativeUsageDurationMs,
+      parallelism: computeDemoParallelism(wallClockUsageDurationMs, cumulativeUsageDurationMs),
+    };
+  });
   const cumulativeUsageDurationMs = models.reduce(
     (total, model) => total + model.cumulativeUsageDurationMs,
     0,
@@ -597,6 +644,7 @@ function demoModelPerformanceForModels(modelIndexes: number[]) {
       parallelism: computeDemoParallelism(wallClockUsageDurationMs, cumulativeUsageDurationMs),
     },
     models,
+    modelGroups,
   };
 }
 
@@ -1866,25 +1914,25 @@ function forwardProxyLive() {
 
 const DEMO_PERFORMANCE_SERIES = [
   {
-    metricId: "collector.queue_depth",
-    section: "overview",
-    dimension: "all",
+    metricId: "telemetry.queue_depth",
+    section: "process",
+    dimension: "collector",
     kind: "gauge",
     unit: "count",
     base: 3,
   },
   {
-    metricId: "collector.dropped_samples",
-    section: "overview",
-    dimension: "all",
+    metricId: "telemetry.dropped_samples",
+    section: "process",
+    dimension: "collector",
     kind: "counter",
     unit: "count",
     base: 0,
   },
   {
-    metricId: "sqlite.busy_wait",
+    metricId: "sqlite.write_duration_ms",
     section: "storage",
-    dimension: "all",
+    dimension: "main",
     kind: "duration",
     unit: "milliseconds",
     base: 7,
@@ -1892,15 +1940,15 @@ const DEMO_PERFORMANCE_SERIES = [
   {
     metricId: "sqlite.wal_bytes",
     section: "storage",
-    dimension: "telemetry",
+    dimension: "main",
     kind: "gauge",
     unit: "bytes",
     base: 4_800_000,
   },
   {
-    metricId: "projection.publish_lag",
+    metricId: "projection.publish_duration_ms",
     section: "projection",
-    dimension: "all",
+    dimension: "current",
     kind: "duration",
     unit: "milliseconds",
     base: 42,
@@ -1914,17 +1962,17 @@ const DEMO_PERFORMANCE_SERIES = [
     base: 16,
   },
   {
-    metricId: "maintenance.backlog",
+    metricId: "maintenance.backlog_age_ms",
     section: "maintenance",
-    dimension: "all",
+    dimension: "maintenance",
     kind: "gauge",
-    unit: "count",
-    base: 12,
+    unit: "milliseconds",
+    base: 1200,
   },
   {
-    metricId: "maintenance.flush_duration",
+    metricId: "maintenance.run_duration_ms",
     section: "maintenance",
-    dimension: "all",
+    dimension: "maintenance",
     kind: "duration",
     unit: "milliseconds",
     base: 180,
@@ -1946,7 +1994,7 @@ const DEMO_PERFORMANCE_SERIES = [
     base: 21,
   },
   {
-    metricId: "browser.data_ready",
+    metricId: "browser.data_ready_ms",
     section: "browser",
     dimension: "system:desktop",
     kind: "duration",
@@ -1954,7 +2002,7 @@ const DEMO_PERFORMANCE_SERIES = [
     base: 640,
   },
   {
-    metricId: "browser.update_to_paint",
+    metricId: "browser.update_to_paint_ms",
     section: "browser",
     dimension: "system:desktop",
     kind: "duration",
@@ -2266,6 +2314,7 @@ function systemStatus() {
         referencedSkipped: 12,
         quarantined: rawOrphanSweepState === "degraded" ? 3 : 2,
         removed: rawOrphanSweepState === "degraded" ? 0 : 1,
+        removedBytes: rawOrphanSweepState === "degraded" ? 0 : 65_536,
         lastProgressAt: "2026-09-21T03:00:00Z",
         nextRetryAt: rawOrphanSweepState === "idle" ? undefined : "2026-09-21T03:05:00Z",
         deferReason:
@@ -2274,7 +2323,23 @@ function systemStatus() {
             : rawOrphanSweepState === "degraded"
               ? "retry_backoff"
               : undefined,
+        admissionStage: rawOrphanSweepState === "deferred" ? "background_slot" : undefined,
+        admissionCause: rawOrphanSweepState === "deferred" ? "background_busy" : undefined,
         failureFingerprint: rawOrphanSweepState === "degraded" ? "7d38a1c0b4c8e2f1" : undefined,
+        lastSettledPass: {
+          settledAt: "2026-09-21T03:00:00Z",
+          complete: rawOrphanSweepState !== "degraded",
+          inspectedEntries: 96,
+          referencedSkipped: 12,
+          quarantined: rawOrphanSweepState === "degraded" ? 3 : 2,
+          removed: rawOrphanSweepState === "degraded" ? 0 : 1,
+          removedBytes: rawOrphanSweepState === "degraded" ? 0 : 65_536,
+        },
+        lastNonzeroRemoval: {
+          removedAt: "2026-09-21T02:59:58Z",
+          removed: 1,
+          removedBytes: 65_536,
+        },
       },
       dashboardProjection: {
         mode: "auto",
@@ -3223,38 +3288,60 @@ function demoInvocationTimeline(url: URL) {
     if (record.tTotalMs == null) return startMs >= rangeStart;
     return startMs + Math.max(0, record.tTotalMs) >= rangeStart;
   });
-  const overLimit = candidates.length > 2_000;
+  const pageSize = Math.min(
+    2_000,
+    Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "500", 10) || 500),
+  );
+  const asOf = url.searchParams.get("asOf") ?? `demo:${rangeStart}:${rangeEnd}`;
+  let offset = 0;
+  const rawCursor = url.searchParams.get("cursor");
+  if (rawCursor) {
+    try {
+      const cursor = JSON.parse(atob(rawCursor)) as { asOf?: string; offset?: number };
+      const cursorOffset = cursor.offset;
+      if (
+        cursor.asOf !== asOf ||
+        typeof cursorOffset !== "number" ||
+        !Number.isSafeInteger(cursorOffset) ||
+        cursorOffset < 0
+      ) {
+        throw new Error("invalid demo timeline cursor");
+      }
+      offset = cursorOffset as number;
+    } catch {
+      throw new Error("invalid demo invocation timeline cursor");
+    }
+  }
+  const page = candidates.slice(offset, offset + pageSize);
+  const hasMore = offset + page.length < candidates.length;
   return {
     rangeStart: new Date(rangeStart).toISOString(),
     rangeEnd: new Date(rangeEnd).toISOString(),
-    asOf: demoNow(),
+    asOf,
     total: candidates.length,
-    overLimit,
-    records: overLimit
-      ? []
-      : candidates.map((record) => {
-          const isInFlight = record.status === "running";
-          return {
-            id: record.id,
-            invokeId: record.invokeId,
-            occurredAt: record.occurredAt,
-            endAt:
-              !isInFlight && record.tTotalMs != null
-                ? new Date(
-                    Date.parse(record.occurredAt) + Math.max(0, record.tTotalMs),
-                  ).toISOString()
-                : null,
-            isInFlight,
-            status: record.status,
-            livePhase: record.livePhase,
-            firstTokenMs: record.firstTokenMs,
-            tTotalMs: record.tTotalMs,
-            poolAttemptCount: record.poolAttemptCount,
-            upstreamAccountId: record.upstreamAccountId,
-            upstreamAccountName: record.upstreamAccountName,
-            failureClass: record.failureClass,
-          };
-        }),
+    hasMore,
+    nextCursor: hasMore ? btoa(JSON.stringify({ asOf, offset: offset + page.length })) : null,
+    records: page.map((record) => {
+      const isInFlight = record.status === "running";
+      return {
+        id: record.id,
+        invokeId: record.invokeId,
+        occurredAt: record.occurredAt,
+        endAt:
+          !isInFlight && record.tTotalMs != null
+            ? new Date(Date.parse(record.occurredAt) + Math.max(0, record.tTotalMs)).toISOString()
+            : null,
+        isInFlight,
+        status: record.status,
+        livePhase: record.livePhase,
+        firstTokenMs: record.firstTokenMs,
+        tTotalMs: record.tTotalMs,
+        poolAttemptCount: record.poolAttemptCount,
+        upstreamAccountId: record.upstreamAccountId,
+        upstreamAccountName: record.upstreamAccountName,
+        failureClass: record.failureClass,
+      };
+    }),
   };
 }
 

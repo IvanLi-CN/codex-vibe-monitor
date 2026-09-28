@@ -1,7 +1,24 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "../../i18n";
 import type { UsageBreakdown, UsageBreakdownModel } from "../../lib/api";
+import { cn } from "../../lib/utils";
 import { ModelIdentity } from "../shared/ModelIdentity";
-import { formatReasoningEffort } from "../shared/reasoningEffort";
+import {
+  ModelBreakdownMetricHeader,
+  ModelBreakdownMetricSortButton,
+  ModelBreakdownModelHeader,
+  ModelBreakdownModelSortButton,
+  ModelBreakdownModeToggle,
+} from "./DashboardModelBreakdownControls";
+import type { DashboardModelBreakdownSort } from "./dashboardModelBreakdown";
+import {
+  groupUsageBreakdownModels,
+  sortForMode,
+  sortUsageBreakdownModels,
+  useDashboardModelBreakdownMode,
+  useDashboardModelBreakdownSort,
+} from "./dashboardModelBreakdown";
+import { ModelPerformanceModelIdentity } from "./ModelPerformanceModelIdentity";
 
 type UsageCostBreakdown = NonNullable<UsageBreakdown["costs"]>;
 
@@ -31,6 +48,7 @@ type UsageBreakdownItem = Pick<
 interface BreakdownTableRow {
   key: string;
   label: ReactNode;
+  compactLabel?: ReactNode;
   values: BreakdownTableValue[];
 }
 
@@ -39,9 +57,9 @@ interface BreakdownTableValue {
   content: ReactNode;
 }
 
-interface BreakdownTableColumn {
-  label: string;
-}
+type BreakdownTableColumn =
+  | { key: "cache-hit-rate" | "total"; label: string; sortable: true }
+  | { key: "cache-write" | "cache-read" | "output"; label: string; sortable: false };
 
 function modelLabel(model: string, unknownModel: string) {
   return model === "unknown" ? unknownModel : model;
@@ -51,24 +69,58 @@ function groupKey(model: UsageBreakdownModel) {
   return `${model.model}\u0000${model.reasoningEffort?.trim() ?? ""}`;
 }
 
-function groupLabel(model: UsageBreakdownModel, labels: UsageBreakdownTooltipProps["labels"]) {
+function groupLabel(
+  model: UsageBreakdownModel,
+  labels: UsageBreakdownTooltipProps["labels"],
+  detailed: boolean,
+  compact = false,
+) {
   const modelName = modelLabel(model.model, labels.unknownModel);
-  const effort = formatReasoningEffort(model.reasoningEffort);
+
+  if (detailed) {
+    return (
+      <ModelPerformanceModelIdentity
+        model={modelName}
+        effortValue={model.reasoningEffort}
+        className="max-w-full"
+        modelClassName="text-[12px] leading-4"
+      />
+    );
+  }
+
   return (
     <span className="flex min-w-0 flex-col gap-0.5">
       {model.model === "unknown" ? (
-        <span className="break-all font-normal text-base-content/80">{modelName}</span>
+        <span
+          className={cn(
+            "truncate font-normal text-base-content/80",
+            compact && "text-[12px] leading-4",
+          )}
+        >
+          {modelName}
+        </span>
       ) : (
-        <ModelIdentity
-          model={modelName}
-          className="max-w-full justify-start"
-          textClassName="break-all font-normal text-base-content/80"
-          iconClassName="h-4 w-4"
-        />
+        <span
+          className={cn("flex min-w-0 max-w-full items-center gap-1.5", compact && "gap-1")}
+          title={modelName}
+        >
+          <span aria-hidden="true">
+            <ModelIdentity
+              model={modelName}
+              className={compact ? "h-4 w-4" : "h-5 w-5"}
+              iconClassName={compact ? "h-3.5 w-3.5" : "h-4 w-4"}
+            />
+          </span>
+          <span
+            className={cn(
+              "min-w-0 truncate font-mono font-normal text-base-content/80",
+              compact && "text-[12px] leading-4",
+            )}
+          >
+            {modelName}
+          </span>
+        </span>
       )}
-      <span className="break-words text-[8px] font-normal leading-3 text-base-content/58 sm:text-[10px]">
-        {labels.reasoningEffort}: {effort}
-      </span>
     </span>
   );
 }
@@ -78,59 +130,156 @@ function BreakdownTable({
   columns,
   rows,
   modelLabel: modelColumnLabel,
+  sort,
+  onSort,
+  simple,
 }: {
   title: string;
   columns: readonly BreakdownTableColumn[];
   rows: readonly BreakdownTableRow[];
   modelLabel: string;
+  sort: DashboardModelBreakdownSort;
+  onSort: (nextSort: DashboardModelBreakdownSort) => void;
+  simple: boolean;
 }) {
   return (
-    <table className="w-full table-fixed border-collapse text-[8px] leading-3 sm:text-[10px] sm:leading-4">
-      <caption className="sr-only">{title}</caption>
-      <thead className="border-y border-base-300/50 bg-base-200/45 text-[8px] font-semibold text-base-content/58 sm:text-[9px]">
-        <tr>
-          <th scope="col" className="w-[38%] px-1.5 py-1.5 text-left font-semibold sm:w-[30%]">
-            {modelColumnLabel}
-          </th>
-          {columns.map((column) => (
-            <th
-              key={column.label}
-              scope="col"
-              className="border-l border-base-300/30 px-0.5 py-1.5 text-right font-semibold break-words"
-            >
-              {column.label}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, rowIndex) => (
-          <tr
-            key={row.key}
-            className={
-              rowIndex === 0
-                ? "border-b border-base-300/50 bg-base-100/45"
-                : "border-b border-base-300/30 last:border-b-0"
-            }
-          >
-            <th
-              scope="row"
-              className="px-1.5 py-1.5 text-left font-normal text-base-content/76 break-all"
-            >
-              {row.label}
-            </th>
-            {row.values.map((value) => (
-              <td
-                key={`${row.key}:${value.key}`}
-                className="border-l border-base-300/30 px-0.5 py-1.5 text-right font-mono font-normal tabular-nums"
-              >
-                {value.content}
-              </td>
+    <>
+      <div
+        className="hidden overflow-x-hidden desktop:block"
+        data-testid="usage-breakdown-table-scroll-region"
+      >
+        <table className="w-full table-fixed border-collapse text-[12px] leading-4">
+          <caption className="sr-only">{title}</caption>
+          <colgroup>
+            <col className="w-[32%]" />
+            {columns.map((column) => (
+              <col key={column.key} className="w-[13.6%]" />
             ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+          </colgroup>
+          <thead className="border-y border-base-300/50 bg-base-200/45 text-[12px] font-semibold text-base-content/58">
+            <tr>
+              <ModelBreakdownModelHeader
+                label={modelColumnLabel}
+                sort={sort}
+                onSort={onSort}
+                simple={simple}
+                className="px-1 py-1.5 text-[12px] leading-4"
+              />
+              {columns.map((column) =>
+                column.sortable ? (
+                  <ModelBreakdownMetricHeader
+                    key={column.key}
+                    label={column.label}
+                    column={column.key}
+                    sort={sort}
+                    onSort={onSort}
+                    className="px-1 py-1.5 text-[12px] leading-4"
+                  />
+                ) : (
+                  <th
+                    key={column.key}
+                    scope="col"
+                    className="min-w-0 border-l border-base-300/30 whitespace-nowrap px-1 py-1.5 text-right font-semibold"
+                  >
+                    {column.label}
+                  </th>
+                ),
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, rowIndex) => (
+              <tr
+                key={row.key}
+                className={
+                  rowIndex === 0
+                    ? "border-b border-base-300/50 bg-base-100/45"
+                    : "border-b border-base-300/30 last:border-b-0"
+                }
+              >
+                <th
+                  scope="row"
+                  className="min-w-0 max-w-full overflow-hidden px-2 py-1 text-left font-normal text-base-content/76 whitespace-nowrap"
+                >
+                  {row.label}
+                </th>
+                {row.values.map((value) => (
+                  <td
+                    key={`${row.key}:${value.key}`}
+                    className="min-w-0 border-l border-base-300/30 px-1 py-1 text-right font-mono font-normal tabular-nums whitespace-nowrap"
+                  >
+                    {value.content}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="min-w-0 max-w-full desktop:hidden" data-testid="usage-breakdown-mobile-list">
+        <div
+          className="border-y border-base-300/50 bg-base-200/45 px-2 py-1.5"
+          data-testid="usage-breakdown-mobile-controls"
+        >
+          <div
+            className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1"
+            data-testid="usage-breakdown-mobile-sort-row"
+          >
+            <ModelBreakdownModelSortButton
+              label={modelColumnLabel}
+              sort={sort}
+              onSort={onSort}
+              simple={simple}
+              className="min-w-0 flex-1 text-[12px] font-semibold text-base-content/58"
+            />
+            <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+              {columns.map((column) =>
+                column.sortable ? (
+                  <ModelBreakdownMetricSortButton
+                    key={column.key}
+                    label={column.label}
+                    column={column.key}
+                    sort={sort}
+                    onSort={onSort}
+                    className="text-[12px] font-semibold text-base-content/58"
+                  />
+                ) : null,
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="divide-y divide-base-300/35">
+          {rows.map((row, rowIndex) => (
+            <section
+              key={row.key}
+              className={rowIndex === 0 ? "bg-base-100/45 px-2 py-1.5" : "px-2 py-1.5"}
+            >
+              <div className="min-w-0 max-w-full text-left font-normal text-[12px] leading-4 text-base-content/76">
+                {row.compactLabel ?? row.label}
+              </div>
+              <dl className="mt-1 grid min-w-0 grid-cols-3 gap-x-2 gap-y-1.5">
+                {columns.map((column) => {
+                  const value = row.values.find((item) => item.key === column.key);
+                  return (
+                    <div
+                      key={`${row.key}:${column.key}`}
+                      className="min-w-0 border-t border-base-300/30 pt-1"
+                    >
+                      <dt className="min-w-0 truncate text-[12px] leading-4 text-base-content/58">
+                        {column.label}
+                      </dt>
+                      <dd className="mt-0 min-w-0 text-right font-mono text-[12px] leading-4 font-normal tabular-nums">
+                        {value?.content ?? "—"}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            </section>
+          ))}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -232,17 +381,31 @@ function UsageBreakdownTable({
   formatRatio,
   formatCurrency,
   labels,
-}: UsageBreakdownTooltipProps & { models: UsageBreakdown["models"] }) {
+  sort,
+  onSort,
+  simple,
+}: UsageBreakdownTooltipProps & {
+  models: UsageBreakdown["models"];
+  sort: DashboardModelBreakdownSort;
+  onSort: (nextSort: DashboardModelBreakdownSort) => void;
+  simple: boolean;
+}) {
   const columns = [
-    { label: labels.cacheWrite },
-    { label: labels.cacheRead },
-    { label: labels.cacheHitRate },
-    { label: labels.output },
-    { label: labels.total },
+    { key: "cache-write" as const, label: labels.cacheWrite, sortable: false as const },
+    { key: "cache-read" as const, label: labels.cacheRead, sortable: false as const },
+    { key: "cache-hit-rate" as const, label: labels.cacheHitRate, sortable: true as const },
+    { key: "output" as const, label: labels.output, sortable: false as const },
+    { key: "total" as const, label: labels.total, sortable: true as const },
   ];
-  const rowFor = (key: string, label: ReactNode, item: UsageBreakdownItem): BreakdownTableRow => ({
+  const rowFor = (
+    key: string,
+    label: ReactNode,
+    item: UsageBreakdownItem,
+    compactLabel: ReactNode = label,
+  ): BreakdownTableRow => ({
     key,
     label,
+    compactLabel,
     values: [
       {
         key: "cache-write",
@@ -300,9 +463,19 @@ function UsageBreakdownTable({
       title={title}
       modelLabel={labels.model}
       columns={columns}
+      sort={sort}
+      onSort={onSort}
+      simple={simple}
       rows={[
         rowFor("total", labels.total, breakdown),
-        ...models.map((model) => rowFor(groupKey(model), groupLabel(model, labels), model)),
+        ...models.map((model) =>
+          rowFor(
+            groupKey(model),
+            groupLabel(model, labels, !simple),
+            model,
+            groupLabel(model, labels, !simple, true),
+          ),
+        ),
       ]}
     />
   );
@@ -316,28 +489,35 @@ export function UsageBreakdownTooltip({
   formatCurrency,
   labels,
 }: UsageBreakdownTooltipProps) {
-  const models = [...breakdown.models]
-    .filter(
+  const { locale } = useTranslation();
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const [mode] = useDashboardModelBreakdownMode();
+  const [sort, setSort] = useDashboardModelBreakdownSort("usage-breakdown");
+  const effectiveSort = sortForMode(sort, mode);
+  const groupedModels =
+    mode === "simple" ? groupUsageBreakdownModels(breakdown.models) : breakdown.models;
+  const models = sortUsageBreakdownModels(
+    groupedModels.filter(
       (model) =>
         model.costs != null ||
         model.cacheWriteTokens > 0 ||
         model.cacheReadTokens > 0 ||
         model.outputTokens > 0,
-    )
-    .sort((left, right) => {
-      const tokenDifference = totalTokens(right) - totalTokens(left);
-      const costDifference = (totalCost(right.costs) ?? 0) - (totalCost(left.costs) ?? 0);
-      return (
-        tokenDifference ||
-        costDifference ||
-        left.model.localeCompare(right.model) ||
-        groupKey(left).localeCompare(groupKey(right))
-      );
-    });
+    ),
+    effectiveSort,
+    localeTag,
+  );
 
   return (
-    <div data-testid="usage-breakdown-tooltip" className="space-y-1.5">
-      <div className="px-0.5 text-[11px] font-semibold leading-4 text-base-content/72">{title}</div>
+    <div data-testid="usage-breakdown-tooltip" className="min-w-0 max-w-full space-y-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
+        <div className="min-w-0 text-[12px] font-semibold leading-4 text-base-content/72">
+          {title}
+        </div>
+        <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+          <ModelBreakdownModeToggle />
+        </div>
+      </div>
       <UsageBreakdownTable
         title={title}
         breakdown={breakdown}
@@ -346,6 +526,9 @@ export function UsageBreakdownTooltip({
         formatRatio={formatRatio}
         formatCurrency={formatCurrency}
         labels={labels}
+        sort={effectiveSort}
+        onSort={setSort}
+        simple={mode === "simple"}
       />
     </div>
   );

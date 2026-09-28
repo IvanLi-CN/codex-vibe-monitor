@@ -13983,7 +13983,6 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register working conversation owner");
-
         let health = crate::load_runtime_pressure_health(state.as_ref()).await;
         assert_eq!(health.prompt_cache_projection.live_path_db_read_count, 1);
         assert_eq!(health.prompt_cache_projection.recovery_state, "hot_db_read");
@@ -14014,7 +14013,6 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register working conversation owner");
-
         let health = crate::load_runtime_pressure_health(state.as_ref()).await;
         assert_eq!(health.prompt_cache_projection.live_path_db_read_count, 0);
         assert_eq!(
@@ -14030,7 +14028,6 @@ mod tests {
         assert_eq!(health.state, "deferred");
         drop(lease);
     }
-
     #[tokio::test]
     async fn repeated_runtime_gaps_dedupe_bounded_recovery_jobs() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14055,12 +14052,10 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register history owner");
-
         hub.mark_runtime_mutation_gap_and_recover(state.clone(), 2, "cursor_gap")
             .await;
         hub.mark_runtime_mutation_gap_and_recover(state.clone(), 3, "receiver_lagged")
             .await;
-
         let mut guard = hub.state.lock().await;
         assert_eq!(guard.runtime_topic_recovery_queue.len(), 1);
         assert_eq!(
@@ -14081,7 +14076,6 @@ mod tests {
         drop(guard);
         drop(lease);
     }
-
     #[tokio::test]
     async fn inactive_owner_skips_cold_prompt_cache_hydration() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14094,9 +14088,7 @@ mod tests {
             detail_level: PromptCacheConversationDetailLevel::Full,
             recent_invocation_limit: Some(16),
         };
-
         state.pool.close().await;
-
         assert!(
             hub.refresh_topic_if_active(state, topic, true)
                 .await
@@ -14104,7 +14096,6 @@ mod tests {
                 .is_none()
         );
     }
-
     #[tokio::test]
     async fn active_owner_without_cached_topic_commits_guarded_refresh() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14120,20 +14111,17 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register history owner");
-
         let cached = hub
             .refresh_topic_if_active(state, topic, true)
             .await
             .expect("active owner can cold build")
             .expect("guarded refresh commits when no generation changed");
-
         assert_eq!(
             cached.topic.cache_key().expect("cached topic key"),
             topic_key
         );
         drop(lease);
     }
-
     #[tokio::test]
     async fn unrelated_topic_disconnect_does_not_block_active_refresh() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14174,7 +14162,6 @@ mod tests {
             false,
         )
         .await;
-
         assert!(
             hub.refresh_topic_if_active(state, active_topic, true)
                 .await
@@ -14184,7 +14171,6 @@ mod tests {
         drop(released_lease);
         drop(active_lease);
     }
-
     #[tokio::test]
     async fn dirty_last_good_reconnect_skips_synchronous_cold_hydration() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14210,12 +14196,10 @@ mod tests {
             .await
             .expect("register history owner");
         state.pool.close().await;
-
         let prepared = hub
             .prepare_connection(state, vec![topic.descriptor()], Vec::new())
             .await
             .expect("reconnect must serve last-good without a database read");
-
         assert_eq!(prepared.initial.len(), 1);
         let guard = hub.state.lock().await;
         assert!(
@@ -14229,7 +14213,6 @@ mod tests {
         drop(guard);
         drop(lease);
     }
-
     #[tokio::test]
     async fn runtime_recovery_retry_cooldown_defers_dirty_topic_requeue() {
         let hub = Arc::new(SubscriptionHub::new());
@@ -14247,12 +14230,10 @@ mod tests {
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
             .expect("register history owner");
-
         assert_eq!(
             hub.defer_runtime_topic_recovery_retry(&topic).await,
             RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF
         );
-
         let mut guard = hub.state.lock().await;
         assert!(
             guard
@@ -14918,7 +14899,6 @@ mod tests {
         );
         assert_eq!(journal.overflowed_through_sequence, Some(3));
     }
-
     #[test]
     fn summary_delta_source_cursor_gap_does_not_advance_terminal_cursor() {
         let mut journal = SummaryDeltaJournal::default();
@@ -14933,7 +14913,6 @@ mod tests {
         assert_eq!(proof.cursor, SummaryDeltaCursor(99));
         assert_eq!(proof.terminal_sequence, None);
     }
-
     #[tokio::test]
     async fn summary_projection_ack_after_absorbing_swap_is_idempotent() {
         let state = crate::tests::test_state_with_openai_base(
@@ -14966,7 +14945,6 @@ mod tests {
         assert_eq!(journal.replayed_entries.len(), 1);
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_projection_replayed_identity_after_restart_is_idempotent() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15000,7 +14978,6 @@ mod tests {
         assert!(journal.replayed_entries.is_empty());
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_projection_replayed_identity_then_ack_is_not_duplicated() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15029,7 +15006,6 @@ mod tests {
         assert_eq!(journal.entries.len(), 1);
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_projection_conflicting_row_identity_remains_fail_closed() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15059,7 +15035,6 @@ mod tests {
             Some(9_100_003)
         );
     }
-
     #[tokio::test]
     async fn summary_delta_journal_rollback_removes_speculative_entry() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15077,7 +15052,6 @@ mod tests {
             .terminal_delta
             .expect("accept speculative terminal delta");
         speculative.terminal_sequence = 1;
-
         let mut journal = SummaryDeltaJournal::default();
         assert!(journal.register_pending(speculative.clone()));
         assert!(journal.entries.is_empty());
@@ -15086,7 +15060,6 @@ mod tests {
         assert!(journal.entries.is_empty());
         assert_eq!(journal.cursor, SummaryDeltaCursor(1));
         assert!(journal.gap_proofs.is_empty());
-
         let mut committed = speculative;
         committed.invoke_id = "summary-delta-after-rollback".to_string();
         committed.terminal_sequence = 2;
@@ -15100,7 +15073,6 @@ mod tests {
         );
         assert!(journal.gap_proofs.is_empty());
     }
-
     #[tokio::test]
     async fn summary_delta_journal_capacity_overflow_retains_local_proof() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15118,7 +15090,6 @@ mod tests {
             .await
             .terminal_delta
             .expect("accept terminal delta template");
-
         let mut journal = SummaryDeltaJournal::default();
         for sequence in 1..=SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 {
             let mut delta = template.clone();
@@ -15145,7 +15116,6 @@ mod tests {
         assert_eq!(proof.upstream_account_id, Some(42));
         assert!(!proof.occurred_at.is_empty());
     }
-
     #[tokio::test]
     async fn summary_delta_journal_proof_budget_retains_broad_fail_closed_guard() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15180,7 +15150,6 @@ mod tests {
         assert!(proof.occurred_at.is_empty());
         assert_eq!(proof.upstream_account_id, None);
     }
-
     #[tokio::test]
     async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
         let state = crate::tests::test_state_with_openai_base(
@@ -15210,7 +15179,6 @@ mod tests {
                 .proxy_runtime_invocations
                 .complete_dashboard_publish_window(consumed);
         }
-
         let descriptors = dashboard_runtime_topology_descriptors();
         let topics = descriptors
             .iter()
@@ -15283,7 +15251,6 @@ mod tests {
             );
         }
         spawn_subscription_broadcast_listener(state.clone());
-
         let process_started_epoch_second = state
             .dashboard_network_speed_cache
             .process_started_at_utc()
@@ -15319,6 +15286,31 @@ mod tests {
                 },
             )
             .await;
+        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            upstream_account_id: None,
+        };
+        let parallel_base = {
+            let guard = state.subscription_hub.state.lock().await;
+            let key = parallel_topic.cache_key().expect("parallel-work topic key");
+            match guard.topics[&key].dashboard_materializer.as_ref() {
+                Some(DashboardTopicMaterializer::ParallelWork { base }) => base.clone(),
+                _ => panic!("expected parallel-work materializer"),
+            }
+        };
+        {
+            let mut parallel_base = parallel_base
+                .lock()
+                .expect("parallel-work materializer state lock");
+            parallel_base.response.current.range_start =
+                format_utc_iso(Utc::now() - ChronoDuration::minutes(2));
+            assert!(
+                parallel_base.requires_rolling_rebase(),
+                "parallel materializer fixture must cross the rolling rebase boundary",
+            );
+        }
         let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
         terminal.id = 748_003;
         terminal.invoke_id = "dashboard-runtime-topology-terminal".to_string();
@@ -15352,6 +15344,27 @@ mod tests {
                 deltas: terminal_capture.deltas,
             })
             .await;
+        // Match the production boundary rebase before applying later live mutations.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            state
+                .subscription_hub
+                .reconcile_dashboard_terminal_window_bases(state.clone()),
+        )
+        .await
+        .expect("dashboard terminal window rebase timed out");
+        let guard = state.subscription_hub.state.lock().await;
+        let parallel_cached =
+            &guard.topics[&parallel_topic.cache_key().expect("parallel-work topic key")];
+        assert!(
+            !guard.topics.values().any(|cached| cached.dirty)
+                && parallel_cached
+                    .dashboard_materializer
+                    .as_ref()
+                    .is_some_and(|materializer| !materializer.requires_terminal_window_rebase()),
+            "terminal rebase must clear dirty bases and refresh the parallel materializer",
+        );
+        drop(guard);
         state.dashboard_network_speed_cache.record_request_bytes(
             "dashboard-runtime-topology-network",
             &occurred_at,
@@ -15377,8 +15390,6 @@ mod tests {
         let mut fallback = terminal.clone();
         fallback.id = 748_004;
         fallback.invoke_id = "dashboard-runtime-topology-fallback".to_string();
-        // Parallel-work only reports completed buckets, so place the live mutation in the
-        // previous minute while still applying it after both subscriptions are established.
         fallback.occurred_at = format_naive(
             (Utc::now() - ChronoDuration::minutes(1))
                 .with_timezone(&Shanghai)
@@ -15465,12 +15476,6 @@ mod tests {
             .subscription_hub
             .handle_runtime_mutation_batch(state.clone(), parallel_work_mutations)
             .await;
-        let parallel_topic = SubscriptionTopic::ParallelWorkCurrent {
-            range: "1d".to_string(),
-            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
-            bucket: Some("1m".to_string()),
-            upstream_account_id: None,
-        };
         let exact_parallel = load_parallel_work_stats_response(
             &state,
             ParallelWorkStatsQuery {
@@ -15495,9 +15500,6 @@ mod tests {
             .iter()
             .find(|point| point.bucket_start == fallback_bucket_start)
             .expect("exact fallback point");
-        // The full lightweight profile can schedule this materializer behind other test
-        // processes. Keep the assertion bounded while allowing the documented async projection
-        // debounce and serialization work to complete under shared CI load.
         let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let projected_parallel = loop {
             let projected_parallel = {
@@ -15698,7 +15700,6 @@ mod tests {
                 .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
             "terminal topic {topic} must reuse one frame across two SSE owners",
         );
-
         let projection = state
             .proxy_runtime_invocations
             .dashboard_topology_counters();
@@ -15719,7 +15720,6 @@ mod tests {
             0,
             "active Dashboard producer must remain on the in-memory live path",
         );
-
         let delivery = state.subscription_hub.dashboard_topology_counters();
         for topic in [
             delivery.activity,
@@ -15966,7 +15966,6 @@ mod tests {
         assert_eq!(state.response.current.active_minute_count, Some(4));
         assert_eq!(state.response.current.avg_count, Some(3.0));
     }
-
     #[test]
     fn parallel_work_projection_promotes_closed_runtime_minutes_on_next_overlay() {
         let minute_start = Utc
@@ -15994,7 +15993,6 @@ mod tests {
             window.active_minute_count = Some(4);
             window.avg_count = Some(3.0);
         }
-
         let first = RuntimeInvocationMutation {
             identity: RuntimeInvocationIdentity::new(
                 "completed-minute-invoke",
@@ -16009,7 +16007,6 @@ mod tests {
         };
         assert!(state.apply_runtime_overlay_at(&first, minute_start + ChronoDuration::seconds(30)));
         assert_eq!(state.active_minute_stats, active_minute_stats);
-
         let next_minute = RuntimeInvocationMutation {
             identity: RuntimeInvocationIdentity::new(
                 "next-minute-invoke",
@@ -16035,13 +16032,20 @@ mod tests {
         );
         assert_eq!(state.response.current.avg_count, Some(2.6));
     }
-
     #[test]
-    fn parallel_work_projection_promotes_persisted_current_minute_after_boundary() {
+    fn parallel_work_projection_promotes_persisted_current_minute_at_utc_boundary() {
         let minute_start = Utc
-            .timestamp_opt(1_700_000_000, 0)
+            .timestamp_opt(1_700_000_040, 0)
             .single()
             .expect("construct minute start");
+        let rebase = |seconds| {
+            rolling_dashboard_window_requires_rebase(
+                Some(minute_start),
+                Some(minute_start + ChronoDuration::seconds(seconds)),
+            )
+        };
+        assert!(!rebase(59));
+        assert!(rebase(60));
         let mut state = parallel_work_materializer_state(
             "1d",
             minute_start - ChronoDuration::minutes(2),
@@ -16069,7 +16073,6 @@ mod tests {
             window.active_minute_count = Some(4);
             window.avg_count = Some(3.0);
         }
-
         let next_minute = RuntimeInvocationMutation {
             identity: RuntimeInvocationIdentity::new(
                 "next-minute-invoke",
@@ -16095,7 +16098,6 @@ mod tests {
         );
         assert_eq!(state.response.current.avg_count, Some(2.6));
     }
-
     #[test]
     fn parallel_work_projection_skips_rows_already_in_its_cold_baseline() {
         let occurred_at = Utc::now() - ChronoDuration::seconds(30);
@@ -16112,11 +16114,9 @@ mod tests {
             sticky_key: None,
             upstream_account_id: None,
         });
-
         assert!(!outcome.changed);
         assert_eq!(state.response.current.conversations[0].request_count, 1);
     }
-
     #[test]
     fn parallel_work_projection_requires_typed_reconcile_for_unknown_account_fallback() {
         let occurred_at = Utc::now() - ChronoDuration::seconds(30);

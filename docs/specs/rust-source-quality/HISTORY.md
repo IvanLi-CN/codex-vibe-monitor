@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 49 large-file entries explicit.
+  its 45 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -196,3 +196,115 @@ Validation for this extraction is the focused
 `cargo test error_distribution_and_sse::tests -- --nocapture` selector,
 rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
 checking, all-target Clippy, and `git diff --check`.
+
+The group note CRUD extraction moves the complete contiguous handler region from
+physical lines 2,043 through 2,501 of
+`src/upstream_accounts/crud_group_notes.rs` into
+`src/upstream_accounts/crud_group_notes/group_notes.rs`. The region contains
+`update_upstream_account_group` and `delete_upstream_account_group`; the parent
+re-exports both handlers with their existing crate-visible paths. After rustfmt,
+the parent is 2,261 physical lines and the child is 460 physical lines, both
+below the 2,500-line production target. The current inventory is 25 production
+and 21 test/helper candidates (46 entries total), while the immutable
+preparation baseline remains 32 and 23 and the suppression baseline remains
+117. SQL, validation, response behavior, tests, and runtime behavior remain
+unchanged.
+
+Validation for this extraction is the focused group-update tests, rustfmt, the
+Rust source-quality checker and fixture harness, all-target Cargo checking,
+all-target Clippy, and `git diff --check`.
+
+The proxy metadata backfill extraction moves the complete contiguous region from
+the leading `#[cfg(test)]` attribute for `backfill_proxy_missing_costs` through
+`backfill_proxy_reasoning_efforts` in `src/proxy/payload_utils.rs` into
+`src/proxy/payload_utils/backfill_metadata.rs`. On the verified main baseline
+`61c8b2e0b0ec8ddd1f295d03d89aba1e05f14f6a`, the moved region is physical lines
+3 through 513 inclusive (511 lines). It contains cost backfill and retry
+helpers plus prompt-cache-key, requested-service-tier, and reasoning-effort
+backfills and their test-only items. After rustfmt, the parent is 2,427 lines
+and the child is 513 lines, both below the 2,500-line production target, so the
+parent is removed from the policy inventory. The parent retains `use super::*`,
+the child module declaration, and a crate-visible re-export; names, signatures,
+conditional compilation, SQL, timing, tests, and runtime behavior remain
+unchanged. The suppression inventory remains at 117 entries, with the moved
+allow recorded under the child path. The current inventory is 25 production and
+21 test/helper candidates (46 entries total), while the immutable preparation
+remains 32 and 23 and the suppression baseline remains 117.
+
+Validation for this extraction is the focused existing proxy cost/backfill and
+prompt-cache stateful SQLite tests, the stateful SQLite backend profile,
+rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo
+checking, all-target Clippy, and `git diff --check`.
+
+The upstream route-binding penalty and live-candidate evaluation extraction
+moves the complete contiguous region from physical lines 390 through 819
+inclusive (430 moved lines) of
+`src/upstream_accounts/routing/selection.rs` into
+`src/upstream_accounts/routing/selection/live_candidate.rs`, on the verified
+main merge base `c94f1f0a0f6ee51e0c442a6007d431c53ee7f151`. The parent retains
+`LivePoolCandidateEvaluation`, scoring helpers, and resolver logic. After
+rustfmt, the parent is 2,449 physical lines and the child is 432 physical
+lines, both below the 2,500-line production target, so the parent is removed
+from the quality policy inventory. The parent and routing module re-exports
+preserve existing crate-visible call paths; function signatures, visibility,
+SQL, routing behavior, and test semantics remain unchanged. The current
+inventory is 24 production and 21 test/helper candidates (45 entries total),
+while the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 117.
+
+Validation for this extraction is the focused route-binding penalty and
+candidate-resolution tests, rustfmt, the Rust source-quality checker and
+fixture harness, all-target Cargo checking, all-target Clippy, and the
+stateful SQLite backend profile.
+
+The routing OAuth route cases move as one contiguous five-test block from
+physical lines 2,374 through 3,025 of
+`src/tests/stateful_sqlite/routing_timeout_and_overload_failover.rs` into
+`src/tests/stateful_sqlite/routing_timeout_and_overload_failover/oauth_route_cases.rs`.
+The nested module remains under the stateful SQLite test prefix. After rustfmt,
+the parent is 2,487 physical lines and the child is 653 lines, both below the
+3,000-line test/helper target. The parent is removed from the policy inventory.
+The current inventory is 24 production and 20 test/helper candidates (44 total),
+while the immutable preparation baseline remains 32 and 23 and the suppression
+baseline remains 117. Test names, assertions, fixtures, timing, and behavior
+remain unchanged.
+
+The system raw-payload metrics inventory/circuit lifecycle moves as one
+contiguous 630-line block from physical lines 1,049 through 1,678 of
+`src/api/slices/system_routes_and_tasks.rs` into
+`src/api/slices/system_routes_and_tasks/raw_payload_inventory.rs`, on verified
+main base `8d0d2d1197f61776807f2e90e022776f6401e39b`. The parent retains
+the preceding filesystem scanner and following status snapshot/task lifecycle.
+After rustfmt, the parent is 2,364 physical lines and the child is 632 lines,
+both below the 2,500-line production target. The parent is removed from the
+policy inventory, leaving 23 production and 20 test/helper candidates (43
+total); the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 117. The crate-visible re-export preserves call
+paths, names, signatures, SQL, timing, logging, cache and circuit behavior.
+
+The pricing catalog/settings extraction moves the complete 17-test block from
+physical lines 24 through 996 of
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs` into
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough/pricing_catalog.rs`
+on verified main base `97ccccc6bd2e0e2f5dac0def8fa59d91203b2f6d`.
+The parent retains the large-stack helper and later model/proxy/routing tests.
+After rustfmt, the parent is 2,424 physical lines and the child is 974 lines,
+both below the 3,000-line test/helper target. The parent is removed from the
+policy inventory, leaving 23 production and 19 test/helper candidates (42
+total); the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 117. Test names, assertions, fixtures, timing,
+and stateful SQLite resource classification remain unchanged.
+
+The provisioning-scope extraction moves the six complete contiguous tests from
+physical lines 768 through 1,400 of
+`src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt.rs`
+into
+`src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt/provisioning_scope.rs`
+on verified main base `81163d7ff2a3b4c00e5a5193d44e08e05ed61b3f`. Both modules
+remain under the stateful SQLite test prefix. The parent is removed from the
+source-quality inventory, reducing the current inventory to 23 production and
+18 test/helper entries (41 total); the immutable preparation baseline remains
+32 and 23 and the suppression baseline remains 117. Test names, bodies,
+assertions, fixtures, timing, and resource classification remain unchanged.
+The parent is 2,919 physical lines and the child is 634 lines, both below the
+3,000-line test/helper target.

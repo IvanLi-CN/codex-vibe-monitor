@@ -87,7 +87,14 @@ describe("demo MSW handlers", () => {
       runtimePressureHealth: {
         state: string;
         dashboardProjection: { livePathDbReadCount: number };
-        rawOrphanSweep: { state: string };
+        rawOrphanSweep: {
+          state: string;
+          removedBytes: number;
+          admissionStage?: string;
+          admissionCause?: string;
+          lastSettledPass: { complete: boolean; removedBytes: number };
+          lastNonzeroRemoval: { removed: number; removedBytes: number };
+        };
       };
     };
     expect(payload.runtimePressureHealth.state).toBe(expectedState);
@@ -95,6 +102,20 @@ describe("demo MSW handlers", () => {
     expect(payload.runtimePressureHealth.rawOrphanSweep.state).toBe(
       expectedState === "deferred" || expectedState === "degraded" ? expectedState : "idle",
     );
+    expect(payload.runtimePressureHealth.rawOrphanSweep.lastSettledPass).toMatchObject({
+      complete: expectedState !== "degraded",
+      removedBytes: expectedState === "degraded" ? 0 : 65_536,
+    });
+    expect(payload.runtimePressureHealth.rawOrphanSweep.lastNonzeroRemoval).toMatchObject({
+      removed: 1,
+      removedBytes: 65_536,
+    });
+    if (expectedState === "deferred") {
+      expect(payload.runtimePressureHealth.rawOrphanSweep).toMatchObject({
+        admissionStage: "background_slot",
+        admissionCause: "background_busy",
+      });
+    }
   });
 
   it("serves deterministic dashboard activity in the shape used by the production normalizer", async () => {
@@ -116,6 +137,13 @@ describe("demo MSW handlers", () => {
             parallelism: number;
           };
           models: Array<{
+            model: string;
+            reasoningEffort: string | null;
+            wallClockUsageDurationMs: number;
+            cumulativeUsageDurationMs: number;
+            parallelism: number;
+          }>;
+          modelGroups: Array<{
             model: string;
             reasoningEffort: string | null;
             wallClockUsageDurationMs: number;
@@ -167,6 +195,22 @@ describe("demo MSW handlers", () => {
         parallelism: expect.any(Number),
       }),
     ]);
+    expect(payload.summary.modelPerformance.modelGroups).toEqual([
+      expect.objectContaining({
+        model: "gpt-5.6-sol",
+        reasoningEffort: null,
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
+      expect.objectContaining({
+        model: "gpt-5.6-terra",
+        reasoningEffort: null,
+        wallClockUsageDurationMs: expect.any(Number),
+        cumulativeUsageDurationMs: expect.any(Number),
+        parallelism: expect.any(Number),
+      }),
+    ]);
   });
 
   it("serves invocation timeline records with account filtering and in-flight state", async () => {
@@ -175,7 +219,8 @@ describe("demo MSW handlers", () => {
     );
     const payload = (await response.json()) as {
       total: number;
-      overLimit: boolean;
+      hasMore: boolean;
+      nextCursor: string | null;
       records: Array<{
         invokeId: string;
         upstreamAccountId: number | null;
@@ -185,7 +230,8 @@ describe("demo MSW handlers", () => {
     };
 
     expect(response.ok).toBe(true);
-    expect(payload.overLimit).toBe(false);
+    expect(payload.hasMore).toBe(false);
+    expect(payload.nextCursor).toBeNull();
     expect(payload.total).toBeGreaterThan(0);
     expect(payload.records.every((record) => record.upstreamAccountId === 101)).toBe(true);
     expect(payload.records).toEqual(

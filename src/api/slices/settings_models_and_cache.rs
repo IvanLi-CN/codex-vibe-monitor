@@ -1281,6 +1281,8 @@ pub(crate) struct RawPayloadMeta {
     pub(crate) size_bytes: i64,
     pub(crate) truncated: bool,
     pub(crate) truncated_reason: Option<String>,
+    #[serde(skip)]
+    pub(crate) write_fence: Option<std::sync::Arc<crate::maintenance::RetentionArchiveFileLock>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2015,6 +2017,8 @@ pub(crate) struct ModelPerformanceResponse {
     pub(crate) available: bool,
     pub(crate) total: ModelPerformanceMetricsResponse,
     pub(crate) models: Vec<ModelPerformanceModelResponse>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) model_groups: Vec<ModelPerformanceModelResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

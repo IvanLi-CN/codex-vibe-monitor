@@ -1106,7 +1106,7 @@ pub(crate) async fn fetch_error_distribution(
                 continue;
             }
             let raw = record.error_message.unwrap_or_default();
-            let key = categorize_error(&raw);
+            let key = categorize_error_with_failure_kind(&raw, record.failure_kind.as_deref());
             *counts.entry(key).or_default() += 1;
         }
         if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
@@ -1142,7 +1142,7 @@ pub(crate) async fn fetch_error_distribution(
                     continue;
                 }
                 let raw = row.error_message.unwrap_or_default();
-                let key = categorize_error(&raw);
+                let key = categorize_error_with_failure_kind(&raw, row.failure_kind.as_deref());
                 *counts.entry(key).or_default() += 1;
             }
         }
@@ -1196,7 +1196,7 @@ pub(crate) async fn fetch_error_distribution(
             continue;
         }
         let raw = r.error_message.unwrap_or_default();
-        let key = categorize_error(&raw);
+        let key = categorize_error_with_failure_kind(&raw, r.failure_kind.as_deref());
         *counts.entry(key).or_insert(0) += 1;
     }
 
@@ -1268,6 +1268,31 @@ pub(crate) fn categorize_error(input: &str) -> String {
         "Other".to_string()
     } else {
         norm
+    }
+}
+
+pub(crate) fn categorize_error_with_failure_kind(
+    input: &str,
+    failure_kind: Option<&str>,
+) -> String {
+    categorize_error(strip_matching_failure_kind_prefix(input, failure_kind))
+}
+
+pub(crate) fn strip_matching_failure_kind_prefix<'a>(
+    input: &'a str,
+    failure_kind: Option<&str>,
+) -> &'a str {
+    let Some(failure_kind) = failure_kind.filter(|kind| !kind.is_empty()) else {
+        return input;
+    };
+    let prefix = format!("[{failure_kind}]");
+    let Some(remainder) = input.strip_prefix(&prefix) else {
+        return input;
+    };
+    if remainder.is_empty() || remainder.chars().next().is_some_and(char::is_whitespace) {
+        remainder.trim_start()
+    } else {
+        input
     }
 }
 

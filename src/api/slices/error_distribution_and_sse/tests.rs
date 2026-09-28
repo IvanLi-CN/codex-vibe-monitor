@@ -1,5 +1,74 @@
 use super::*;
 
+#[test]
+fn failure_kind_prefix_is_removed_only_when_it_matches_exactly() {
+    let input = "[upstream_response_failed] upstream stream error";
+
+    assert_eq!(
+        strip_matching_failure_kind_prefix(input, Some("upstream_response_failed")),
+        "upstream stream error",
+    );
+    assert_eq!(
+        strip_matching_failure_kind_prefix(input, Some("different_failure_kind")),
+        input,
+    );
+    assert_eq!(strip_matching_failure_kind_prefix(input, None), input);
+    assert_eq!(
+        strip_matching_failure_kind_prefix(
+            "upstream stream error",
+            Some("upstream_response_failed")
+        ),
+        "upstream stream error",
+    );
+}
+
+#[test]
+fn failure_kind_prefix_requires_a_boundary_after_the_closing_bracket() {
+    assert_eq!(
+        strip_matching_failure_kind_prefix(
+            "[upstream_response_failed]",
+            Some("upstream_response_failed"),
+        ),
+        "",
+    );
+    assert_eq!(
+        strip_matching_failure_kind_prefix(
+            "[upstream_response_failed]upstream stream error",
+            Some("upstream_response_failed"),
+        ),
+        "[upstream_response_failed]upstream stream error",
+    );
+    assert_eq!(
+        strip_matching_failure_kind_prefix(
+            "[upstream_response_failed] [provider] upstream stream error",
+            Some("upstream_response_failed"),
+        ),
+        "[provider] upstream stream error",
+    );
+}
+
+#[test]
+fn error_reason_categorization_preserves_unmatched_bracketed_text() {
+    assert_eq!(
+        categorize_error_with_failure_kind("[provider] upstream stream error", None),
+        "[provider] upstream stream error",
+    );
+    assert_eq!(
+        categorize_error_with_failure_kind(
+            "[provider] upstream stream error",
+            Some("different_failure_kind"),
+        ),
+        "[provider] upstream stream error",
+    );
+    assert_eq!(
+        categorize_error_with_failure_kind(
+            "[upstream_response_failed] upstream stream error",
+            Some("upstream_response_failed"),
+        ),
+        "upstream stream error",
+    );
+}
+
 fn live_record(
     invoke_id: &str,
     account_id: Option<i64>,

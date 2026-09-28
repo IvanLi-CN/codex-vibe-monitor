@@ -1291,6 +1291,7 @@ async fn persist_proxy_capture_runtime_record_keeps_response_size_when_preview_d
                 size_bytes: 17,
                 truncated: false,
                 truncated_reason: None,
+                write_fence: None,
             },
             timings: StageTimings {
                 t_total_ms: 0.0,
@@ -1366,6 +1367,7 @@ async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_d
                 size_bytes: 17,
                 truncated: false,
                 truncated_reason: None,
+                write_fence: None,
             },
             timings: StageTimings {
                 t_total_ms: 0.0,

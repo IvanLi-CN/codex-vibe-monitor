@@ -4126,6 +4126,7 @@ pub(crate) async fn persist_proxy_capture_runtime_record_tx(
             size_bytes: record.resp_raw.size_bytes,
             truncated: record.resp_raw.truncated,
             truncated_reason: record.resp_raw.truncated_reason.clone(),
+            write_fence: None,
         }
     };
     let failure = resolve_failure_classification(
@@ -4741,6 +4742,7 @@ impl PendingRawPayloadWrite {
                     size_bytes: 0,
                     truncated: true,
                     truncated_reason: Some(format!("write_failed:{err}")),
+                    write_fence: None,
                 },
             },
         }
@@ -4763,6 +4765,7 @@ pub(crate) fn spawn_raw_payload_file_write(
             size_bytes: bytes.len() as i64,
             truncated: false,
             truncated_reason: None,
+            write_fence: None,
         });
     }
     let reservation = match state.raw_capture_circuit.admit(bytes.len() as u64) {
@@ -4794,6 +4797,7 @@ pub(crate) fn spawn_raw_payload_file_write(
                     size_bytes: bytes_for_spool.len() as i64,
                     truncated: true,
                     truncated_reason: Some("capture_unavailable:spool_capacity".to_string()),
+                    write_fence: None,
                 });
             }
         };
@@ -4810,6 +4814,7 @@ pub(crate) fn spawn_raw_payload_file_write(
                     } else {
                         "capture_unavailable:spool_write_failed".to_string()
                     }),
+                    write_fence: None,
                 };
             }
             let meta = spool.finish(bytes_for_spool.len() as i64).await;
@@ -4850,6 +4855,7 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
                 size_bytes: size as i64,
                 truncated: false,
                 truncated_reason: None,
+                write_fence: None,
             })
         }
         PoolReplayBodySnapshot::File { temp_file, size } => {
@@ -4931,6 +4937,7 @@ fn storage_suppressed_raw_payload_meta(size_bytes: i64) -> RawPayloadMeta {
         size_bytes,
         truncated: false,
         truncated_reason: Some("storage_suppressed".to_string()),
+        write_fence: None,
     }
 }
 
@@ -5235,6 +5242,7 @@ impl RawOverflowSpool {
                 size_bytes: observed_size_bytes,
                 truncated: true,
                 truncated_reason: Some("spool_capacity_exceeded".to_string()),
+                write_fence: None,
             };
         }
         if let Err(err) = self.file.flush() {
@@ -5243,6 +5251,7 @@ impl RawOverflowSpool {
                 size_bytes: observed_size_bytes,
                 truncated: true,
                 truncated_reason: Some(format!("spool_write_failed:{err}")),
+                write_fence: None,
             };
         }
         let completion_marker =
@@ -5630,6 +5639,7 @@ async fn replay_raw_overflow_spool_segments(
                 size_bytes: 0,
                 truncated: true,
                 truncated_reason: Some("spool_replay_failed".to_string()),
+                write_fence: None,
             };
         }
     };
@@ -5702,6 +5712,7 @@ async fn replay_raw_overflow_spool_segments(
                     size_bytes: 0,
                     truncated: true,
                     truncated_reason: Some("spool_replay_failed".to_string()),
+                    write_fence: None,
                 };
             }
         };
@@ -5714,6 +5725,7 @@ async fn replay_raw_overflow_spool_segments(
                 size_bytes: 0,
                 truncated: true,
                 truncated_reason: Some("spool_replay_failed".to_string()),
+                write_fence: None,
             };
         }
     }
@@ -5725,6 +5737,7 @@ async fn replay_raw_overflow_spool_segments(
             size_bytes: 0,
             truncated: true,
             truncated_reason: Some("spool_replay_failed".to_string()),
+            write_fence: None,
         },
     };
     if let Some(reservation) = reservation {
@@ -6224,6 +6237,7 @@ impl AsyncStreamingRawPayloadWriter {
                         size_bytes: self.observed_size_bytes,
                         truncated: true,
                         truncated_reason: Some(format!("write_failed:{err}")),
+                        write_fence: None,
                     },
                 },
                 None => RawPayloadMeta::default(),
@@ -6343,6 +6357,16 @@ fn write_direct_streaming_raw_payload_to_file_inner(
 
     let gzip_path = raw_payload_gzip_path(&path);
     let zstd_path = raw_payload_zstd_path(&path);
+    let write_fence = match crate::maintenance::acquire_retention_raw_write_fence(&path) {
+        Ok(write_fence) => write_fence,
+        Err(error) => {
+            return RawPayloadMeta {
+                truncated: true,
+                truncated_reason: Some(format!("write_failed:{error}")),
+                ..RawPayloadMeta::default()
+            };
+        }
+    };
     let mut writer = match codec {
         // Gzip retains the existing hot-plaintext threshold. Zstd intentionally starts at
         // the first byte: it is the current identity-response storage format.
@@ -6453,6 +6477,7 @@ fn write_direct_streaming_raw_payload_to_file_inner(
                         size_bytes: meta.size_bytes,
                         truncated: true,
                         truncated_reason: Some(format!("write_failed:{error}")),
+                        write_fence: None,
                     };
                 }
             };
@@ -6468,6 +6493,7 @@ fn write_direct_streaming_raw_payload_to_file_inner(
         Ok(()) => {
             if let Some(active_path) = active_path {
                 meta.path = Some(active_path.to_string_lossy().to_string());
+                meta.write_fence = Some(write_fence);
             }
         }
         Err(error) => {
@@ -6530,6 +6556,19 @@ async fn write_streaming_raw_payload_to_file_from_receiver(
     let mut meta = RawPayloadMeta::default();
     let gzip_path = raw_payload_gzip_path(&path);
     let zstd_path = raw_payload_zstd_path(&path);
+    let write_fence = match run_blocking_raw_writer_io({
+        let write_path = path.clone();
+        move || crate::maintenance::acquire_retention_raw_write_fence(&write_path)
+    })
+    .await
+    {
+        Ok(write_fence) => write_fence,
+        Err(error) => {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{error}"));
+            return meta;
+        }
+    };
     let mut writer = StreamingRawPayloadWriterState::Buffer(Vec::new());
     let mut written_bytes = 0usize;
     while let Some(bytes) = rx.recv().await {
@@ -6790,6 +6829,8 @@ async fn write_streaming_raw_payload_to_file_from_receiver(
             let _ = fs::remove_file(path);
         }
         meta.path = None;
+    } else if meta.path.is_some() {
+        meta.write_fence = Some(write_fence);
     }
 
     meta

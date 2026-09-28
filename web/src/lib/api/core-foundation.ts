@@ -993,6 +993,7 @@ export interface ModelPerformance {
   available: boolean;
   total: ModelPerformanceMetrics;
   models: ModelPerformanceModel[];
+  modelGroups?: ModelPerformanceModel[];
 }
 
 export interface UpstreamAccountActivityAccount {
@@ -1287,8 +1288,10 @@ export interface InvocationTimelineResponse {
   rangeStart: string;
   rangeEnd: string;
   asOf: string;
+  snapshotAtMs?: number;
   total: number;
-  overLimit: boolean;
+  hasMore: boolean;
+  nextCursor?: string | null;
   records: InvocationTimelineRecord[];
 }
 
@@ -2368,10 +2371,31 @@ export interface RuntimePressureRawOrphanSweepHealth {
   referencedSkipped?: number;
   quarantined?: number;
   removed?: number;
+  removedBytes?: number;
   lastProgressAt?: string;
   nextRetryAt?: string;
   deferReason?: string;
   failureFingerprint?: string;
+  admissionStage?: string;
+  admissionCause?: string;
+  lastSettledPass?: RuntimePressureRawOrphanSweepSettledPass;
+  lastNonzeroRemoval?: RuntimePressureRawOrphanSweepRemoval;
+}
+
+export interface RuntimePressureRawOrphanSweepSettledPass {
+  settledAt?: string;
+  complete?: boolean;
+  inspectedEntries?: number;
+  referencedSkipped?: number;
+  quarantined?: number;
+  removed?: number;
+  removedBytes?: number;
+}
+
+export interface RuntimePressureRawOrphanSweepRemoval {
+  removedAt?: string;
+  removed?: number;
+  removedBytes?: number;
 }
 
 export interface RuntimePressureRawCaptureHealth {
@@ -2757,7 +2781,8 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
   const rangeEnd = payload.rangeEnd;
   const asOf = payload.asOf;
   const total = payload.total;
-  const overLimit = payload.overLimit;
+  const hasMore = payload.hasMore;
+  const nextCursor = payload.nextCursor;
   const records = payload.records;
   if (
     typeof rangeStart !== "string" ||
@@ -2766,15 +2791,17 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
     !Number.isFinite(Date.parse(rangeEnd)) ||
     Date.parse(rangeEnd) <= Date.parse(rangeStart) ||
     typeof asOf !== "string" ||
-    !Number.isFinite(Date.parse(asOf)) ||
+    !asOf.trim() ||
     typeof total !== "number" ||
     !Number.isFinite(total) ||
     total < 0 ||
     !Number.isInteger(total) ||
-    typeof overLimit !== "boolean" ||
+    typeof hasMore !== "boolean" ||
+    (nextCursor != null && typeof nextCursor !== "string") ||
+    (hasMore && (!nextCursor || nextCursor.trim() === "")) ||
+    (!hasMore && nextCursor != null) ||
     !Array.isArray(records) ||
-    (!overLimit && total !== records.length) ||
-    (overLimit && records.length !== 0)
+    records.length > total
   ) {
     throw new Error("Invalid invocation timeline response");
   }
@@ -2783,7 +2810,8 @@ function normalizeInvocationTimelineResponse(raw: unknown): InvocationTimelineRe
     rangeEnd,
     asOf,
     total,
-    overLimit,
+    hasMore,
+    nextCursor: nextCursor == null ? null : nextCursor,
     records: records.map((rawRecord): InvocationTimelineRecord => {
       if (rawRecord == null || typeof rawRecord !== "object" || Array.isArray(rawRecord)) {
         throw new Error("Invalid invocation timeline record");
@@ -4380,27 +4408,33 @@ function normalizeModelPerformanceMetrics(raw: unknown): ModelPerformanceMetrics
 
 function normalizeModelPerformance(raw: unknown): ModelPerformance {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const models = Array.isArray(payload.models)
-    ? payload.models.flatMap((item) => {
-        const modelPayload = item as Record<string, unknown>;
-        const model = typeof modelPayload.model === "string" ? modelPayload.model.trim() : "";
-        if (!model) return [];
-        return [
-          {
-            model,
-            reasoningEffort:
-              typeof modelPayload.reasoningEffort === "string"
-                ? modelPayload.reasoningEffort.trim() || null
-                : null,
-            ...normalizeModelPerformanceMetrics(modelPayload),
-          },
-        ];
-      })
-    : [];
+  const normalizeModels = (value: unknown) =>
+    Array.isArray(value)
+      ? value.flatMap((item) => {
+          const modelPayload = item as Record<string, unknown>;
+          const model = typeof modelPayload.model === "string" ? modelPayload.model.trim() : "";
+          if (!model) return [];
+          return [
+            {
+              model,
+              reasoningEffort:
+                typeof modelPayload.reasoningEffort === "string"
+                  ? modelPayload.reasoningEffort.trim() || null
+                  : null,
+              ...normalizeModelPerformanceMetrics(modelPayload),
+            },
+          ];
+        })
+      : [];
+  const models = normalizeModels(payload.models);
+  const modelGroups = Array.isArray(payload.modelGroups)
+    ? normalizeModels(payload.modelGroups)
+    : models;
   return {
     available: payload.available === true,
     total: normalizeModelPerformanceMetrics(payload.total),
     models,
+    modelGroups,
   };
 }
 
@@ -4685,6 +4719,43 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
     const normalized = normalizeFiniteNumber(value);
     return normalized != null && normalized >= 0 ? Math.trunc(normalized) : undefined;
   };
+  const optionalEnum = (value: unknown, allowed: readonly string[]) =>
+    typeof value === "string" && allowed.includes(value) ? value : undefined;
+  const rawOrphanSweepAdmissionStages = ["background_slot", "maintenance_write"] as const;
+  const rawOrphanSweepAdmissionCauses = [
+    "pressure_cooldown",
+    "background_busy",
+    "coordinator_wait",
+    "shutdown",
+  ] as const;
+  const normalizeSettledPass = (
+    raw: unknown,
+  ): RuntimePressureRawOrphanSweepSettledPass | undefined => {
+    if (raw == null || typeof raw !== "object") {
+      return undefined;
+    }
+    const pass = raw as Record<string, unknown>;
+    return {
+      settledAt: optionalString(pass.settledAt),
+      complete: typeof pass.complete === "boolean" ? pass.complete : undefined,
+      inspectedEntries: optionalCount(pass.inspectedEntries),
+      referencedSkipped: optionalCount(pass.referencedSkipped),
+      quarantined: optionalCount(pass.quarantined),
+      removed: optionalCount(pass.removed),
+      removedBytes: optionalCount(pass.removedBytes),
+    };
+  };
+  const normalizeRemoval = (raw: unknown): RuntimePressureRawOrphanSweepRemoval | undefined => {
+    if (raw == null || typeof raw !== "object") {
+      return undefined;
+    }
+    const removal = raw as Record<string, unknown>;
+    return {
+      removedAt: optionalString(removal.removedAt),
+      removed: optionalCount(removal.removed),
+      removedBytes: optionalCount(removal.removedBytes),
+    };
+  };
   const normalizeSlice = (raw: unknown): RuntimePressureProjectionSliceHealth => {
     const slice = (raw ?? {}) as Record<string, unknown>;
     return {
@@ -4819,6 +4890,7 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       referencedSkipped: optionalCount(rawOrphanSweep?.referencedSkipped),
       quarantined: optionalCount(rawOrphanSweep?.quarantined),
       removed: optionalCount(rawOrphanSweep?.removed),
+      removedBytes: optionalCount(rawOrphanSweep?.removedBytes),
       lastProgressAt: optionalString(rawOrphanSweep?.lastProgressAt),
       nextRetryAt: optionalString(rawOrphanSweep?.nextRetryAt),
       deferReason: optionalString(rawOrphanSweep?.deferReason),
@@ -4827,6 +4899,10 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
         /^[0-9a-f]{16}$/.test(rawOrphanSweep.failureFingerprint)
           ? rawOrphanSweep.failureFingerprint
           : undefined,
+      admissionStage: optionalEnum(rawOrphanSweep?.admissionStage, rawOrphanSweepAdmissionStages),
+      admissionCause: optionalEnum(rawOrphanSweep?.admissionCause, rawOrphanSweepAdmissionCauses),
+      lastSettledPass: normalizeSettledPass(rawOrphanSweep?.lastSettledPass),
+      lastNonzeroRemoval: normalizeRemoval(rawOrphanSweep?.lastNonzeroRemoval),
     },
     rawCapture: {
       state: optionalString(rawCapture?.state) ?? "unknown",
@@ -5595,19 +5671,29 @@ export async function fetchTimeseries(
 }
 
 export async function fetchInvocationTimeline(options: {
+  naturalDayStart?: string;
+  naturalDayEnd?: string;
   from: string;
   to: string;
   upstreamAccountId?: number;
   includeLive?: boolean;
+  limit?: number;
+  cursor?: string;
+  asOf?: string;
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams({ from: options.from, to: options.to });
+  if (options.naturalDayStart) search.set("naturalDayStart", options.naturalDayStart);
+  if (options.naturalDayEnd) search.set("naturalDayEnd", options.naturalDayEnd);
   if (options.upstreamAccountId != null) {
     search.set("upstreamAccountId", String(options.upstreamAccountId));
   }
   if (options.includeLive != null) {
     search.set("includeLive", String(options.includeLive));
   }
+  if (options.limit != null) search.set("limit", String(options.limit));
+  if (options.cursor) search.set("cursor", options.cursor);
+  if (options.asOf) search.set("asOf", options.asOf);
   const response = await fetchJson<unknown>(`/api/stats/invocation-timeline?${search.toString()}`, {
     signal: options.signal,
   });

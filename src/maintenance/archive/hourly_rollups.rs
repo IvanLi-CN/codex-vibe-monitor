@@ -1281,8 +1281,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
                 && classification.failure_class != FailureClass::None
             {
-                let error_category =
-                    categorize_error(row.error_message.as_deref().unwrap_or_default());
+                let error_category = categorize_error_with_failure_kind(
+                    row.error_message.as_deref().unwrap_or_default(),
+                    row.failure_kind.as_deref(),
+                );
                 *failures
                     .entry((
                         bucket_start_epoch,

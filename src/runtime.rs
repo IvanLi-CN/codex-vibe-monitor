@@ -895,6 +895,7 @@ where
     ));
     log_startup_phase("http_ready", http_ready_started_at);
     spawn_system_status_snapshot_maintenance(state.clone());
+    spawn_invocation_timeline_snapshot_maintenance(state.clone());
 
     let startup_backfill_stage =
         run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {

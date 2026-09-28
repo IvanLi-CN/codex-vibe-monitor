@@ -37,7 +37,8 @@ function createTimeline(
     rangeEnd,
     asOf: rangeEnd,
     total: 1,
-    overLimit: false,
+    hasMore: false,
+    nextCursor: null,
     records: [
       {
         id: 1,
@@ -76,15 +77,29 @@ function Probe({
   liveRevision?: number;
   liveRefreshAllowed?: boolean;
 }) {
-  const { data, bounds, setWindow } = useInvocationTimeline({
-    response,
-    closedNaturalDay,
-    liveRevision,
-    liveRefreshAllowed,
-  });
+  const { data, bounds, error, isLoading, isRefreshing, isStale, window, setWindow } =
+    useInvocationTimeline({
+      response,
+      closedNaturalDay,
+      liveRevision,
+      liveRefreshAllowed,
+    });
   return (
     <>
       <output data-testid="invoke-id">{data?.records[0]?.invokeId ?? ""}</output>
+      <output data-testid="record-count">{data?.records.length ?? 0}</output>
+      <output data-testid="record-ids">
+        {data?.records.map((record) => record.invokeId).join(",") ?? ""}
+      </output>
+      <output data-testid="error">{error ?? ""}</output>
+      <output data-testid="loading">{String(isLoading)}</output>
+      <output data-testid="refreshing">{String(isRefreshing)}</output>
+      <output data-testid="stale">{String(isStale)}</output>
+      <output data-testid="window">
+        {window
+          ? `${new Date(window.startMs).toISOString()}|${new Date(window.endMs).toISOString()}`
+          : ""}
+      </output>
       <button
         type="button"
         data-testid="zoom-window"
@@ -186,6 +201,24 @@ describe("useInvocationTimeline", () => {
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("loads the initial snapshot even when live refresh is unavailable", async () => {
+    timelineMocks.fetch.mockResolvedValue(createTimeline("offline-initial"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRefreshAllowed={false} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+    expect(timelineMocks.fetch.mock.calls[0]?.[0]).toMatchObject({
+      naturalDayStart: "2026-07-16T10:00:00.000Z",
+      naturalDayEnd: "2026-07-16T10:30:00.000Z",
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("offline-initial");
+  });
+
   it("aborts and invalidates a request when timeseries bounds disappear", async () => {
     const pending: Array<{
       resolve: (value: InvocationTimelineResponse) => void;
@@ -257,8 +290,149 @@ describe("useInvocationTimeline", () => {
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("coalesces live revisions while one snapshot traversal is in flight", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRevision={1} />);
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} />);
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    pending.shift()?.(createTimeline("revision-1"));
+    await act(async () => {
+      await vi.waitFor(() => expect(timelineMocks.fetch).toHaveBeenCalledTimes(2));
+    });
+    pending.shift()?.(createTimeline("revision-2"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("revision-2");
+  });
+
+  it("does not run a coalesced follow-up while live refresh is frozen", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRevision={1} liveRefreshAllowed />);
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} liveRefreshAllowed />);
+    });
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} liveRefreshAllowed={false} />);
+    });
+    pending.shift()?.(createTimeline("frozen-request"));
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} liveRefreshAllowed />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("traverses immutable pages and folds duplicate logical invocations", async () => {
+    const firstPage = createTimeline("page-one");
+    firstPage.asOf = "snapshot-1";
+    firstPage.hasMore = true;
+    firstPage.nextCursor = "cursor-1";
+    firstPage.total = 2;
+    const secondPage = createTimeline("page-one");
+    secondPage.asOf = "snapshot-1";
+    secondPage.records[0] = {
+      ...secondPage.records[0],
+      id: 2,
+      status: "error",
+    };
+    secondPage.records.push({
+      ...secondPage.records[0],
+      id: 3,
+      invokeId: "page-two",
+      occurredAt: "2026-07-16T10:20:00.000Z",
+    });
+    secondPage.hasMore = false;
+    secondPage.nextCursor = null;
+    timelineMocks.fetch.mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage);
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} closedNaturalDay />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+    expect(timelineMocks.fetch.mock.calls[1]?.[0]).toMatchObject({
+      cursor: "cursor-1",
+      asOf: "snapshot-1",
+    });
+    expect(host?.querySelector("[data-testid=record-count]")?.textContent).toBe("2");
+    expect(host?.querySelector("[data-testid=record-ids]")?.textContent).toBe("page-one,page-two");
+  });
+
+  it("rejects a truncated final snapshot instead of committing incomplete data", async () => {
+    const truncated = createTimeline("only-record");
+    truncated.total = 2;
+    truncated.hasMore = false;
+    timelineMocks.fetch.mockResolvedValue(truncated);
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} closedNaturalDay />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=record-count]")?.textContent).toBe("0");
+    expect(host?.querySelector("[data-testid=error]")?.textContent).toBe(
+      "Invocation timeline snapshot is incomplete",
+    );
+  });
+
+  it("keeps the last successful snapshot when a refresh fails", async () => {
+    timelineMocks.fetch.mockResolvedValueOnce(createTimeline("last-good"));
+    timelineMocks.fetch.mockRejectedValueOnce(new Error("snapshot unavailable"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("last-good");
+
+    act(() => {
+      root?.render(<Probe response={response} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("last-good");
+  });
+
   it("uses one request when the live time bounds advance", async () => {
-    timelineMocks.fetch.mockResolvedValue(createTimeline("advancing-window"));
+    timelineMocks.fetch
+      .mockResolvedValueOnce(createTimeline("initial-window"))
+      .mockResolvedValueOnce(
+        createTimeline("advancing-window", "2026-07-16T10:01:00.000Z", "2026-07-16T10:31:00.000Z"),
+      );
     const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
     const nextResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
 
@@ -277,6 +451,71 @@ describe("useInvocationTimeline", () => {
     });
 
     expect(timelineMocks.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the committed snapshot and its window visible during a delayed live refresh", async () => {
+    const pending: Array<(value: InvocationTimelineResponse) => void> = [];
+    timelineMocks.fetch.mockImplementation(
+      () => new Promise<InvocationTimelineResponse>((resolve) => pending.push(resolve)),
+    );
+    const firstResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    const nextResponse = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+
+    render(<Probe response={firstResponse} liveRevision={1} />);
+    expect(pending).toHaveLength(1);
+    pending[0]?.(createTimeline("committed-window"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      root?.render(<Probe response={nextResponse} liveRevision={2} />);
+    });
+    expect(pending).toHaveLength(2);
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("committed-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:00:00.000Z|2026-07-16T10:30:00.000Z",
+    );
+    expect(host?.querySelector("[data-testid=loading]")?.textContent).toBe("false");
+    expect(host?.querySelector("[data-testid=refreshing]")?.textContent).toBe("true");
+
+    pending[1]?.(
+      createTimeline("replacement-window", "2026-07-16T10:01:00.000Z", "2026-07-16T10:31:00.000Z"),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("replacement-window");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:01:00.000Z|2026-07-16T10:31:00.000Z",
+    );
+    expect(host?.querySelector("[data-testid=refreshing]")?.textContent).toBe("false");
+  });
+
+  it("keeps the committed live window visible and stale when its replacement fails", async () => {
+    timelineMocks.fetch.mockResolvedValueOnce(createTimeline("last-good"));
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+    render(<Probe response={response} liveRevision={1} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    timelineMocks.fetch.mockRejectedValueOnce(new Error("snapshot unavailable"));
+    const advanced = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:31:00.000Z");
+    act(() => {
+      root?.render(<Probe response={advanced} liveRevision={2} />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("last-good");
+    expect(host?.querySelector("[data-testid=window]")?.textContent).toBe(
+      "2026-07-16T10:00:00.000Z|2026-07-16T10:30:00.000Z",
+    );
+    expect(host?.querySelector("[data-testid=loading]")?.textContent).toBe("false");
+    expect(host?.querySelector("[data-testid=stale]")?.textContent).toBe("true");
   });
 
   it("does not expose the previous window data while a zoom request is pending", async () => {
@@ -298,6 +537,44 @@ describe("useInvocationTimeline", () => {
       host?.querySelector<HTMLButtonElement>("[data-testid=zoom-window]")?.click();
     });
     expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("");
+  });
+
+  it("refreshes the latest viewport after a zoom during an in-flight request", async () => {
+    const pending: Array<{
+      resolve: (value: InvocationTimelineResponse) => void;
+      options: { from?: string; to?: string };
+    }> = [];
+    timelineMocks.fetch.mockImplementation((options: { from?: string; to?: string }) => {
+      return new Promise<InvocationTimelineResponse>((resolve) =>
+        pending.push({ resolve, options }),
+      );
+    });
+    const response = createTimeseries("2026-07-16T10:00:00.000Z", "2026-07-16T10:30:00.000Z");
+
+    render(<Probe response={response} />);
+    expect(pending).toHaveLength(1);
+    act(() => {
+      host?.querySelector<HTMLButtonElement>("[data-testid=zoom-window]")?.click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(pending).toHaveLength(1);
+
+    pending[0]?.resolve(createTimeline("old-viewport"));
+    await act(async () => {
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+    });
+    expect(pending[1]?.options).toMatchObject({
+      from: "2026-07-16T10:01:00.000Z",
+      to: "2026-07-16T10:30:00.000Z",
+    });
+
+    pending[1]?.resolve(createTimeline("new-viewport", "2026-07-16T10:01:00.000Z"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host?.querySelector("[data-testid=invoke-id]")?.textContent).toBe("new-viewport");
   });
 
   it("accepts whole-second server bounds for fractional-second windows", async () => {

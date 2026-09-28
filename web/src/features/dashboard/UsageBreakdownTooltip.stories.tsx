@@ -1,4 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
+import { I18nProvider } from "../../i18n";
 import type { UsageBreakdown } from "../../lib/api";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
@@ -42,6 +44,21 @@ const exactBreakdown: UsageBreakdown = {
       },
     },
     {
+      model: "gpt-5.6",
+      reasoningEffort: "medium",
+      cacheWriteTokens: 60_000,
+      cacheReadTokens: 28_000,
+      outputTokens: 30_000,
+      costs: {
+        input: 0.26,
+        cacheWrite: 0.44,
+        cacheRead: 0.06,
+        output: 0.85,
+        reasoning: 0.1,
+        unknown: 0,
+      },
+    },
+    {
       model: "gpt-5.6-luna-2026-07-27",
       reasoningEffort: "ULTRA",
       cacheWriteTokens: 142_000,
@@ -70,7 +87,7 @@ const historicalBreakdown: UsageBreakdown = {
       cacheRead: 0,
       output: 0,
       reasoning: 0,
-      unknown: model.model === "gpt-5.6" ? 9.48 : 2.99,
+      unknown: model.model === "gpt-5.6" ? (model.reasoningEffort === " MAX " ? 5.76 : 3.72) : 2.99,
     },
   })),
 };
@@ -108,6 +125,13 @@ const meta = {
   parameters: {
     layout: "fullscreen",
   },
+  decorators: [
+    (Story) => (
+      <I18nProvider>
+        <Story />
+      </I18nProvider>
+    ),
+  ],
   args: {
     title: "Usage details",
     breakdown: exactBreakdown,
@@ -117,8 +141,14 @@ const meta = {
     labels,
   },
   render: (args) => (
-    <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-      <div className="mx-auto w-full max-w-[48rem] rounded-xl border border-base-300 bg-base-100 p-3 shadow-sm sm:p-4">
+    <div
+      data-visual-evidence-surface="dashboard-usage-breakdown-tooltip"
+      className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6"
+    >
+      <div
+        data-visual-evidence-target="dashboard-usage-breakdown-table"
+        className="mx-auto w-full max-w-[48rem]"
+      >
         <UsageBreakdownTooltip {...args} />
       </div>
     </div>
@@ -133,6 +163,30 @@ export const ExactCosts: Story = {
   args: { breakdown: exactBreakdown },
 };
 
+export const SimpleGrouping: Story = {
+  args: { breakdown: exactBreakdown },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("dashboard-model-breakdown-mode-simple"));
+    await expect(canvas.getByTestId("dashboard-model-breakdown-mode-simple")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(canvas.getAllByRole("row")).toHaveLength(4);
+    await expect(canvasElement.querySelector("select")).toBeNull();
+    await expect(
+      canvasElement.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-write"]'),
+    ).toBeNull();
+    await expect(
+      canvasElement.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-read"]'),
+    ).toBeNull();
+    await expect(
+      canvasElement.querySelector('[data-testid="dashboard-model-breakdown-sort-output"]'),
+    ).toBeNull();
+    await expect(canvas.getByTestId("dashboard-model-breakdown-sort-total")).toBeInTheDocument();
+  },
+};
+
 export const HistoricalTotalOnly: Story = {
   args: { breakdown: historicalBreakdown },
 };
@@ -145,5 +199,71 @@ export const Mobile390: Story = {
   ...ExactCosts,
   globals: {
     viewport: { value: "mobile390", isRotated: false },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const mobileList = canvas.getByTestId("usage-breakdown-mobile-list");
+    const mobileCanvas = within(mobileList);
+    await expect(mobileList).toBeInTheDocument();
+    await expect(mobileCanvas.getByTestId("usage-breakdown-mobile-controls")).toBeInTheDocument();
+    await expect(
+      mobileCanvas.getByTestId("dashboard-model-breakdown-sort-total"),
+    ).toBeInTheDocument();
+    const modelSort = mobileCanvas.getByTestId("dashboard-model-breakdown-model-sort");
+    const totalSort = mobileCanvas.getByTestId("dashboard-model-breakdown-sort-total");
+    const modelLabel = modelSort.querySelector("span");
+    if (!(modelLabel instanceof HTMLElement)) {
+      throw new Error("missing mobile model sort label");
+    }
+    await expect(getComputedStyle(modelLabel).lineHeight).toBe("16px");
+    for (const element of mobileList.querySelectorAll("button, section > div, dt, dd")) {
+      await expect(Number.parseFloat(getComputedStyle(element).fontSize)).toBeGreaterThanOrEqual(
+        12,
+      );
+    }
+    for (const label of mobileList.querySelectorAll("section:not(:first-child) > div > span")) {
+      await expect(getComputedStyle(label).flexDirection).toBe("row");
+    }
+    await expect(
+      Math.abs(modelSort.getBoundingClientRect().top - totalSort.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(1);
+    await expect(canvas.getByTestId("usage-breakdown-table-scroll-region")).toHaveClass("hidden");
+  },
+};
+
+export const ConstrainedOverlay: Story = {
+  ...ExactCosts,
+  render: (args) => (
+    <div
+      data-visual-evidence-surface="dashboard-usage-breakdown-constrained-overlay"
+      className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6"
+    >
+      <div
+        data-visual-evidence-target="dashboard-usage-breakdown-constrained-table"
+        data-testid="usage-breakdown-constrained-overlay"
+        className="w-[644px] max-w-full px-3.5 py-3"
+      >
+        <UsageBreakdownTooltip {...args} />
+      </div>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const overlay = canvasElement.querySelector(
+      '[data-testid="usage-breakdown-constrained-overlay"]',
+    );
+    if (!(overlay instanceof HTMLElement)) {
+      throw new Error("missing constrained usage breakdown overlay");
+    }
+    await expect(overlay.scrollWidth).toBeLessThanOrEqual(overlay.clientWidth);
+    const tableRegion = canvasElement.querySelector(
+      '[data-testid="usage-breakdown-table-scroll-region"]',
+    );
+    if (!(tableRegion instanceof HTMLElement)) {
+      throw new Error("missing usage breakdown table region");
+    }
+    await expect(
+      Number.parseFloat(getComputedStyle(tableRegion.querySelector("table")!).fontSize),
+    ).toBeGreaterThanOrEqual(12);
+    await expect(tableRegion.scrollWidth).toBeLessThanOrEqual(tableRegion.clientWidth);
   },
 };

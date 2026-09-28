@@ -60,8 +60,8 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 48 explicit file entries: 27
-production candidates above 2,500 lines and 21 test/helper candidates above
+The policy MUST keep the current inventory as 41 explicit file entries: 23
+production candidates above 2,500 lines and 18 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
 counts for checker compatibility. Each current entry MUST record its exact
 current budget, role, and either a specific next module workstream or a
@@ -94,10 +94,68 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 48 entries have
+The current inventory retains no cohesive-module exceptions: all 41 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
+
+The group note CRUD extraction moves the complete `update_upstream_account_group`
+and `delete_upstream_account_group` handler region from physical lines 2,043
+through 2,501 of `src/upstream_accounts/crud_group_notes.rs` into
+`src/upstream_accounts/crud_group_notes/group_notes.rs`. After rustfmt, the
+parent is 2,261 physical lines and the child is 460 physical lines. The parent
+is removed from the current inventory while route names, signatures, visibility,
+SQL, validation, responses, tests, and runtime behavior remain unchanged.
+
+The proxy metadata backfill extraction moves the complete contiguous region from
+the leading `#[cfg(test)]` attribute for `backfill_proxy_missing_costs` through
+`backfill_proxy_reasoning_efforts` in `src/proxy/payload_utils.rs` into
+`src/proxy/payload_utils/backfill_metadata.rs`. On the verified main baseline
+`61c8b2e0b0ec8ddd1f295d03d89aba1e05f14f6a`, the moved region is physical lines
+3 through 513 inclusive (511 lines). It contains cost backfill and retry
+helpers plus prompt-cache-key, requested-service-tier, and reasoning-effort
+backfills and their test-only items. After rustfmt, the parent is 2,427 lines
+and the child is 513 lines, both below the 2,500-line production target, so the
+parent is removed from the policy inventory. The parent retains `use super::*`,
+the child module declaration, and a crate-visible re-export; names, signatures,
+conditional compilation, SQL, timing, tests, and runtime behavior remain
+unchanged. The suppression inventory remains at 117 entries, with the moved
+allow recorded under the child path.
+
+The upstream route-binding penalty and live-candidate evaluation extraction
+moves the complete contiguous region from physical lines 390 through 819
+inclusive (430 moved lines) of
+`src/upstream_accounts/routing/selection.rs` into
+`src/upstream_accounts/routing/selection/live_candidate.rs`, on the verified
+main merge base `c94f1f0a0f6ee51e0c442a6007d431c53ee7f151`. The parent retains
+`LivePoolCandidateEvaluation`, scoring helpers, and resolver logic. After
+rustfmt, the parent is 2,449 physical lines and the child is 432 physical
+lines, both below the 2,500-line production target, so the parent is removed
+from the policy inventory. The parent re-export and routing module export keep
+the existing crate-visible call paths; function signatures, visibility, SQL,
+routing behavior, and test semantics remain unchanged.
+
+The system raw-payload metrics inventory and capture-circuit lifecycle moves
+as one contiguous region from physical lines 1,049 through 1,678 inclusive
+(630 moved lines) of `src/api/slices/system_routes_and_tasks.rs` into
+`src/api/slices/system_routes_and_tasks/raw_payload_inventory.rs`, on the
+verified main base `8d0d2d1197f61776807f2e90e022776f6401e39b`. The parent
+retains the preceding filesystem scanner and following status snapshot/task
+lifecycle. After rustfmt, the parent is 2,364 physical lines and the child is
+632 lines, both below the 2,500-line production target. The parent is removed
+from the policy inventory. Its crate-visible re-export preserves existing call
+paths; names, signatures, SQL, timing, logging, cache and circuit behavior
+remain unchanged.
+
+The pricing catalog/settings extraction moves the complete 17-test block from
+physical lines 24 through 996 of
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs` into
+`src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough/pricing_catalog.rs`.
+The parent retains its large-stack helper and later model/proxy/routing tests.
+After rustfmt, the parent is 2,424 physical lines and the child is 974 lines,
+both below the 3,000-line test/helper target. The parent is removed from the
+policy inventory; test names, assertions, fixtures, timing, and resource bucket
+remain unchanged.
 
 ## Later Module Rollout
 
@@ -136,7 +194,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 27 production and 21 test/helper entries, with
+Pass condition: the policy has 23 production and 18 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004

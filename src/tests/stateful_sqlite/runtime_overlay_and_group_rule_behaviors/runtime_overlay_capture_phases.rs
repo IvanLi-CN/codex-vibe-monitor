@@ -1410,12 +1410,14 @@ async fn persist_proxy_capture_record_finalizes_existing_running_row_in_place() 
         size_bytes: 128,
         truncated: false,
         truncated_reason: None,
+        write_fence: None,
     };
     terminal_record.resp_raw = RawPayloadMeta {
         path: Some("proxy_raw_payloads/invoke-runtime-broadcast-response.bin.gz".to_string()),
         size_bytes: 256,
         truncated: false,
         truncated_reason: None,
+        write_fence: None,
     };
     let finalized = persist_proxy_capture_record(&state.pool, Instant::now(), terminal_record)
         .await

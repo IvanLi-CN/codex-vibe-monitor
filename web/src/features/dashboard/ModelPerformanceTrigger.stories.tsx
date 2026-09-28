@@ -94,6 +94,85 @@ const modelPerformance: ModelPerformance = {
       parallelism: 1.11,
     },
   ],
+  modelGroups: [
+    {
+      model: "gpt-5.6-sol",
+      reasoningEffort: null,
+      tokensPerMinute: 1098,
+      streamingResponseRate: 182.4,
+      avgResponseMs: 5150,
+      avgFirstTokenMs: 1480,
+      wallClockUsageDurationMs: 86400,
+      cumulativeUsageDurationMs: 118600,
+      parallelism: 1.37,
+    },
+    {
+      model: "gpt-5.6-terra",
+      reasoningEffort: null,
+      tokensPerMinute: 734,
+      streamingResponseRate: null,
+      avgResponseMs: null,
+      avgFirstTokenMs: 930,
+      wallClockUsageDurationMs: 50800,
+      cumulativeUsageDurationMs: 65600,
+      parallelism: 1.29,
+    },
+    {
+      model: "gpt-5.6-luna",
+      reasoningEffort: null,
+      tokensPerMinute: 648,
+      streamingResponseRate: 141.8,
+      avgResponseMs: 4380,
+      avgFirstTokenMs: 880,
+      wallClockUsageDurationMs: 46200,
+      cumulativeUsageDurationMs: 58900,
+      parallelism: 1.27,
+    },
+    {
+      model: "gpt-5.6-sol-2026-07-27",
+      reasoningEffort: null,
+      tokensPerMinute: 592,
+      streamingResponseRate: 128.6,
+      avgResponseMs: 3950,
+      avgFirstTokenMs: 760,
+      wallClockUsageDurationMs: 41100,
+      cumulativeUsageDurationMs: 48700,
+      parallelism: 1.18,
+    },
+    {
+      model: "gpt-5.6-terra-experimental-routing-variant-with-a-very-long-name",
+      reasoningEffort: null,
+      tokensPerMinute: 436,
+      streamingResponseRate: 103.4,
+      avgResponseMs: 5260,
+      avgFirstTokenMs: 1130,
+      wallClockUsageDurationMs: 37800,
+      cumulativeUsageDurationMs: 42900,
+      parallelism: 1.13,
+    },
+    {
+      model: "gpt-5.6-luna-2026-07-27",
+      reasoningEffort: null,
+      tokensPerMinute: 384,
+      streamingResponseRate: 96.2,
+      avgResponseMs: 3410,
+      avgFirstTokenMs: 690,
+      wallClockUsageDurationMs: 32200,
+      cumulativeUsageDurationMs: 36500,
+      parallelism: 1.13,
+    },
+    {
+      model: "gpt-5.5-codex",
+      reasoningEffort: null,
+      tokensPerMinute: 305,
+      streamingResponseRate: null,
+      avgResponseMs: 6120,
+      avgFirstTokenMs: null,
+      wallClockUsageDurationMs: 28600,
+      cumulativeUsageDurationMs: 31700,
+      parallelism: 1.11,
+    },
+  ],
 };
 
 const meta = {
@@ -111,7 +190,10 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-base-200 p-8 text-base-content">
+        <div
+          data-visual-evidence-surface="dashboard-model-performance-trigger"
+          className="min-h-screen bg-base-200 p-8 text-base-content"
+        >
           <Story />
         </div>
       </I18nProvider>

@@ -7,6 +7,8 @@ This spec owns invocation observability and the read-only model identity present
 ## Requirements
 
 - REQ-GPT6-PERFORMANCE-IDENTITY: GPT-6 Astra/Sol/Luna identities in model-performance rows must reuse the shared accessible model identity, integrate into the badge's existing outline, and preserve single-line rows and badge height.
+- REQ-DASHBOARD-MODEL-BREAKDOWN: The Dashboard model-performance and usage-breakdown floaters must expose one shared frontend grouping mode. `detailed` is the default and keeps one row per response model plus reasoning effort; `simple` shows one row per response model. The selected mode is persisted globally for all eligible floaters, synchronizes already-open floaters, and applies to future openings. The model-performance simple view must consume an exact backend `modelGroups` projection using the same qualifying-sample and interval-union rules as detailed performance data; the frontend must not approximate it by merging detailed rows. Long-term statistics surfaces are outside this contract.
+- REQ-DASHBOARD-MODEL-BREAKDOWN-SORT: Each logical floater type persists its own frontend sort preference. The model column provides name ascending, name descending, reasoning-effort ascending, and reasoning-effort descending in detailed mode, and only the two name rules in simple mode. Numeric metric columns toggle ascending/descending; missing values sort last in either direction, the total row remains pinned first, and usage numeric sorting uses token counts as the primary value while cost remains display-only. Reasoning-effort order is `minimal < low < medium < high < xhigh < max < ultra`, with unknown values last.
 
 ## Shared invocation card presentation
 
@@ -130,6 +132,8 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
 - Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
+- Dashboard 总览的模型性能与用量明细浮窗共享“简单 / 详细”分组切换：详细模式按响应模型与思考程度保留行，简单模式按模型合并；模式默认为详细，并由前端跨两个浮窗全局持久化，已打开浮窗必须立即同步。简单性能模式使用接口提供的 `modelGroups` 精确结果，不能在前端从详细行近似合并。
+- 两类浮窗分别记忆自己的排序设置。排序必须通过表头直接操作，不使用原生下拉控件；模型列在详细模式支持名称升序、名称降序、思考程度升序、思考程度降序四条规则，简单模式仅保留名称升序/降序；指标列支持升序/降序，缺失值双向均排在末尾，总计行固定置顶。用量明细仅允许缓存命中率与总计列排序，缓存写入、缓存读取、输出列只展示不排序；用量排序按 Token 数取主值，成本仅作为同一行的展示字段。桌面表格保持稳定列宽；一般手机视口改用纵向指标布局，必须不产生文档级或组件级横向滚动条，且排序入口仍可操作。
 - TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为完整代理总时长平均值；TTFT 为 `first_token_ms` 样本平均值，不得从 `t_upstream_ttfb_ms` 或阶段累计值计算。墙钟时长为合格调用区间 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 的并集时长；累计时长为合格调用 `t_total_ms` 直接求和；并行数为 `cumulativeUsageDurationMs / wallClockUsageDurationMs`。分母缺失、非有限值或小于等于零时，并行数显示 `—`；缺少有效样本的其他单项同样显示 `—`。
 - `modelPerformance.total.tokensPerMinute` 与账号级模型性能总计继续使用本规格定义的成功已计费完整范围分母；Dashboard 顶部实时 `TPM / 消费速率 / 首字用时 / 响应时间` 的 owner-facing 当前值由 `z6ysw` 的 `last_complete_1m_sma` 合同负责，不复用这些完整范围总计。
 - 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；浮窗宽度随视口自适应且上限为 `72rem`，表格不得产生横向滚动，只允许在模型数量或可用高度不足时纵向滚动。总计行置顶，模型行按累计时长降序；显式时长列顺序固定为 `墙钟时长 / 累计时长 / 并行数`；总计墙钟时长允许小于模型行墙钟时长的算术和。
@@ -279,6 +283,8 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - Given 请求携带 `x-forwarded-for` 与 `metadata.prompt_cache_key`，When 请求完成并查询 `/api/invocations`，Then 返回 `requesterIp`、`promptCacheKey`、`cacheInputTokens` 与阶段耗时字段。
 - Given 请求无转发头且 body 无 prompt_cache_key，When 请求完成，Then 前端详情对应字段显示 `—` 且页面无错误。
 - Given 成功或失败记录，When 用户展开表格详情，Then 可见 endpoint、failureKind 与完整阶段耗时。
+- Given 总览打开模型性能或用量明细浮窗，When 用户切换简单/详细，Then 两类已打开浮窗同步切换，后续打开的浮窗复用该前端模式；简单模型性能行来自接口 `modelGroups`。
+- Given 用户在任一明细浮窗直接点击模型或可排序指标表头，When 排序状态改变，Then 该浮窗类型恢复自己的排序记忆，缺失值置底且总计行保持置顶；用量缓存写入、缓存读取和输出表头不提供排序操作。
 - Given 旧记录或 `source=xy` 记录缺扩展字段，When 页面渲染，Then 不崩溃且缺值显示 `—`。
 - Given 调用详情记录 `source=xy` 或其他非 proxy 值但缺少 `proxyDisplayName`，When 用户展开详情，Then 不显示 `source` 行且代理字段显示 `—`。
 - Given 号池失败尝试存在 `proxyBindingKeySnapshot=fpb_...` 且绑定节点可解析，When 用户展开号池尝试明细，Then 该尝试显示“代理/Proxy”与对应代理显示名，不把完整内部 key 作为主视觉值。
@@ -333,6 +339,10 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - Given 同一模型两次成功已计费调用分别持续 `10s`、`10s` 且重叠 `5s`，When 请求模型性能明细，Then 该模型返回 `wallClockUsageDurationMs=15s`、`cumulativeUsageDurationMs=20s`、`parallelism≈1.33`。
 - Given 两个不同模型在所选范围内各自活跃 `4s` 且跨模型重叠 `1s`，When owner 查看模型性能明细，Then 总计墙钟时长为 `7s`、两个模型行墙钟时长之和为 `8s`，并且说明文案明确“跨模型重叠时模型行墙钟和可能大于总计”。
 - Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；每个模型行保持单行，GPT-5.6/GPT-6 专用图标方案不得与模型名称重复显示，GPT-6 模型段不添加第二道边框或改变徽标高度，未知模型名安全省略，表格 `scrollWidth <= clientWidth`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉和相同模型身份语义展示同一数据。
+- Given owner 在任一模型性能或用量明细浮窗切换为“简单”，When 该浮窗和另一个已打开的 eligible 浮窗仍在页面上，Then 两个浮窗都按模型合并且不显示思考程度分行；重新打开的同类浮窗继续使用该模式。
+- Given owner 在模型性能浮窗的详细模式打开模型排序菜单，When 选择名称或思考程度排序规则，Then 只改变当前模型性能浮窗类型的排序偏好；切换到简单模式时思考程度规则不可选，切回详细模式仍恢复此前保存的思考程度规则。
+- Given owner 在用量明细浮窗点击任一指标表头，When 列表排序，Then 以 Token 数值升序或降序排列、成本仍随模型行展示，缺失数值排在末尾且总计行保持第一行；模型性能浮窗的各项数值指标遵循相同的缺失值规则。
+- Given owner 在一般手机视口打开用量明细浮窗，When 明细渲染，Then 使用纵向指标布局而不是横向滚动表格，文档和浮窗内容均不产生横向滚动条，模型与可排序指标入口仍可用。
 - Given 一条调用的请求体使用 `zstd` 压缩而上游响应 `Content-Encoding` 为 `identity`，When owner 查看调用列表或展开详情，Then “响应耗时 / HTTP 请求压缩”和“HTTP 请求压缩”均显示 `zstd`；响应值明确标为“HTTP 响应压缩”。
 - Given 历史记录没有持久化 `requestCompressionAlgorithm`，When owner 查看调用列表或详情，Then 请求压缩显示 `—`，不得用响应 `Content-Encoding` 回退填充。
 - Given 调用发生重试，When owner 查看调用列表、Prompt Cache 会话展开、账号活动预览或对应的归档历史，Then 请求压缩显示最终 attempt 的真实请求压缩算法。
@@ -872,6 +882,8 @@ For in-flight records, missing TTFT and response duration values display elapsed
 ## Verification
 
 - VER-GPT6-PERFORMANCE-IDENTITY: covers: REQ-GPT6-PERFORMANCE-IDENTITY; ModelPerformanceModelIdentity and Dashboard performance tests verify badge composition, accessible model labels, and row layout.
+- VER-DASHBOARD-MODEL-BREAKDOWN: covers: REQ-DASHBOARD-MODEL-BREAKDOWN; backend model-performance duration tests, API normalization, ModelPerformanceDetails and UsageBreakdownTooltip tests verify exact model grouping and synchronized frontend mode state.
+- VER-DASHBOARD-MODEL-BREAKDOWN-SORT: covers: REQ-DASHBOARD-MODEL-BREAKDOWN-SORT; dashboardModelBreakdown unit tests, direct-header component tests, and Storybook plays verify cycling model rules, sortable metric boundaries, missing-value ordering, pinned totals, and frontend persistence.
 
 ## Related ADRs
 

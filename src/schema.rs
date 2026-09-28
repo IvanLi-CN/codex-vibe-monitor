@@ -2491,6 +2491,18 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             last_failure_fingerprint TEXT,
             defer_reason TEXT,
             last_progress_at TEXT,
+            last_admission_stage TEXT,
+            last_admission_cause TEXT,
+            last_settled_pass_at TEXT,
+            last_settled_pass_complete INTEGER,
+            last_settled_pass_inspected_entries INTEGER,
+            last_settled_pass_referenced_skipped INTEGER,
+            last_settled_pass_quarantined INTEGER,
+            last_settled_pass_removed INTEGER,
+            last_settled_pass_removed_bytes INTEGER,
+            last_nonzero_removal_at TEXT,
+            last_nonzero_removal INTEGER,
+            last_nonzero_removal_bytes INTEGER,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2515,6 +2527,18 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("last_failure_fingerprint", "TEXT"),
         ("defer_reason", "TEXT"),
         ("last_progress_at", "TEXT"),
+        ("last_admission_stage", "TEXT"),
+        ("last_admission_cause", "TEXT"),
+        ("last_settled_pass_at", "TEXT"),
+        ("last_settled_pass_complete", "INTEGER"),
+        ("last_settled_pass_inspected_entries", "INTEGER"),
+        ("last_settled_pass_referenced_skipped", "INTEGER"),
+        ("last_settled_pass_quarantined", "INTEGER"),
+        ("last_settled_pass_removed", "INTEGER"),
+        ("last_settled_pass_removed_bytes", "INTEGER"),
+        ("last_nonzero_removal_at", "TEXT"),
+        ("last_nonzero_removal", "INTEGER"),
+        ("last_nonzero_removal_bytes", "INTEGER"),
     ] {
         ensure_column_with_definition(pool, "retention_recovery_cursors", column, definition)
             .await
@@ -2528,6 +2552,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             file_identity TEXT NOT NULL,
             byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
             quarantined_at TEXT NOT NULL,
+            release_pending INTEGER NOT NULL DEFAULT 0,
+            release_pending_at TEXT,
+            removal_evidence_persisted INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2535,6 +2562,31 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure retention raw reconciliation table existence")?;
+
+    ensure_column_with_definition(
+        pool,
+        "retention_raw_reconciliation",
+        "release_pending",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await
+    .context("failed to ensure retention_raw_reconciliation.release_pending")?;
+    ensure_column_with_definition(
+        pool,
+        "retention_raw_reconciliation",
+        "release_pending_at",
+        "TEXT",
+    )
+    .await
+    .context("failed to ensure retention_raw_reconciliation.release_pending_at")?;
+    ensure_column_with_definition(
+        pool,
+        "retention_raw_reconciliation",
+        "removal_evidence_persisted",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await
+    .context("failed to ensure retention_raw_reconciliation.removal_evidence_persisted")?;
 
     sqlx::query(
         r#"
@@ -2545,6 +2597,28 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure retention raw reconciliation quarantine index")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_retention_raw_reconciliation_pending
+        ON retention_raw_reconciliation (updated_at, raw_path)
+        WHERE release_pending != 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention raw reconciliation pending index")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_retention_raw_reconciliation_active
+        ON retention_raw_reconciliation (raw_path)
+        WHERE release_pending = 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure retention raw reconciliation active index")?;
 
     // A detail-prune archive duplicates records still retained in the live table. Segment keys
     // encode the exact inclusive ID bounds in hexadecimal; only a contiguous live range proves

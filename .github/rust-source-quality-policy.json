@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 48,
+    "inventory_entries": 41,
     "suppression_entries": 117
   },
   "loc_targets": {
@@ -27,7 +27,7 @@
     {
       "path": "src/api/slices/prompt_cache_and_timeseries/timeseries.rs",
       "role": "production",
-      "line_budget": 5853,
+      "line_budget": 5881,
       "next_module_workstream": "Split prompt-cache timeseries query, aggregation, and flush/restart lifecycle."
     },
     {
@@ -35,12 +35,6 @@
       "role": "production",
       "line_budget": 24001,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
-    },
-    {
-      "path": "src/api/slices/system_routes_and_tasks.rs",
-      "role": "production",
-      "line_budget": 2993,
-      "next_module_workstream": "Split system routes, task lifecycle, runtime pressure, and filesystem operations."
     },
     {
       "path": "src/app_state.rs",
@@ -75,7 +69,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 9597,
+      "line_budget": 11255,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -97,12 +91,6 @@
       "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
     },
     {
-      "path": "src/proxy/payload_utils.rs",
-      "role": "production",
-      "line_budget": 2936,
-      "next_module_workstream": "Split proxy payload normalization, classification, backfill, and CORS helpers."
-    },
-    {
       "path": "src/proxy/request_entry.rs",
       "role": "production",
       "line_budget": 6317,
@@ -117,7 +105,7 @@
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 6920,
+      "line_budget": 6947,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
@@ -129,7 +117,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6447,
+      "line_budget": 6521,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -141,7 +129,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 5833,
+      "line_budget": 5843,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {
@@ -153,13 +141,13 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 9211,
+      "line_budget": 9750,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
       "role": "test_helper",
-      "line_budget": 4182,
+      "line_budget": 4184,
       "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
     },
     {
@@ -177,14 +165,8 @@
     {
       "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
       "role": "test_helper",
-      "line_budget": 23764,
+      "line_budget": 23829,
       "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough.rs",
-      "role": "test_helper",
-      "line_budget": 3396,
-      "next_module_workstream": "Split pricing catalog/model passthrough fixtures by catalog, fallback, and accounting cases."
     },
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
@@ -217,15 +199,9 @@
       "next_module_workstream": "Split routing failover terminal-reasoning fixtures by capture route, overload, and timeout."
     },
     {
-      "path": "src/tests/stateful_sqlite/routing_timeout_and_overload_failover.rs",
-      "role": "test_helper",
-      "line_budget": 3137,
-      "next_module_workstream": "Split routing timeout/overload fixtures by timeout paths, overload streams, and account rules."
-    },
-    {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6171,
+      "line_budget": 6172,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {
@@ -241,22 +217,10 @@
       "next_module_workstream": "Split upstream account runtime types, account state, and capability projections."
     },
     {
-      "path": "src/upstream_accounts/crud_group_notes.rs",
-      "role": "production",
-      "line_budget": 2717,
-      "next_module_workstream": "Split upstream group note CRUD, validation, and endpoint projection."
-    },
-    {
       "path": "src/upstream_accounts/oauth_sessions_callbacks.rs",
       "role": "production",
       "line_budget": 3500,
       "next_module_workstream": "Split OAuth session callbacks, mailbox transitions, and account mutation helpers."
-    },
-    {
-      "path": "src/upstream_accounts/routing/selection.rs",
-      "role": "production",
-      "line_budget": 2875,
-      "next_module_workstream": "Split upstream route candidate selection, policy, and route health inputs."
     },
     {
       "path": "src/upstream_accounts/sync_account_imports_tags.rs",
@@ -287,12 +251,6 @@
       "role": "test_helper",
       "line_budget": 4729,
       "next_module_workstream": "Split upstream relogin/duplicate usage fixtures by mailbox, identity, and snapshot recovery."
-    },
-    {
-      "path": "src/upstream_accounts/tests/stateful_sqlite/resolver_concurrency_and_node_shunt.rs",
-      "role": "test_helper",
-      "line_budget": 3550,
-      "next_module_workstream": "Split upstream resolver concurrency/node-shunt fixtures by core, provisioning, and failures."
     },
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/sync_cooldown_and_capability_learning.rs",
@@ -483,10 +441,10 @@
       "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
     },
     {
-      "path": "src/proxy/payload_utils.rs",
+      "path": "src/proxy/payload_utils/backfill_metadata.rs",
       "kind": "allow",
       "declaration": "#[allow(dead_code)]",
-      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils.rs; remove it when the listed module workstream makes the item reachable."
+      "reason": "Retain this targeted allow for the current compatibility or helper item in src/proxy/payload_utils/backfill_metadata.rs; remove it when the listed module workstream makes the item reachable."
     },
     {
       "path": "src/proxy/payload_utils.rs",

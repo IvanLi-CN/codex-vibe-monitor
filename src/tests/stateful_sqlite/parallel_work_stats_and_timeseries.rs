@@ -1850,8 +1850,7 @@ async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
         "pck-after-range",
     )
     .await;
-
-    let Json(response) = fetch_parallel_work_stats(
+    let Json(response) = fetch_parallel_work_stats_at(
         State(state),
         Query(ParallelWorkStatsQuery {
             range: "7d".to_string(),
@@ -1859,6 +1858,7 @@ async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
             time_zone: Some("Asia/Shanghai".to_string()),
             upstream_account_id: None,
         }),
+        now,
     )
     .await
     .expect("fetch parallel-work stats");
@@ -3118,6 +3118,107 @@ async fn all_time_summary_skips_archive_fallback_rows_already_counted_in_live_ta
     assert_eq!(summary.failure_count, 1);
     assert_eq!(summary.total_tokens, 30);
     assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn error_distribution_strips_only_matching_failure_kind_prefix() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (id, invoke_id, error_message, failure_kind) in [
+        (
+            1_i64,
+            "error-distribution-matching-prefix",
+            "[provider] upstream stream error",
+            Some("provider"),
+        ),
+        (
+            2_i64,
+            "error-distribution-mismatched-prefix",
+            "[provider] upstream stream error",
+            Some("different_kind"),
+        ),
+        (
+            3_i64,
+            "error-distribution-missing-failure-kind",
+            "[provider] upstream stream error",
+            None,
+        ),
+        (
+            4_i64,
+            "error-distribution-no-prefix",
+            "upstream stream error",
+            Some("provider"),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                total_tokens,
+                cost,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("failed")
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind("service_failure")
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(0.01_f64)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert error distribution regression row");
+    }
+
+    let Json(response) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: "today".to_string(),
+            top: Some(8),
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution regression rows");
+
+    assert_eq!(response.items.iter().map(|item| item.count).sum::<i64>(), 4);
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .find(|item| item.reason == "upstream stream error")
+            .map(|item| item.count),
+        Some(2),
+    );
+    assert_eq!(
+        response
+            .items
+            .iter()
+            .find(|item| item.reason == "[provider] upstream stream error")
+            .map(|item| item.count),
+        Some(2),
+    );
 }
 
 #[tokio::test]

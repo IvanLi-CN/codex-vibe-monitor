@@ -34,7 +34,7 @@
 - A legacy or unmatched artifact MUST be handled by a resumable, bounded reconciliation cursor that wraps after exhausting the current tail so files arriving behind the saved cursor are eventually revisited. It is retained as quarantined evidence for 24 hours and may then be removed only when it matches neither a Prepared Archive nor a committed manifest.
 - Legacy reconciliation MUST obtain background write admission before traversing the archive directory or performing archive-file I/O. It MUST stream directory entries through a selection structure whose retained allocation, comparison work per entry, and candidate set are bounded by the scan batch rather than materializing and sorting a complete directory. Directory cursors MUST preserve the lexical stream position between same-prefix files and descendants; a truncated directory MUST pause traversal at its selected boundary, and cursor persistence MUST be monotonic with a conditional tail wrap so overlapping passes cannot skip or regress legacy artifacts.
 - A raw residual MUST be handled by a separate scheduled worker and durable quarantine ledger. Each slice MUST advance at most 128 direct entries from one in-memory iterator and process at most 32 supported direct regular files under the resolved raw root; it MUST skip subdirectories, symlinks, unknown file names, and paths outside that root. The iterator MUST continue across slices, close at end-of-directory, and restart from the root after process restart; the per-file ledger MUST make repeated observations idempotent.
-- A raw residual MAY be physically removed only after its identity is unchanged, no raw link or fallback raw-path resolution can resolve to it, and its durable quarantine period has elapsed. Ownership MUST be queried through the indexed `proxy_raw_payload_blob_links(raw_path)` ledger after verifying the legacy-link seed completion marker; path fallback precedence MUST be preserved without scanning owner tables. The final metadata and indexed reference checks MUST happen immediately before removal. Inventory reset intent MUST be durable before unlink, and the ledger row MUST be cleared only after successful deletion or later proof that the file is absent.
+- A raw residual MAY be physically removed only after its identity is unchanged, no raw link or fallback raw-path resolution can resolve to it, and its durable quarantine period has elapsed. Ownership MUST be queried through the indexed `proxy_raw_payload_blob_links(raw_path)` ledger after verifying the legacy-link seed completion marker; path fallback precedence MUST be preserved without scanning owner tables. Raw writers MUST acquire the shared raw-directory fence before their filesystem mutation window and MUST retain it through owner-link persistence; cold compression MUST acquire the exclusive side through compression, raw-reference replacement, and source cleanup; the worker MUST use the exclusive side of that fence. The final metadata and indexed reference checks MUST happen immediately before removal while maintenance admission and the nonblocking directory fence are held, and identity/size MUST be revalidated immediately before unlink. A release-pending intent and timestamp MUST be durable before unlink, the raw parent MUST be synchronized after unlink, and removal evidence plus its persisted marker MUST commit atomically before the intent is cleared. Pending recovery MUST receive an independent bounded batch share so ordinary missing-ledger rows are not starved, and pending rows whose files remain present MUST rotate their due-work timestamp. A present identity or non-regular replacement MUST NOT be treated as proof that the older object was deleted; it resets or clears observation without removal evidence. The ledger row MUST be cleared only after successful deletion or later proof that the file is absent. Successful removal evidence MUST be persisted before ledger cleanup.
 
 ### REQ-ARR-003
 
@@ -64,7 +64,7 @@
 - The additive System Status raw-inventory contract MUST expose nullable tracked raw metric bytes plus `rawMetricsHealth.physicalCoverage=partial|unknown`. When raw inventory is not ready or coverage is unknown, raw metric bytes and any derived project-storage total MUST remain unknown or explicitly restricted; a missing raw value MUST NOT render as `0 B` or as a complete physical-disk claim. Runtime Pressure `rawCapture.rawBytes` remains the separate physical-capture measurement and keeps its own nullable contract.
 - These diagnostics MUST NOT expose raw request/response content, SQL text or bindings, account identifiers, or full payload/archive paths.
 - Retention write diagnostics MAY include `rawReferenceCheckMs`; it is nullable and MUST remain unknown when no raw-owner confirmation ran.
-- The optional `runtimePressureHealth.rawOrphanSweep` object MUST expose `unknown`, `idle`, `scanning`, `deferred`, or `degraded`, per-slice inspected/referenced/quarantined/removed counts, last progress, retry time, defer reason, and sanitized failure fingerprint. Missing fields MUST normalize to `unknown` rather than zero.
+- The optional `runtimePressureHealth.rawOrphanSweep` object MUST expose `unknown`, `idle`, `scanning`, `deferred`, or `degraded`, per-slice inspected/referenced/quarantined/removed counts and removed bytes, last progress, retry time, defer reason, and sanitized failure fingerprint. It MUST separately expose the most recent settled pass (complete/partial and its counters) and most recent nonzero removal (count/bytes and timestamp), and MUST expose only fixed admission stages (`background_slot`, `maintenance_write`) and causes (`pressure_cooldown`, `background_busy`, `coordinator_wait`, `shutdown`). Missing fields MUST normalize to `unknown` rather than zero; admission diagnostics MUST never contain a path, SQL text, account identifier, or payload content.
 
 ### REQ-ARR-007
 
@@ -74,10 +74,11 @@
 ### REQ-ARR-008
 
 - The raw orphan worker MUST be independent of the hourly retention cadence and MUST NOT overlap another raw sweep in the same process.
-- Before any raw-root or candidate filesystem inspection, including reconciliation-ledger metadata checks and fallback-path existence checks, the worker MUST obtain maintenance admission. Admission refusal MUST perform no raw filesystem I/O and persist a retry at least five minutes later. For bounded filesystem-only slices, it MUST retain the background pressure slot while releasing the SQLite write-coordinator permit, so another background task cannot enter during filesystem inspection while P1 and interactive writes remain eligible.
+- Before any raw-root or candidate filesystem inspection, including reconciliation-ledger metadata checks and fallback-path existence checks, the worker MUST first reserve a background pressure slot with bounded FIFO priority wait of at most 15 seconds, then obtain maintenance write admission with a separate bound of at most 15 seconds. The current stage and one fixed cause (`pressure_cooldown`, `background_busy`, `coordinator_wait`, or `shutdown`) MUST be retained for each unsuccessful admission. Admission refusal MUST perform no raw filesystem I/O and persist a retry at least five minutes later. For bounded filesystem-only slices, it MUST retain the background pressure slot while releasing the SQLite write-coordinator permit, so another background task cannot enter during filesystem inspection while P1 and interactive writes remain eligible.
+- An admitted slice MUST inspect at most 128 directory entries, process at most 32 supported candidates, and stop candidate processing after two seconds. It MUST resume unfinished work at a cadence of at least one second. If admission is lost after a batch begins, unprocessed candidates MUST remain pending and be retried before opening or advancing the directory iterator; process restart MAY restart from the root because the durable identity ledger preserves safety.
 - While maintenance admission is held for a candidate release, the raw-directory lock MUST be acquired nonblocking. Lock contention MUST defer that candidate and release admission without waiting on the lock, so later candidates and foreground writes are not held behind cross-process file activity.
 - After progress without failure, the worker MUST resume after one second. A failed slice MUST persist a sanitized fingerprint and back off for 5/10/20/40/60 minutes; an item failure MUST NOT prevent later candidates in that slice from being checked. End-of-directory MUST close the iterator and schedule a new pass after five minutes.
-- The existing `raw_payload_files` cursor MUST NOT be used as a directory seek position. It MAY be used as a persistent keyset position for bounded missing-ledger cleanup. No new DDL or startup-wide backfill is required.
+- The existing `raw_payload_files` cursor MUST NOT be used as a directory seek position. It MAY be used as a persistent keyset position for bounded missing-ledger cleanup. Admission stage/cause and settled-pass/removal evidence MUST use additive nullable columns on this existing cursor, with an idempotent migration and no startup-wide backfill; old or missing values remain unknown.
 
 ## Verification
 
@@ -119,9 +120,9 @@
 
 ### VER-ARR-007
 
-- Method: Instrumented large-directory slices, restart/reopen fixtures, scheduler clock tests, and concurrent P1/interactive writes on the shared testbox.
+- Method: Instrumented large-directory slices, restart/reopen fixtures, scheduler clock tests, admission-cause/no-I/O fixtures, mid-pass pending-batch deferral, additive old-schema migration, unlink-ledger failure, and concurrent P1/interactive writes on the shared testbox.
 - covers: `REQ-ARR-002`, `REQ-ARR-003`, `REQ-ARR-006`, `REQ-ARR-008`
-- Pass condition: Every slice advances no more than 128 directory entries and processes no more than 32 supported candidates; restart and directory mutations eventually revisit candidates; pressure refusal performs no directory I/O; legacy-link seed absence retains files; matching indexed references retain files; expired unreferenced fixtures are removed; lock contention releases maintenance admission without waiting; an item failure does not prevent later candidates in the slice; retry cadence and System Status state remain accurate without adding foreground busy/locked events.
+- Pass condition: Every admitted slice advances no more than 128 directory entries and processes no more than 32 supported candidates within two seconds; background and maintenance admission each stay within their 15-second bound; pressure/cause refusal performs no directory or candidate filesystem I/O and persists at least five minutes; pending candidates precede new entries; restart and directory mutations eventually revisit candidates; legacy-link seed absence retains files; matching indexed references retain files; expired unreferenced fixtures are removed; lock contention releases maintenance admission without waiting; an item failure does not prevent later candidates in the slice; unlink count/bytes survive ledger-cleanup failure; settled-pass/removal evidence survives defer and reopen; retry cadence and System Status state remain accurate without adding foreground busy/locked events.
 
 ## Related ADRs
 
@@ -215,15 +216,23 @@
   ![System Status retention recovery degraded](./assets/retention-recovery-liveness-degraded.png)
 - source_type: ui_demo
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   requested_viewport: 1440x1100
   viewport_strategy: devtools-emulate
   margin_policy: trim_only
   evidence_surface: page
-  state: idle raw orphan sweep with deterministic mock counters
-  evidence_note: shows the per-slice directory-entry cap, referenced-file skips, quarantine and release counts; values are fixture data, not production telemetry.
+  state: deferred raw orphan admission with settled/removal evidence
+  evidence_note: shows deferred raw orphan admission with a fixed stage/cause, removed bytes, latest settled-pass completeness/counters, and latest nonzero-removal evidence; values are fixture data, not production telemetry.
   image:
   ![System Status raw orphan sweep](./assets/raw-orphan-sweep-desktop.png)
+- visual_comparison:
+  base_sha: 2739505a288e42b1e8f98eb835a5d8da16b9df7c
+  baseline_sha256: 478f1be0d4e080a90e78f508d6f48c8e63d64a418fee9c824cd52b523c0d98a6
+  baseline_dimensions: 1011x114
+  current_sha256: 4c542f8f7f03d3745eda2515868b9cbd75416061146a61ee7c9764e0756c0d9a
+  current_dimensions: 1440x1100
+  result: owner-confirmed intended visual state change
+  confirmation: The current deferred-admission evidence accurately reflects the requested settled/removal diagnostics and was shown to the owner with the baseline comparison heatmap.
 
 ## References
 

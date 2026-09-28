@@ -171,6 +171,30 @@ const sampleModelPerformance: ModelPerformance = {
       parallelism: 1.3,
     },
   ],
+  modelGroups: [
+    {
+      model: "gpt-5.6",
+      reasoningEffort: null,
+      tokensPerMinute: 760,
+      streamingResponseRate: 162.4,
+      avgResponseMs: 4500,
+      avgFirstTokenMs: 1100,
+      wallClockUsageDurationMs: 82000,
+      cumulativeUsageDurationMs: 107000,
+      parallelism: 1.3,
+    },
+    {
+      model: "gpt-5.4-mini",
+      reasoningEffort: null,
+      tokensPerMinute: 440,
+      streamingResponseRate: null,
+      avgResponseMs: null,
+      avgFirstTokenMs: 860,
+      wallClockUsageDurationMs: 47000,
+      cumulativeUsageDurationMs: 61000,
+      parallelism: 1.3,
+    },
+  ],
 };
 
 const comparisonStats: StatsResponse = {
@@ -465,7 +489,11 @@ export const UsageBreakdownDetails: Story = {
           .map((header) => header.textContent),
       ).toEqual(["模型", "缓存写入", "缓存读取", "缓存命中率", "输出", "总计"]);
       expect(tooltip).toHaveTextContent("23.3%");
-      expect(tooltip).toHaveTextContent(/Reasoning effort|思考等级/);
+      expect(
+        tooltip.querySelectorAll('[data-model-context-display="model-badge"]').length,
+      ).toBeGreaterThan(0);
+      expect(tooltip.querySelectorAll("[data-reasoning-effort-tone]").length).toBeGreaterThan(0);
+      expect(tooltip).not.toHaveTextContent(/Reasoning effort|思考等级/);
       expect(tooltip).toHaveTextContent(/Unspecified|未指定|—/);
       expect(tooltip).toHaveTextContent(/Output|输出/);
       const panel = within(tooltip).getByTestId("usage-breakdown-tooltip");

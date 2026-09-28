@@ -17,6 +17,9 @@ const TELEMETRY_BROWSER_GLOBAL_RATE_LIMIT: u32 = 120;
 const TELEMETRY_BROWSER_CLIENT_RATE_LIMIT: u32 = 30;
 const TELEMETRY_BROWSER_RATE_WINDOW: Duration = Duration::from_secs(60);
 
+type TelemetryColumnContract = (&'static str, &'static str, i64, i64);
+type TelemetryTableContract = (&'static str, &'static [TelemetryColumnContract]);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MetricKind {
     Counter,
@@ -1168,43 +1171,64 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .fetch_one(pool)
     .await?;
+    let existing_object_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE name NOT LIKE 'sqlite_%' AND type IN ('table', 'index', 'view', 'trigger')",
+    )
+    .fetch_one(pool)
+    .await?;
     if current_version == 0 && existing_table_count > 0 {
         bail!(
             "partial performance telemetry schema found without final schema marker; recreate the disposable telemetry database"
         );
     }
+    if current_version == 0 && existing_object_count > 0 {
+        bail!(
+            "unknown database schema at performance telemetry path; use an empty disposable database"
+        );
+    }
     if current_version == TELEMETRY_SCHEMA_VERSION {
-        let expected_tables: &[(&str, &[&str])] = &[
-            ("performance_meta", &["key", "value"]),
-            ("performance_epochs", &["epoch", "started_at", "ended_at"]),
+        let expected_tables: &[TelemetryTableContract] = &[
+            (
+                "performance_meta",
+                &[("key", "TEXT", 0, 1), ("value", "TEXT", 1, 0)],
+            ),
+            (
+                "performance_epochs",
+                &[
+                    ("epoch", "TEXT", 0, 1),
+                    ("started_at", "TEXT", 1, 0),
+                    ("ended_at", "TEXT", 0, 0),
+                ],
+            ),
             (
                 "performance_buckets",
                 &[
-                    "bucket_start",
-                    "resolution_seconds",
-                    "metric_id",
-                    "dimension_code",
-                    "sample_count",
-                    "expected_count",
-                    "sum_value",
-                    "min_value",
-                    "max_value",
-                    "last_value",
-                    "weighted_sum",
-                    "weighted_seconds",
-                    "histogram_json",
-                    "epoch",
+                    ("bucket_start", "INTEGER", 1, 1),
+                    ("resolution_seconds", "INTEGER", 1, 2),
+                    ("metric_id", "TEXT", 1, 3),
+                    ("dimension_code", "TEXT", 1, 4),
+                    ("sample_count", "INTEGER", 1, 0),
+                    ("expected_count", "INTEGER", 1, 0),
+                    ("sum_value", "REAL", 1, 0),
+                    ("min_value", "REAL", 0, 0),
+                    ("max_value", "REAL", 0, 0),
+                    ("last_value", "REAL", 0, 0),
+                    ("weighted_sum", "REAL", 1, 0),
+                    ("weighted_seconds", "REAL", 1, 0),
+                    ("histogram_json", "TEXT", 1, 0),
+                    ("epoch", "TEXT", 1, 0),
                 ],
             ),
             (
                 "performance_collector_health",
                 &[
-                    "id",
-                    "state",
-                    "last_successful_flush",
-                    "dropped_samples",
-                    "flush_failure_count",
-                    "last_error",
+                    ("id", "INTEGER", 0, 1),
+                    ("state", "TEXT", 1, 0),
+                    ("last_successful_flush", "TEXT", 0, 0),
+                    ("dropped_samples", "INTEGER", 1, 0),
+                    ("flush_failure_count", "INTEGER", 1, 0),
+                    ("last_error", "TEXT", 0, 0),
                 ],
             ),
         ];
@@ -1213,13 +1237,26 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .fetch_all(pool)
                 .await?
                 .into_iter()
-                .map(|row| row.try_get::<String, _>("name"))
+                .map(|row| {
+                    Ok::<_, sqlx::Error>((
+                        row.try_get::<String, _>("name")?,
+                        row.try_get::<String, _>("type")?,
+                        row.try_get::<i64, _>("notnull")?,
+                        row.try_get::<i64, _>("pk")?,
+                    ))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            if columns.len() != expected_columns.len()
-                || expected_columns
+            let schema_matches = columns.len() == expected_columns.len()
+                && columns
                     .iter()
-                    .any(|column| !columns.iter().any(|actual| actual == column))
-            {
+                    .zip(expected_columns.iter())
+                    .all(|(actual, expected)| {
+                        actual.0 == expected.0
+                            && actual.1 == expected.1
+                            && actual.2 == expected.2
+                            && actual.3 == expected.3
+                    });
+            if !schema_matches {
                 bail!(
                     "malformed performance telemetry table {table}; recreate the disposable telemetry database"
                 );
@@ -1233,6 +1270,27 @@ async fn ensure_telemetry_schema(pool: &Pool<Sqlite>) -> Result<()> {
         if index_exists != 1 {
             bail!(
                 "malformed performance telemetry index; recreate the disposable telemetry database"
+            );
+        }
+        let index_columns = sqlx::query("PRAGMA index_info(\"idx_performance_buckets_range\")")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok::<_, sqlx::Error>((
+                    row.try_get::<i64, _>("seqno")?,
+                    row.try_get::<String, _>("name")?,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if index_columns
+            != [
+                (0, "resolution_seconds".to_string()),
+                (1, "bucket_start".to_string()),
+            ]
+        {
+            bail!(
+                "malformed performance telemetry range index; recreate the disposable telemetry database"
             );
         }
         return Ok(());
@@ -1312,7 +1370,26 @@ async fn run_telemetry_writer(
                     .dropped_samples
                     .fetch_add(dropped, Ordering::Relaxed);
                 merge_dropped_expectations(&runtime, &mut accumulators);
-                let _ = flush_accumulators(&runtime, &mut accumulators, &epoch).await;
+                if flush_accumulators(&runtime, &mut accumulators, &epoch)
+                    .await
+                    .is_err()
+                {
+                    let dropped = drop_accumulators_with_runtime(&runtime, &mut accumulators);
+                    runtime
+                        .dropped_samples
+                        .fetch_add(dropped, Ordering::Relaxed);
+                }
+                if let Some(pool) = runtime.pool.get()
+                    && let Err(error) = close_telemetry_epoch(pool, &epoch).await
+                {
+                    runtime.flush_failure_count.fetch_add(1, Ordering::Relaxed);
+                    runtime
+                        .update_health(|health| {
+                            health.state = "degraded".to_string();
+                            health.last_error = Some(error.to_string());
+                        })
+                        .await;
+                }
                 return;
             }
             event = receiver.recv() => match event {
@@ -1386,6 +1463,28 @@ fn drain_events(
             dropped = dropped.saturating_add(1);
         }
     }
+    dropped
+}
+
+fn drop_accumulators_with_runtime(
+    runtime: &PerformanceTelemetryRuntime,
+    accumulators: &mut HashMap<(i64, String, String), BucketAccumulator>,
+) -> u64 {
+    let dropped = accumulators
+        .values()
+        .map(|accumulator| accumulator.count)
+        .sum::<u64>();
+    for ((bucket_start, metric_id, dimension), accumulator) in accumulators.iter() {
+        if let Some((metric_id, dimension)) = registered_metric_dimension(metric_id, dimension) {
+            runtime.note_dropped_expectation(
+                metric_id,
+                dimension,
+                DateTime::from_timestamp(*bucket_start, 0).unwrap_or_else(Utc::now),
+                accumulator.expected_count,
+            );
+        }
+    }
+    accumulators.clear();
     dropped
 }
 
@@ -1660,6 +1759,16 @@ async fn flush_accumulators(
             Err(error)
         }
     }
+}
+
+async fn close_telemetry_epoch(pool: &Pool<Sqlite>, epoch: &str) -> Result<()> {
+    sqlx::query("UPDATE performance_epochs SET ended_at = ? WHERE epoch = ?")
+        .bind(Utc::now().to_rfc3339())
+        .bind(epoch)
+        .execute(pool)
+        .await
+        .context("failed to close performance telemetry epoch")?;
+    Ok(())
 }
 
 async fn rollup_and_prune(pool: &Pool<Sqlite>) -> Result<()> {
@@ -3135,6 +3244,145 @@ mod tests {
                 .to_string()
                 .contains("malformed performance telemetry table")
         );
+    }
+
+    #[tokio::test]
+    async fn unrelated_existing_database_is_rejected_without_conversion() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open existing database fixture");
+        sqlx::query("CREATE TABLE application_state (id INTEGER PRIMARY KEY, value TEXT)")
+            .execute(&pool)
+            .await
+            .expect("create unrelated table");
+
+        let error = ensure_telemetry_schema(&pool)
+            .await
+            .expect_err("unrelated database must remain untouched");
+        assert!(error.to_string().contains("unknown database schema"));
+        let telemetry_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'performance_%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count untouched telemetry tables");
+        assert_eq!(telemetry_tables, 0);
+    }
+
+    #[tokio::test]
+    async fn marked_schema_without_bucket_primary_key_is_rejected() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open telemetry database fixture");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        sqlx::query("DROP TABLE performance_buckets")
+            .execute(&pool)
+            .await
+            .expect("remove valid bucket table");
+        sqlx::query(
+            "CREATE TABLE performance_buckets (
+                bucket_start INTEGER NOT NULL,
+                resolution_seconds INTEGER NOT NULL,
+                metric_id TEXT NOT NULL,
+                dimension_code TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                expected_count INTEGER NOT NULL,
+                sum_value REAL NOT NULL,
+                min_value REAL,
+                max_value REAL,
+                last_value REAL,
+                weighted_sum REAL NOT NULL DEFAULT 0,
+                weighted_seconds REAL NOT NULL DEFAULT 0,
+                histogram_json TEXT NOT NULL,
+                epoch TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create malformed bucket table");
+        let error = ensure_telemetry_schema(&pool)
+            .await
+            .expect_err("bucket primary key must be required");
+        assert!(
+            error
+                .to_string()
+                .contains("malformed performance telemetry table")
+        );
+    }
+
+    #[tokio::test]
+    async fn epoch_close_records_termination_time() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open telemetry database fixture");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        sqlx::query("INSERT INTO performance_epochs(epoch, started_at) VALUES ('epoch-test', ?)")
+            .bind(Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .expect("insert epoch");
+
+        close_telemetry_epoch(&pool, "epoch-test")
+            .await
+            .expect("close telemetry epoch");
+        let ended_at: Option<String> = sqlx::query_scalar(
+            "SELECT ended_at FROM performance_epochs WHERE epoch = 'epoch-test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load closed epoch");
+        assert!(ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn failed_shutdown_flush_accounts_buffered_events() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open telemetry database fixture");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        let runtime = PerformanceTelemetryRuntime::disabled_for_tests();
+        runtime
+            .pool
+            .set(pool.clone())
+            .expect("install test telemetry pool");
+        let mut accumulators = HashMap::new();
+        assert!(add_event(
+            &mut accumulators,
+            TelemetryEvent {
+                metric_id: "p1.queue_depth",
+                dimension: "p1",
+                kind: EventKind::Gauge,
+                value: 3.0,
+                weight_seconds: 10.0,
+                at: Utc::now(),
+            },
+        ));
+        pool.close().await;
+        assert!(
+            flush_accumulators(&runtime, &mut accumulators, "epoch-test")
+                .await
+                .is_err()
+        );
+        let dropped = drop_accumulators_with_runtime(&runtime, &mut accumulators);
+        runtime
+            .dropped_samples
+            .fetch_add(dropped, Ordering::Relaxed);
+        assert_eq!(runtime.dropped_samples.load(Ordering::Relaxed), 1);
+        assert_eq!(runtime.take_dropped_expectations().values().sum::<u64>(), 1);
     }
 
     #[cfg(unix)]
