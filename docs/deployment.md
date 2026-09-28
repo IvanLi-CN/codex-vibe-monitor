@@ -108,6 +108,8 @@ labels:
 以下变量均为按需覆盖；未配置时使用服务默认值：
 
 - `DATABASE_PATH`：SQLite 主库路径；升级旧版本前请先同步新的公开 env 命名，legacy `XY_*` 公共键会在启动期直接被拒绝。
+- `PERFORMANCE_DATABASE_PATH`：独立性能指标 SQLite 路径；未配置时使用 `DATABASE_PATH` 同目录的 `<主库名>.performance.sqlite`。该文件只保存固定低基数的聚合指标，可按备份策略排除。
+- `PERFORMANCE_TELEMETRY_ENABLED`：性能指标采集开关，默认 `true`；设为 `false` 或指标库不可用时，主库、代理、P1 terminal ACK 与 `/health` 继续工作。
 - `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
 - `PUBLIC_ORIGIN`：用于生成 `og:image` / `twitter:image` 等对外绝对 URL 的公开入口基址；推荐显式配置为最终对外域名。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。

@@ -2229,6 +2229,7 @@ pub(crate) struct AppState {
     pub(crate) config: AppConfig,
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) process_started_at_utc: DateTime<Utc>,
+    pub(crate) performance_telemetry: Arc<PerformanceTelemetryRuntime>,
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,
     pub(crate) pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
     pub(crate) proxy_runtime_invocations: Arc<RuntimeProjectionHub>,

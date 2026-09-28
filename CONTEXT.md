@@ -74,6 +74,16 @@ _Avoid_: TTFT 为零, 首响应, TTFB 回退
 The duration from the first upstream response byte to the end of that upstream stream.
 _Avoid_: 总耗时, TTFT, 代理处理耗时
 
+## Performance Observation
+
+**性能时间桶（Performance Bucket）**:
+A bounded aggregate of one registered metric and its permitted low-cardinality dimensions over a UTC interval. Its resolution and coverage are part of its meaning.
+_Avoid_: 调用明细, 原始事件, 完整请求链路
+
+**观测覆盖率（Observation Coverage）**:
+The proportion of expected samples or observation time actually represented by a performance bucket. Missing collection is unknown, not a measured zero.
+_Avoid_: 成功率, 采样值为零, 无流量
+
 ## Runtime Read Models
 
 **Summary Projection**:

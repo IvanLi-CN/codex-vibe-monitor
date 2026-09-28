@@ -94,6 +94,7 @@
 | -     | Autonomous Retention Recovery and Raw Capture Circuit Breaker             | active    | `autonomous-retention-recovery/SPEC.md`                    | `autonomous-retention-recovery/IMPLEMENTATION.md`                    | topic anchor: retention / raw storage / recovery             |
 | -     | Rust 源码质量准备合同                                                     | active    | `rust-source-quality/SPEC.md`                              | `rust-source-quality/IMPLEMENTATION.md`                              | topic anchor: Rust budgets / suppression / CI                |
 | -     | Dashboard 对外调用时间线                                                  | active    | `dashboard-invocation-timeline/SPEC.md`                    | `dashboard-invocation-timeline/IMPLEMENTATION.md`                    | topic anchor: dashboard / invocation timeline / TTFT         |
+| -     | 独立性能遥测                                                              | active    | `performance-telemetry/SPEC.md`                            | `performance-telemetry/IMPLEMENTATION.md`                            | topic anchor: performance / telemetry / bounded SQLite       |
 
 ## Archived Sources
 

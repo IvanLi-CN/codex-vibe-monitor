@@ -298,6 +298,8 @@ pub(crate) async fn run() -> Result<()> {
     let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
     let process_started_at_utc = Utc::now();
+    let performance_telemetry =
+        PerformanceTelemetryRuntime::start(&config, process_started_at_utc, shutdown.clone());
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
@@ -332,6 +334,7 @@ pub(crate) async fn run() -> Result<()> {
         config: config.clone(),
         pool,
         process_started_at_utc,
+        performance_telemetry,
         sqlite_batch_writer,
         pool_account_selection_runtime,
         proxy_runtime_invocations,
@@ -403,6 +406,7 @@ pub(crate) async fn run() -> Result<()> {
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
+    spawn_performance_telemetry_sampler(state.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     run_runtime_until_shutdown(

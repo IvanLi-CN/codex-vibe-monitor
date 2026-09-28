@@ -1866,6 +1866,7 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
+        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),
@@ -2545,6 +2546,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
+        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),

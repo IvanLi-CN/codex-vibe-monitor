@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, lazy, type ReactNode, Suspense } from "react
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Spinner } from "./components/ui/spinner";
 import { AppLayout } from "./features/app-shell/AppLayout";
+import { BrowserPerformanceTelemetry } from "./lib/browserPerformanceTelemetry";
 
 const AccountPoolLayout = lazy(() => import("./pages/account-pool/AccountPoolLayout"));
 const GroupsPage = lazy(() => import("./pages/account-pool/Groups"));
@@ -15,6 +16,7 @@ const SettingsPage = lazy(() => import("./pages/Settings"));
 const StatsPage = lazy(() => import("./pages/Stats"));
 const SystemLayout = lazy(() => import("./pages/system/SystemLayout"));
 const SystemProxyPage = lazy(() => import("./pages/system/SystemProxyPage"));
+const SystemPerformancePage = lazy(() => import("./pages/system/SystemPerformancePage"));
 const SystemSettingsPage = lazy(() => import("./pages/system/SystemSettingsPage"));
 const SystemStatusPage = lazy(() => import("./pages/system/SystemStatusPage"));
 const SystemTasksPage = lazy(() => import("./pages/system/SystemTasksPage"));
@@ -83,8 +85,11 @@ function LegacyAccountCreateRedirect() {
 }
 
 function App() {
+  const location = useLocation();
+
   return (
     <AppErrorBoundary>
+      <BrowserPerformanceTelemetry pathname={location.pathname} />
       <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
           <Route path="/" element={<AppLayout />}>
@@ -111,6 +116,7 @@ function App() {
             <Route path="system" element={<SystemLayout />}>
               <Route index element={<Navigate to="/system/status" replace />} />
               <Route path="status" element={<SystemStatusPage />} />
+              <Route path="performance" element={<SystemPerformancePage />} />
               <Route path="tasks" element={<SystemTasksPage />} />
               <Route path="settings" element={<SystemSettingsPage />} />
               <Route path="proxy" element={<SystemProxyPage />} />

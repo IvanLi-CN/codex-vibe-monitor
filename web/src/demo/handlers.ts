@@ -1864,6 +1864,173 @@ function forwardProxyLive() {
   };
 }
 
+const DEMO_PERFORMANCE_SERIES = [
+  {
+    metricId: "collector.queue_depth",
+    section: "overview",
+    dimension: "all",
+    kind: "gauge",
+    unit: "count",
+    base: 3,
+  },
+  {
+    metricId: "collector.dropped_samples",
+    section: "overview",
+    dimension: "all",
+    kind: "counter",
+    unit: "count",
+    base: 0,
+  },
+  {
+    metricId: "sqlite.busy_wait",
+    section: "storage",
+    dimension: "all",
+    kind: "duration",
+    unit: "milliseconds",
+    base: 7,
+  },
+  {
+    metricId: "sqlite.wal_bytes",
+    section: "storage",
+    dimension: "telemetry",
+    kind: "gauge",
+    unit: "bytes",
+    base: 4_800_000,
+  },
+  {
+    metricId: "projection.publish_lag",
+    section: "projection",
+    dimension: "all",
+    kind: "duration",
+    unit: "milliseconds",
+    base: 42,
+  },
+  {
+    metricId: "sse.active_subscribers",
+    section: "projection",
+    dimension: "all",
+    kind: "gauge",
+    unit: "count",
+    base: 16,
+  },
+  {
+    metricId: "maintenance.backlog",
+    section: "maintenance",
+    dimension: "all",
+    kind: "gauge",
+    unit: "count",
+    base: 12,
+  },
+  {
+    metricId: "maintenance.flush_duration",
+    section: "maintenance",
+    dimension: "all",
+    kind: "duration",
+    unit: "milliseconds",
+    base: 180,
+  },
+  {
+    metricId: "process.rss_bytes",
+    section: "process",
+    dimension: "all",
+    kind: "gauge",
+    unit: "bytes",
+    base: 312_000_000,
+  },
+  {
+    metricId: "process.cpu_percent",
+    section: "process",
+    dimension: "all",
+    kind: "gauge",
+    unit: "percent",
+    base: 21,
+  },
+  {
+    metricId: "browser.data_ready",
+    section: "browser",
+    dimension: "system:desktop",
+    kind: "duration",
+    unit: "milliseconds",
+    base: 640,
+  },
+  {
+    metricId: "browser.update_to_paint",
+    section: "browser",
+    dimension: "system:desktop",
+    kind: "duration",
+    unit: "milliseconds",
+    base: 92,
+  },
+] as const;
+
+function demoPerformanceMetrics(url: URL) {
+  const range = url.searchParams.get("range") ?? "24h";
+  const section = url.searchParams.get("section");
+  const rangeConfig: Record<string, { seconds: number; points: number }> = {
+    "6h": { seconds: 60, points: 48 },
+    "24h": { seconds: 120, points: 48 },
+    "7d": { seconds: 900, points: 56 },
+    "30d": { seconds: 3_600, points: 48 },
+    "13mo": { seconds: 86_400, points: 48 },
+  };
+  const config = rangeConfig[range] ?? rangeConfig["24h"];
+  const endSeconds = Math.floor(Date.parse(demoNow()) / 1_000);
+  const series = DEMO_PERFORMANCE_SERIES.filter((item) => !section || item.section === section).map(
+    (item, seriesIndex) => ({
+      metricId: item.metricId,
+      section: item.section,
+      dimension: item.dimension,
+      kind: item.kind,
+      unit: item.unit,
+      points: Array.from({ length: config.points }, (_, index) => {
+        const wave = Math.sin((index + seriesIndex) / 4) * (item.base * 0.08);
+        const value = Math.max(0, item.base + wave);
+        const sampleCount = item.kind === "duration" ? 18 + (index % 5) : 1;
+        const histogram =
+          item.kind === "duration"
+            ? [1, 2, 3, 4, 4, 2, 1, 0].map((count, bucket) =>
+                bucket === 3 ? count + (index % 3) : count,
+              )
+            : undefined;
+        return {
+          bucketStart: endSeconds - (config.points - index) * config.seconds,
+          sampleCount,
+          expectedCount: 1,
+          sum: item.kind === "counter" ? Math.round(value) : Math.round(value * sampleCount),
+          min: Math.round(value * 0.82),
+          max: Math.round(value * 1.18),
+          last: Math.round(value),
+          weightedAverage: Math.round(value),
+          histogram,
+        };
+      }),
+    }),
+  );
+  return {
+    from: new Date((endSeconds - config.points * config.seconds) * 1_000).toISOString(),
+    to: new Date(endSeconds * 1_000).toISOString(),
+    stepSeconds: config.seconds,
+    coverage: 0.98,
+    epochs: ["demo-epoch-2026-09-28"],
+    series,
+  };
+}
+
+function demoPerformanceHealth() {
+  return {
+    state: "healthy",
+    enabled: true,
+    path: "/var/lib/codex-vibe-monitor/performance.sqlite3",
+    epoch: "demo-epoch-2026-09-28",
+    queueDepth: 2,
+    queueCapacity: 512,
+    droppedSamples: 0,
+    flushFailureCount: 0,
+    lastSuccessfulFlush: demoNow(),
+    lastError: null,
+  };
+}
+
 function accountList(kind?: string | null) {
   const allItems = demoModel.snapshot.scene === "empty" ? [] : demoAccounts();
   const items = kind ? allItems.filter((item) => item.kind === kind) : allItems;
@@ -3715,6 +3882,12 @@ export async function handleDemoRequest(request: Request) {
         : { key: { ...key, updatedAt: demoNow() }, secret: "cvm-synthetic-rotated-key-not-valid" },
     );
   }
+  if (pathname === "/api/system/performance" && request.method === "GET")
+    return json(demoPerformanceMetrics(url));
+  if (pathname === "/api/system/performance/health" && request.method === "GET")
+    return json(demoPerformanceHealth());
+  if (pathname === "/api/system/performance/browser" && request.method === "POST")
+    return json({ accepted: true });
   if (pathname === "/api/system/status") return json(systemStatus());
   if (pathname === "/api/system/tasks") {
     let items = systemTasks();

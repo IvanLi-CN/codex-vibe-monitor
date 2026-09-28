@@ -1,0 +1,33 @@
+{
+  "state": "performance telemetry SQLite database",
+  "owner": "codex-vibe-monitor runtime",
+  "source_compatibility": {
+    "introduced": "current release",
+    "earlier_state": "absent or the current final schema version"
+  },
+  "ordered_operations": [
+    "resolve and validate an isolated database path",
+    "open with WAL and create the complete final schema once",
+    "reject an unrecognized schema marker without modifying the file and expose telemetry as unavailable",
+    "start bounded collector and writer after main database readiness",
+    "roll up finer buckets before deleting covered source buckets",
+    "prune data older than thirteen months and checkpoint WAL"
+  ],
+  "rollout_signals": [
+    "collector health state",
+    "last successful flush timestamp",
+    "dropped sample count",
+    "schema mismatch, rollup, and write error counters"
+  ],
+  "recovery": {
+    "business_path": "continues without telemetry",
+    "repair": "recreate the disposable telemetry file; no in-place schema conversion is attempted",
+    "backup_restore": "separate operator disaster recovery action"
+  },
+  "validation": [
+    "absent database starts cleanly",
+    "same schema startup is idempotent",
+    "stopped rollup re-enters without double counting",
+    "unwritable or corrupt telemetry storage does not block proxy or health"
+  ]
+}

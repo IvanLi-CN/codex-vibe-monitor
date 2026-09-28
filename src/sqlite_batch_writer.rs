@@ -252,13 +252,21 @@ pub(crate) struct PendingQueueAccountingSnapshot {
     pub(crate) state: String,
     pub(crate) pending_depth: usize,
     pub(crate) pending_bytes: usize,
+    pub(crate) p1_ack_sequence: u64,
+    pub(crate) p1_ack_duration_ms: u64,
     pub(crate) transfer_bytes: usize,
     pub(crate) retry_count: u64,
+    pub(crate) p1_retry_count: u64,
+    pub(crate) p2_retry_count: u64,
     pub(crate) p2_flush_attempt_count: u64,
     pub(crate) p2_pressure_defer_count: u64,
     pub(crate) p2_lock_retry_count: u64,
     pub(crate) p2_next_attempt_in_ms: u64,
     pub(crate) p2_deferred_age_ms: u64,
+    pub(crate) write_batch_count: u64,
+    pub(crate) write_rows: u64,
+    pub(crate) write_bytes: u64,
+    pub(crate) write_duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) p2_wake_reason: Option<String>,
     pub(crate) invariant_violation_count: u64,
@@ -272,13 +280,21 @@ pub(crate) struct PendingQueueAccountingSnapshot {
 pub(crate) struct PendingQueueAccounting {
     pending_depth: AtomicUsize,
     pending_bytes: AtomicUsize,
+    p1_ack_sequence: AtomicU64,
+    p1_ack_duration_ms: AtomicU64,
     transfer_bytes: AtomicUsize,
     retry_count: AtomicU64,
+    p1_retry_count: AtomicU64,
+    p2_retry_count: AtomicU64,
     p2_flush_attempt_count: AtomicU64,
     p2_pressure_defer_count: AtomicU64,
     p2_lock_retry_count: AtomicU64,
     p2_next_attempt_in_ms: AtomicU64,
     p2_deferred_age_ms: AtomicU64,
+    write_batch_count: AtomicU64,
+    write_rows: AtomicU64,
+    write_bytes: AtomicU64,
+    write_duration_ms: AtomicU64,
     p2_wake_reason: std::sync::Mutex<Option<String>>,
     invariant_violation_count: AtomicU64,
     last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
@@ -330,8 +346,33 @@ impl PendingQueueAccounting {
         );
     }
 
+    pub(crate) fn record_p1_ack_duration(&self, duration_ms: u64) {
+        self.p1_ack_duration_ms
+            .store(duration_ms, Ordering::Relaxed);
+        self.p1_ack_sequence.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_write_batch(&self, rows: usize, bytes: usize, duration_ms: u64) {
+        self.write_batch_count.fetch_add(1, Ordering::Relaxed);
+        self.write_rows
+            .fetch_add(rows.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+        self.write_bytes
+            .fetch_add(bytes.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+        self.write_duration_ms.store(duration_ms, Ordering::Relaxed);
+    }
+
     pub(crate) fn retry_deferred(&self) {
         self.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn retry_p1_deferred(&self) {
+        self.retry_deferred();
+        self.p1_retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn retry_p2_deferred(&self) {
+        self.retry_deferred();
+        self.p2_retry_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn p2_attempted(&self) {
@@ -409,13 +450,21 @@ impl PendingQueueAccounting {
             },
             pending_depth: self.pending_depth.load(Ordering::Relaxed),
             pending_bytes: self.pending_bytes.load(Ordering::Relaxed),
+            p1_ack_sequence: self.p1_ack_sequence.load(Ordering::Relaxed),
+            p1_ack_duration_ms: self.p1_ack_duration_ms.load(Ordering::Relaxed),
             transfer_bytes: self.transfer_bytes.load(Ordering::Relaxed),
             retry_count: self.retry_count.load(Ordering::Relaxed),
+            p1_retry_count: self.p1_retry_count.load(Ordering::Relaxed),
+            p2_retry_count: self.p2_retry_count.load(Ordering::Relaxed),
             p2_flush_attempt_count: self.p2_flush_attempt_count.load(Ordering::Relaxed),
             p2_pressure_defer_count: self.p2_pressure_defer_count.load(Ordering::Relaxed),
             p2_lock_retry_count: self.p2_lock_retry_count.load(Ordering::Relaxed),
             p2_next_attempt_in_ms: self.p2_next_attempt_in_ms.load(Ordering::Relaxed),
             p2_deferred_age_ms: self.p2_deferred_age_ms.load(Ordering::Relaxed),
+            write_batch_count: self.write_batch_count.load(Ordering::Relaxed),
+            write_rows: self.write_rows.load(Ordering::Relaxed),
+            write_bytes: self.write_bytes.load(Ordering::Relaxed),
+            write_duration_ms: self.write_duration_ms.load(Ordering::Relaxed),
             p2_wake_reason: self
                 .p2_wake_reason
                 .lock()
@@ -1752,6 +1801,10 @@ impl SqliteBatchWriter {
         self.accounting.snapshot()
     }
 
+    pub(crate) fn queued_p1_count(&self) -> usize {
+        self.queued_p1_count.load(Ordering::Relaxed)
+    }
+
     pub(crate) async fn flush_now(&self, _pool: &Pool<Sqlite>) -> Result<()> {
         #[cfg(test)]
         if self.buffered_writes.is_some() {
@@ -2949,7 +3002,7 @@ fn drain_terminal_journal_deferred_writes(
             decrement_queued_p1_count(queued_p1_count);
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
             accounting.enqueue(write.estimated_memory_bytes());
-            accounting.retry_deferred();
+            accounting.retry_p1_deferred();
             pending.push_accounted(write, accounting);
         }
         for finish in
@@ -2957,7 +3010,7 @@ fn drain_terminal_journal_deferred_writes(
         {
             let write = SqliteBatchWrite::SystemTaskFinish(finish);
             accounting.enqueue(write.estimated_memory_bytes());
-            accounting.retry_deferred();
+            accounting.retry_p2_deferred();
             pending.push_accounted(write, accounting);
         }
     }
@@ -3024,6 +3077,7 @@ async fn flush_pending_batch_accounted(
         .collect::<Vec<_>>();
     let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
+    let flush_started = Instant::now();
     let result = flush_pending_batch(
         accounting,
         pool,
@@ -3039,6 +3093,11 @@ async fn flush_pending_batch_accounted(
         terminal_journal,
     )
     .await;
+    accounting.record_write_batch(
+        submitted_depth,
+        submitted_bytes,
+        flush_started.elapsed().as_millis() as u64,
+    );
     let completed_system_task_ids =
         successfully_flushed_system_task_ids(&submitted_system_task_ids, result.as_ref());
     if !completed_system_task_ids.is_empty()
@@ -3072,8 +3131,13 @@ async fn flush_pending_batch_accounted(
             "discarded non-retryable P2 batch after deterministic failure; durable source remains authoritative"
         );
     }
-    if was_retained_retry && result.as_ref().is_some_and(|retained| retained.failed) {
-        accounting.retry_deferred();
+    if was_retained_retry && let Some(retained) = result.as_ref().filter(|retained| retained.failed)
+    {
+        if retained.batch.terminal_invocations.is_empty() {
+            accounting.retry_p2_deferred();
+        } else {
+            accounting.retry_p1_deferred();
+        }
     }
     let retained_bytes = result
         .as_ref()
@@ -3370,6 +3434,9 @@ pub(crate) async fn flush_pending_batch(
             }
             result => result,
         };
+        accounting.record_p1_ack_duration(
+            lock_wait_ms.saturating_add(execute_started.elapsed().as_millis() as u64),
+        );
         match p1_result {
             Ok(deferred) => {
                 debug!(

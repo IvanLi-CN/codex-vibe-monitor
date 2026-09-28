@@ -288,6 +288,8 @@ pub(crate) struct MaintenanceDryRunArgs {
 pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
+    pub(crate) performance_database_path: PathBuf,
+    pub(crate) performance_telemetry_enabled: bool,
     pub(crate) poll_interval: Duration,
     pub(crate) request_timeout: Duration,
     pub(crate) pool_upstream_responses_attempt_timeout: Duration,
@@ -373,6 +375,20 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var(ENV_DATABASE_PATH).ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
+        let performance_database_path = env::var(ENV_PERFORMANCE_DATABASE_PATH)
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let stem = database_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("codex_vibe_monitor");
+                database_path.with_file_name(format!("{stem}.performance.sqlite"))
+            });
+        let performance_telemetry_enabled = parse_bool_env_var(
+            ENV_PERFORMANCE_TELEMETRY_ENABLED,
+            DEFAULT_PERFORMANCE_TELEMETRY_ENABLED,
+        )?;
         let poll_interval = overrides
             .poll_interval_secs
             .or_else(|| {
@@ -700,6 +716,8 @@ impl AppConfig {
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
+            performance_database_path,
+            performance_telemetry_enabled,
             poll_interval,
             request_timeout,
             pool_upstream_responses_attempt_timeout,

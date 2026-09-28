@@ -5061,6 +5061,100 @@ export async function fetchSystemStatus(): Promise<SystemStatusResponse> {
   return normalizeSystemStatusResponse(response);
 }
 
+export type PerformanceRange = "6h" | "24h" | "7d" | "30d" | "13mo";
+export type PerformanceSection =
+  | "overview"
+  | "storage"
+  | "projection"
+  | "maintenance"
+  | "process"
+  | "browser";
+
+export interface PerformancePoint {
+  bucketStart: number;
+  sampleCount: number;
+  expectedCount: number;
+  sum: number;
+  min?: number;
+  max?: number;
+  last?: number;
+  weightedAverage?: number;
+  histogram?: number[];
+}
+
+export interface PerformanceSeries {
+  metricId: string;
+  section: PerformanceSection;
+  dimension: string;
+  kind: "counter" | "duration" | "gauge";
+  unit: "milliseconds" | "bytes" | "percent" | "count";
+  points: PerformancePoint[];
+}
+
+export interface PerformanceMetricsResponse {
+  from: string;
+  to: string;
+  stepSeconds: number;
+  coverage: number;
+  epochs: string[];
+  series: PerformanceSeries[];
+}
+
+export interface PerformanceTelemetryHealth {
+  state: "starting" | "healthy" | "degraded" | "disabled" | "unavailable" | string;
+  enabled: boolean;
+  path: string;
+  epoch: string;
+  queueDepth: number;
+  queueCapacity: number;
+  droppedSamples: number;
+  flushFailureCount: number;
+  lastSuccessfulFlush?: string | null;
+  lastError?: string | null;
+}
+
+export interface BrowserPerformanceEvent {
+  page: "dashboard" | "records" | "system";
+  device: "mobile" | "desktop";
+  metric:
+    | "data_ready_ms"
+    | "update_to_paint_ms"
+    | "long_task_ms"
+    | "long_task_count"
+    | "api_request_duration_ms"
+    | "api_request_count"
+    | "sse_duration_ms"
+    | "sse_disconnect_count"
+    | "unsupported_count"
+    | "visibility_hidden_count";
+  value: number;
+}
+
+export async function fetchPerformanceMetrics(params?: {
+  range?: PerformanceRange;
+  section?: PerformanceSection;
+}): Promise<PerformanceMetricsResponse> {
+  const query = new URLSearchParams();
+  if (params?.range) query.set("range", params.range);
+  if (params?.section) query.set("section", params.section);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return fetchJson<PerformanceMetricsResponse>(`/api/system/performance${suffix}`);
+}
+
+export async function fetchPerformanceHealth(): Promise<PerformanceTelemetryHealth> {
+  return fetchJson<PerformanceTelemetryHealth>("/api/system/performance/health");
+}
+
+export async function postBrowserPerformanceTelemetry(
+  events: BrowserPerformanceEvent[],
+): Promise<void> {
+  await fetchJson<void>("/api/system/performance/browser", {
+    method: "POST",
+    body: JSON.stringify({ events }),
+    keepalive: true,
+  });
+}
+
 export async function fetchSystemTaskRuns(params?: {
   taskKind?: string;
   status?: string;
