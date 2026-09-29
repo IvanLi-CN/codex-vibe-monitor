@@ -81,6 +81,11 @@ export const topLevelNavItems: AppNavigationGroup[] = [
         matchPrefixes: ["/system/tasks"],
       },
       {
+        to: "/system/prompt-cache",
+        labelKey: "system.nav.promptCache",
+        matchPrefixes: ["/system/prompt-cache"],
+      },
+      {
         to: "/system/settings",
         labelKey: "system.nav.settings",
         matchPrefixes: ["/system/settings", "/settings", "/settings/legacy"],

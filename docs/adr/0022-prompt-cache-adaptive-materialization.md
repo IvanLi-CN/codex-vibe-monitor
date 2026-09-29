@@ -38,9 +38,17 @@ includes a 2 ms cooperative scheduler window so foreground readers can acquire S
 between commits; this wait is outside the transaction and cannot interrupt the active batch. Other
 startup backfills retain the existing P2 cancellation behavior.
 
-The existing migration progress table, unavailable read contract, marker names, queue, and public
-responses do not change. Structured startup-backfill details expose phase, scanned/updated counts,
-batch count, last/max batch size, accumulated batch time, and defer reason.
+The existing migration progress table, unavailable read contract, marker names, queue, and aggregate
+responses do not change. A dedicated operator status surface adds GET/PATCH
+/api/system/prompt-cache/materialization. The PATCH control is durable in
+startup_backfill_progress.enabled; disabling a task only takes effect at a committed
+micro-batch boundary, while enabling it wakes the scheduler.
+
+The prompt-cache migration progress row stores a fixed source total once the identity snapshot is
+captured. A bounded prompt_cache_conversation_materialization_runs table retains the latest 100
+task calls, including phase, duration, processed/updated counts, batch metrics, and defer or
+failure reason. The UI exposes the latest 10 records and derives ETA only from these committed
+records; it never performs a historical scan on a status request.
 
 ## Consequences
 

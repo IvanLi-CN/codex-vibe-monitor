@@ -157,6 +157,83 @@ async fn ensure_schema_defers_prompt_cache_conversation_materialization_to_start
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_status_reports_progress_history_and_control() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    for index in 0..4 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, '2026-09-01 00:00:00', ?2, 'success', 7, 0.07, ?3, '{}')
+            "#,
+        )
+        .bind(format!("status-invocation-{index}"))
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": format!("status-key-{index}")}).to_string())
+        .execute(&pool)
+        .await
+        .expect("insert status fixture invocation");
+    }
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+
+    let outcome = run_prompt_cache_conversations_materialization(&pool, 400, None)
+        .await
+        .expect("materialize status fixture");
+    record_prompt_cache_conversation_materialization_run(
+        &pool,
+        "2026-09-29T04:16:45.000Z",
+        120,
+        &outcome,
+        "success",
+        None,
+    )
+    .await
+    .expect("record materialization history");
+
+    let status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load materialization status");
+    assert!(status.enabled);
+    assert_eq!(status.total_keys, Some(4));
+    assert_eq!(status.completed_keys, 4);
+    assert_eq!(status.progress_percent, Some(100.0));
+    assert_eq!(status.estimated_remaining_ms, Some(0));
+    assert_eq!(status.queue_pending, 0);
+    assert_eq!(status.recent_runs.len(), 1);
+
+    let disabled = set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization");
+    assert!(!disabled.enabled);
+    let disabled_status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load disabled materialization status");
+    assert!(!disabled_status.enabled);
+    assert_eq!(disabled_status.last_status, "disabled");
+
+    let enabled = set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        true,
+    )
+    .await
+    .expect("enable prompt-cache materialization");
+    assert!(enabled.enabled);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_new_keys() {
     let temp_dir = make_temp_test_dir("prompt-cache-conversation-materialization-restart");
     let db_path = temp_dir.join("state.db");

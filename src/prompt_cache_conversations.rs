@@ -14,6 +14,8 @@ const PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE: &str =
     "prompt_cache_conversation_stats_refresh_queue";
 const PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE: &str =
     "prompt_cache_conversation_migration_progress";
+const PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE: &str =
+    "prompt_cache_conversation_materialization_runs";
 const PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL: &str = "identity_backfill";
 const PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION: &str = "identity_reconciliation";
 const PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD: &str = "stats_rebuild";
@@ -84,6 +86,46 @@ struct PromptCacheConversationMigrationProgressRow {
     phase: String,
     source_max_invocation_id: i64,
     cursor_key: Option<String>,
+    updated_at: String,
+    total_keys: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationMaterializationRunRecord {
+    pub(crate) id: i64,
+    pub(crate) started_at: String,
+    pub(crate) finished_at: String,
+    pub(crate) phase: String,
+    pub(crate) status: String,
+    pub(crate) scanned: i64,
+    pub(crate) updated: i64,
+    pub(crate) batch_count: i64,
+    pub(crate) last_batch_size: i64,
+    pub(crate) max_batch_size: i64,
+    pub(crate) batch_elapsed_ms: i64,
+    pub(crate) duration_ms: i64,
+    pub(crate) defer_reason: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationMaterializationStatus {
+    pub(crate) enabled: bool,
+    pub(crate) phase: String,
+    pub(crate) total_keys: Option<u64>,
+    pub(crate) completed_keys: u64,
+    pub(crate) queue_pending: u64,
+    pub(crate) progress_percent: Option<f64>,
+    pub(crate) estimated_remaining_ms: Option<u64>,
+    pub(crate) source_max_invocation_id: u64,
+    pub(crate) updated_at: String,
+    pub(crate) last_started_at: Option<String>,
+    pub(crate) last_finished_at: Option<String>,
+    pub(crate) last_status: String,
+    pub(crate) suspension_reason: Option<String>,
+    pub(crate) recent_runs: Vec<PromptCacheConversationMaterializationRunRecord>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -420,6 +462,35 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     .execute(pool)
     .await
     .context("failed to ensure prompt-cache conversation migration progress table")?;
+    ensure_prompt_cache_column(pool, "total_keys", "INTEGER").await?;
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE} (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            started_at TEXT NOT NULL,\
+            finished_at TEXT NOT NULL,\
+            phase TEXT NOT NULL,\
+            status TEXT NOT NULL,\
+            scanned INTEGER NOT NULL DEFAULT 0,\
+            updated INTEGER NOT NULL DEFAULT 0,\
+            batch_count INTEGER NOT NULL DEFAULT 0,\
+            last_batch_size INTEGER NOT NULL DEFAULT 0,\
+            max_batch_size INTEGER NOT NULL DEFAULT 0,\
+            batch_elapsed_ms INTEGER NOT NULL DEFAULT 0,\
+            duration_ms INTEGER NOT NULL DEFAULT 0,\
+            defer_reason TEXT,\
+            error TEXT\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt-cache materialization run history table")?;
+    sqlx::query(&format!(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_cache_materialization_runs_started_at \
+         ON {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE} (started_at DESC, id DESC)"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt-cache materialization run history index")?;
     sqlx::query(&format!(
         "INSERT OR IGNORE INTO {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} \
          (migration_name, phase, source_max_invocation_id, cursor_key) VALUES (?1, ?2, 0, NULL)"
@@ -429,6 +500,28 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     .execute(pool)
     .await
     .context("failed to initialize prompt-cache conversation migration progress")?;
+    Ok(())
+}
+
+async fn ensure_prompt_cache_column(
+    pool: &Pool<Sqlite>,
+    column_name: &str,
+    definition: &str,
+) -> Result<()> {
+    let columns = sqlx::query("PRAGMA table_info(prompt_cache_conversation_migration_progress)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+    let statement = format!(
+        "ALTER TABLE {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} \
+         ADD COLUMN {column_name} {definition}"
+    );
+    sqlx::query(&statement).execute(pool).await?;
     Ok(())
 }
 
@@ -442,7 +535,7 @@ async fn load_prompt_cache_conversation_migration_progress_on_connection(
     connection: &mut SqliteConnection,
 ) -> Result<PromptCacheConversationMigrationProgressRow> {
     sqlx::query_as::<_, PromptCacheConversationMigrationProgressRow>(&format!(
-        "SELECT phase, source_max_invocation_id, cursor_key \
+        "SELECT phase, source_max_invocation_id, cursor_key, updated_at, total_keys \
          FROM {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} \
          WHERE migration_name = ?1"
     ))
@@ -462,6 +555,211 @@ async fn load_prompt_cache_conversation_migration_progress(
 ) -> Result<PromptCacheConversationMigrationProgressRow> {
     let mut connection = pool.acquire().await?;
     load_prompt_cache_conversation_migration_progress_on_connection(&mut connection).await
+}
+
+async fn ensure_prompt_cache_conversation_total_keys(
+    pool: &Pool<Sqlite>,
+    source_max_invocation_id: i64,
+) -> Result<()> {
+    let existing = sqlx::query_scalar::<_, Option<i64>>(&format!(
+        r#"
+        SELECT total_keys
+        FROM {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE}
+        WHERE migration_name = ?1
+        "#
+    ))
+    .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
+    .fetch_one(pool)
+    .await?;
+    if existing.is_some() {
+        return Ok(());
+    }
+
+    let invocation_key_expr = invocation_prompt_cache_key_expr_sql("i");
+    let total = sqlx::query_scalar::<_, i64>(&format!(
+        r#"
+        SELECT COUNT(*)
+        FROM (
+            SELECT DISTINCT {invocation_key_expr}
+            FROM codex_invocations AS i
+            WHERE i.id <= ?1
+              AND {invocation_key_expr} IS NOT NULL
+              AND {invocation_key_expr} <> ''
+        )
+        "#
+    ))
+    .bind(source_max_invocation_id)
+    .fetch_one(pool)
+    .await?;
+    sqlx::query(&format!(
+        r#"
+        UPDATE {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE}
+        SET total_keys = ?1,
+            updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE migration_name = ?2
+        "#
+    ))
+    .bind(total)
+    .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn record_prompt_cache_conversation_materialization_run(
+    pool: &Pool<Sqlite>,
+    started_at: &str,
+    duration_ms: u64,
+    outcome: &PromptCacheConversationMaterializationRun,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    let to_i64 = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+    let error = error.map(|value| value.chars().take(512).collect::<String>());
+    sqlx::query(&format!(
+        r#"
+        INSERT INTO {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE} (
+            started_at, finished_at, phase, status, scanned, updated, batch_count,
+            last_batch_size, max_batch_size, batch_elapsed_ms, duration_ms, defer_reason, error
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#
+    ))
+    .bind(started_at)
+    .bind(format_utc_iso(Utc::now()))
+    .bind(&outcome.phase)
+    .bind(status)
+    .bind(to_i64(outcome.scanned))
+    .bind(to_i64(outcome.updated))
+    .bind(to_i64(outcome.batch_count))
+    .bind(to_i64(outcome.last_batch_size as u64))
+    .bind(to_i64(outcome.max_batch_size as u64))
+    .bind(to_i64(outcome.batch_elapsed_ms))
+    .bind(to_i64(duration_ms))
+    .bind(outcome.defer_reason)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    sqlx::query(&format!(
+        r#"
+        DELETE FROM {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE}
+        WHERE id NOT IN (
+            SELECT id
+            FROM {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE}
+            ORDER BY id DESC
+            LIMIT 100
+        )
+        "#
+    ))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn load_prompt_cache_conversation_materialization_status(
+    pool: &Pool<Sqlite>,
+) -> Result<PromptCacheConversationMaterializationStatus> {
+    let progress = load_prompt_cache_conversation_migration_progress(pool).await?;
+    let task = crate::load_startup_backfill_progress(
+        pool,
+        PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME,
+    )
+    .await?;
+    let queue_pending = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT COUNT(*) FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE}"
+    ))
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64;
+    let conversation_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM prompt_cache_conversations")
+            .fetch_one(pool)
+            .await?
+            .max(0) as u64;
+    let total_keys = progress
+        .total_keys
+        .map(|value| value.max(0) as u64)
+        .map(|value| value.max(conversation_count));
+    let completed_keys = if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE {
+        total_keys.unwrap_or(conversation_count)
+    } else if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN {
+        total_keys
+            .unwrap_or(conversation_count)
+            .saturating_sub(queue_pending)
+    } else if let Some(cursor_key) = progress.cursor_key.as_deref() {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key <= ?1",
+        )
+        .bind(cursor_key)
+        .fetch_one(pool)
+        .await?
+        .max(0) as u64
+    } else if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION {
+        conversation_count
+    } else {
+        0
+    };
+    let completed_keys = total_keys
+        .map(|total| completed_keys.min(total))
+        .unwrap_or(completed_keys);
+    let progress_percent = total_keys.and_then(|total| {
+        (total > 0).then(|| (completed_keys as f64 / total as f64 * 100.0).min(100.0))
+    });
+    let recent_runs = sqlx::query_as::<_, PromptCacheConversationMaterializationRunRecord>(
+        &format!(
+            r#"
+            SELECT id, started_at, finished_at, phase, status, scanned, updated, batch_count,
+                   last_batch_size, max_batch_size, batch_elapsed_ms, duration_ms, defer_reason, error
+            FROM {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE}
+            ORDER BY id DESC
+            LIMIT 10
+            "#
+        ),
+    )
+    .fetch_all(pool)
+    .await?;
+    let (sampled_ms, sampled_keys) = recent_runs
+        .iter()
+        .filter(|run| run.status != "failed" && run.scanned > 0 && run.duration_ms >= 0)
+        .fold((0_u64, 0_u64), |(ms, keys), run| {
+            (
+                ms.saturating_add(run.duration_ms.max(0) as u64),
+                keys.saturating_add(run.scanned.max(0) as u64),
+            )
+        });
+    let estimated_remaining_ms = total_keys.and_then(|total| {
+        let remaining = total.saturating_sub(completed_keys);
+        if remaining == 0 {
+            return Some(0);
+        }
+        if sampled_keys == 0 {
+            return None;
+        }
+        Some(
+            ((remaining as f64 * sampled_ms as f64 / sampled_keys as f64).ceil() as u64)
+                .min(365 * 24 * 60 * 60 * 1000),
+        )
+    });
+
+    Ok(PromptCacheConversationMaterializationStatus {
+        enabled: task.enabled,
+        phase: progress.phase,
+        total_keys,
+        completed_keys,
+        queue_pending,
+        progress_percent,
+        estimated_remaining_ms,
+        source_max_invocation_id: progress.source_max_invocation_id.max(0) as u64,
+        updated_at: progress.updated_at,
+        last_started_at: task.last_started_at,
+        last_finished_at: task.last_finished_at,
+        last_status: if task.enabled {
+            task.last_status
+        } else {
+            "disabled".to_string()
+        },
+        suspension_reason: task.suspension_reason,
+        recent_runs,
+    })
 }
 
 async fn update_prompt_cache_conversation_migration_progress_on_connection(
@@ -756,6 +1054,7 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
         )
         .await?;
     }
+    ensure_prompt_cache_conversation_total_keys(context.pool, source_max_invocation_id).await?;
 
     let (last_key_clause, limit_placeholder) = progress
         .cursor_key
