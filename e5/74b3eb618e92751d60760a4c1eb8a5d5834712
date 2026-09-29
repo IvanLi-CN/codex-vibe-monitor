@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.78.0",
+  "base_stable_version": "2.77.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-29T07:03:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.78.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "379bf8b2016f24ed1c8839450ddcb30650ecaeaa",
+  "pr_number": 1049,
+  "pr_title": "feat(api): add public project metrics endpoint",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.78.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.78.0",
+  "target_sha": "e574b3eb618e92751d60760a4c1eb8a5d5834712",
+  "type_label": "type:minor"
+}
