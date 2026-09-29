@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.79.0",
+  "base_stable_version": "2.78.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-29T16:24:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.79.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "be34907ee563db3d1b412572c90392acd7365470",
+  "pr_number": 1053,
+  "pr_title": "feat(prompt-cache): add adaptive materialization control",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.79.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.79.0",
+  "target_sha": "c978a68462c08d0d967efa8c8761a66a39a1f8e4",
+  "type_label": "type:minor"
+}
