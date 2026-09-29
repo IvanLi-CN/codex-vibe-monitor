@@ -386,6 +386,14 @@ impl AppConfig {
                     .unwrap_or("codex_vibe_monitor");
                 database_path.with_file_name(format!("{stem}.performance.sqlite"))
             });
+        let maintenance_database_path = Self::derive_maintenance_database_path(&database_path);
+        if maintenance_database_path == database_path
+            || maintenance_database_path == performance_database_path
+        {
+            bail!(
+                "{ENV_MAINTENANCE_DATABASE_PATH} must differ from DATABASE_PATH and PERFORMANCE_DATABASE_PATH"
+            );
+        }
         let performance_telemetry_enabled = parse_bool_env_var(
             ENV_PERFORMANCE_TELEMETRY_ENABLED,
             DEFAULT_PERFORMANCE_TELEMETRY_ENABLED,
@@ -791,6 +799,23 @@ impl AppConfig {
             upstream_accounts_history_retention_days,
             upstream_accounts_kaisoumail,
         })
+    }
+
+    pub(crate) fn derive_maintenance_database_path(database_path: &std::path::Path) -> PathBuf {
+        env::var(ENV_MAINTENANCE_DATABASE_PATH)
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let stem = database_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("codex_vibe_monitor");
+                database_path.with_file_name(format!("{stem}.maintenance.sqlite"))
+            })
+    }
+
+    pub(crate) fn maintenance_database_path(&self) -> PathBuf {
+        Self::derive_maintenance_database_path(&self.database_path)
     }
 
     pub(crate) fn database_url(&self) -> String {

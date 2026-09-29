@@ -89,9 +89,10 @@ fn timeseries_minute_projection_pressure_deferred(
     error: &ApiError,
 ) -> Option<TimeseriesMinuteProjectionDeferred> {
     let error = match error {
-        ApiError::BadRequest(error) | ApiError::Unavailable(error) | ApiError::Internal(error) => {
-            error
-        }
+        ApiError::BadRequest(error)
+        | ApiError::Conflict(error)
+        | ApiError::Unavailable(error)
+        | ApiError::Internal(error) => error,
     };
     if !pressure_gate.record_error(task, error) {
         return None;

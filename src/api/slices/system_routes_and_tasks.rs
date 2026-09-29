@@ -1471,6 +1471,15 @@ pub(crate) async fn begin_system_task_run(
 ) -> Result<SystemTaskRunHandle> {
     let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
+    if let Some(store) = crate::maintenance_store::global() {
+        let id = store.begin_run(task_kind.as_str(), &started_at).await?;
+        return Ok(SystemTaskRunHandle {
+            id,
+            task_kind,
+            trigger_kind,
+            started_at: Instant::now(),
+        });
+    }
     let id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO system_task_runs (
@@ -1508,6 +1517,17 @@ pub(crate) async fn begin_system_task_run_nonblocking(
     trigger_kind: impl Into<String>,
     summary: Option<String>,
 ) -> Result<SystemTaskRunHandle> {
+    let trigger_kind = trigger_kind.into();
+    if let Some(store) = crate::maintenance_store::global() {
+        let started_at = format_utc_iso_millis(Utc::now());
+        let id = store.begin_run(task_kind.as_str(), &started_at).await?;
+        return Ok(SystemTaskRunHandle {
+            id,
+            task_kind,
+            trigger_kind,
+            started_at: Instant::now(),
+        });
+    }
     let options = SqliteConnectOptions::from_str(database_url)
         .context("invalid sqlite database url")?
         .create_if_missing(true)
@@ -1515,7 +1535,6 @@ pub(crate) async fn begin_system_task_run_nonblocking(
         .busy_timeout(Duration::ZERO);
     let mut connection = SqliteConnection::connect_with(&options).await?;
     let started_at = format_utc_iso_millis(Utc::now());
-    let trigger_kind = trigger_kind.into();
     let result = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO system_task_runs (
@@ -1588,6 +1607,19 @@ pub(crate) async fn finish_system_task_run(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
+    if let Some(store) = crate::maintenance_store::global() {
+        return store
+            .finish_run(
+                handle.id,
+                status.as_str(),
+                &finished_at,
+                duration_ms,
+                summary.as_deref(),
+                detail.as_deref(),
+            )
+            .await
+            .is_ok();
+    }
     if let Err(err) = sqlx::query(
         r#"
         UPDATE system_task_runs
@@ -1714,6 +1746,25 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
+    if let Some(store) = crate::maintenance_store::global().cloned() {
+        let id = handle.id;
+        let status_text = status.as_str().to_string();
+        let detail_text = detail.clone();
+        let summary_text = summary.clone();
+        tokio::spawn(async move {
+            let _ = store
+                .finish_run(
+                    id,
+                    &status_text,
+                    &finished_at,
+                    duration_ms,
+                    summary_text.as_deref(),
+                    detail_text.as_deref(),
+                )
+                .await;
+        });
+        return true;
+    }
     let finish = BatchedSystemTaskFinish {
         run_id: handle.id,
         task_kind: handle.task_kind,
@@ -1907,6 +1958,91 @@ pub(crate) async fn list_system_task_runs(
         page_size,
         next_cursor,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedTaskControlRequest {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) interval_secs: Option<i64>,
+    pub(crate) cron_expr: Option<String>,
+}
+
+pub(crate) async fn list_managed_tasks(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<Vec<crate::maintenance_store::ManagedTask>>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Ok(Json(Vec::new()));
+    };
+    store.list_tasks().await.map(Json).map_err(ApiError::from)
+}
+
+pub(crate) async fn get_managed_task(
+    State(_state): State<Arc<AppState>>,
+    AxumPath(task_key): AxumPath<String>,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    store
+        .detail(&task_key)
+        .await
+        .map_err(ApiError::from)?
+        .map(Json)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("managed task not found")))
+}
+
+pub(crate) async fn update_managed_task(
+    State(state): State<Arc<AppState>>,
+    AxumPath(task_key): AxumPath<String>,
+    Json(request): Json<ManagedTaskControlRequest>,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    if let Some(enabled) = request.enabled
+        && !store
+            .set_enabled(&task_key, enabled)
+            .await
+            .map_err(ApiError::from)?
+    {
+        return Err(ApiError::bad_request(anyhow!("managed task not found")));
+    }
+    if (request.interval_secs.is_some() || request.cron_expr.is_some())
+        && !store
+            .set_schedule(
+                &task_key,
+                request.interval_secs,
+                request.cron_expr.as_deref(),
+            )
+            .await
+            .map_err(ApiError::from)?
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "manual or unknown task cannot be scheduled"
+        )));
+    }
+    get_managed_task(State(state), AxumPath(task_key)).await
+}
+
+pub(crate) async fn run_managed_task_now(
+    State(state): State<Arc<AppState>>,
+    AxumPath(task_key): AxumPath<String>,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    store
+        .request_run(&task_key)
+        .await
+        .map_err(ApiError::conflict)?;
+    get_managed_task(State(state), AxumPath(task_key)).await
 }
 
 pub(crate) fn summarize_retention_run_for_system_task(

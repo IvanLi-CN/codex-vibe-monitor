@@ -2810,6 +2810,67 @@ function systemTasks() {
   ];
 }
 
+function managedTasks() {
+  const tasks = [
+    ["retention_archive", "Retention archive", "interval", false],
+    ["upstream_account_maintenance", "Upstream account maintenance", "interval", false],
+    ["forward_proxy_subscription_refresh", "Forward proxy subscription refresh", "event", false],
+    ["prompt_cache_materialization", "Prompt cache materialization", "event", false],
+    ["startup_backfill", "Startup backfill", "startup", false],
+    ["raw_compression", "Raw compression", "manual", true],
+  ] as const;
+  return tasks.map(([taskKey, title, triggerMode, isManual], index) => ({
+    taskKey,
+    title,
+    description: "Demo task operations state",
+    triggerMode,
+    enabled: index !== 5,
+    intervalSecs: isManual ? null : 300,
+    cronExpr: null,
+    isManual,
+  }));
+}
+
+function managedTaskDetail(taskKey: string) {
+  const task = managedTasks().find((item) => item.taskKey === taskKey);
+  if (!task) return null;
+  const at = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
+  return {
+    task,
+    progress: task.isManual
+      ? {
+          total: null,
+          completed: null,
+          phase: "manual",
+          checkpoint: null,
+          etaSeconds: null,
+          updatedAt: at,
+          freshness: "fresh",
+        }
+      : {
+          total: 2547,
+          completed: 1842,
+          phase: "processing",
+          checkpoint: "cursor:1842",
+          etaSeconds: 420,
+          updatedAt: at,
+          freshness: "fresh",
+        },
+    recentRuns: [
+      {
+        id: 1,
+        startedAt: at,
+        finishedAt: demoNow(),
+        durationMs: 31_000,
+        status: "success",
+        processedCount: 1842,
+        updatedCount: 1780,
+        errorDetail: null,
+      },
+    ],
+  };
+}
+
 function poolAttempts(invokeId: string) {
   const record = invocations().find((item) => item.invokeId === invokeId);
   if (!record) return [];
@@ -4116,6 +4177,22 @@ export async function handleDemoRequest(request: Request) {
       pageSize,
       items: items.slice((page - 1) * pageSize, page * pageSize),
     });
+  }
+  if (pathname === "/api/system/managed-tasks" && request.method === "GET")
+    return json(managedTasks());
+  const managedTaskMatch = pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
+  if (managedTaskMatch && request.method === "GET") {
+    const detail = managedTaskDetail(decodeURIComponent(managedTaskMatch[1]));
+    return detail ? json(detail) : json({ error: "not found" }, { status: 404 });
+  }
+  if (managedTaskMatch && request.method === "PATCH") {
+    const detail = managedTaskDetail(decodeURIComponent(managedTaskMatch[1]));
+    return detail ? json(detail) : json({ error: "not found" }, { status: 404 });
+  }
+  const managedRunMatch = pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)\/run$/);
+  if (managedRunMatch && request.method === "POST") {
+    const detail = managedTaskDetail(decodeURIComponent(managedRunMatch[1]));
+    return detail ? json(detail) : json({ error: "not found" }, { status: 404 });
   }
 
   if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")

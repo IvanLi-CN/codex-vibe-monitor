@@ -934,3 +934,63 @@ _Avoid_: Completed archive, orphan archive
 **Retention Recovery**:
 The autonomous, pressure-aware background process that resumes a Retention Backlog without an operator CLI, restart, or manual database repair.
 _Avoid_: Manual cleanup, maintenance window
+
+## Task Operations
+
+**纳管任务（Managed Task）**:
+A background task with an independently observable boundary and operator controls for enablement, triggering, progress, and run history. A task may be interval-based, cron-based, event-driven, or startup-only; the trigger mode is part of its identity.
+_Avoid_: 任意后台线程, 单次 SQL, 页面刷新
+
+**任务运行（Task Run）**:
+One execution of a Managed Task with a trigger, start and finish timestamps, terminal status, duration, summary, and bounded error detail. A Task Run is an operational record, not a business invocation.
+_Avoid_: 对外调用, 上游尝试, 日志行
+
+**任务进度快照（Task Progress Snapshot）**:
+The latest durable operational state for a Managed Task, including phase, unit-aware total and completed counts, cursor or checkpoint, last update, and an optional estimate. Unknown or open-ended work remains explicitly unknown instead of being represented as zero or complete.
+_Avoid_: 数据库行数, 实时日志, 伪造百分比
+
+**持续任务（Continuous Task）**:
+A Managed Task whose work is continuously replenished or whose total cannot be bounded for one run. It exposes health, activity, throughput, and recent runs while leaving total progress and remaining time unknown when no sound estimate exists.
+_Avoid_: 永不完成任务, 无限循环
+
+**安全边界暂停（Safe-Boundary Pause）**:
+A task control state that prevents new work and lets the active batch or checkpoint commit before the run becomes paused. It does not forcefully interrupt an in-flight database operation.
+_Avoid_: 强制取消, 事务中断, 立即杀死任务
+
+**任务触发模式（Task Trigger Mode）**:
+The declared way a Managed Task becomes eligible: event wake, fixed interval, cron schedule, or startup. Event-driven tasks retain their event wake path and may use interval or cron only for bounded fallback probes.
+_Avoid_: 固定轮询, 触发来源混用, 把所有任务改成 cron
+
+**主库业务事实（Business Main Facts）**:
+The durable request, account, archive, and projection facts that serve product behavior. New task controls, progress snapshots, and run history must not add synchronous writes to this store.
+_Avoid_: 任务审计库, 性能指标库, 页面缓存
+
+**运维任务数据（Operational Task Data）**:
+The newly introduced task configuration, progress, run history, and bounded diagnostic summaries used by the management pages. It is stored outside the Business Main Facts store so task observability does not increase main-database write pressure.
+_Avoid_: 业务事实, 原始请求载荷, 性能时间桶
+
+**维护库（Maintenance Database）**:
+The separate local SQLite database for Operational Task Data, distinct from both the Business Main Facts store and the Performance Telemetry Database. Task controls, progress snapshots, run history, and bounded error summaries are written here asynchronously on a best-effort basis; unavailability never falls back to the main database.
+_Avoid_: 主库旁路表, 性能时间桶, 任务执行前置依赖
+
+The configurable path is `MAINTENANCE_DATABASE_PATH`. When omitted, the service derives a sibling file by appending `.maintenance.sqlite` to the main database stem: `codex.sqlite` becomes `codex.maintenance.sqlite`; this is a suffix, not a hidden filename beginning with `.`.
+
+**性能指标库（Performance Telemetry Database）**:
+The existing separate SQLite database for bounded, low-cardinality aggregate performance metrics. It records task overhead, throughput, database waits, pressure, latency distributions, failures, and deferrals, but does not become the source for task configuration, progress, or run history.
+_Avoid_: 任务状态库, 运行明细库, 账号级指标
+
+**运维观测降级（Operational Observability Degradation）**:
+A state in which a task continues its authorized work while the Maintenance Database is unavailable or a write is dropped. The management page shows missing or stale observation coverage; the system never synchronously writes the missing record to the Business Main Facts store just to make the page complete.
+_Avoid_: 阻断任务, 主库回退, 伪造成功记录
+
+**手工维护操作（Manual Maintenance Operation）**:
+A Managed Task that has no interval or cron trigger and runs only after an operator invokes it. Its enable switch controls whether invocation is allowed; it uses the same safe-boundary pause and run-history contract as scheduled tasks.
+_Avoid_: 隐藏 CLI, 伪计划任务, 自动补跑
+
+**单实例任务运行（Single-Instance Task Run）**:
+The concurrency rule that permits at most one active run for a Managed Task. A second manual request is rejected while one is active, and a missed scheduled occurrence is not queued for a later burst.
+_Avoid_: 并发重复运行, 任务队列, 追赶补跑
+
+**无追赶调度（No-Catch-Up Scheduling）**:
+The scheduling policy that does not replay occurrences missed while a task was disabled or already active. Re-enabling waits for the next normal eligibility; an operator can request an explicit one-off run when backfill is intended.
+_Avoid_: 恢复即补跑, 补偿风暴, 隐式追赶

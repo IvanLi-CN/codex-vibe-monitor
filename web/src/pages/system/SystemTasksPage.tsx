@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
-import { Button } from "../../components/ui/button";
 import {
   Card,
   CardContent,
@@ -8,270 +8,65 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
-import { Input } from "../../components/ui/input";
-import { SelectField } from "../../components/ui/select-field";
 import { ListBodyState } from "../../features/shared/ListBodyState";
-import { useTranslation } from "../../i18n";
-import { fetchSystemTaskRuns, type SystemTaskRun } from "../../lib/api";
-
-const TASK_PAGE_SIZE_OPTIONS = [10, 20, 50, 100].map((value) => ({
-  value: String(value),
-  label: String(value),
-}));
-
-function toIsoStringOrUndefined(value: string, upperBound = false): string | undefined {
-  const normalized = value.trim();
-  if (!normalized) return undefined;
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return undefined;
-  if (upperBound && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
-    parsed.setSeconds(59, 999);
-  }
-  return parsed.toISOString();
-}
-
-function statusTone(status: string): string {
-  switch (status) {
-    case "success":
-      return "text-success";
-    case "failed":
-      return "text-error";
-    case "skipped":
-      return "text-warning";
-    default:
-      return "text-info";
-  }
-}
+import { fetchManagedTasks, type ManagedTask } from "../../lib/api";
 
 export default function SystemTasksPage() {
-  const { t } = useTranslation();
-  const [items, setItems] = useState<SystemTaskRun[]>([]);
-  const [total, setTotal] = useState(0);
+  const [tasks, setTasks] = useState<ManagedTask[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [taskKind, setTaskKind] = useState("");
-  const [status, setStatus] = useState("");
-  const [startedAtFrom, setStartedAtFrom] = useState("");
-  const [startedAtTo, setStartedAtTo] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-
-  const startedAtFromIso = useMemo(() => toIsoStringOrUndefined(startedAtFrom), [startedAtFrom]);
-  const startedAtToIso = useMemo(() => toIsoStringOrUndefined(startedAtTo, true), [startedAtTo]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
-    setIsLoading(true);
-    fetchSystemTaskRuns({
-      taskKind: taskKind || undefined,
-      status: status || undefined,
-      startedAtFrom: startedAtFromIso,
-      startedAtTo: startedAtToIso,
-      page,
-      pageSize,
-    })
-      .then((response) => {
-        if (!active) return;
-        setItems(response.items);
-        setTotal(response.total);
-        setPage(response.page);
-        setPageSize(response.pageSize);
-        setError(null);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!active) return;
-        setIsLoading(false);
-      });
-
+    fetchManagedTasks()
+      .then((items) => active && setTasks(items))
+      .catch(
+        (reason) => active && setError(reason instanceof Error ? reason.message : String(reason)),
+      )
+      .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [page, pageSize, startedAtFromIso, startedAtToIso, status, taskKind]);
-
-  const filteredCount = useMemo(() => total.toLocaleString(), [total]);
-  const pageCount = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [pageSize, total]);
+  }, []);
 
   return (
     <section className="surface-panel overflow-hidden">
       <div className="surface-panel-body gap-5">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div className="section-heading">
-            <h2 className="section-title text-2xl">{t("system.tasks.title")}</h2>
-            <p className="section-description max-w-3xl">{t("system.tasks.description")}</p>
-          </div>
-          <div className="grid gap-3 min-[769px]:grid-cols-2 xl:grid-cols-5">
-            <Input
-              value={taskKind}
-              onChange={(event) => {
-                setTaskKind(event.target.value);
-                setPage(1);
-              }}
-              placeholder={t("system.tasks.filters.taskKindPlaceholder")}
-            />
-            <SelectField
-              value={status}
-              onValueChange={(value) => {
-                setStatus(value);
-                setPage(1);
-              }}
-              options={[
-                { value: "", label: t("system.tasks.filters.allStatuses") },
-                { value: "success", label: "success" },
-                { value: "failed", label: "failed" },
-                { value: "skipped", label: "skipped" },
-                { value: "running", label: "running" },
-              ]}
-            />
-            <label className="space-y-1">
-              <span className="text-xs font-medium text-base-content/65">
-                {t("system.tasks.filters.startedAtFrom")}
-              </span>
-              <Input
-                type="datetime-local"
-                value={startedAtFrom}
-                onChange={(event) => {
-                  setStartedAtFrom(event.target.value);
-                  setPage(1);
-                }}
-              />
-            </label>
-            <label className="space-y-1">
-              <span className="text-xs font-medium text-base-content/65">
-                {t("system.tasks.filters.startedAtTo")}
-              </span>
-              <Input
-                type="datetime-local"
-                value={startedAtTo}
-                onChange={(event) => {
-                  setStartedAtTo(event.target.value);
-                  setPage(1);
-                }}
-              />
-            </label>
-            <div className="flex min-h-10 items-center rounded-xl border border-base-300/75 bg-base-100/72 px-3 text-sm text-base-content/70">
-              {t("system.tasks.filters.count", { count: filteredCount })}
-            </div>
-          </div>
+        <div className="section-heading">
+          <h2 className="section-title text-2xl">任务运维</h2>
+          <p className="section-description max-w-3xl">数据库维护任务的进度、调度与运行记录。</p>
         </div>
-
-        {error && items.length > 0 ? (
-          <Alert variant="error">{t("system.tasks.loadError", { error })}</Alert>
+        {error ? <Alert variant="error">维护库观测不可用：{error}</Alert> : null}
+        {loading ? <ListBodyState variant="loading" title="正在读取任务目录" /> : null}
+        {!loading && tasks.length === 0 ? (
+          <ListBodyState variant="empty" title="暂无任务观测" />
         ) : null}
-
-        <div className="grid gap-4" data-testid="system-tasks-list">
-          {isLoading && items.length === 0 ? (
-            <ListBodyState
-              variant="loading"
-              title={t("system.tasks.loading")}
-              testId="system-tasks-loading"
-            />
-          ) : error && items.length === 0 ? (
-            <ListBodyState
-              variant="error"
-              title={t("system.tasks.loadError", { error })}
-              testId="system-tasks-error"
-            />
-          ) : null}
-          {items.map((item) => (
-            <Card
-              key={item.id}
-              className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm"
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {tasks.map((task) => (
+            <Link
+              key={task.taskKey}
+              to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
+              className="block"
             >
-              <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                  <div>
-                    <CardTitle className="text-base font-semibold">{item.taskKind}</CardTitle>
-                    <CardDescription>
-                      {t("system.tasks.meta", {
-                        trigger: item.triggerKind,
-                        startedAt: item.startedAt,
-                      })}
-                    </CardDescription>
+              <Card className="h-full transition-colors hover:border-primary/60">
+                <CardHeader className="gap-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <CardTitle className="text-base">{task.title}</CardTitle>
+                    <span
+                      className={`text-xs font-semibold ${task.enabled ? "text-success" : "text-base-content/50"}`}
+                    >
+                      {task.enabled ? "已启用" : "已停用"}
+                    </span>
                   </div>
-                  <div
-                    className={`text-sm font-semibold uppercase tracking-[0.14em] ${statusTone(item.status)}`}
-                  >
-                    {item.status}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2 pt-4 text-sm">
-                {item.summary ? <div>{item.summary}</div> : null}
-                {item.detail ? <div className="text-base-content/68">{item.detail}</div> : null}
-                <div className="text-xs text-base-content/55">
-                  {t("system.tasks.duration", {
-                    duration: item.durationMs == null ? "—" : `${item.durationMs} ms`,
-                    finishedAt: item.finishedAt ?? "—",
-                  })}
-                </div>
-              </CardContent>
-            </Card>
+                  <CardDescription>{task.description}</CardDescription>
+                </CardHeader>
+                <CardContent className="flex items-center justify-between text-xs text-base-content/60">
+                  <span>{task.taskKey}</span>
+                  <span>{task.isManual ? "手动" : task.triggerMode}</span>
+                </CardContent>
+              </Card>
+            </Link>
           ))}
-          {!isLoading && !error && items.length === 0 ? (
-            <ListBodyState
-              variant="empty"
-              title={t("system.tasks.empty")}
-              testId="system-tasks-empty"
-            />
-          ) : null}
-        </div>
-
-        <div
-          className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between"
-          data-testid="system-tasks-pagination"
-        >
-          <div className="text-sm text-base-content/70">
-            {t("system.tasks.pagination.summary", {
-              page,
-              pageCount,
-              total: total.toLocaleString(),
-            })}
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center justify-between gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2 sm:justify-start">
-              <span className="text-sm font-medium text-base-content/65">
-                {t("system.tasks.pagination.pageSize")}
-              </span>
-              <SelectField
-                className="w-[7rem] min-w-[7rem]"
-                value={String(pageSize)}
-                options={TASK_PAGE_SIZE_OPTIONS}
-                size="sm"
-                triggerClassName="h-11 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm lg:h-10"
-                aria-label={t("system.tasks.pagination.pageSize")}
-                onValueChange={(value) => {
-                  setPageSize(Number(value));
-                  setPage(1);
-                }}
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-11 rounded-xl px-4 lg:h-10"
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
-                disabled={isLoading || page <= 1}
-              >
-                {t("system.tasks.pagination.previous")}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-11 rounded-xl px-4 lg:h-10"
-                onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                disabled={isLoading || page >= pageCount}
-              >
-                {t("system.tasks.pagination.next")}
-              </Button>
-            </div>
-          </div>
         </div>
       </div>
     </section>

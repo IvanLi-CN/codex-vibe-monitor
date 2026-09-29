@@ -488,6 +488,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                     );
                     let pressure_error = match &err {
                         ApiError::BadRequest(err)
+                        | ApiError::Conflict(err)
                         | ApiError::Unavailable(err)
                         | ApiError::Internal(err) => pressure_gate
                             .record_error("dashboard_runtime_projection_reconcile", err),

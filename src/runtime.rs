@@ -215,6 +215,19 @@ pub(crate) async fn run() -> Result<()> {
 
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
+    let _maintenance_store = match crate::maintenance_store::open(&config).await {
+        Ok(store) => {
+            if let Err(error) = store.migrate_legacy_state(&pool).await {
+                warn!(error = %error, "legacy task state migration did not complete; will retry on next startup");
+            }
+            crate::maintenance_store::set_global(Arc::new(store.clone()));
+            Some(Arc::new(store))
+        }
+        Err(error) => {
+            warn!(error = %error, path = %config.maintenance_database_path().display(), "maintenance database unavailable; operational observation will be stale");
+            None
+        }
+    };
     log_startup_phase("schema", schema_started_at);
     if should_recover_pending_pool_attempts_on_startup(&cli) {
         let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
