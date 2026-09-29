@@ -27,8 +27,8 @@ Historical materialization is an ordered startup backfill task named
 `prompt_cache_conversations_materialization_v1`. Its durable phases are:
 
 1. `identity_backfill` snapshots `MAX(codex_invocations.id)` and paginates distinct prompt-cache
-   keys in key order. The snapshot bounds the initial scan, and `cursor_key` advances only after
-   the page's identity/statistics work has committed.
+   keys in key order. The snapshot bounds the initial scan, and `cursor_key` advances in the same
+   transaction as each committed identity/statistics batch.
 2. `identity_reconciliation` performs an uncursored, bounded search for missing identities so
    keys created or changed while the snapshot scan was running are included.
 3. `stats_rebuild` paginates existing conversation keys and refreshes their aggregates.
@@ -38,14 +38,18 @@ Historical materialization is an ordered startup backfill task named
 The identity marker, statistics freshness marker, complete phase, and empty refresh queue are a
 single read-completeness contract. Until all four conditions hold, prompt-cache aggregate reads
 and subscription baselines return the existing `ApiError::Unavailable` error. They do not expose
-partial statistics or zero-valued placeholders. New invocation writes and incremental refreshes
-remain available; mutation triggers continue to invalidate freshness and enqueue affected keys.
+partial statistics or zero-valued placeholders. New invocation writes remain available; terminal
+writes and prompt-cache key backfills only invalidate freshness and enqueue affected keys. The
+startup materialization task owns the historical aggregate refresh so foreground P1/P2 write paths
+never synchronously scan retained invocation payloads.
 
 The startup backfill scheduler owns pressure admission, P2 write coordination, cancellation,
-failure backoff, and task wake-up. Page data is committed before its progress cursor is advanced,
-so process exit or cancellation repeats only an idempotent page. A later run can forward-repair
-missing identities, stale markers, or pending queue entries without rewriting existing conversation
-IDs. WebSocket behavior is outside this decision.
+failure backoff, and task wake-up. Each micro-batch commits its data and progress cursor together,
+so process exit or transaction failure repeats only an idempotent micro-batch. Prompt-cache
+materialization may refine a page into smaller committed transactions and yields only between those transactions;
+the shared cancellation behavior for other startup backfills is unchanged. A later run can
+forward-repair missing identities, stale markers, or pending queue entries without rewriting
+existing conversation IDs. WebSocket behavior is outside this decision.
 
 ## Consequences
 
@@ -53,7 +57,8 @@ IDs. WebSocket behavior is outside this decision.
 - Progress is observable through the durable migration phase/cursor and existing startup-backfill
   scanned/updated/status records and structured task logs.
 - A newly started process can serve normal writes while aggregate prompt-cache reads fail closed
-  until materialization converges.
+  until materialization converges; queued aggregate refreshes do not extend foreground write
+  transactions or retry in the online writer.
 - Deployment rollback does not reverse the additive schema or derived rows; a newer program
   version performs forward repair.
 
@@ -61,3 +66,4 @@ IDs. WebSocket behavior is outside this decision.
 
 - `docs/specs/proxy-invocation-identity/IMPLEMENTATION.md`
 - `docs/specs/proxy-invocation-identity/assets/persistent-state-migration-record.json`
+- `docs/adr/0022-prompt-cache-adaptive-materialization.md`
