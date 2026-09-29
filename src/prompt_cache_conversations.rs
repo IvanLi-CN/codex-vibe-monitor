@@ -920,11 +920,17 @@ async fn prompt_cache_conversation_materialize_key_batch(
 ) -> Result<(usize, usize, Duration)> {
     let started_at = Instant::now();
     let mut tx = pool.begin().await?;
+    let existing_keys =
+        load_prompt_cache_conversation_keys_on_connection(tx.as_mut(), prompt_cache_keys).await?;
     let mut identities_created = 0;
     for prompt_cache_key in prompt_cache_keys {
-        if ensure_prompt_cache_conversation_row_on_connection(tx.as_mut(), prompt_cache_key).await?
-        {
-            identities_created += 1;
+        if !existing_keys.contains(prompt_cache_key) {
+            let (_, created) =
+                create_prompt_cache_conversation_row_on_connection(tx.as_mut(), prompt_cache_key)
+                    .await?;
+            if created {
+                identities_created += 1;
+            }
         }
     }
     let prompt_cache_key_refs = prompt_cache_keys
@@ -950,6 +956,30 @@ async fn prompt_cache_conversation_materialize_key_batch(
     }
     tx.commit().await?;
     Ok((identities_created, refreshed, started_at.elapsed()))
+}
+
+async fn load_prompt_cache_conversation_keys_on_connection(
+    connection: &mut SqliteConnection,
+    prompt_cache_keys: &[String],
+) -> Result<HashSet<String>> {
+    if prompt_cache_keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let placeholders = std::iter::repeat_n("?", prompt_cache_keys.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT prompt_cache_key FROM prompt_cache_conversations WHERE prompt_cache_key IN ({placeholders})"
+    );
+    let mut query = sqlx::query_scalar::<_, String>(&sql);
+    for prompt_cache_key in prompt_cache_keys {
+        query = query.bind(prompt_cache_key);
+    }
+    Ok(query
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .collect())
 }
 
 async fn run_prompt_cache_conversation_adaptive_key_batches(
