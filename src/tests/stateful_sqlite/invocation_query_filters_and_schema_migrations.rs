@@ -525,8 +525,11 @@ async fn prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale
             panic!("scale materialization did not complete within the test budget");
         };
         let foreground_reads = async {
-            let mut latencies = Vec::with_capacity(100);
-            while !finished.load(std::sync::atomic::Ordering::SeqCst) || latencies.len() < 100 {
+            const FOREGROUND_SAMPLE_COUNT: usize = 500;
+            let mut latencies = Vec::with_capacity(FOREGROUND_SAMPLE_COUNT);
+            while !finished.load(std::sync::atomic::Ordering::SeqCst)
+                || latencies.len() < FOREGROUND_SAMPLE_COUNT
+            {
                 let started_at = std::time::Instant::now();
                 sqlx::query_scalar::<_, i64>(
                     "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
