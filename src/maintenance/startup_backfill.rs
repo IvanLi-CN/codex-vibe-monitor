@@ -2127,26 +2127,27 @@ async fn run_startup_backfill_task_if_due_outcome(
             if run.deferred {
                 drop(write_permit);
                 if run.defer_reason == Some("operator_disabled") {
-                    STARTUP_BACKFILL_SCHEDULER.clear_next_due(task);
-                    set_startup_backfill_task_enabled(
-                        &state.pool,
-                        StartupBackfillTask::PromptCacheConversationsMaterialization,
-                        false,
-                    )
-                    .await?;
+                    let current_progress =
+                        load_startup_backfill_progress(&state.pool, &task_name).await?;
+                    let resumed = current_progress.enabled;
                     info!(
                         task = task.log_label(),
                         task_name = %task_name,
                         detail = %detail,
+                        resumed,
                         "startup backfill task stopped at a committed micro-batch boundary after operator disable"
                     );
                     return Ok((
                         StartupBackfillTaskRunOutcome {
                             actionable: false,
                             failed: false,
-                            deferred: false,
-                            completed: true,
-                            next_due: Utc::now() + ChronoDuration::days(3650),
+                            deferred: resumed,
+                            completed: !resumed,
+                            next_due: if resumed {
+                                Utc::now()
+                            } else {
+                                Utc::now() + ChronoDuration::days(3650)
+                            },
                         },
                         None,
                     ));
@@ -2480,7 +2481,18 @@ async fn run_startup_backfill_task_with_pressure(
                 {
                     Ok(outcome) => outcome,
                     Err(error) => {
-                        let failed_outcome = PromptCacheConversationMaterializationRun::default();
+                        let failed_outcome =
+                            crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                                &state.pool,
+                            )
+                            .await
+                            .map(|progress| PromptCacheConversationMaterializationRun {
+                                phase: progress.phase,
+                                scanned: progress.completed_keys.unwrap_or(0).max(0) as u64,
+                                updated: progress.completed_keys.unwrap_or(0).max(0) as u64,
+                                ..Default::default()
+                            })
+                            .unwrap_or_default();
                         if let Err(record_error) =
                             record_prompt_cache_conversation_materialization_run(
                                 &state.pool,

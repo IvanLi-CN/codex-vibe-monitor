@@ -105,9 +105,9 @@
       "dml-prompt-cache-conversation-queue-drain"
     ],
     "progress_signals": [
-      "The prompt_cache_conversation_migration_progress row exposes the current phase, invocation snapshot boundary, keyset cursor, committed-key counter, and updated_at checkpoint.",
+      "The prompt_cache_conversation_migration_progress row exposes the current phase, invocation snapshot boundary, keyset cursor, committed identity-key counter, and updated_at checkpoint; schema setup repairs counters for older complete rows.",
       "The system prompt-cache materialization status surface exposes total keys, completed keys, progress, queue backlog, estimated remaining time, the latest 10 bounded run records, and a durable pause/resume control.",
-      "Structured startup-backfill logs expose phase, scanned, updated, completion, retry, failure, and defer status, together with micro-batch count, last/max batch size, accumulated batch time, and defer reason.",
+      "Structured startup-backfill logs expose phase, scanned, updated, completion, retry, failure, and defer status, together with micro-batch count, last/max batch size, accumulated batch time, and defer reason; failed prompt-cache records retain the durable phase checkpoint.",
       "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
       "The prompt_cache_conversations_stats_v2 marker identifies a completed aggregate refresh only when the prompt_cache_conversation_stats_refresh_queue is empty; its absence or a pending queue triggers a paged startup rebuild."
     ],

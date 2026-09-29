@@ -204,8 +204,8 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
     assert!(status.enabled);
     assert_eq!(status.total_keys, Some(4));
     assert_eq!(status.completed_keys, 4);
-    assert_eq!(status.progress_percent, Some(100.0));
-    assert_eq!(status.estimated_remaining_ms, Some(0));
+    assert_eq!(status.progress_percent, Some(99.0));
+    assert_eq!(status.estimated_remaining_ms, None);
     assert_eq!(status.queue_pending, 0);
     assert_eq!(status.recent_runs.len(), 1);
 
@@ -231,6 +231,46 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
     .await
     .expect("enable prompt-cache materialization");
     assert!(enabled.enabled);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_repairs_complete_progress_counters() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache materialization schema");
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key) \
+         VALUES ('ABCDEF', 'legacy-complete-key')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy complete conversation");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_migration_progress \
+         SET phase = 'complete', total_keys = NULL, completed_keys = 0 \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("reset legacy complete progress counters");
+
+    ensure_schema(&pool)
+        .await
+        .expect("repair legacy complete progress counters");
+    let status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load repaired materialization status");
+    assert_eq!(status.total_keys, Some(1));
+    assert_eq!(status.completed_keys, 1);
+    assert_eq!(status.progress_percent, Some(100.0));
+    assert_eq!(status.estimated_remaining_ms, Some(0));
 }
 
 #[tokio::test]

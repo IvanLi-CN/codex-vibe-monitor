@@ -45,12 +45,13 @@ responses do not change. A dedicated operator status surface adds GET/PATCH
 startup_backfill_progress.enabled; disabling a task only takes effect at a committed
 micro-batch boundary, while enabling it wakes the scheduler.
 
-The prompt-cache migration progress row stores a fixed source total and a committed-key counter
-once the identity snapshot is captured. A bounded prompt_cache_conversation_materialization_runs
-table retains the latest 100 task calls, including phase, duration, processed/updated counts, batch
-metrics, and defer or failure reason. The UI exposes the latest 10 records and derives ETA only
-from these committed records; status reads use the durable counters and bounded queue sampling,
-never a historical table scan.
+The prompt-cache migration progress row stores a fixed source total and a committed identity-key
+counter once the identity snapshot is captured. Statistics cursor commits do not add those keys
+again. A bounded prompt_cache_conversation_materialization_runs table retains the latest 100 task
+calls, including phase, duration, processed/updated counts, batch metrics, and defer or failure
+reason. The UI exposes the latest 10 records; incomplete phases stay below 100% and zero ETA is
+reported only in the complete phase. Status reads use durable counters and bounded queue sampling,
+never a historical table scan. Schema setup repairs counters for older complete rows.
 
 ## Consequences
 
