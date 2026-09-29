@@ -457,6 +457,59 @@ async fn prompt_cache_materialization_honors_operator_disable_in_queue_drain() {
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_honors_operator_disable_before_empty_phase_transition() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization before empty phases");
+
+    for phase in ["identity_reconciliation", "stats_rebuild"] {
+        sqlx::query(
+            "UPDATE prompt_cache_conversation_migration_progress SET phase = ?1 \
+             WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+        )
+        .bind(phase)
+        .execute(&pool)
+        .await
+        .expect("set empty materialization phase");
+
+        let should_yield = || false;
+        let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            400,
+            None,
+            &should_yield,
+        )
+        .await
+        .expect("run disabled empty materialization phase");
+        assert!(outcome.deferred);
+        assert_eq!(outcome.defer_reason, Some("operator_disabled"));
+
+        let persisted_phase: String = sqlx::query_scalar(
+            "SELECT phase FROM prompt_cache_conversation_migration_progress \
+             WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load empty materialization phase after disable");
+        assert_eq!(persisted_phase, phase);
+    }
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_new_keys() {
     let temp_dir = make_temp_test_dir("prompt-cache-conversation-materialization-restart");
     let db_path = temp_dir.join("state.db");

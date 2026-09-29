@@ -823,13 +823,19 @@ async fn update_prompt_cache_conversation_migration_progress_on_connection(
     Ok(())
 }
 
-async fn update_prompt_cache_conversation_migration_progress(
+async fn update_prompt_cache_conversation_migration_progress_with_control(
     pool: &Pool<Sqlite>,
     phase: &str,
     source_max_invocation_id: i64,
     cursor_key: Option<&str>,
-) -> Result<()> {
+    check_operator_enabled: bool,
+) -> Result<bool> {
     let mut tx = pool.begin().await?;
+    if check_operator_enabled
+        && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
+    {
+        return Ok(false);
+    }
     update_prompt_cache_conversation_migration_progress_on_connection(
         tx.as_mut(),
         phase,
@@ -838,7 +844,19 @@ async fn update_prompt_cache_conversation_migration_progress(
     )
     .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(true)
+}
+
+fn prompt_cache_conversation_materialization_deferred(
+    phase: &str,
+) -> PromptCacheConversationMaterializationRun {
+    PromptCacheConversationMaterializationRun {
+        phase: phase.to_string(),
+        hit_scan_limit: true,
+        deferred: true,
+        defer_reason: Some("operator_disabled"),
+        ..Default::default()
+    }
 }
 
 async fn increment_prompt_cache_conversation_completed_keys_on_connection(
@@ -1009,10 +1027,16 @@ async fn prompt_cache_conversation_materialize_key_batch(
     phase: &str,
     source_max_invocation_id: i64,
     advance_cursor: bool,
+    check_operator_enabled: bool,
     prompt_cache_keys: &[String],
-) -> Result<(usize, usize, Duration)> {
+) -> Result<Option<(usize, usize, Duration)>> {
     let started_at = Instant::now();
     let mut tx = pool.begin().await?;
+    if check_operator_enabled
+        && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
+    {
+        return Ok(None);
+    }
     let existing_keys =
         load_prompt_cache_conversation_keys_on_connection(tx.as_mut(), prompt_cache_keys).await?;
     let mut identities_created = 0;
@@ -1055,7 +1079,7 @@ async fn prompt_cache_conversation_materialize_key_batch(
         }
     }
     tx.commit().await?;
-    Ok((identities_created, refreshed, started_at.elapsed()))
+    Ok(Some((identities_created, refreshed, started_at.elapsed())))
 }
 
 async fn load_prompt_cache_conversation_keys_on_connection(
@@ -1121,23 +1145,28 @@ async fn run_prompt_cache_conversation_adaptive_key_batches(
             .next_batch_size(prompt_cache_keys.len() - offset);
         let batch_end = (offset + batch_size).min(prompt_cache_keys.len());
         let batch = &prompt_cache_keys[offset..batch_end];
-        let (identities_created, refreshed, elapsed) =
-            match prompt_cache_conversation_materialize_key_batch(
-                context.pool,
-                phase,
-                source_max_invocation_id,
-                advance_cursor,
-                batch,
-            )
-            .await
-            {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    context.controller.observe_failure();
-                    context.controller.persist_adaptive(context.policy);
-                    return Err(error);
-                }
-            };
+        let batch_outcome = match prompt_cache_conversation_materialize_key_batch(
+            context.pool,
+            phase,
+            source_max_invocation_id,
+            advance_cursor,
+            context.check_operator_enabled,
+            batch,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                context.controller.observe_failure();
+                context.controller.persist_adaptive(context.policy);
+                return Err(error);
+            }
+        };
+        let Some((identities_created, refreshed, elapsed)) = batch_outcome else {
+            result.deferred = true;
+            result.defer_reason = Some("operator_disabled");
+            return Ok(result);
+        };
         let priority_waiter = (context.should_yield)();
         context
             .controller
@@ -1190,14 +1219,19 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
     } else {
         progress.source_max_invocation_id
     };
-    if source_max_invocation_id != progress.source_max_invocation_id {
-        update_prompt_cache_conversation_migration_progress(
+    if source_max_invocation_id != progress.source_max_invocation_id
+        && !update_prompt_cache_conversation_migration_progress_with_control(
             context.pool,
             PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
             source_max_invocation_id,
             progress.cursor_key.as_deref(),
+            context.check_operator_enabled,
         )
-        .await?;
+        .await?
+    {
+        return Ok(prompt_cache_conversation_materialization_deferred(
+            PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+        ));
     }
     ensure_prompt_cache_conversation_total_keys(context.pool, source_max_invocation_id).await?;
 
@@ -1230,13 +1264,19 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
         .fetch_all(context.pool)
         .await?;
     if prompt_cache_keys.is_empty() {
-        update_prompt_cache_conversation_migration_progress(
+        if !update_prompt_cache_conversation_migration_progress_with_control(
             context.pool,
             PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION,
             source_max_invocation_id,
             None,
+            context.check_operator_enabled,
         )
-        .await?;
+        .await?
+        {
+            return Ok(prompt_cache_conversation_materialization_deferred(
+                PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+            ));
+        }
         return Ok(PromptCacheConversationMaterializationRun {
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION.to_string(),
             updated: 1,
@@ -1269,13 +1309,19 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
                 .expect("non-empty key page")
                 .as_str()
         });
-    update_prompt_cache_conversation_migration_progress(
+    if !update_prompt_cache_conversation_migration_progress_with_control(
         context.pool,
         next_phase,
         source_max_invocation_id,
         next_cursor,
+        context.check_operator_enabled,
     )
-    .await?;
+    .await?
+    {
+        return Ok(prompt_cache_conversation_materialization_deferred(
+            PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+        ));
+    }
     result.phase = next_phase.to_string();
     Ok(result)
 }
@@ -1303,6 +1349,13 @@ async fn run_prompt_cache_conversation_adaptive_identity_reconciliation_page(
         .await?;
     if prompt_cache_keys.is_empty() {
         let mut tx = context.pool.begin().await?;
+        if context.check_operator_enabled
+            && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
+        {
+            return Ok(prompt_cache_conversation_materialization_deferred(
+                PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION,
+            ));
+        }
         sqlx::query(
             "INSERT OR REPLACE INTO schema_refresh_migrations (migration_name) VALUES (?1)",
         )
@@ -1359,13 +1412,22 @@ async fn run_prompt_cache_conversation_adaptive_stats_rebuild_page(
         .fetch_all(context.pool)
         .await?;
     if prompt_cache_keys.is_empty() {
-        update_prompt_cache_conversation_migration_progress(
-            context.pool,
+        let mut tx = context.pool.begin().await?;
+        if context.check_operator_enabled
+            && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
+        {
+            return Ok(prompt_cache_conversation_materialization_deferred(
+                PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD,
+            ));
+        }
+        update_prompt_cache_conversation_migration_progress_on_connection(
+            tx.as_mut(),
             PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
             progress.source_max_invocation_id,
             None,
         )
         .await?;
+        tx.commit().await?;
         return Ok(PromptCacheConversationMaterializationRun {
             phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
             updated: 1,
@@ -1397,13 +1459,19 @@ async fn run_prompt_cache_conversation_adaptive_stats_rebuild_page(
             .expect("non-empty key page")
             .as_str()
     });
-    update_prompt_cache_conversation_migration_progress(
+    if !update_prompt_cache_conversation_migration_progress_with_control(
         context.pool,
         next_phase,
         progress.source_max_invocation_id,
         next_cursor,
+        context.check_operator_enabled,
     )
-    .await?;
+    .await?
+    {
+        return Ok(prompt_cache_conversation_materialization_deferred(
+            PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD,
+        ));
+    }
     result.phase = next_phase.to_string();
     Ok(result)
 }
@@ -1529,6 +1597,11 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
             ..Default::default()
         });
     }
+    if check_operator_enabled && !prompt_cache_conversation_materialization_enabled(pool).await? {
+        return Ok(prompt_cache_conversation_materialization_deferred(
+            &progress.phase,
+        ));
+    }
     mark_prompt_cache_conversation_stats_stale(pool).await?;
 
     if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE {
@@ -1548,7 +1621,19 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
         } else {
             PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD
         };
-        update_prompt_cache_conversation_migration_progress(pool, phase, 0, None).await?;
+        if !update_prompt_cache_conversation_migration_progress_with_control(
+            pool,
+            phase,
+            0,
+            None,
+            check_operator_enabled,
+        )
+        .await?
+        {
+            return Ok(prompt_cache_conversation_materialization_deferred(
+                &progress.phase,
+            ));
+        }
         progress = load_prompt_cache_conversation_migration_progress(pool).await?;
     }
 
@@ -1594,13 +1679,19 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
             run_prompt_cache_conversation_adaptive_queue_drain_page(&mut context, &progress).await?
         }
         _ => {
-            update_prompt_cache_conversation_migration_progress(
+            if !update_prompt_cache_conversation_migration_progress_with_control(
                 pool,
                 PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
                 0,
                 None,
+                check_operator_enabled,
             )
-            .await?;
+            .await?
+            {
+                return Ok(prompt_cache_conversation_materialization_deferred(
+                    PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+                ));
+            }
             PromptCacheConversationMaterializationRun {
                 phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL.to_string(),
                 updated: 1,
