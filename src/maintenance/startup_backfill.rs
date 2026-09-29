@@ -2126,6 +2126,31 @@ async fn run_startup_backfill_task_if_due_outcome(
         Ok((run, detail)) => {
             if run.deferred {
                 drop(write_permit);
+                if run.defer_reason == Some("operator_disabled") {
+                    STARTUP_BACKFILL_SCHEDULER.clear_next_due(task);
+                    set_startup_backfill_task_enabled(
+                        &state.pool,
+                        StartupBackfillTask::PromptCacheConversationsMaterialization,
+                        false,
+                    )
+                    .await?;
+                    info!(
+                        task = task.log_label(),
+                        task_name = %task_name,
+                        detail = %detail,
+                        "startup backfill task stopped at a committed micro-batch boundary after operator disable"
+                    );
+                    return Ok((
+                        StartupBackfillTaskRunOutcome {
+                            actionable: false,
+                            failed: false,
+                            deferred: false,
+                            completed: true,
+                            next_due: Utc::now() + ChronoDuration::days(3650),
+                        },
+                        None,
+                    ));
+                }
                 info!(
                     task = task.log_label(),
                     task_name = %task_name,
@@ -2444,32 +2469,34 @@ async fn run_startup_backfill_task_with_pressure(
             let should_yield = prompt_cache_should_yield.unwrap_or(&never_yield);
             let run_started = Instant::now();
             let run_started_at = format_utc_iso(Utc::now());
-            let outcome = match run_prompt_cache_conversations_materialization_with_pressure(
-                &state.pool,
-                scan_limit,
-                max_elapsed,
-                should_yield,
-            )
-            .await
-            {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    let failed_outcome = PromptCacheConversationMaterializationRun::default();
-                    if let Err(record_error) = record_prompt_cache_conversation_materialization_run(
-                        &state.pool,
-                        &run_started_at,
-                        run_started.elapsed().as_millis() as u64,
-                        &failed_outcome,
-                        "failed",
-                        Some(&error.to_string()),
-                    )
-                    .await
-                    {
-                        warn!(error = %record_error, "failed to record prompt-cache materialization failure");
+            let outcome =
+                match run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                    &state.pool,
+                    scan_limit,
+                    max_elapsed,
+                    should_yield,
+                )
+                .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        let failed_outcome = PromptCacheConversationMaterializationRun::default();
+                        if let Err(record_error) =
+                            record_prompt_cache_conversation_materialization_run(
+                                &state.pool,
+                                &run_started_at,
+                                run_started.elapsed().as_millis() as u64,
+                                &failed_outcome,
+                                "failed",
+                                Some(&error.to_string()),
+                            )
+                            .await
+                        {
+                            warn!(error = %record_error, "failed to record prompt-cache materialization failure");
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-            };
+                };
             if let Err(error) = record_prompt_cache_conversation_materialization_run(
                 &state.pool,
                 &run_started_at,

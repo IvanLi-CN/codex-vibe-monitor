@@ -234,6 +234,58 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_honors_operator_disable_before_a_batch() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('operator-disable-invocation', '2026-09-01 00:00:00', ?1, 'success', 7, 0.07, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "operator-disable-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert operator-disable fixture invocation");
+    set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization");
+
+    let should_yield = || false;
+    let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &should_yield,
+    )
+    .await
+    .expect("run disabled prompt-cache materialization");
+    assert!(outcome.deferred);
+    assert_eq!(outcome.defer_reason, Some("operator_disabled"));
+    assert_eq!(outcome.batch_count, 0);
+
+    let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+        .fetch_one(&pool)
+        .await
+        .expect("count identities after operator disable");
+    assert_eq!(identity_count, 0);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_new_keys() {
     let temp_dir = make_temp_test_dir("prompt-cache-conversation-materialization-restart");
     let db_path = temp_dir.join("state.db");

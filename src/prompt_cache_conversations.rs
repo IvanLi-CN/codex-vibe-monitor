@@ -88,6 +88,7 @@ struct PromptCacheConversationMigrationProgressRow {
     cursor_key: Option<String>,
     updated_at: String,
     total_keys: Option<i64>,
+    completed_keys: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -228,6 +229,7 @@ struct PromptCacheConversationMaterializationContext<'a> {
     policy: PromptCacheConversationBatchPolicy,
     controller: &'a mut PromptCacheConversationBatchController,
     should_yield: &'a (dyn Fn() -> bool + Send + Sync),
+    check_operator_enabled: bool,
 }
 
 pub(crate) fn prompt_cache_conversation_id_from_invoke_id(invoke_id: &str) -> Option<&str> {
@@ -456,6 +458,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
             phase TEXT NOT NULL,\
             source_max_invocation_id INTEGER NOT NULL DEFAULT 0,\
             cursor_key TEXT,\
+            completed_keys INTEGER NOT NULL DEFAULT 0,\
             updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))\
         )"
     ))
@@ -463,6 +466,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     .await
     .context("failed to ensure prompt-cache conversation migration progress table")?;
     ensure_prompt_cache_column(pool, "total_keys", "INTEGER").await?;
+    ensure_prompt_cache_column(pool, "completed_keys", "INTEGER NOT NULL DEFAULT 0").await?;
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE} (\
             id INTEGER PRIMARY KEY AUTOINCREMENT,\
@@ -535,7 +539,7 @@ async fn load_prompt_cache_conversation_migration_progress_on_connection(
     connection: &mut SqliteConnection,
 ) -> Result<PromptCacheConversationMigrationProgressRow> {
     sqlx::query_as::<_, PromptCacheConversationMigrationProgressRow>(&format!(
-        "SELECT phase, source_max_invocation_id, cursor_key, updated_at, total_keys \
+        "SELECT phase, source_max_invocation_id, cursor_key, updated_at, total_keys, completed_keys \
          FROM {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} \
          WHERE migration_name = ?1"
     ))
@@ -665,39 +669,13 @@ pub(crate) async fn load_prompt_cache_conversation_materialization_status(
     )
     .await?;
     let queue_pending = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT COUNT(*) FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE}"
+        "SELECT COUNT(*) FROM (SELECT 1 FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} LIMIT 1001)"
     ))
     .fetch_one(pool)
     .await?
     .max(0) as u64;
-    let conversation_count =
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM prompt_cache_conversations")
-            .fetch_one(pool)
-            .await?
-            .max(0) as u64;
-    let total_keys = progress
-        .total_keys
-        .map(|value| value.max(0) as u64)
-        .map(|value| value.max(conversation_count));
-    let completed_keys = if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE {
-        total_keys.unwrap_or(conversation_count)
-    } else if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN {
-        total_keys
-            .unwrap_or(conversation_count)
-            .saturating_sub(queue_pending)
-    } else if let Some(cursor_key) = progress.cursor_key.as_deref() {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key <= ?1",
-        )
-        .bind(cursor_key)
-        .fetch_one(pool)
-        .await?
-        .max(0) as u64
-    } else if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION {
-        conversation_count
-    } else {
-        0
-    };
+    let total_keys = progress.total_keys.map(|value| value.max(0) as u64);
+    let completed_keys = progress.completed_keys.unwrap_or(0).max(0) as u64;
     let completed_keys = total_keys
         .map(|total| completed_keys.min(total))
         .unwrap_or(completed_keys);
@@ -800,6 +778,48 @@ async fn update_prompt_cache_conversation_migration_progress(
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn increment_prompt_cache_conversation_completed_keys_on_connection(
+    connection: &mut SqliteConnection,
+    completed_keys: usize,
+) -> Result<()> {
+    sqlx::query(&format!(
+        "UPDATE {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} \
+         SET completed_keys = COALESCE(completed_keys, 0) + ?1, \
+             updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE migration_name = ?2"
+    ))
+    .bind(i64::try_from(completed_keys).unwrap_or(i64::MAX))
+    .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn mark_prompt_cache_conversation_completed_keys_on_connection(
+    connection: &mut SqliteConnection,
+) -> Result<()> {
+    sqlx::query(&format!(
+        "UPDATE {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} \
+         SET completed_keys = COALESCE(total_keys, completed_keys), \
+             updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE migration_name = ?1"
+    ))
+    .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+async fn prompt_cache_conversation_materialization_enabled(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT enabled FROM startup_backfill_progress WHERE task_name = ?1",
+    )
+    .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
+    .fetch_optional(pool)
+    .await?
+    .is_none_or(|enabled| enabled != 0))
 }
 
 async fn prompt_cache_conversation_marker_exists_on_connection(
@@ -953,6 +973,11 @@ async fn prompt_cache_conversation_materialize_key_batch(
             prompt_cache_keys.last().map(String::as_str),
         )
         .await?;
+        increment_prompt_cache_conversation_completed_keys_on_connection(
+            tx.as_mut(),
+            prompt_cache_keys.len(),
+        )
+        .await?;
     }
     tx.commit().await?;
     Ok((identities_created, refreshed, started_at.elapsed()))
@@ -1002,6 +1027,13 @@ async fn run_prompt_cache_conversation_adaptive_key_batches(
         ) {
             return Ok(result);
         }
+        if context.check_operator_enabled
+            && !prompt_cache_conversation_materialization_enabled(context.pool).await?
+        {
+            result.deferred = true;
+            result.defer_reason = Some("operator_disabled");
+            return Ok(result);
+        }
         if (context.should_yield)() {
             result.deferred = true;
             result.defer_reason = Some("coordinator_priority");
@@ -1048,6 +1080,14 @@ async fn run_prompt_cache_conversation_adaptive_key_batches(
         result.updated = result
             .updated
             .saturating_add(identities_created.saturating_add(refreshed) as u64);
+
+        if context.check_operator_enabled
+            && !prompt_cache_conversation_materialization_enabled(context.pool).await?
+        {
+            result.deferred = true;
+            result.defer_reason = Some("operator_disabled");
+            return Ok(result);
+        }
 
         if priority_waiter {
             result.deferred = true;
@@ -1330,6 +1370,7 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
                 None,
             )
             .await?;
+            mark_prompt_cache_conversation_completed_keys_on_connection(tx.as_mut()).await?;
             mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
             tx.commit().await?;
             return Ok(PromptCacheConversationMaterializationRun {
@@ -1376,6 +1417,7 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
     max_elapsed: Option<Duration>,
     policy: PromptCacheConversationBatchPolicy,
     should_yield: &(dyn Fn() -> bool + Send + Sync),
+    check_operator_enabled: bool,
 ) -> Result<PromptCacheConversationMaterializationRun> {
     let started_at = Instant::now();
     let mut progress = load_prompt_cache_conversation_migration_progress(pool).await?;
@@ -1444,6 +1486,7 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
         policy,
         controller: &mut controller,
         should_yield,
+        check_operator_enabled,
     };
     let mut result = match progress.phase.as_str() {
         PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL => {
@@ -1501,6 +1544,24 @@ pub(crate) async fn run_prompt_cache_conversations_materialization_with_pressure
         max_elapsed,
         PromptCacheConversationBatchPolicy::Adaptive,
         should_yield,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn run_prompt_cache_conversations_materialization_with_pressure_and_control(
+    pool: &Pool<Sqlite>,
+    scan_limit: u64,
+    max_elapsed: Option<Duration>,
+    should_yield: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<PromptCacheConversationMaterializationRun> {
+    run_prompt_cache_conversations_materialization_with_policy(
+        pool,
+        scan_limit,
+        max_elapsed,
+        PromptCacheConversationBatchPolicy::Adaptive,
+        should_yield,
+        true,
     )
     .await
 }
@@ -1516,6 +1577,7 @@ pub(crate) async fn run_prompt_cache_conversations_materialization(
         max_elapsed,
         PromptCacheConversationBatchPolicy::Adaptive,
         &prompt_cache_conversation_never_yields,
+        false,
     )
     .await
 }
@@ -1533,6 +1595,7 @@ pub(crate) async fn run_prompt_cache_conversations_materialization_with_test_bat
         max_elapsed,
         PromptCacheConversationBatchPolicy::Fixed(batch_size),
         &prompt_cache_conversation_never_yields,
+        false,
     )
     .await
 }
@@ -1551,6 +1614,7 @@ pub(crate) async fn run_prompt_cache_conversations_materialization_with_test_bat
         max_elapsed,
         PromptCacheConversationBatchPolicy::Fixed(batch_size),
         should_yield,
+        false,
     )
     .await
 }

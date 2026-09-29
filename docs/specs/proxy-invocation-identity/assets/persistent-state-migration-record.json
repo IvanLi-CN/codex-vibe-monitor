@@ -37,7 +37,7 @@
       },
       {
         "id": "ddl-prompt-cache-conversation-migration-progress",
-        "description": "Create the additive migration progress table with migration_name, phase, source_max_invocation_id, cursor_key, updated_at, and the durable source total so materialization can resume after cancellation or restart and expose bounded progress.",
+        "description": "Create the additive migration progress table with migration_name, phase, source_max_invocation_id, cursor_key, completed_keys, updated_at, and the durable source total so materialization can resume after cancellation or restart and expose bounded progress.",
         "order": 3,
         "depends_on": [
           "ddl-prompt-cache-conversation-master",
@@ -105,7 +105,7 @@
       "dml-prompt-cache-conversation-queue-drain"
     ],
     "progress_signals": [
-      "The prompt_cache_conversation_migration_progress row exposes the current phase, invocation snapshot boundary, keyset cursor, and updated_at checkpoint.",
+      "The prompt_cache_conversation_migration_progress row exposes the current phase, invocation snapshot boundary, keyset cursor, committed-key counter, and updated_at checkpoint.",
       "The system prompt-cache materialization status surface exposes total keys, completed keys, progress, queue backlog, estimated remaining time, the latest 10 bounded run records, and a durable pause/resume control.",
       "Structured startup-backfill logs expose phase, scanned, updated, completion, retry, failure, and defer status, together with micro-batch count, last/max batch size, accumulated batch time, and defer reason.",
       "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
