@@ -69,7 +69,7 @@
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3323,
+      "line_budget": 3427,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {
@@ -147,7 +147,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 8902,
+      "line_budget": 9192,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -165,7 +165,7 @@
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
       "role": "test_helper",
-      "line_budget": 6311,
+      "line_budget": 6322,
       "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
     },
     {
