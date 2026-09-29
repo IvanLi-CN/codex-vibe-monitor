@@ -883,6 +883,18 @@ async fn prompt_cache_conversation_materialization_enabled(pool: &Pool<Sqlite>) 
     .is_none_or(|enabled| enabled != 0))
 }
 
+async fn prompt_cache_conversation_materialization_enabled_on_connection(
+    connection: &mut SqliteConnection,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT enabled FROM startup_backfill_progress WHERE task_name = ?1",
+    )
+    .bind(PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME)
+    .fetch_optional(&mut *connection)
+    .await?
+    .is_none_or(|enabled| enabled != 0))
+}
+
 async fn prompt_cache_conversation_marker_exists_on_connection(
     connection: &mut SqliteConnection,
     migration_name: &str,
@@ -1418,6 +1430,17 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
             });
         }
         let mut tx = context.pool.begin().await?;
+        if context.check_operator_enabled
+            && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
+        {
+            return Ok(PromptCacheConversationMaterializationRun {
+                phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
+                hit_scan_limit: true,
+                deferred: true,
+                defer_reason: Some("operator_disabled"),
+                ..Default::default()
+            });
+        }
         let identity_complete = prompt_cache_conversation_marker_exists_on_connection(
             tx.as_mut(),
             PROMPT_CACHE_CONVERSATIONS_BACKFILL_NAME,

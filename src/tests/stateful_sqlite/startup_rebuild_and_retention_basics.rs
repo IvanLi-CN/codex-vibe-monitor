@@ -2486,6 +2486,60 @@ async fn prompt_cache_materialization_wake_preserves_operator_disable() {
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_failure_history_reports_per_run_work() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        ) VALUES ('prompt-cache-failure-history', '2026-09-01 00:00:00', ?1, 'success', ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "prompt-cache-failure-history-key"}).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt-cache failure fixture invocation");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER fail_prompt_cache_materialization
+        BEFORE INSERT ON prompt_cache_conversations
+        BEGIN
+            SELECT RAISE(ABORT, 'forced prompt-cache materialization failure');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("install prompt-cache failure trigger");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
+    run_startup_backfill_task_if_due_with_gate(
+        &state,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        &gate,
+    )
+    .await
+    .expect("failed materialization should be recorded and retried");
+
+    let (status, scanned, updated, error): (String, i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT status, scanned, updated, error \
+         FROM prompt_cache_conversation_materialization_runs \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load failed prompt-cache materialization history");
+    assert_eq!(status, "failed");
+    assert_eq!(scanned, 0);
+    assert_eq!(updated, 0);
+    assert!(error.is_some());
+}
+
+#[tokio::test]
 async fn startup_backfill_pressure_defer_never_accesses_sqlite() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),

@@ -59,6 +59,56 @@ async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invoc
 }
 
 #[tokio::test]
+async fn ensure_schema_enables_legacy_startup_backfill_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query(
+        r#"
+        CREATE TABLE startup_backfill_progress (
+            task_name TEXT PRIMARY KEY,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            next_run_after TEXT,
+            zero_update_streak INTEGER NOT NULL DEFAULT 0,
+            last_started_at TEXT,
+            last_finished_at TEXT,
+            last_scanned INTEGER NOT NULL DEFAULT 0,
+            last_updated INTEGER NOT NULL DEFAULT 0,
+            last_status TEXT NOT NULL DEFAULT 'idle'
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy startup backfill schema");
+    sqlx::query(
+        "INSERT INTO startup_backfill_progress (task_name, cursor_id) \
+         VALUES ('prompt_cache_conversations_materialization_v1', 12)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy startup backfill progress");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate legacy startup backfill schema");
+
+    let (enabled, cursor_id): (i64, i64) = sqlx::query_as(
+        "SELECT enabled, cursor_id FROM startup_backfill_progress \
+         WHERE task_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated startup backfill progress");
+    assert_eq!(enabled, 1);
+    assert_eq!(cursor_id, 12);
+}
+
+#[tokio::test]
 async fn ensure_schema_defers_prompt_cache_conversation_materialization_to_startup_backfill() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -353,6 +403,57 @@ async fn prompt_cache_materialization_honors_operator_disable_before_a_batch() {
         .await
         .expect("count identities after operator disable");
     assert_eq!(identity_count, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_honors_operator_disable_in_queue_drain() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_migration_progress \
+         SET phase = 'queue_drain' \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("set queue-drain phase");
+    set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization in queue drain");
+
+    let should_yield = || false;
+    let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &should_yield,
+    )
+    .await
+    .expect("run disabled queue-drain materialization");
+    assert!(outcome.deferred);
+    assert_eq!(outcome.defer_reason, Some("operator_disabled"));
+    assert!(!outcome.complete);
+
+    let phase: String = sqlx::query_scalar(
+        "SELECT phase FROM prompt_cache_conversation_migration_progress \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load queue-drain phase after disable");
+    assert_eq!(phase, "queue_drain");
 }
 
 #[tokio::test]
