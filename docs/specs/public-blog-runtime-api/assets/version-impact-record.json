@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add a read-only project metrics endpoint with live trends and explicit long-term history coverage.",
+    "release_unit_description": "Public project metrics API implementation.",
+    "affected_contracts": [
+      "public-api"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The planned change adds a service-scoped public route within the current major line and does not change persisted formats.",
+      "assessed_at": "2026-09-28T15:22:15Z",
+      "evidence": [
+        "docs/specs/public-blog-runtime-api/SPEC.md defines the shared service route family and this service's GET contract."
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "The endpoint reads existing aggregate rollups, reports missing long-term coverage explicitly, and adds no persistent-state writes or serialized state formats."
+      },
+      "reasoning": "The service-scoped public API is additive within the current major line. Persistent-state impact is not applicable because the endpoint uses existing rollups and adds no persistent writes; the release unit remains minor.",
+      "reassessed_at": "2026-09-29T04:09:39Z",
+      "evidence": [
+        "The endpoint uses /api/public/metrics/v1/codex-vibe-monitor and the independent PUBLIC_METRICS_CORS_ALLOWED_ORIGINS allowlist.",
+        "Unavailable and partial long-term coverage serialize as null-valued daily points while current metrics remain available; refreshes crossing a Shanghai hour or day are rejected.",
+        "The endpoint's fixed today/1h/Asia/Shanghai query uses the existing hourly rollup branch and returns before sub-hour minute-projection logic."
+      ]
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "The new API contract is additive within the current major line. The endpoint writes no persistent state, so the highest applicable and verified impact is the public API's minor classification.",
+      "verified_at": "2026-09-29T04:09:39Z",
+      "evidence": [
+        "cargo test public_blog -- --nocapture passed 22 tests, including current-hour boundary consistency, service-scoped CORS, and available, partial, and unavailable daily history.",
+        "Rust formatting, the explicit source-quality policy check, public API Spec contract, Spec drift, and whitespace checks passed on the candidate.",
+        "cargo check --locked --all-targets --all-features passed.",
+        "cargo clippy --locked --all-targets --all-features -- -D warnings passed.",
+        "Source review confirmed the endpoint's fixed today/1h/Asia/Shanghai request selects hourly rollups, and a Shanghai-hour fence keeps the live value on its observed boundary."
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Consumers on the current major line; existing API paths and response contracts remain compatible.",
+      "evidence": [
+        "The route is additive at /api/public/metrics/v1/codex-vibe-monitor and follows the shared /api/public/metrics/v1/{project} family; the project slug identifies the metrics instance independently of its consumers.",
+        "The route-level tests verify GET-only behavior, service-scoped CORS, live current-hour trend values, and available, partial, or failed long-term history reads."
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "Not applicable; the endpoint reads existing aggregate rollups, while its snapshot cache and rate limiter remain process memory.",
+      "source_program_compatibility_range": "Not applicable; this change adds no persistent-state writes, schema changes, migrations, or serialized formats.",
+      "evidence": [
+        "The endpoint requests today with a 1h bucket in Asia/Shanghai, which selects the whole-hour-aligned hourly rollup path.",
+        "The hourly rollup path returns before the sub-hour minute-projection fallback and its asynchronous warm-up writer.",
+        "The endpoint adds no persistent-state writes, schema changes, migrations, or serialized state formats."
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "public-blog-runtime-api"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "Public API impact is minor; persistent-state impact is not applicable; the release unit remains minor."
+    ]
+  }
+}

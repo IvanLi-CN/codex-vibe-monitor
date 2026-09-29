@@ -2455,6 +2455,10 @@ pub(crate) fn test_config() -> AppConfig {
         shared_connection_parallelism: 1,
         http_bind: "127.0.0.1:0".parse().expect("valid socket address"),
         cors_allowed_origins: Vec::new(),
+        public_metrics_cors_allowed_origins: vec![
+            "https://ivanli.cc".to_string(),
+            "http://127.0.0.1:12620".to_string(),
+        ],
         list_limit_max: 100,
         user_agent: "codex-test".to_string(),
         static_dir: None,

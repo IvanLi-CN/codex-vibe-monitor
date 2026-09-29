@@ -96,6 +96,7 @@
 | -     | Dashboard 对外调用时间线                                                  | active    | `dashboard-invocation-timeline/SPEC.md`                    | `dashboard-invocation-timeline/IMPLEMENTATION.md`                    | topic anchor: dashboard / invocation timeline / TTFT         |
 | -     | 独立性能遥测                                                              | active    | `performance-telemetry/SPEC.md`                            | `performance-telemetry/IMPLEMENTATION.md`                            | topic anchor: performance / telemetry / bounded SQLite       |
 | -     | Proxy invocation identity and prompt-cache conversation master            | active    | `proxy-invocation-identity/SPEC.md`                        | `proxy-invocation-identity/IMPLEMENTATION.md`                        | topic anchor: proxy / conversation identity / SQLite         |
+| -     | Public Project Metrics API                                                | active    | `public-blog-runtime-api/SPEC.md`                          | `public-blog-runtime-api/IMPLEMENTATION.md`                          | topic anchor: public API / project metrics / cache           |
 
 ## Archived Sources
 

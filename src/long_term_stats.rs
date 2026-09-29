@@ -10075,6 +10075,67 @@ async fn load_long_term_daily_rows(
     Ok(query.fetch_all(pool).await?)
 }
 
+pub(crate) async fn load_public_blog_token_activity_90d(
+    pool: &Pool<Sqlite>,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Result<Option<Vec<(String, Option<i64>)>>> {
+    if (end_date - start_date).num_days() != 89 {
+        bail!("public blog token activity requires a 90-day range");
+    }
+    let state = load_long_term_state(pool).await?;
+    if state.status != LONG_TERM_STATUS_READY {
+        return Ok(None);
+    }
+    let Some(covered_start) = state
+        .statistics_start_date
+        .as_deref()
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+    else {
+        return Ok(None);
+    };
+
+    let query_start = start_date.max(covered_start);
+    let rows = if query_start <= end_date {
+        load_long_term_daily_rows(
+            pool,
+            "overall",
+            None,
+            &query_start.to_string(),
+            &end_date.to_string(),
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let mut tokens_by_date = HashMap::<String, i64>::new();
+    for row in rows {
+        if row.token_total < 0 {
+            bail!("long-term usage read model contains a negative token total");
+        }
+        let total = tokens_by_date.entry(row.bucket_or_date).or_default();
+        *total = total
+            .checked_add(row.token_total)
+            .ok_or_else(|| anyhow!("long-term daily token total overflow"))?;
+    }
+
+    let mut points = Vec::with_capacity(90);
+    let mut date = start_date;
+    while date <= end_date {
+        let key = date.to_string();
+        let value = if date < query_start {
+            None
+        } else {
+            tokens_by_date.get(&key).copied()
+        };
+        points.push((key, value));
+        date = date
+            .succ_opt()
+            .ok_or_else(|| anyhow!("public blog token activity date overflow"))?;
+    }
+    Ok(Some(points))
+}
+
 fn long_term_projection_active_daily_cte() -> &'static str {
     r#"
     WITH active_daily AS (

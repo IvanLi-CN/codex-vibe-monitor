@@ -41,6 +41,18 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 3. Traefik 路由按固定 Host 转发到应用服务。
 4. 不允许旁路访问应用容器（安全组、防火墙、网络策略）。
 
+## Public Project Metrics API
+
+公共项目指标接口统一使用 `/api/public/metrics/v1/{project}` 路径，并由反向代理按项目 slug 路由，同时保留完整请求路径：
+
+- Codex Vibe Monitor：`/api/public/metrics/v1/codex-vibe-monitor`
+- OctoRill：`/api/public/metrics/v1/octo-rill`
+- Tavily Hikari：`/api/public/metrics/v1/tavily-hikari`
+
+Tavily Hikari 现有的 token metrics 接口与此项目指标接口分离。三个服务各自处理 CORS。Codex Vibe Monitor 使用 `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS` 配置来源白名单，默认值为 `https://ivanli.cc,http://127.0.0.1:12620`；只需配置实际浏览器来源，不要设置通配符或凭据访问。
+
+指标消费端应按 `tokenActivity90d.status` 判断历史完整度，并保留点中的 `value: null`，不能将缺失日期当作零。历史尚未就绪或只覆盖部分日期时，当前指标仍会返回。
+
 ## Public Origin For Social Preview Metadata
 
 仓库首页图与应用的 `og:image` / `twitter:image` 会优先使用显式 `PUBLIC_ORIGIN` 生成绝对 URL。

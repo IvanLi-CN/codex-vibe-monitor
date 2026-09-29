@@ -39,7 +39,7 @@
     {
       "path": "src/long_term_stats.rs",
       "role": "production",
-      "line_budget": 18815,
+      "line_budget": 18924,
       "next_module_workstream": "Split long-term statistics projection, archive compatibility, rollups, and refresh lifecycle."
     },
     {
@@ -57,7 +57,7 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4447,
+      "line_budget": 4449,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -141,7 +141,7 @@
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
       "role": "test_helper",
-      "line_budget": 4210,
+      "line_budget": 4214,
       "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
     },
     {
@@ -225,7 +225,7 @@
     {
       "path": "src/upstream_accounts/tests/archive_file_io/archive_batch_compat_and_query_parsing.rs",
       "role": "test_helper",
-      "line_budget": 4468,
+      "line_budget": 4472,
       "next_module_workstream": "Split upstream archive batch fixtures by compatibility, query, usage, and OAuth paths."
     },
     {

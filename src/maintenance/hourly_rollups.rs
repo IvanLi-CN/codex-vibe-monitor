@@ -3934,6 +3934,8 @@ pub(crate) async fn spawn_http_server(
         }
     }
 
+    router = router.merge(build_public_blog_runtime_router(state.clone()));
+
     let listener = TcpListener::bind(&state.config.http_bind).await?;
     let addr = listener.local_addr()?;
     info!(%addr, "http server listening");
