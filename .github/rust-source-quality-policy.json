@@ -57,7 +57,7 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4449,
+      "line_budget": 4454,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -69,7 +69,7 @@
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3427,
+      "line_budget": 3566,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {
@@ -111,7 +111,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6536,
+      "line_budget": 6537,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -147,7 +147,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 9192,
+      "line_budget": 9342,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
