@@ -2580,6 +2580,40 @@ export interface SystemTaskRunsResponse {
   nextCursor?: string;
 }
 
+export interface PromptCacheMaterializationRun {
+  id: number;
+  startedAt: string;
+  finishedAt: string;
+  phase: string;
+  status: string;
+  scanned: number;
+  updated: number;
+  batchCount: number;
+  lastBatchSize: number;
+  maxBatchSize: number;
+  batchElapsedMs: number;
+  durationMs: number;
+  deferReason?: string;
+  error?: string;
+}
+
+export interface PromptCacheMaterializationStatus {
+  enabled: boolean;
+  phase: string;
+  totalKeys?: number;
+  completedKeys: number;
+  queuePending: number;
+  progressPercent?: number;
+  estimatedRemainingMs?: number;
+  sourceMaxInvocationId: number;
+  updatedAt: string;
+  lastStartedAt?: string;
+  lastFinishedAt?: string;
+  lastStatus: string;
+  suspensionReason?: string;
+  recentRuns: PromptCacheMaterializationRun[];
+}
+
 export interface ExternalApiKeySummary {
   id: number;
   name: string;
@@ -5069,6 +5103,58 @@ function normalizeSystemTaskRunsResponse(raw: unknown): SystemTaskRunsResponse {
   };
 }
 
+function normalizePromptCacheMaterializationRun(
+  raw: unknown,
+): PromptCacheMaterializationRun | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const startedAt = typeof payload.startedAt === "string" ? payload.startedAt : "";
+  const finishedAt = typeof payload.finishedAt === "string" ? payload.finishedAt : "";
+  if (id == null || !startedAt || !finishedAt) return null;
+  return {
+    id,
+    startedAt,
+    finishedAt,
+    phase: typeof payload.phase === "string" ? payload.phase : "unknown",
+    status: typeof payload.status === "string" ? payload.status : "unknown",
+    scanned: normalizeNonNegativeFiniteNumber(payload.scanned) ?? 0,
+    updated: normalizeNonNegativeFiniteNumber(payload.updated) ?? 0,
+    batchCount: normalizeNonNegativeFiniteNumber(payload.batchCount) ?? 0,
+    lastBatchSize: normalizeNonNegativeFiniteNumber(payload.lastBatchSize) ?? 0,
+    maxBatchSize: normalizeNonNegativeFiniteNumber(payload.maxBatchSize) ?? 0,
+    batchElapsedMs: normalizeNonNegativeFiniteNumber(payload.batchElapsedMs) ?? 0,
+    durationMs: normalizeNonNegativeFiniteNumber(payload.durationMs) ?? 0,
+    deferReason: typeof payload.deferReason === "string" ? payload.deferReason : undefined,
+    error: typeof payload.error === "string" ? payload.error : undefined,
+  };
+}
+
+function normalizePromptCacheMaterializationStatus(raw: unknown): PromptCacheMaterializationStatus {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const runs = Array.isArray(payload.recentRuns)
+    ? payload.recentRuns
+        .map(normalizePromptCacheMaterializationRun)
+        .filter((run): run is PromptCacheMaterializationRun => run != null)
+    : [];
+  return {
+    enabled: payload.enabled !== false,
+    phase: typeof payload.phase === "string" ? payload.phase : "unknown",
+    totalKeys: normalizeNonNegativeFiniteNumber(payload.totalKeys),
+    completedKeys: normalizeNonNegativeFiniteNumber(payload.completedKeys) ?? 0,
+    queuePending: normalizeNonNegativeFiniteNumber(payload.queuePending) ?? 0,
+    progressPercent: normalizeNonNegativeFiniteNumber(payload.progressPercent),
+    estimatedRemainingMs: normalizeNonNegativeFiniteNumber(payload.estimatedRemainingMs),
+    sourceMaxInvocationId: normalizeNonNegativeFiniteNumber(payload.sourceMaxInvocationId) ?? 0,
+    updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : "",
+    lastStartedAt: typeof payload.lastStartedAt === "string" ? payload.lastStartedAt : undefined,
+    lastFinishedAt: typeof payload.lastFinishedAt === "string" ? payload.lastFinishedAt : undefined,
+    lastStatus: typeof payload.lastStatus === "string" ? payload.lastStatus : "unknown",
+    suspensionReason:
+      typeof payload.suspensionReason === "string" ? payload.suspensionReason : undefined,
+    recentRuns: runs.slice(0, 10),
+  };
+}
+
 function normalizeExternalApiKeySummary(raw: unknown): ExternalApiKeySummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
@@ -5135,6 +5221,27 @@ export async function fetchSettings(): Promise<SettingsPayload> {
 export async function fetchSystemStatus(): Promise<SystemStatusResponse> {
   const response = await fetchJson<unknown>("/api/system/status");
   return normalizeSystemStatusResponse(response);
+}
+
+export async function fetchPromptCacheMaterializationStatus(
+  signal?: AbortSignal,
+): Promise<PromptCacheMaterializationStatus> {
+  const response = await fetchJson<unknown>("/api/system/prompt-cache/materialization", {
+    signal,
+  });
+  return normalizePromptCacheMaterializationStatus(response);
+}
+
+export async function updatePromptCacheMaterializationControl(
+  enabled: boolean,
+  signal?: AbortSignal,
+): Promise<PromptCacheMaterializationStatus> {
+  const response = await fetchJson<unknown>("/api/system/prompt-cache/materialization", {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
+    signal,
+  });
+  return normalizePromptCacheMaterializationStatus(response);
 }
 
 export type PerformanceRange = "6h" | "24h" | "7d" | "30d" | "13mo";

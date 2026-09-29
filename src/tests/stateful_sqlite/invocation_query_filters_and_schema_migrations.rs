@@ -59,6 +59,56 @@ async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invoc
 }
 
 #[tokio::test]
+async fn ensure_schema_enables_legacy_startup_backfill_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query(
+        r#"
+        CREATE TABLE startup_backfill_progress (
+            task_name TEXT PRIMARY KEY,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            next_run_after TEXT,
+            zero_update_streak INTEGER NOT NULL DEFAULT 0,
+            last_started_at TEXT,
+            last_finished_at TEXT,
+            last_scanned INTEGER NOT NULL DEFAULT 0,
+            last_updated INTEGER NOT NULL DEFAULT 0,
+            last_status TEXT NOT NULL DEFAULT 'idle'
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy startup backfill schema");
+    sqlx::query(
+        "INSERT INTO startup_backfill_progress (task_name, cursor_id) \
+         VALUES ('prompt_cache_conversations_materialization_v1', 12)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy startup backfill progress");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate legacy startup backfill schema");
+
+    let (enabled, cursor_id): (i64, i64) = sqlx::query_as(
+        "SELECT enabled, cursor_id FROM startup_backfill_progress \
+         WHERE task_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated startup backfill progress");
+    assert_eq!(enabled, 1);
+    assert_eq!(cursor_id, 12);
+}
+
+#[tokio::test]
 async fn ensure_schema_defers_prompt_cache_conversation_materialization_to_startup_backfill() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -154,6 +204,309 @@ async fn ensure_schema_defers_prompt_cache_conversation_materialization_to_start
     .await
     .expect("count backfilled prompt-cache conversations");
     assert_eq!(row_count, 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_status_reports_progress_history_and_control() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    for index in 0..4 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, '2026-09-01 00:00:00', ?2, 'success', 7, 0.07, ?3, '{}')
+            "#,
+        )
+        .bind(format!("status-invocation-{index}"))
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": format!("status-key-{index}")}).to_string())
+        .execute(&pool)
+        .await
+        .expect("insert status fixture invocation");
+    }
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+
+    let outcome = run_prompt_cache_conversations_materialization(&pool, 400, None)
+        .await
+        .expect("materialize status fixture");
+    record_prompt_cache_conversation_materialization_run(
+        &pool,
+        "2026-09-29T04:16:45.000Z",
+        120,
+        &outcome,
+        "success",
+        None,
+    )
+    .await
+    .expect("record materialization history");
+
+    let status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load materialization status");
+    assert!(status.enabled);
+    assert_eq!(status.total_keys, Some(4));
+    assert_eq!(status.completed_keys, 4);
+    assert_eq!(status.progress_percent, Some(99.0));
+    assert_eq!(status.estimated_remaining_ms, None);
+    assert_eq!(status.queue_pending, 0);
+    assert_eq!(status.recent_runs.len(), 1);
+
+    let disabled = set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization");
+    assert!(!disabled.enabled);
+    let disabled_status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load disabled materialization status");
+    assert!(!disabled_status.enabled);
+    assert_eq!(disabled_status.last_status, "disabled");
+
+    let enabled = set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        true,
+    )
+    .await
+    .expect("enable prompt-cache materialization");
+    assert!(enabled.enabled);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_status_does_not_report_complete_with_pending_refresh() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key) \
+         VALUES ('pending-after-complete')",
+    )
+    .execute(&pool)
+    .await
+    .expect("enqueue pending refresh");
+
+    let status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load incomplete materialization status");
+    assert_eq!(status.queue_pending, 1);
+    assert_ne!(status.progress_percent, Some(100.0));
+    assert_ne!(status.estimated_remaining_ms, Some(0));
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_repairs_complete_progress_counters() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache materialization schema");
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key) \
+         VALUES ('ABCDEF', 'legacy-complete-key')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy complete conversation");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_migration_progress \
+         SET phase = 'complete', total_keys = NULL, completed_keys = 0 \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("reset legacy complete progress counters");
+
+    ensure_schema(&pool)
+        .await
+        .expect("repair legacy complete progress counters");
+    let status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load repaired materialization status");
+    assert_eq!(status.total_keys, Some(1));
+    assert_eq!(status.completed_keys, 1);
+    assert_eq!(status.progress_percent, Some(99.0));
+    assert_eq!(status.estimated_remaining_ms, None);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_honors_operator_disable_before_a_batch() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('operator-disable-invocation', '2026-09-01 00:00:00', ?1, 'success', 7, 0.07, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "operator-disable-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert operator-disable fixture invocation");
+    set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization");
+
+    let should_yield = || false;
+    let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &should_yield,
+    )
+    .await
+    .expect("run disabled prompt-cache materialization");
+    assert!(outcome.deferred);
+    assert_eq!(outcome.defer_reason, Some("operator_disabled"));
+    assert_eq!(outcome.batch_count, 0);
+
+    let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+        .fetch_one(&pool)
+        .await
+        .expect("count identities after operator disable");
+    assert_eq!(identity_count, 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_honors_operator_disable_in_queue_drain() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_migration_progress \
+         SET phase = 'queue_drain' \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("set queue-drain phase");
+    set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization in queue drain");
+
+    let should_yield = || false;
+    let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &should_yield,
+    )
+    .await
+    .expect("run disabled queue-drain materialization");
+    assert!(outcome.deferred);
+    assert_eq!(outcome.defer_reason, Some("operator_disabled"));
+    assert!(!outcome.complete);
+
+    let phase: String = sqlx::query_scalar(
+        "SELECT phase FROM prompt_cache_conversation_migration_progress \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load queue-drain phase after disable");
+    assert_eq!(phase, "queue_drain");
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_honors_operator_disable_before_empty_phase_transition() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    set_startup_backfill_task_enabled(
+        &pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        false,
+    )
+    .await
+    .expect("disable prompt-cache materialization before empty phases");
+
+    for phase in ["identity_reconciliation", "stats_rebuild"] {
+        sqlx::query(
+            "UPDATE prompt_cache_conversation_migration_progress SET phase = ?1 \
+             WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+        )
+        .bind(phase)
+        .execute(&pool)
+        .await
+        .expect("set empty materialization phase");
+
+        let should_yield = || false;
+        let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            400,
+            None,
+            &should_yield,
+        )
+        .await
+        .expect("run disabled empty materialization phase");
+        assert!(outcome.deferred);
+        assert_eq!(outcome.defer_reason, Some("operator_disabled"));
+
+        let persisted_phase: String = sqlx::query_scalar(
+            "SELECT phase FROM prompt_cache_conversation_migration_progress \
+             WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load empty materialization phase after disable");
+        assert_eq!(persisted_phase, phase);
+    }
 }
 
 #[tokio::test]
@@ -448,8 +801,11 @@ async fn prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale
             panic!("scale materialization did not complete within the test budget");
         };
         let foreground_reads = async {
-            let mut latencies = Vec::with_capacity(100);
-            while !finished.load(std::sync::atomic::Ordering::SeqCst) || latencies.len() < 100 {
+            const FOREGROUND_SAMPLE_COUNT: usize = 500;
+            let mut latencies = Vec::with_capacity(FOREGROUND_SAMPLE_COUNT);
+            while !finished.load(std::sync::atomic::Ordering::SeqCst)
+                || latencies.len() < FOREGROUND_SAMPLE_COUNT
+            {
                 let started_at = std::time::Instant::now();
                 sqlx::query_scalar::<_, i64>(
                     "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
@@ -498,29 +854,47 @@ async fn prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale
         sorted[rank.min(sorted.len() - 1)]
     }
 
+    fn median_duration(durations: &mut [Duration]) -> Duration {
+        durations.sort_unstable();
+        durations[durations.len() / 2]
+    }
+
     let temp_dir = make_temp_test_dir("prompt-cache-materialization-scale");
-    let fixed = run_scale_case(&temp_dir.join("fixed.db"), false).await;
-    let adaptive = run_scale_case(&temp_dir.join("adaptive.db"), true).await;
-    let fixed_p95 = percentile_micros(&fixed.1, 95);
-    let fixed_p99 = percentile_micros(&fixed.1, 99);
-    let adaptive_p95 = percentile_micros(&adaptive.1, 95);
-    let adaptive_p99 = percentile_micros(&adaptive.1, 99);
+    const REPRESENTATIVE_TRIALS: usize = 3;
+    let mut fixed_durations = Vec::with_capacity(REPRESENTATIVE_TRIALS);
+    let mut adaptive_durations = Vec::with_capacity(REPRESENTATIVE_TRIALS);
+    let mut fixed_latencies = Vec::with_capacity(REPRESENTATIVE_TRIALS * 500);
+    let mut adaptive_latencies = Vec::with_capacity(REPRESENTATIVE_TRIALS * 500);
+    for trial in 0..REPRESENTATIVE_TRIALS {
+        let fixed = run_scale_case(&temp_dir.join(format!("fixed-{trial}.db")), false).await;
+        assert_eq!((fixed.2, fixed.3, fixed.4), (4_000, 40_000, 0));
+        fixed_durations.push(fixed.0);
+        fixed_latencies.extend(fixed.1);
+
+        let adaptive = run_scale_case(&temp_dir.join(format!("adaptive-{trial}.db")), true).await;
+        assert_eq!((adaptive.2, adaptive.3, adaptive.4), (4_000, 40_000, 0));
+        adaptive_durations.push(adaptive.0);
+        adaptive_latencies.extend(adaptive.1);
+    }
+    let fixed_ms = median_duration(&mut fixed_durations).as_millis();
+    let adaptive_ms = median_duration(&mut adaptive_durations).as_millis();
+    let fixed_p95 = percentile_micros(&fixed_latencies, 95);
+    let fixed_p99 = percentile_micros(&fixed_latencies, 99);
+    let adaptive_p95 = percentile_micros(&adaptive_latencies, 95);
+    let adaptive_p99 = percentile_micros(&adaptive_latencies, 99);
     eprintln!(
-        "prompt-cache scale fixed_ms={} adaptive_ms={} fixed_p95_us={} adaptive_p95_us={} fixed_p99_us={} adaptive_p99_us={}",
-        fixed.0.as_millis(),
-        adaptive.0.as_millis(),
+        "prompt-cache scale trials={} fixed_median_ms={} adaptive_median_ms={} fixed_p95_us={} adaptive_p95_us={} fixed_p99_us={} adaptive_p99_us={}",
+        REPRESENTATIVE_TRIALS,
+        fixed_ms,
+        adaptive_ms,
         fixed_p95,
         adaptive_p95,
         fixed_p99,
         adaptive_p99,
     );
-    assert_eq!((fixed.2, fixed.3, fixed.4), (4_000, 40_000, 0));
-    assert_eq!((adaptive.2, adaptive.3, adaptive.4), (4_000, 40_000, 0));
     assert!(
-        adaptive.0.as_secs_f64() <= fixed.0.as_secs_f64() / 0.7,
-        "adaptive throughput fell below 70%: fixed={:?} adaptive={:?}",
-        fixed.0,
-        adaptive.0
+        adaptive_ms <= fixed_ms * 10 / 7,
+        "adaptive throughput fell below 70%: fixed_median_ms={fixed_ms} adaptive_median_ms={adaptive_ms}"
     );
     assert!(
         adaptive_p95 <= fixed_p95.saturating_mul(110) / 100 + 1,

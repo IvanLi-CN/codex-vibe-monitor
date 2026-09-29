@@ -3594,6 +3594,11 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
     router
         .route("/api/system/status", get(fetch_system_status))
         .route("/api/system/tasks", get(list_system_task_runs))
+        .route(
+            "/api/system/prompt-cache/materialization",
+            get(fetch_prompt_cache_materialization_status)
+                .patch(update_prompt_cache_materialization_control),
+        )
         .route("/api/system/performance", get(fetch_performance_metrics))
         .route(
             "/api/system/performance/health",

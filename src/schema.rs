@@ -5755,6 +5755,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("suspension_reason", "TEXT"),
         ("next_probe_at", "TEXT"),
         ("wake_generation", "INTEGER NOT NULL DEFAULT 0"),
+        ("enabled", "INTEGER NOT NULL DEFAULT 1"),
     ] {
         ensure_column_with_definition(pool, "startup_backfill_progress", column, definition)
             .await

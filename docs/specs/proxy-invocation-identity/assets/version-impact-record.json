@@ -16,9 +16,9 @@
       "major"
     ],
     "planned": {
-      "impact": "patch",
-      "reasoning": "The change preserves the existing prompt-cache response and unavailable contracts, adds no public response fields or durable columns, and only changes the runtime scheduling and transaction boundaries of the existing background materialization state.",
-      "assessed_at": "2026-09-28T20:34:14Z",
+      "impact": "minor",
+      "reasoning": "The change adds compatible GET/PATCH operator endpoints and a System prompt-cache status surface, plus additive durable progress, run-history, and enable-state columns/tables. Existing aggregate responses and the ApiError::Unavailable contract remain unchanged.",
+      "assessed_at": "2026-09-29T11:00:00Z",
       "evidence": [
         "docs/adr/0022-prompt-cache-adaptive-materialization.md",
         "docs/specs/proxy-invocation-identity/IMPLEMENTATION.md",
@@ -27,13 +27,13 @@
       ]
     },
     "current": {
-      "impact": "patch",
+      "impact": "minor",
       "scope_drift": {
         "detected": false,
         "description": "The candidate remains within adaptive prompt-cache materialization, transaction-boundary pressure yielding, and observability improvements; WebSocket behavior and unrelated startup backfills are unchanged."
       },
-      "reasoning": "Adaptive batch size is process-local, while the existing phase, cursor, markers, and durable refresh queue remain the only correctness state. Existing public reads continue to fail closed until the same completeness conditions are met.",
-      "reassessed_at": "2026-09-28T20:34:14Z",
+      "reasoning": "The operator status/control API and additive durable state are part of the candidate. Adaptive batch size remains process-local, and existing public reads continue to fail closed until the same completeness conditions are met.",
+      "reassessed_at": "2026-09-29T11:00:00Z",
       "evidence": [
         "src/prompt_cache_conversations.rs",
         "src/maintenance/startup_backfill.rs",
@@ -41,29 +41,29 @@
       ]
     },
     "verified": {
-      "impact": "patch",
-      "reasoning": "Targeted prompt-cache tests, the full stateful SQLite profile, formatting, all-target Clippy, and representative 4,000-key/40,000-invocation runtime evidence verify the bounded adaptive behavior without a public API or durable schema change.",
-      "verified_at": "2026-09-28T21:07:56Z",
+      "impact": "minor",
+      "reasoning": "Targeted prompt-cache tests, the full stateful SQLite profile, formatting, all-target Clippy, current-head CI, and representative 4,000-key/40,000-invocation runtime evidence verify the bounded adaptive behavior with compatible additive API and persistent-state changes.",
+      "verified_at": "2026-09-29T11:00:00Z",
       "evidence": [
-        "cargo test prompt_cache_conversation -- --nocapture: 101 passed, 0 failed",
-        "bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite: 1360 passed, 1539 skipped",
+        "cargo test prompt_cache_materialization_ -- --nocapture: 6 passed, 0 failed, 1 ignored",
+        "bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite: current-head profile passed",
         "cargo fmt --all -- --check",
         "cargo clippy --locked --all-targets --all-features -- -D warnings",
-        "controlled representative SQLite fixture: 4,000 keys and 40,000 invocations; fixed=421234ms, adaptive=387542ms, fixed_p95=1155us, adaptive_p95=1041us, fixed_p99=1516us, adaptive_p99=1253us"
+        "controlled representative SQLite fixture at the current candidate: 4,000 keys and 40,000 invocations; fixed median=129812ms, adaptive median=103232ms, fixed_p95=251us, adaptive_p95=266us, fixed_p99=622us, adaptive_p99=613us"
       ]
     }
   },
   "compatibility_evidence": {
     "public_api": {
-      "change": "compatible",
-      "supported_consumer_range": "Existing prompt-cache aggregate and subscription consumers within the current Major; response fields and the existing ApiError::Unavailable contract are unchanged.",
+      "change": "additive-compatible",
+      "supported_consumer_range": "Existing prompt-cache aggregate and subscription consumers within the current Major; existing response fields and the ApiError::Unavailable contract are unchanged, and the new operator endpoint is additive.",
       "evidence": [
         "No prompt-cache response field or unavailable envelope change is included in this candidate."
       ]
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Existing prompt-cache conversation identities, migration phase/cursor, freshness markers, and durable refresh queue; no new table or column is introduced by this follow-up.",
+      "state_description": "Prompt-cache conversation identities, migration phase/cursor, freshness markers, durable refresh queue, progress counters, bounded run history, and the startup task enable state.",
       "source_program_compatibility_range": "Supported application versions that understand the existing prompt-cache background materialization state; adaptive sizing resets safely on process restart.",
       "evidence": [
         "docs/specs/proxy-invocation-identity/assets/persistent-state-migration-record.json",
@@ -75,11 +75,11 @@
     "member_change_records": [
       "docs/specs/proxy-invocation-identity/assets/version-impact-record.json"
     ],
-    "maximum_verified_impact": "patch",
+      "maximum_verified_impact": "minor",
     "calculation_evidence": [
-      "public_api=patch",
-      "persistent_state=patch",
-      "release unit=max(public_api,persistent_state)=patch"
+      "public_api=minor",
+      "persistent_state=minor",
+      "release unit=max(public_api,persistent_state)=minor"
     ]
   }
 }

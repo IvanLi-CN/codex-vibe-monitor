@@ -20,6 +20,7 @@ const SystemPerformancePage = lazy(() => import("./pages/system/SystemPerformanc
 const SystemSettingsPage = lazy(() => import("./pages/system/SystemSettingsPage"));
 const SystemStatusPage = lazy(() => import("./pages/system/SystemStatusPage"));
 const SystemTasksPage = lazy(() => import("./pages/system/SystemTasksPage"));
+const SystemPromptCachePage = lazy(() => import("./pages/system/SystemPromptCachePage"));
 
 function RouteLoadingFallback() {
   return (
@@ -118,6 +119,7 @@ function App() {
               <Route path="status" element={<SystemStatusPage />} />
               <Route path="performance" element={<SystemPerformancePage />} />
               <Route path="tasks" element={<SystemTasksPage />} />
+              <Route path="prompt-cache" element={<SystemPromptCachePage />} />
               <Route path="settings" element={<SystemSettingsPage />} />
               <Route path="proxy" element={<SystemProxyPage />} />
             </Route>

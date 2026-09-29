@@ -288,6 +288,17 @@ fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime
         .unwrap_or_else(Utc::now)
 }
 
+fn prompt_cache_materialization_failed_outcome(
+    phase: Option<String>,
+) -> PromptCacheConversationMaterializationRun {
+    phase
+        .map(|phase| PromptCacheConversationMaterializationRun {
+            phase,
+            ..Default::default()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StartupBackfillTaskRunOutcome {
     actionable: bool,
@@ -670,6 +681,7 @@ pub(crate) struct StartupBackfillProgressRow {
     suspension_reason: Option<String>,
     next_probe_at: Option<String>,
     wake_generation: i64,
+    enabled: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -686,6 +698,7 @@ pub(crate) struct StartupBackfillProgress {
     pub(crate) suspension_reason: Option<String>,
     pub(crate) next_probe_at: Option<String>,
     pub(crate) wake_generation: u64,
+    pub(crate) enabled: bool,
 }
 
 impl StartupBackfillProgress {
@@ -703,6 +716,7 @@ impl StartupBackfillProgress {
             suspension_reason: None,
             next_probe_at: None,
             wake_generation: 0,
+            enabled: true,
         }
     }
 
@@ -729,6 +743,7 @@ impl From<StartupBackfillProgressRow> for StartupBackfillProgress {
             suspension_reason: value.suspension_reason,
             next_probe_at: value.next_probe_at,
             wake_generation: value.wake_generation.max(0) as u64,
+            enabled: value.enabled != 0,
         }
     }
 }
@@ -935,7 +950,8 @@ pub(crate) async fn load_startup_backfill_progress(
             last_status,
             suspension_reason,
             next_probe_at,
-            wake_generation
+            wake_generation,
+            enabled
         FROM startup_backfill_progress
         WHERE task_name = ?1
         LIMIT 1
@@ -946,6 +962,63 @@ pub(crate) async fn load_startup_backfill_progress(
     .await?
     .map(Into::into)
     .unwrap_or_else(|| StartupBackfillProgress::pending(task_name.to_string())))
+}
+
+pub(crate) async fn set_startup_backfill_task_enabled(
+    pool: &Pool<Sqlite>,
+    task: StartupBackfillTask,
+    enabled: bool,
+) -> Result<StartupBackfillProgress> {
+    let task_name = task.name();
+    let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation,
+            enabled
+        )
+        VALUES (?1, 0, ?2, 0, NULL, NULL, 0, 0, 'idle', ?3, NULL, 0, ?4)
+        ON CONFLICT(task_name) DO UPDATE SET
+            enabled = excluded.enabled,
+            next_run_after = excluded.next_run_after,
+            suspension_reason = excluded.suspension_reason,
+            next_probe_at = NULL,
+            wake_generation = startup_backfill_progress.wake_generation + 1
+        "#,
+    )
+    .bind(task_name)
+    .bind(if enabled {
+        None
+    } else {
+        Some(disabled_until.as_str())
+    })
+    .bind(if enabled {
+        None
+    } else {
+        Some("operator_disabled")
+    })
+    .bind(if enabled { 1_i64 } else { 0_i64 })
+    .execute(pool)
+    .await
+    .with_context(|| format!("failed to update startup backfill task control for {task_name}"))?;
+
+    if enabled {
+        STARTUP_BACKFILL_SCHEDULER.wake(task);
+    } else {
+        STARTUP_BACKFILL_SCHEDULER.clear_next_due(task);
+    }
+    load_startup_backfill_progress(pool, task_name).await
 }
 
 pub(crate) async fn mark_startup_backfill_running(
@@ -1102,6 +1175,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
                 suspension_reason = NULL,
                 wake_generation = startup_backfill_progress.wake_generation + 1,
                 last_status = ?2
+            WHERE startup_backfill_progress.enabled != 0
             "#,
         )
         .bind(&task_name)
@@ -1115,8 +1189,11 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
                 task_name
             )
         })?;
-        woken += outcome.rows_affected();
-        STARTUP_BACKFILL_SCHEDULER.wake(*task);
+        let rows_affected = outcome.rows_affected();
+        woken += rows_affected;
+        if rows_affected > 0 {
+            STARTUP_BACKFILL_SCHEDULER.wake(*task);
+        }
     }
     if !tasks.is_empty() {
         info!(
@@ -1967,6 +2044,19 @@ async fn run_startup_backfill_task_if_due_outcome(
         .inspect_err(|err| {
             record_startup_backfill_pressure_error(gate, err);
         })?;
+    if task == StartupBackfillTask::PromptCacheConversationsMaterialization && !progress.enabled {
+        STARTUP_BACKFILL_SCHEDULER.clear_next_due(task);
+        return Ok((
+            StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: false,
+                completed: true,
+                next_due: Utc::now() + ChronoDuration::days(3650),
+            },
+            None,
+        ));
+    }
     let now = Utc::now();
     if !progress.is_due(now) {
         debug!(
@@ -2051,6 +2141,32 @@ async fn run_startup_backfill_task_if_due_outcome(
         Ok((run, detail)) => {
             if run.deferred {
                 drop(write_permit);
+                if run.defer_reason == Some("operator_disabled") {
+                    let current_progress =
+                        load_startup_backfill_progress(&state.pool, &task_name).await?;
+                    let resumed = current_progress.enabled;
+                    info!(
+                        task = task.log_label(),
+                        task_name = %task_name,
+                        detail = %detail,
+                        resumed,
+                        "startup backfill task stopped at a committed micro-batch boundary after operator disable"
+                    );
+                    return Ok((
+                        StartupBackfillTaskRunOutcome {
+                            actionable: false,
+                            failed: false,
+                            deferred: resumed,
+                            completed: !resumed,
+                            next_due: if resumed {
+                                Utc::now()
+                            } else {
+                                Utc::now() + ChronoDuration::days(3650)
+                            },
+                        },
+                        None,
+                    ));
+                }
                 info!(
                     task = task.log_label(),
                     task_name = %task_name,
@@ -2367,13 +2483,59 @@ async fn run_startup_backfill_task_with_pressure(
         StartupBackfillTask::PromptCacheConversationsMaterialization => {
             let never_yield = || false;
             let should_yield = prompt_cache_should_yield.unwrap_or(&never_yield);
-            let outcome = run_prompt_cache_conversations_materialization_with_pressure(
+            let run_started = Instant::now();
+            let run_started_at = format_utc_iso(Utc::now());
+            let outcome =
+                match run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                    &state.pool,
+                    scan_limit,
+                    max_elapsed,
+                    should_yield,
+                )
+                .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        let failed_outcome = prompt_cache_materialization_failed_outcome(
+                            crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                                &state.pool,
+                            )
+                            .await
+                            .ok()
+                            .map(|progress| progress.phase),
+                        );
+                        if let Err(record_error) =
+                            record_prompt_cache_conversation_materialization_run(
+                                &state.pool,
+                                &run_started_at,
+                                run_started.elapsed().as_millis() as u64,
+                                &failed_outcome,
+                                "failed",
+                                Some(&error.to_string()),
+                            )
+                            .await
+                        {
+                            warn!(error = %record_error, "failed to record prompt-cache materialization failure");
+                        }
+                        return Err(error);
+                    }
+                };
+            if let Err(error) = record_prompt_cache_conversation_materialization_run(
                 &state.pool,
-                scan_limit,
-                max_elapsed,
-                should_yield,
+                &run_started_at,
+                run_started.elapsed().as_millis() as u64,
+                &outcome,
+                if outcome.deferred {
+                    "deferred"
+                } else {
+                    "success"
+                },
+                None,
             )
-            .await?;
+            .await
+            {
+                warn!(error = %error, "failed to record prompt-cache materialization run");
+            }
             let detail = format!(
                 "phase={} scanned={} updated={} complete={} batches={} last_batch_size={} max_batch_size={} batch_elapsed_ms={} deferred={} defer_reason={}",
                 outcome.phase,
@@ -2970,6 +3132,17 @@ mod startup_backfill_tests {
         );
 
         assert_eq!(retry_at.timestamp_millis() as u64, expected_deadline);
+    }
+
+    #[test]
+    fn failed_prompt_cache_materialization_does_not_report_cumulative_work() {
+        let outcome =
+            prompt_cache_materialization_failed_outcome(Some("stats_rebuild".to_string()));
+
+        assert_eq!(outcome.phase, "stats_rebuild");
+        assert_eq!(outcome.scanned, 0);
+        assert_eq!(outcome.updated, 0);
+        assert_eq!(outcome.batch_count, 0);
     }
 
     #[test]

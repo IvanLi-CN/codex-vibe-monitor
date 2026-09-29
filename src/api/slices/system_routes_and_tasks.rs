@@ -1755,6 +1755,36 @@ pub(crate) async fn fetch_system_status(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheMaterializationControlRequest {
+    enabled: bool,
+}
+
+pub(crate) async fn fetch_prompt_cache_materialization_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PromptCacheConversationMaterializationStatus>, ApiError> {
+    Ok(Json(
+        load_prompt_cache_conversation_materialization_status(&state.pool)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+pub(crate) async fn update_prompt_cache_materialization_control(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PromptCacheMaterializationControlRequest>,
+) -> Result<Json<PromptCacheConversationMaterializationStatus>, ApiError> {
+    set_startup_backfill_task_enabled(
+        &state.pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        payload.enabled,
+    )
+    .await
+    .map_err(ApiError::from)?;
+    fetch_prompt_cache_materialization_status(State(state)).await
+}
+
 pub(crate) async fn list_system_task_runs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SystemTaskRunsQuery>,

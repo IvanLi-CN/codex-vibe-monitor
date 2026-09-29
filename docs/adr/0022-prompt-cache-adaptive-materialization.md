@@ -32,15 +32,26 @@ transaction boundaries from multiplying per-key write overhead while preserving 
 identity, statistics, queue, and cursor commit.
 
 Prompt-cache materialization checks the existing P1/interactive waiter signal before starting a
-micro-batch and after its commit. If a waiter arrives, the completed batch remains committed and
-the next batch is deferred. When another adaptive micro-batch remains, the committed boundary also
-includes a 2 ms cooperative scheduler window so foreground readers can acquire SQLite access
+micro-batch and after its commit. It also rereads the durable operator-enabled flag after each
+commit. If a waiter or operator disable arrives, the completed batch remains committed and the
+next batch is deferred. When another adaptive micro-batch remains, the committed boundary also
+includes a 10 ms cooperative scheduler window so foreground readers can acquire SQLite access
 between commits; this wait is outside the transaction and cannot interrupt the active batch. Other
 startup backfills retain the existing P2 cancellation behavior.
 
-The existing migration progress table, unavailable read contract, marker names, queue, and public
-responses do not change. Structured startup-backfill details expose phase, scanned/updated counts,
-batch count, last/max batch size, accumulated batch time, and defer reason.
+The existing migration progress table, unavailable read contract, marker names, queue, and aggregate
+responses do not change. A dedicated operator status surface adds GET/PATCH
+/api/system/prompt-cache/materialization. The PATCH control is durable in
+startup_backfill_progress.enabled; disabling a task only takes effect at a committed
+micro-batch boundary, while enabling it wakes the scheduler.
+
+The prompt-cache migration progress row stores a fixed source total and a committed identity-key
+counter once the identity snapshot is captured. Statistics cursor commits do not add those keys
+again. A bounded prompt_cache_conversation_materialization_runs table retains the latest 100 task
+calls, including phase, duration, processed/updated counts, batch metrics, and defer or failure
+reason. The UI exposes the latest 10 records; incomplete phases stay below 100% and zero ETA is
+reported only in the complete phase. Status reads use durable counters and bounded queue sampling,
+never a historical table scan. Schema setup repairs counters for older complete rows.
 
 ## Consequences
 

@@ -184,6 +184,8 @@ export type {
   PromptCacheConversationSelectionMode,
   PromptCacheConversationsResponse,
   PromptCacheConversationUpstreamAccount,
+  PromptCacheMaterializationRun,
+  PromptCacheMaterializationStatus,
   ProxyFastModeRewriteMode,
   ProxySettings,
   QuotaSnapshot,
