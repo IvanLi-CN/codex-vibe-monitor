@@ -578,29 +578,47 @@ async fn prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale
         sorted[rank.min(sorted.len() - 1)]
     }
 
+    fn median_duration(durations: &mut [Duration]) -> Duration {
+        durations.sort_unstable();
+        durations[durations.len() / 2]
+    }
+
     let temp_dir = make_temp_test_dir("prompt-cache-materialization-scale");
-    let fixed = run_scale_case(&temp_dir.join("fixed.db"), false).await;
-    let adaptive = run_scale_case(&temp_dir.join("adaptive.db"), true).await;
-    let fixed_p95 = percentile_micros(&fixed.1, 95);
-    let fixed_p99 = percentile_micros(&fixed.1, 99);
-    let adaptive_p95 = percentile_micros(&adaptive.1, 95);
-    let adaptive_p99 = percentile_micros(&adaptive.1, 99);
+    const REPRESENTATIVE_TRIALS: usize = 3;
+    let mut fixed_durations = Vec::with_capacity(REPRESENTATIVE_TRIALS);
+    let mut adaptive_durations = Vec::with_capacity(REPRESENTATIVE_TRIALS);
+    let mut fixed_latencies = Vec::with_capacity(REPRESENTATIVE_TRIALS * 500);
+    let mut adaptive_latencies = Vec::with_capacity(REPRESENTATIVE_TRIALS * 500);
+    for trial in 0..REPRESENTATIVE_TRIALS {
+        let fixed = run_scale_case(&temp_dir.join(format!("fixed-{trial}.db")), false).await;
+        assert_eq!((fixed.2, fixed.3, fixed.4), (4_000, 40_000, 0));
+        fixed_durations.push(fixed.0);
+        fixed_latencies.extend(fixed.1);
+
+        let adaptive = run_scale_case(&temp_dir.join(format!("adaptive-{trial}.db")), true).await;
+        assert_eq!((adaptive.2, adaptive.3, adaptive.4), (4_000, 40_000, 0));
+        adaptive_durations.push(adaptive.0);
+        adaptive_latencies.extend(adaptive.1);
+    }
+    let fixed_ms = median_duration(&mut fixed_durations).as_millis();
+    let adaptive_ms = median_duration(&mut adaptive_durations).as_millis();
+    let fixed_p95 = percentile_micros(&fixed_latencies, 95);
+    let fixed_p99 = percentile_micros(&fixed_latencies, 99);
+    let adaptive_p95 = percentile_micros(&adaptive_latencies, 95);
+    let adaptive_p99 = percentile_micros(&adaptive_latencies, 99);
     eprintln!(
-        "prompt-cache scale fixed_ms={} adaptive_ms={} fixed_p95_us={} adaptive_p95_us={} fixed_p99_us={} adaptive_p99_us={}",
-        fixed.0.as_millis(),
-        adaptive.0.as_millis(),
+        "prompt-cache scale trials={} fixed_median_ms={} adaptive_median_ms={} fixed_p95_us={} adaptive_p95_us={} fixed_p99_us={} adaptive_p99_us={}",
+        REPRESENTATIVE_TRIALS,
+        fixed_ms,
+        adaptive_ms,
         fixed_p95,
         adaptive_p95,
         fixed_p99,
         adaptive_p99,
     );
-    assert_eq!((fixed.2, fixed.3, fixed.4), (4_000, 40_000, 0));
-    assert_eq!((adaptive.2, adaptive.3, adaptive.4), (4_000, 40_000, 0));
     assert!(
-        adaptive.0.as_secs_f64() <= fixed.0.as_secs_f64() / 0.7,
-        "adaptive throughput fell below 70%: fixed={:?} adaptive={:?}",
-        fixed.0,
-        adaptive.0
+        adaptive_ms <= fixed_ms * 10 / 7,
+        "adaptive throughput fell below 70%: fixed_median_ms={fixed_ms} adaptive_median_ms={adaptive_ms}"
     );
     assert!(
         adaptive_p95 <= fixed_p95.saturating_mul(110) / 100 + 1,

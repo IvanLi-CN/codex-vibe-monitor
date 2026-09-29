@@ -114,7 +114,7 @@
     "pause_points": [
       "Schema installation stops after additive DDL and does not scan historical invocations, allowing HTTP readiness to continue.",
       "The operator control disables the prompt-cache task at the next committed micro-batch boundary and wakes it from its durable cursor when re-enabled; it does not interrupt an active SQLite transaction.",
-      "Each 400-key logical page is split into adaptive 32..400-key transactions. A micro-batch runs to commit or explicit failure, and its phase cursor advances in that same transaction; after a committed adaptive batch a 2 ms scheduler window gives foreground readers a bounded opportunity before the next batch. Prompt-cache pressure defers the next boundary while process exit or failure repeats the latest idempotent micro-batch.",
+      "Each 400-key logical page is split into adaptive 32..400-key transactions. A micro-batch runs to commit or explicit failure, and its phase cursor advances in that same transaction; after a committed adaptive batch a 10 ms scheduler window gives foreground readers a bounded opportunity before the next batch. Prompt-cache pressure defers the next boundary while process exit or failure repeats the latest idempotent micro-batch.",
       "SQLite invocation mutation triggers enqueue affected prompt-cache keys and remove the freshness marker in the source transaction; startup recovery can rebuild aggregates and identities after a stopped release."
     ]
   },
