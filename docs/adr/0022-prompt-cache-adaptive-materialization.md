@@ -26,6 +26,11 @@ Each micro-batch uses one SQLite transaction for identity ensure, aggregate refr
 the phase cursor checkpoint, and commit. A process exit or transaction failure therefore repeats
 the latest micro-batch idempotently instead of skipping it.
 
+Aggregate rows discovered by the grouped refresh are written back with one set-based update per
+micro-batch rather than one SQLite update statement per conversation key. This keeps the smaller
+transaction boundaries from multiplying per-key write overhead while preserving the same atomic
+identity, statistics, queue, and cursor commit.
+
 Prompt-cache materialization checks the existing P1/interactive waiter signal before starting a
 micro-batch and after its commit. If a waiter arrives, the completed batch remains committed and
 the next batch is deferred. When another adaptive micro-batch remains, the committed boundary also
@@ -44,6 +49,8 @@ batch count, last/max batch size, accumulated batch time, and defer reason.
 - Foreground aggregate readers get a bounded scheduling opportunity between adaptive commits,
   keeping the representative read p95/p99 within the fixed-400 baseline while retaining shorter
   write transactions.
+- Statistics writeback remains proportional to the number of micro-batches, not the number of
+  conversation keys, so adaptive batches do not pay an avoidable per-key statement overhead.
 - Quiet SQLite databases can recover close to the 400-key throughput ceiling, while high-latency
   transactions reduce lock duration on the next batch.
 - Adaptive size is intentionally process-local; durable correctness remains in phase, cursor,

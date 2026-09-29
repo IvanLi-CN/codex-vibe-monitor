@@ -1978,58 +1978,87 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats_on_connection(
         stats_query = stats_query.bind(*prompt_cache_key);
     }
     let stats_rows = stats_query.fetch_all(&mut *connection).await?;
-    for stats in &stats_rows {
+    let mut update_query = sqlx::QueryBuilder::<Sqlite>::new(
+        "WITH refreshed(prompt_cache_key, max_invoke_sequence, request_count, success_count, \
+         failure_count, input_tokens, output_tokens, cache_input_tokens, \
+         reported_cache_write_tokens, reasoning_tokens, total_tokens, cost, cost_input, \
+         cost_cache_write, cost_cache_read, cost_output, cost_reasoning, first_invocation_at, \
+         last_invocation_at) AS (VALUES ",
+    );
+    for (index, stats) in stats_rows.iter().enumerate() {
+        if index > 0 {
+            update_query.push(", ");
+        }
         let max_sequence = stats.max_invoke_id.as_deref().and_then(|invoke_id| {
             let suffix = invoke_id_suffix(invoke_id, &stats.conversation_id)?;
             decode_prompt_cache_conversation_sequence(suffix)
         });
-        sqlx::query(
-            r#"
-                UPDATE prompt_cache_conversations
-                SET last_invoke_sequence = MAX(last_invoke_sequence, COALESCE(?1, -1)),
-                    request_count = ?2,
-                    success_count = ?3,
-                    failure_count = ?4,
-                    input_tokens = ?5,
-                    output_tokens = ?6,
-                    cache_input_tokens = ?7,
-                    reported_cache_write_tokens = ?8,
-                    reasoning_tokens = ?9,
-                    total_tokens = ?10,
-                    cost = ?11,
-                    cost_input = ?12,
-                    cost_cache_write = ?13,
-                    cost_cache_read = ?14,
-                    cost_output = ?15,
-                    cost_reasoning = ?16,
-                    first_invocation_at = ?17,
-                    last_invocation_at = ?18,
-                    updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE prompt_cache_key = ?19
-                "#,
-        )
-        .bind(max_sequence.map(i64::from))
-        .bind(stats.request_count)
-        .bind(stats.success_count)
-        .bind(stats.failure_count)
-        .bind(stats.input_tokens)
-        .bind(stats.output_tokens)
-        .bind(stats.cache_input_tokens)
-        .bind(stats.reported_cache_write_tokens)
-        .bind(stats.reasoning_tokens)
-        .bind(stats.total_tokens)
-        .bind(stats.cost)
-        .bind(stats.cost_input)
-        .bind(stats.cost_cache_write)
-        .bind(stats.cost_cache_read)
-        .bind(stats.cost_output)
-        .bind(stats.cost_reasoning)
-        .bind(stats.first_invocation_at.as_deref())
-        .bind(stats.last_invocation_at.as_deref())
-        .bind(&stats.prompt_cache_key)
-        .execute(&mut *connection)
-        .await?;
+        update_query
+            .push("(")
+            .push_bind(&stats.prompt_cache_key)
+            .push(", ")
+            .push_bind(max_sequence.map(i64::from))
+            .push(", ")
+            .push_bind(stats.request_count)
+            .push(", ")
+            .push_bind(stats.success_count)
+            .push(", ")
+            .push_bind(stats.failure_count)
+            .push(", ")
+            .push_bind(stats.input_tokens)
+            .push(", ")
+            .push_bind(stats.output_tokens)
+            .push(", ")
+            .push_bind(stats.cache_input_tokens)
+            .push(", ")
+            .push_bind(stats.reported_cache_write_tokens)
+            .push(", ")
+            .push_bind(stats.reasoning_tokens)
+            .push(", ")
+            .push_bind(stats.total_tokens)
+            .push(", ")
+            .push_bind(stats.cost)
+            .push(", ")
+            .push_bind(stats.cost_input)
+            .push(", ")
+            .push_bind(stats.cost_cache_write)
+            .push(", ")
+            .push_bind(stats.cost_cache_read)
+            .push(", ")
+            .push_bind(stats.cost_output)
+            .push(", ")
+            .push_bind(stats.cost_reasoning)
+            .push(", ")
+            .push_bind(stats.first_invocation_at.as_deref())
+            .push(", ")
+            .push_bind(stats.last_invocation_at.as_deref())
+            .push(")");
     }
+    update_query.push(
+        ") UPDATE prompt_cache_conversations AS c
+         SET last_invoke_sequence = MAX(c.last_invoke_sequence, COALESCE(r.max_invoke_sequence, -1)),
+             request_count = r.request_count,
+             success_count = r.success_count,
+             failure_count = r.failure_count,
+             input_tokens = r.input_tokens,
+             output_tokens = r.output_tokens,
+             cache_input_tokens = r.cache_input_tokens,
+             reported_cache_write_tokens = r.reported_cache_write_tokens,
+             reasoning_tokens = r.reasoning_tokens,
+             total_tokens = r.total_tokens,
+             cost = r.cost,
+             cost_input = r.cost_input,
+             cost_cache_write = r.cost_cache_write,
+             cost_cache_read = r.cost_cache_read,
+             cost_output = r.cost_output,
+             cost_reasoning = r.cost_reasoning,
+             first_invocation_at = r.first_invocation_at,
+             last_invocation_at = r.last_invocation_at,
+             updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM refreshed AS r
+         WHERE c.prompt_cache_key = r.prompt_cache_key",
+    );
+    update_query.build().execute(&mut *connection).await?;
     Ok(stats_rows.len())
 }
 

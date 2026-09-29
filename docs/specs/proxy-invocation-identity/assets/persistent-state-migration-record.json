@@ -61,7 +61,7 @@
       },
       {
         "id": "dml-prompt-cache-conversation-statistics",
-        "description": "In the background stats_rebuild phase, refresh aggregate fields for conversation keys by 400-key logical pages split into adaptive 32..400-key micro-batches; each micro-batch commits identity ensure, aggregate refresh, queue clearing, and its durable cursor checkpoint in one transaction after identity coverage is complete.",
+        "description": "In the background stats_rebuild phase, refresh aggregate fields for conversation keys by 400-key logical pages split into adaptive 32..400-key micro-batches; each micro-batch uses one set-based aggregate writeback and commits identity ensure, aggregate refresh, queue clearing, and its durable cursor checkpoint in one transaction after identity coverage is complete.",
         "order": 5,
         "depends_on": [
           "dml-prompt-cache-conversation-identity-backfill"
