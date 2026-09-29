@@ -742,6 +742,8 @@ pub(crate) struct StartupBackfillRunState {
     retry_soon: bool,
     force_idle: bool,
     source_unavailable: bool,
+    deferred: bool,
+    defer_reason: Option<&'static str>,
     samples: Vec<String>,
 }
 
@@ -832,6 +834,8 @@ pub(crate) fn historical_rollup_startup_backfill_run_state(
         retry_soon: false,
         force_idle: pending_after == 0 || permanently_blocked,
         source_unavailable: permanently_blocked,
+        deferred: false,
+        defer_reason: None,
         samples: Vec::new(),
     }
 }
@@ -1996,36 +2000,75 @@ async fn run_startup_backfill_task_if_due_outcome(
 
     let started_at = Instant::now();
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    // Backfill implementations combine bounded SQL batches with file reads/decompression. If
-    // an interactive writer arrives while this P2 task is active, cancel the in-flight future so
-    // its transaction rolls back and release admission immediately for the higher-priority write.
-    let task_result = tokio::select! {
-        biased;
-        _ = coordinator.wait_for_p2_preemption() => {
-            drop(write_permit);
-            return persist_startup_backfill_pressure_defer(
-                state,
-                task,
-                &task_name,
-                &progress,
-                gate,
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
-            )
-            .await
-            .map(|outcome| (outcome, None));
-        }
-        result = super::retention::retention_try_archive_locks_scope(
-            run_startup_backfill_task(
+    // Most backfills combine bounded SQL batches with file reads/decompression. If an interactive
+    // writer arrives while one of those P2 tasks is active, cancel the in-flight future so its
+    // transaction rolls back. Prompt-cache materialization is the exception: it observes the same
+    // signal only after each committed micro-batch.
+    let prompt_cache_should_yield = || coordinator.p2_should_yield();
+    let task_result = if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+        // Prompt-cache materialization checks priority only between committed micro-batches. The
+        // enclosing maintenance pass still cancels the task during process shutdown.
+        super::retention::retention_try_archive_locks_scope(
+            run_startup_backfill_task_with_pressure(
                 state,
                 task,
                 progress.cursor_id,
                 progress.zero_update_streak,
                 progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
-            )
-        ) => result,
+                Some(&prompt_cache_should_yield),
+            ),
+        )
+        .await
+    } else {
+        tokio::select! {
+            biased;
+            _ = coordinator.wait_for_p2_preemption() => {
+                drop(write_permit);
+                return persist_startup_backfill_pressure_defer(
+                    state,
+                    task,
+                    &task_name,
+                    &progress,
+                    gate,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+                )
+                .await
+                .map(|outcome| (outcome, None));
+            }
+            result = super::retention::retention_try_archive_locks_scope(
+                run_startup_backfill_task_with_pressure(
+                    state,
+                    task,
+                    progress.cursor_id,
+                    progress.zero_update_streak,
+                    progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
+                    None,
+                )
+            ) => result,
+        }
     };
     let outcome = match task_result {
         Ok((run, detail)) => {
+            if run.deferred {
+                drop(write_permit);
+                info!(
+                    task = task.log_label(),
+                    task_name = %task_name,
+                    defer_reason = run.defer_reason.unwrap_or("unknown"),
+                    detail = %detail,
+                    "startup backfill task yielded at a prompt-cache micro-batch boundary"
+                );
+                return persist_startup_backfill_pressure_defer(
+                    state,
+                    task,
+                    &task_name,
+                    &progress,
+                    gate,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+                )
+                .await
+                .map(|outcome| (outcome, None));
+            }
             let zero_update_streak = if run.updated == 0 {
                 progress.zero_update_streak.saturating_add(1)
             } else {
@@ -2190,6 +2233,25 @@ pub(crate) async fn run_startup_backfill_task(
     _zero_update_streak: u32,
     source_unavailable_probe: bool,
 ) -> Result<(StartupBackfillRunState, String)> {
+    run_startup_backfill_task_with_pressure(
+        state,
+        task,
+        cursor_id,
+        _zero_update_streak,
+        source_unavailable_probe,
+        None,
+    )
+    .await
+}
+
+async fn run_startup_backfill_task_with_pressure(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    cursor_id: i64,
+    _zero_update_streak: u32,
+    source_unavailable_probe: bool,
+    prompt_cache_should_yield: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> Result<(StartupBackfillRunState, String)> {
     let scan_limit = startup_backfill_scan_limit(source_unavailable_probe);
     let max_elapsed = Some(startup_backfill_run_budget(source_unavailable_probe));
     let raw_path_fallback_root = state.config.database_path.parent();
@@ -2220,6 +2282,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 detail,
@@ -2262,6 +2326,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 detail,
@@ -2291,21 +2357,35 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 detail,
             ))
         }
         StartupBackfillTask::PromptCacheConversationsMaterialization => {
-            let outcome = run_prompt_cache_conversations_materialization(
+            let never_yield = || false;
+            let should_yield = prompt_cache_should_yield.unwrap_or(&never_yield);
+            let outcome = run_prompt_cache_conversations_materialization_with_pressure(
                 &state.pool,
                 scan_limit,
                 max_elapsed,
+                should_yield,
             )
             .await?;
             let detail = format!(
-                "phase={} scanned={} updated={} complete={}",
-                outcome.phase, outcome.scanned, outcome.updated, outcome.complete
+                "phase={} scanned={} updated={} complete={} batches={} last_batch_size={} max_batch_size={} batch_elapsed_ms={} deferred={} defer_reason={}",
+                outcome.phase,
+                outcome.scanned,
+                outcome.updated,
+                outcome.complete,
+                outcome.batch_count,
+                outcome.last_batch_size,
+                outcome.max_batch_size,
+                outcome.batch_elapsed_ms,
+                outcome.deferred,
+                outcome.defer_reason.unwrap_or("none"),
             );
             Ok((
                 StartupBackfillRunState {
@@ -2316,6 +2396,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: outcome.complete,
                     source_unavailable: false,
+                    deferred: outcome.deferred,
+                    defer_reason: outcome.defer_reason,
                     samples: Vec::new(),
                 },
                 detail,
@@ -2345,6 +2427,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 detail,
@@ -2372,6 +2456,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 detail,
@@ -2401,6 +2487,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 detail,
@@ -2424,6 +2512,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
@@ -2446,6 +2536,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 "attempt_public_id live rows".to_string(),
@@ -2469,6 +2561,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: outcome.samples,
                 },
                 format!(
@@ -2491,6 +2585,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle: false,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: Vec::new(),
                 },
                 format!("pending_accounts={pending_accounts}"),
@@ -2516,6 +2612,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon: false,
                     force_idle,
                     source_unavailable: pending_accounts > 0 && force_idle,
+                    deferred: false,
+                    defer_reason: None,
                     samples: Vec::new(),
                 },
                 format!(
@@ -2544,6 +2642,8 @@ pub(crate) async fn run_startup_backfill_task(
                     force_idle: cache_summary.pending_batches == 0
                         && hourly_summary.pending_batches == 0,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: Vec::new(),
                 },
                 format!(
@@ -2590,6 +2690,8 @@ pub(crate) async fn run_startup_backfill_task(
                     retry_soon,
                     force_idle: window.candidate_count == 0,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: Vec::new(),
                 },
                 format!(
@@ -2641,6 +2743,8 @@ pub(crate) async fn run_startup_backfill_task(
                     ),
                     force_idle: window.candidate_count == 0,
                     source_unavailable: false,
+                    deferred: false,
+                    defer_reason: None,
                     samples: Vec::new(),
                 },
                 format!(

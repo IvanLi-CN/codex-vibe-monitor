@@ -2383,6 +2383,32 @@ async fn ensure_schema_adds_invoke_id_filter_expression_index() {
     pool.close().await;
 }
 
+#[tokio::test]
+async fn invocation_detail_retention_uses_its_ordering_index() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema test pool");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT id FROM codex_invocations WHERE (LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = '')) AND detail_level = ?1 AND occurred_at < ?2 AND occurred_at >= ?3 ORDER BY occurred_at ASC, id ASC LIMIT ?4",
+    )
+    .bind("full")
+    .bind("2026-08-01 00:00:00")
+    .bind("2026-05-01 00:00:00")
+    .bind(2_i64)
+    .fetch_all(&pool)
+    .await
+    .expect("explain invocation detail retention query");
+    assert!(
+        plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_codex_invocations_detail_level_occurred_at")
+        }),
+        "invocation detail retention must use its bounded ordering index: {plan:?}"
+    );
+    pool.close().await;
+}
+
 pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),

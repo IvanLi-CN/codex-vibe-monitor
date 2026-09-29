@@ -268,6 +268,272 @@ async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_yields_only_after_a_committed_micro_batch() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache conversation structure");
+
+    for index in 0..65 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            ) VALUES (?1, '2026-09-01 00:00:00', ?2, 'success', 7, 0.07, ?3, '{}')
+            "#,
+        )
+        .bind(format!("pressure-invocation-{index:04}"))
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": format!("pressure-key-{index:04}")}).to_string())
+        .execute(&pool)
+        .await
+        .expect("insert pressure fixture invocation");
+    }
+
+    let checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let should_yield = {
+        let checks = std::sync::Arc::clone(&checks);
+        move || checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2
+    };
+    let deferred =
+        run_prompt_cache_conversations_materialization_with_test_batch_size_and_pressure(
+            &pool,
+            65,
+            None,
+            32,
+            &should_yield,
+        )
+        .await
+        .expect("run pressure-aware materialization");
+    assert!(deferred.deferred);
+    assert_eq!(deferred.batch_count, 1);
+    assert_eq!(deferred.scanned, 32);
+    assert!(!deferred.page_complete);
+
+    let materialized_before_yield: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+            .fetch_one(&pool)
+            .await
+            .expect("count committed micro-batch identities");
+    assert_eq!(materialized_before_yield, 32);
+    let checkpoint: Option<String> = sqlx::query_scalar(
+        "SELECT cursor_key FROM prompt_cache_conversation_migration_progress \
+         WHERE migration_name = 'prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load committed micro-batch cursor");
+    assert_eq!(checkpoint.as_deref(), Some("pressure-key-0031"));
+
+    for _ in 0..16 {
+        let outcome = run_prompt_cache_conversations_materialization_with_test_batch_size(
+            &pool, 65, None, 32,
+        )
+        .await
+        .expect("resume after pressure boundary");
+        if outcome.complete {
+            break;
+        }
+    }
+    assert!(
+        prompt_cache_conversation_materialization_is_complete(&pool)
+            .await
+            .expect("check pressure fixture completion")
+    );
+    let identity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+        .fetch_one(&pool)
+        .await
+        .expect("count completed identities");
+    assert_eq!(identity_count, 65);
+    let total_requests: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("sum completed statistics");
+    assert_eq!(total_requests, 65);
+}
+
+#[tokio::test]
+#[ignore = "controlled representative SQLite acceptance; run explicitly"]
+async fn prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale() {
+    async fn setup_scale_database(path: &std::path::Path) -> (Pool<Sqlite>, Pool<Sqlite>) {
+        let db_url = test_sqlite_url_for_path(path);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(
+                build_sqlite_connect_options(&db_url, Duration::from_secs(5))
+                    .expect("build scale sqlite options"),
+            )
+            .await
+            .expect("open scale sqlite database");
+        sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+            .execute(&pool)
+            .await
+            .expect("create scale invocation schema");
+        ensure_schema(&pool)
+            .await
+            .expect("install scale prompt-cache structure");
+
+        let mut transaction = pool.begin().await.expect("begin scale fixture insert");
+        for key_index in 0..4_000 {
+            let prompt_cache_key = format!("scale-key-{key_index:04}");
+            for invocation_index in 0..10 {
+                sqlx::query(
+                    r#"
+                    INSERT INTO codex_invocations (
+                        invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                    ) VALUES (?1, '2026-09-01 00:00:00', ?2, 'success', 7, 0.07, ?3, '{}')
+                    "#,
+                )
+                .bind(format!("scale-{key_index:04}-{invocation_index:02}"))
+                .bind(SOURCE_PROXY)
+                .bind(json!({"promptCacheKey": prompt_cache_key}).to_string())
+                .execute(&mut *transaction)
+                .await
+                .expect("insert scale fixture invocation");
+            }
+        }
+        transaction
+            .commit()
+            .await
+            .expect("commit scale fixture insert");
+
+        let read_pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(
+                build_sqlite_connect_options(&db_url, Duration::from_secs(5))
+                    .expect("build scale reader sqlite options"),
+            )
+            .await
+            .expect("open scale reader database");
+        (pool, read_pool)
+    }
+
+    async fn run_scale_case(
+        path: &std::path::Path,
+        adaptive: bool,
+    ) -> (Duration, Vec<u128>, i64, i64, i64) {
+        let (pool, read_pool) = setup_scale_database(path).await;
+        if adaptive {
+            reset_prompt_cache_conversation_batch_controller_for_test();
+        }
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let materialization_finished = std::sync::Arc::clone(&finished);
+        let materialization = async {
+            let started_at = std::time::Instant::now();
+            for _ in 0..128 {
+                let outcome = if adaptive {
+                    run_prompt_cache_conversations_materialization(&pool, 400, None)
+                        .await
+                        .expect("run adaptive scale materialization")
+                } else {
+                    run_prompt_cache_conversations_materialization_with_test_batch_size(
+                        &pool, 400, None, 400,
+                    )
+                    .await
+                    .expect("run fixed scale materialization")
+                };
+                if outcome.complete {
+                    materialization_finished.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return started_at.elapsed();
+                }
+            }
+            panic!("scale materialization did not complete within the test budget");
+        };
+        let foreground_reads = async {
+            let mut latencies = Vec::with_capacity(100);
+            while !finished.load(std::sync::atomic::Ordering::SeqCst) || latencies.len() < 100 {
+                let started_at = std::time::Instant::now();
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
+                )
+                .fetch_one(&read_pool)
+                .await
+                .expect("run foreground aggregate read");
+                latencies.push(started_at.elapsed().as_micros());
+                tokio::task::yield_now().await;
+            }
+            latencies
+        };
+        let (elapsed, latencies) = tokio::join!(materialization, foreground_reads);
+        let identity_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+                .fetch_one(&pool)
+                .await
+                .expect("count scale identities");
+        let request_count: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_conversations",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("sum scale requests");
+        let queue_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count scale queue");
+        pool.close().await;
+        read_pool.close().await;
+        (
+            elapsed,
+            latencies,
+            identity_count,
+            request_count,
+            queue_count,
+        )
+    }
+
+    fn percentile_micros(latencies: &[u128], percentile: usize) -> u128 {
+        let mut sorted = latencies.to_vec();
+        sorted.sort_unstable();
+        let rank = ((sorted.len() * percentile).saturating_add(99) / 100).max(1) - 1;
+        sorted[rank.min(sorted.len() - 1)]
+    }
+
+    let temp_dir = make_temp_test_dir("prompt-cache-materialization-scale");
+    let fixed = run_scale_case(&temp_dir.join("fixed.db"), false).await;
+    let adaptive = run_scale_case(&temp_dir.join("adaptive.db"), true).await;
+    let fixed_p95 = percentile_micros(&fixed.1, 95);
+    let fixed_p99 = percentile_micros(&fixed.1, 99);
+    let adaptive_p95 = percentile_micros(&adaptive.1, 95);
+    let adaptive_p99 = percentile_micros(&adaptive.1, 99);
+    eprintln!(
+        "prompt-cache scale fixed_ms={} adaptive_ms={} fixed_p95_us={} adaptive_p95_us={} fixed_p99_us={} adaptive_p99_us={}",
+        fixed.0.as_millis(),
+        adaptive.0.as_millis(),
+        fixed_p95,
+        adaptive_p95,
+        fixed_p99,
+        adaptive_p99,
+    );
+    assert_eq!((fixed.2, fixed.3, fixed.4), (4_000, 40_000, 0));
+    assert_eq!((adaptive.2, adaptive.3, adaptive.4), (4_000, 40_000, 0));
+    assert!(
+        adaptive.0.as_secs_f64() <= fixed.0.as_secs_f64() / 0.7,
+        "adaptive throughput fell below 70%: fixed={:?} adaptive={:?}",
+        fixed.0,
+        adaptive.0
+    );
+    assert!(
+        adaptive_p95 <= fixed_p95.saturating_mul(110) / 100 + 1,
+        "adaptive foreground p95 regressed: fixed={fixed_p95}us adaptive={adaptive_p95}us"
+    );
+    assert!(
+        adaptive_p99 <= fixed_p99.saturating_mul(110) / 100 + 1,
+        "adaptive foreground p99 regressed: fixed={fixed_p99}us adaptive={adaptive_p99}us"
+    );
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_read_snapshot_keeps_completeness_with_aggregate_reads() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "prompt-cache-conversation-read-snapshot",
@@ -782,7 +1048,7 @@ async fn prompt_cache_conversation_retention_preserves_active_and_live_identitie
 }
 
 #[tokio::test]
-async fn prompt_cache_conversation_stats_refresh_after_terminal_batch() {
+async fn prompt_cache_conversation_stats_refresh_is_deferred_after_terminal_batch() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -843,6 +1109,30 @@ async fn prompt_cache_conversation_stats_refresh_after_terminal_batch() {
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
         .await;
+
+    let queued_refreshes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = ?1",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count deferred prompt-cache aggregate refresh");
+    assert_eq!(
+        queued_refreshes, 1,
+        "terminal persistence must defer the historical aggregate refresh"
+    );
+    let fresh_marker: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name = 'prompt_cache_conversations_stats_v2')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check deferred prompt-cache aggregate marker");
+    assert_eq!(
+        fresh_marker, 0,
+        "deferred aggregates must remain unavailable"
+    );
+
+    complete_prompt_cache_conversation_materialization_for_test(&state.pool).await;
 
     let stats = sqlx::query_as::<_, (i64, i64, i64, i64, i64, f64, String, String)>(
         r#"

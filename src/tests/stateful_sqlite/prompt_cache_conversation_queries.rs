@@ -5767,6 +5767,17 @@ async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
     assert_eq!(summary_first.skipped_invalid_json, 0);
     assert_eq!(summary_first.skipped_missing_key, 0);
 
+    let queued_refreshes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = 'pck-backfill-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count deferred prompt-cache aggregate refresh");
+    assert_eq!(
+        queued_refreshes, 1,
+        "prompt-cache key backfill must defer the historical aggregate refresh"
+    );
+
     let payload: String =
         sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
             .bind("proxy-pck-backfill-1")

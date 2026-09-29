@@ -36,11 +36,13 @@
 ### REQ-PII-004
 
 - Schema creation and legacy prompt-cache-key backfill MUST be idempotent and separately observable from aggregate statistics refresh.
-- Terminal and derived batch writes MUST refresh affected master statistics after persistence, and retention MUST release masters whose retained invocation rows have been removed without maintaining a permanent released-ID blacklist.
+- Terminal and derived batch writes MUST persist the invocation, enqueue affected prompt-cache keys, and invalidate aggregate freshness without synchronously scanning retained history. The ordered background materialization task MUST refresh identities and aggregate statistics from the durable queue and advance its cursor only after each committed transaction.
+- A 400-key logical materialization page MAY be split into adaptive 32..400-key micro-batches. Prompt-cache pressure MUST yield only between committed micro-batches; a started micro-batch runs to commit or explicit failure.
+- Aggregate reads MUST use the existing unavailable contract until identity coverage, aggregate freshness, complete migration phase, and an empty durable refresh queue are all satisfied. Retention MUST release masters whose retained invocation rows have been removed without maintaining a permanent released-ID blacklist.
 
 ### REQ-PII-005
 
-- Allocation, cache recovery, migration/backfill, delayed statistics refresh, retention release, sequence exhaustion, and bounded allocation errors MUST emit diagnostic logs without logging raw prompt-cache keys.
+- Allocation, cache recovery, migration/backfill, delayed statistics refresh, retention release, sequence exhaustion, and bounded allocation errors MUST emit diagnostic logs without logging raw prompt-cache keys. Materialization logs MUST include phase, cursor, scanned/updated counts, batch size and duration, and pressure defer/failure state.
 
 ## Verification
 
@@ -54,7 +56,7 @@
 
 - Method: Stateful SQLite schema migration and statistics tests.
 - covers: `REQ-PII-002`, `REQ-PII-004`
-- Pass condition: Backfill creates valid master rows, materializes aggregate fields, reruns without duplication, and retention removes released orphan masters.
+- Pass condition: Backfill creates valid master rows, materializes aggregate fields through resumable 400-key logical pages and adaptive 32..400-key transactions, reruns without duplication, and retention removes released orphan masters.
 
 ### VER-PII-003
 
@@ -66,11 +68,13 @@
 
 - Method: Structured tracing call-site inspection and focused proxy compilation.
 - covers: `REQ-PII-005`
-- Pass condition: Diagnostic fields contain fingerprints or generated IDs, while raw prompt-cache keys are excluded from allocator and migration logs.
+- Pass condition: Diagnostic fields contain fingerprints or generated IDs, materialization progress exposes the required batch/defer fields, and raw prompt-cache keys are excluded from allocator and migration logs.
 
 ## Related ADRs
 
 - [`../../adr/0020-proxy-invocation-identity.md`](../../adr/0020-proxy-invocation-identity.md)
+- [`../../adr/0021-prompt-cache-background-materialization.md`](../../adr/0021-prompt-cache-background-materialization.md)
+- [`../../adr/0022-prompt-cache-adaptive-materialization.md`](../../adr/0022-prompt-cache-adaptive-materialization.md)
 
 ## Visual Evidence
 

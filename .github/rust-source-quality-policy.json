@@ -63,13 +63,13 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11480,
+      "line_budget": 11497,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3323,
+      "line_budget": 3427,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {
@@ -111,7 +111,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6523,
+      "line_budget": 6536,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -141,13 +141,13 @@
     {
       "path": "src/tests/lightweight/forward_proxy_config_and_storage.rs",
       "role": "test_helper",
-      "line_budget": 4188,
+      "line_budget": 4214,
       "next_module_workstream": "Split forward-proxy configuration, storage, and runtime synchronization fixtures."
     },
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 8902,
+      "line_budget": 9192,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -165,7 +165,7 @@
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
       "role": "test_helper",
-      "line_budget": 6311,
+      "line_budget": 6322,
       "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
     },
     {
@@ -195,7 +195,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6248,
+      "line_budget": 6314,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {
