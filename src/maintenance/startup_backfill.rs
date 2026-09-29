@@ -288,6 +288,17 @@ fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime
         .unwrap_or_else(Utc::now)
 }
 
+fn prompt_cache_materialization_failed_outcome(
+    phase: Option<String>,
+) -> PromptCacheConversationMaterializationRun {
+    phase
+        .map(|phase| PromptCacheConversationMaterializationRun {
+            phase,
+            ..Default::default()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StartupBackfillTaskRunOutcome {
     actionable: bool,
@@ -1164,6 +1175,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
                 suspension_reason = NULL,
                 wake_generation = startup_backfill_progress.wake_generation + 1,
                 last_status = ?2
+            WHERE startup_backfill_progress.enabled != 0
             "#,
         )
         .bind(&task_name)
@@ -1177,8 +1189,11 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
                 task_name
             )
         })?;
-        woken += outcome.rows_affected();
-        STARTUP_BACKFILL_SCHEDULER.wake(*task);
+        let rows_affected = outcome.rows_affected();
+        woken += rows_affected;
+        if rows_affected > 0 {
+            STARTUP_BACKFILL_SCHEDULER.wake(*task);
+        }
     }
     if !tasks.is_empty() {
         info!(
@@ -2481,18 +2496,14 @@ async fn run_startup_backfill_task_with_pressure(
                 {
                     Ok(outcome) => outcome,
                     Err(error) => {
-                        let failed_outcome =
+                        let failed_outcome = prompt_cache_materialization_failed_outcome(
                             crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
                                 &state.pool,
                             )
                             .await
-                            .map(|progress| PromptCacheConversationMaterializationRun {
-                                phase: progress.phase,
-                                scanned: progress.completed_keys.unwrap_or(0).max(0) as u64,
-                                updated: progress.completed_keys.unwrap_or(0).max(0) as u64,
-                                ..Default::default()
-                            })
-                            .unwrap_or_default();
+                            .ok()
+                            .map(|progress| progress.phase),
+                        );
                         if let Err(record_error) =
                             record_prompt_cache_conversation_materialization_run(
                                 &state.pool,
@@ -3121,6 +3132,17 @@ mod startup_backfill_tests {
         );
 
         assert_eq!(retry_at.timestamp_millis() as u64, expected_deadline);
+    }
+
+    #[test]
+    fn failed_prompt_cache_materialization_does_not_report_cumulative_work() {
+        let outcome =
+            prompt_cache_materialization_failed_outcome(Some("stats_rebuild".to_string()));
+
+        assert_eq!(outcome.phase, "stats_rebuild");
+        assert_eq!(outcome.scanned, 0);
+        assert_eq!(outcome.updated, 0);
+        assert_eq!(outcome.batch_count, 0);
     }
 
     #[test]

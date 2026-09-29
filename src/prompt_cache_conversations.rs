@@ -726,6 +726,8 @@ pub(crate) async fn load_prompt_cache_conversation_materialization_status(
     .fetch_one(pool)
     .await?
     .max(0) as u64;
+    let materialization_complete =
+        prompt_cache_conversation_materialization_is_complete(pool).await?;
     let total_keys = progress.total_keys.map(|value| value.max(0) as u64);
     let completed_keys = progress.completed_keys.unwrap_or(0).max(0) as u64;
     let completed_keys = total_keys
@@ -734,7 +736,7 @@ pub(crate) async fn load_prompt_cache_conversation_materialization_status(
     let progress_percent = total_keys.and_then(|total| {
         (total > 0).then(|| {
             let percent = (completed_keys as f64 / total as f64 * 100.0).min(100.0);
-            if progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE {
+            if materialization_complete {
                 percent
             } else {
                 percent.min(99.0)
@@ -765,7 +767,7 @@ pub(crate) async fn load_prompt_cache_conversation_materialization_status(
         });
     let estimated_remaining_ms = total_keys.and_then(|total| {
         let remaining = total.saturating_sub(completed_keys);
-        if remaining == 0 && progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE {
+        if remaining == 0 && materialization_complete {
             return Some(0);
         }
         if sampled_keys == 0 || remaining == 0 {

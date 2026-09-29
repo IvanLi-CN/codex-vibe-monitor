@@ -234,6 +234,36 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_status_does_not_report_complete_with_pending_refresh() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    complete_prompt_cache_conversation_materialization_for_test(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key) \
+         VALUES ('pending-after-complete')",
+    )
+    .execute(&pool)
+    .await
+    .expect("enqueue pending refresh");
+
+    let status = load_prompt_cache_conversation_materialization_status(&pool)
+        .await
+        .expect("load incomplete materialization status");
+    assert_eq!(status.queue_pending, 1);
+    assert_ne!(status.progress_percent, Some(100.0));
+    assert_ne!(status.estimated_remaining_ms, Some(0));
+}
+
+#[tokio::test]
 async fn prompt_cache_materialization_repairs_complete_progress_counters() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -269,8 +299,8 @@ async fn prompt_cache_materialization_repairs_complete_progress_counters() {
         .expect("load repaired materialization status");
     assert_eq!(status.total_keys, Some(1));
     assert_eq!(status.completed_keys, 1);
-    assert_eq!(status.progress_percent, Some(100.0));
-    assert_eq!(status.estimated_remaining_ms, Some(0));
+    assert_eq!(status.progress_percent, Some(99.0));
+    assert_eq!(status.estimated_remaining_ms, None);
 }
 
 #[tokio::test]

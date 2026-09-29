@@ -2458,6 +2458,34 @@ async fn startup_backfill_event_wakes_only_the_matching_task() {
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_wake_preserves_operator_disable() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+
+    let disabled = set_startup_backfill_task_enabled(&state.pool, task, false)
+        .await
+        .expect("disable prompt-cache materialization");
+    let woken = wake_startup_backfill_tasks(&state.pool, &[task], "test_terminal_write")
+        .await
+        .expect("wake prompt-cache materialization");
+
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("load disabled prompt-cache progress");
+    assert_eq!(woken, 0);
+    assert!(!progress.enabled);
+    assert_eq!(
+        progress.suspension_reason,
+        Some("operator_disabled".to_string())
+    );
+    assert_eq!(progress.wake_generation, disabled.wake_generation);
+    assert!(!progress.is_due(Utc::now()));
+}
+
+#[tokio::test]
 async fn startup_backfill_pressure_defer_never_accesses_sqlite() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
