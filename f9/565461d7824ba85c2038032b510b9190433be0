@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.77.2",
+  "base_stable_version": "2.77.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-29T02:10:26Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.77.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a215a6cd5c68e66ac9226afcf39d67af13e4726b",
+  "pr_number": 1052,
+  "pr_title": "perf(prompt-cache): adapt background materialization batches",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.77.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.77.2",
+  "target_sha": "f9565461d7824ba85c2038032b510b9190433be0",
+  "type_label": "type:patch"
+}
