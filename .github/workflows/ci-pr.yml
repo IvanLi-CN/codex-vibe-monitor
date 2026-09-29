@@ -450,7 +450,6 @@ jobs:
           demo_status=0
           dashboard_status=0
           performance_status=0
-          timeline_capacity_status=0
           PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
             bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts || records_status=$?
           E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
@@ -459,9 +458,7 @@ jobs:
             bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts || dashboard_status=$?
           E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-performance \
             bun run test:e2e -- --workers=1 --output=test-results/dashboard-render-performance dashboard-render-performance.spec.ts || performance_status=$?
-          E2E_BASE_URL=http://127.0.0.1:60083 E2E_PRODUCTION_BUILD=1 E2E_TIMELINE_CAPACITY=1 E2E_TIMELINE_CAPACITY_DURATION_MS=60000 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard-timeline-capacity \
-            bun run test:e2e -- --workers=1 --output=test-results/dashboard-timeline-capacity dashboard-timeline-capacity.spec.ts || timeline_capacity_status=$?
-          exit $(( records_status || demo_status || dashboard_status || performance_status || timeline_capacity_status ))
+          exit $(( records_status || demo_status || dashboard_status || performance_status ))
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -473,7 +470,6 @@ jobs:
             web/playwright-report-demo
             web/playwright-report-dashboard
             web/playwright-report-dashboard-performance
-            web/playwright-report-dashboard-timeline-capacity
             web/test-results
           if-no-files-found: ignore
 

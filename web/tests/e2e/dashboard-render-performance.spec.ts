@@ -1,5 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
 
+// Keep timeline capacity coverage in the existing production Dashboard E2E slot.
+import "./dashboard-timeline-capacity.spec";
+
 const DASHBOARD_PERFORMANCE_URL =
   "/#/dashboard?demoScene=operational&demoTheme=light&demoViewport=default&demoPerformanceTimeseries=minute-day";
 const MEASURED_RUN_COUNT = 5;

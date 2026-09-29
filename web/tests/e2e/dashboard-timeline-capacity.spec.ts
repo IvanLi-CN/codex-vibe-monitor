@@ -4,10 +4,13 @@ import { expect, type Page, test } from "@playwright/test";
 const CAPACITY_DASHBOARD_URL =
   "/#/dashboard?demoScene=operational&demoTimelineCapacity=1&demoTheme=dark&demoViewport=default";
 const requestedScenarioDurationMs = Number(process.env.E2E_TIMELINE_CAPACITY_DURATION_MS);
+const defaultScenarioDurationMs = process.env.CI === "true" ? 60_000 : 5 * 60 * 1_000;
+const timelineCapacityEnabled =
+  process.env.E2E_TIMELINE_CAPACITY === "1" || process.env.E2E_PRODUCTION_BUILD === "1";
 const CAPACITY_SCENARIO_DURATION_MS =
   Number.isFinite(requestedScenarioDurationMs) && requestedScenarioDurationMs > 0
     ? requestedScenarioDurationMs
-    : 5 * 60 * 1_000;
+    : defaultScenarioDurationMs;
 const MINIMUM_TRAVERSALS = Math.max(2, Math.floor(CAPACITY_SCENARIO_DURATION_MS / 15_000) - 1);
 const MINIMUM_REFRESH_INTERVAL_MS = 15_000;
 const REVISION_INTERVAL_MS = 1_000;
@@ -323,8 +326,8 @@ test("two clients release paged snapshots during high-frequency revisions", asyn
   page,
 }, testInfo) => {
   test.skip(
-    process.env.E2E_TIMELINE_CAPACITY !== "1",
-    "Two-client capacity proof is enabled explicitly for CI and testbox validation.",
+    !timelineCapacityEnabled,
+    "Two-client capacity proof runs in production-build CI and explicit testbox validation.",
   );
   test.setTimeout(
     Math.max(MINIMUM_TEST_TIMEOUT_MS, CAPACITY_SCENARIO_DURATION_MS * 2 + 3 * 60 * 1_000),
@@ -540,8 +543,8 @@ test("single-client dense timeline stays below the long-task budget on desktop a
   browser,
 }, testInfo) => {
   test.skip(
-    process.env.E2E_TIMELINE_CAPACITY !== "1",
-    "Timeline render performance proof is enabled explicitly for CI and testbox validation.",
+    !timelineCapacityEnabled,
+    "Timeline render performance proof runs in production-build CI and explicit testbox validation.",
   );
   test.setTimeout(120_000);
   for (const [name, viewport] of [
