@@ -29,7 +29,7 @@
         "description": "The endpoint reads existing aggregate rollups, reports missing long-term coverage explicitly, and adds no persistent-state writes or serialized state formats."
       },
       "reasoning": "The service-scoped public API is additive within the current major line. Persistent-state impact is not applicable because the endpoint uses existing rollups and adds no persistent writes; the release unit remains minor.",
-      "reassessed_at": "2026-09-28T17:43:02Z",
+      "reassessed_at": "2026-09-29T04:09:39Z",
       "evidence": [
         "The endpoint uses /api/public/metrics/v1/codex-vibe-monitor and the independent PUBLIC_METRICS_CORS_ALLOWED_ORIGINS allowlist.",
         "Unavailable and partial long-term coverage serialize as null-valued daily points while current metrics remain available; refreshes crossing a Shanghai hour or day are rejected.",
@@ -39,7 +39,7 @@
     "verified": {
       "impact": "minor",
       "reasoning": "The new API contract is additive within the current major line. The endpoint writes no persistent state, so the highest applicable and verified impact is the public API's minor classification.",
-      "verified_at": "2026-09-28T17:43:02Z",
+      "verified_at": "2026-09-29T04:09:39Z",
       "evidence": [
         "cargo test public_blog -- --nocapture passed 22 tests, including current-hour boundary consistency, service-scoped CORS, and available, partial, and unavailable daily history.",
         "Rust formatting, the explicit source-quality policy check, public API Spec contract, Spec drift, and whitespace checks passed on the candidate.",
@@ -54,7 +54,7 @@
       "change": "compatible",
       "supported_consumer_range": "Consumers on the current major line; existing API paths and response contracts remain compatible.",
       "evidence": [
-        "The route is additive at /api/public/metrics/v1/codex-vibe-monitor and follows the shared /api/public/metrics/v1/{service} family.",
+        "The route is additive at /api/public/metrics/v1/codex-vibe-monitor and follows the shared /api/public/metrics/v1/{project} family; the project slug identifies the metrics instance independently of its consumers.",
         "The route-level tests verify GET-only behavior, service-scoped CORS, live current-hour trend values, and available, partial, or failed long-term history reads."
       ]
     },

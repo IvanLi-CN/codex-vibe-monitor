@@ -1185,7 +1185,45 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(methods, "GET");
             assert_eq!(methods.contains(requested_method), allowed);
+            if allowed {
+                assert_eq!(
+                    response.headers().get("access-control-allow-origin"),
+                    Some(&HeaderValue::from_static("http://127.0.0.1:12620"))
+                );
+                let allowed_headers = response
+                    .headers()
+                    .get("access-control-allow-headers")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                assert!(allowed_headers.contains("if-none-match"));
+                assert!(
+                    response
+                        .headers()
+                        .get("access-control-allow-credentials")
+                        .is_none()
+                );
+            }
         }
+
+        let denied_preflight = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri(PUBLIC_BLOG_RUNTIME_PATH)
+                    .header("origin", "https://unlisted.example")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .expect("denied preflight request"),
+            )
+            .await
+            .expect("denied preflight response");
+        assert!(
+            denied_preflight
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none()
+        );
     }
 
     async fn seed_public_blog_parallel_fixture(pool: &Pool<Sqlite>, current_hour_start: i64) {

@@ -1,4 +1,4 @@
-# Public Blog Runtime API Topic History
+# Public Project Metrics API Topic History
 
 > This file records lifecycle, compatibility, and related changes. The normative contract remains in `./SPEC.md`.
 
@@ -8,7 +8,7 @@
 
 ## Replacements / Background
 
-- The blog runtime panel consumes aggregate values and does not use invocation-level details.
+- Consumers use aggregate values and do not receive invocation-level details.
 
 ## Related Changes
 

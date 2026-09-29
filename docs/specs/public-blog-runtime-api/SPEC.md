@@ -1,17 +1,17 @@
-# Public Blog Runtime API
+# Public Project Metrics API
 
 > This file is the durable topic requirements contract. Current implementation facts belong in `IMPLEMENTATION.md`; lifecycle and change references belong in `HISTORY.md`.
 
 ## Context and Scope
 
-- Context: The IvanLi blog needs a public snapshot of aggregate Codex Vibe Monitor runtime activity. Read-only means there is no public mutation operation or persistent-state write.
+- Context: Consumers need a public snapshot of aggregate Codex Vibe Monitor runtime activity. Read-only means there is no public mutation operation or persistent-state write.
 - In scope: One project-owned endpoint, its aggregate response shape, freshness and failure behavior, CORS, and request limiting.
-- Out of scope: Changes to existing Codex Vibe Monitor APIs, blog application code, and any raw invocation or account data interface.
+- Out of scope: Changes to existing Codex Vibe Monitor APIs, consumer application code, and any raw invocation or account data interface.
 
 ## Terms and Interfaces
 
 - Interface: `GET /api/public/metrics/v1/codex-vibe-monitor`.
-- Shared project-metrics route family: `/api/public/metrics/v1/{service}`. OctoRill uses `/api/public/metrics/v1/octo-rill`; a future Tavily Hikari project-wall metrics endpoint MUST use `/api/public/metrics/v1/tavily-hikari`.
+- Shared project-metrics route family: `/api/public/metrics/v1/{project}`. The terminal project slug identifies the metrics instance independently of its consumers. The three interfaces are `/api/public/metrics/v1/codex-vibe-monitor`, `/api/public/metrics/v1/tavily-hikari`, and `/api/public/metrics/v1/octo-rill`; OctoRill's existing metrics route is the shared-prefix baseline.
 - Stat: An object with a current numeric `value` and a `trend` containing a range and ordered timestamped points.
 - Shanghai day: A calendar day bounded in `Asia/Shanghai`.
 - Interface discriminator: `kind` is the literal `codex-vibe-monitor`; the only metric fields are `tokensPerMinute`, `parallelCalls`, `todayTokens`, and `tokenActivity90d`.
@@ -38,7 +38,7 @@
 - The system MUST return exactly 90 daily token activity points for the 90 completed Shanghai days ending yesterday, in ascending date order, inside a `tokenActivity90d` object with a `status` and `points`.
 - Inputs: The project's long-term overall usage read model, which may be unready or cover only part of the requested range.
 - Outputs: `status` is `available` when all points are numeric, `partial` when some points are numeric and some are missing, and `unavailable` when no points are numeric. Each point has only a `date` (`YYYY-MM-DD`) and a non-negative numeric `value` or `null`. Missing or source-uncovered dates MUST serialize as `null`, never as a fabricated zero. Unavailable long-term history MUST NOT make otherwise available current metrics fail.
-- Consumer contract: Blog consumers MUST preserve `null` as unavailable historical data and MUST NOT coerce it to zero. Consumers can render current fields regardless of the long-term status.
+- Consumer contract: Consumers MUST preserve `null` as unavailable historical data and MUST NOT coerce it to zero. Consumers can render current fields regardless of the long-term status.
 
 ### REQ-PBRA-004
 
@@ -81,7 +81,7 @@
 
 ### VER-PBRA-003
 
-- Method: CORS middleware tests with allowed and denied origins and methods.
+- Method: CORS middleware tests with allowed and denied origins, GET requests, and GET preflights.
 - covers: `REQ-PBRA-007`
 - Pass condition: Both configured defaults are allowed, unconfigured origins and non-GET preflights are denied, credentials are not enabled, and a cross-origin 429 response exposes its `Retry-After` header.
 

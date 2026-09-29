@@ -1,4 +1,4 @@
-# Public Blog Runtime API Implementation Status
+# Public Project Metrics API Implementation Status
 
 > `./SPEC.md` is the normative contract. This file records implementation coverage and rollout facts.
 
@@ -6,7 +6,7 @@
 
 - Implementation: Complete
 - Lifecycle: active
-- Catalog note: Public read-only aggregate endpoint for the IvanLi blog runtime panel.
+- Catalog note: Public read-only aggregate endpoint for Codex Vibe Monitor metrics consumers.
 
 ## Implementation Coverage
 

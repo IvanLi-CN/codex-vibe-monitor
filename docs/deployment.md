@@ -43,15 +43,15 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 
 ## Public Project Metrics API
 
-公共项目指标接口统一使用 `/api/public/metrics/v1/{service}` 路径，并由反向代理按服务名路由，同时保留完整请求路径：
+公共项目指标接口统一使用 `/api/public/metrics/v1/{project}` 路径，并由反向代理按项目 slug 路由，同时保留完整请求路径：
 
 - Codex Vibe Monitor：`/api/public/metrics/v1/codex-vibe-monitor`
 - OctoRill：`/api/public/metrics/v1/octo-rill`
-- Tavily Hikari 后续新增的项目墙指标接口：`/api/public/metrics/v1/tavily-hikari`
+- Tavily Hikari：`/api/public/metrics/v1/tavily-hikari`
 
-Tavily Hikari 现有的 token metrics 接口不属于此项目墙接口；新增项目指标接口时应遵循上述公共前缀。每个服务独立处理 CORS。Codex Vibe Monitor 使用 `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS` 配置来源白名单，默认值为 `https://ivanli.cc,http://127.0.0.1:12620`；只需配置实际浏览器来源，不要设置通配符或凭据访问。
+Tavily Hikari 现有的 token metrics 接口与此项目指标接口分离。三个服务各自处理 CORS。Codex Vibe Monitor 使用 `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS` 配置来源白名单，默认值为 `https://ivanli.cc,http://127.0.0.1:12620`；只需配置实际浏览器来源，不要设置通配符或凭据访问。
 
-博客等消费者应按 `tokenActivity90d.status` 判断历史完整度，并保留点中的 `value: null`，不能将缺失日期当作零。历史尚未就绪或只覆盖部分日期时，当前指标仍会返回。
+指标消费端应按 `tokenActivity90d.status` 判断历史完整度，并保留点中的 `value: null`，不能将缺失日期当作零。历史尚未就绪或只覆盖部分日期时，当前指标仍会返回。
 
 ## Public Origin For Social Preview Metadata
 
