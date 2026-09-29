@@ -1655,6 +1655,24 @@ async fn conversation_prefix_conflicts_with_live_invocation_on_connection(
         != 0)
 }
 
+async fn prompt_cache_conversation_id_candidate_conflicts_on_connection(
+    connection: &mut SqliteConnection,
+    conversation_id: &str,
+) -> Result<bool> {
+    let upper_bound = format!("{conversation_id}[");
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE conversation_id = ?1) \
+         OR EXISTS(SELECT 1 FROM codex_invocations \
+                   WHERE invoke_id >= ?1 AND invoke_id < ?2 AND length(invoke_id) = ?3)",
+    )
+    .bind(conversation_id)
+    .bind(upper_bound)
+    .bind(PROXY_INVOKE_ID_LENGTH as i64)
+    .fetch_one(&mut *connection)
+    .await?
+        != 0)
+}
+
 async fn create_prompt_cache_conversation_row(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
@@ -1673,12 +1691,11 @@ async fn create_prompt_cache_conversation_row_on_connection(
 ) -> Result<(PromptCacheConversationIdentity, bool)> {
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
         let conversation_id = generate_prompt_cache_conversation_id();
-        if conversation_id_exists_on_connection(connection, &conversation_id).await?
-            || conversation_prefix_conflicts_with_live_invocation_on_connection(
-                connection,
-                &conversation_id,
-            )
-            .await?
+        if prompt_cache_conversation_id_candidate_conflicts_on_connection(
+            connection,
+            &conversation_id,
+        )
+        .await?
         {
             debug!(
                 attempt,
