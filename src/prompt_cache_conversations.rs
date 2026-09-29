@@ -1978,6 +1978,9 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats_on_connection(
         stats_query = stats_query.bind(*prompt_cache_key);
     }
     let stats_rows = stats_query.fetch_all(&mut *connection).await?;
+    if stats_rows.is_empty() {
+        return Ok(0);
+    }
     let mut update_query = sqlx::QueryBuilder::<Sqlite>::new(
         "WITH refreshed(prompt_cache_key, max_invoke_sequence, request_count, success_count, \
          failure_count, input_tokens, output_tokens, cache_input_tokens, \
