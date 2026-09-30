@@ -921,6 +921,27 @@ fi
 
 grep -q "ci-pr.yml.jobs.lint must preserve full source checks in the isolated Clippy cache" "$tmp_dir/clippy-parallelism.log"
 
+clippy_main_parallelism_repo="$tmp_dir/clippy-main-parallelism-repo"
+copy_repo_snapshot "$baseline_repo" "$clippy_main_parallelism_repo"
+python3 - <<'PY' "$clippy_main_parallelism_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-main.yml"
+text = path.read_text()
+needle = "CARGO_BUILD_JOBS: 4"
+if needle not in text:
+    raise SystemExit("failed to locate Main Clippy parallelism contract")
+path.write_text(text.replace(needle, "CARGO_BUILD_JOBS: 8", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$clippy_main_parallelism_repo" --profile final >/dev/null 2>"$tmp_dir/clippy-main-parallelism.log"; then
+  echo "expected oversubscribed Main Clippy parallelism fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-main.yml.jobs.lint must preserve full source checks in the isolated Clippy cache" "$tmp_dir/clippy-main-parallelism.log"
+
 e2e_parallel_repo="$tmp_dir/e2e-parallel-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_parallel_repo"
 python3 - <<'PY' "$e2e_parallel_repo"
