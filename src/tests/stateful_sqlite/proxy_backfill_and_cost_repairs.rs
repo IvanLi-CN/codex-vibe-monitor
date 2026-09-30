@@ -1815,8 +1815,36 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
     prefix: &str,
     busy_timeout: Duration,
 ) -> (Arc<AppState>, PathBuf, String) {
+    file_backed_test_state_with_busy_timeout_and_template(prefix, busy_timeout, None).await
+}
+
+pub(crate) async fn file_backed_test_state_with_current_schema_template_and_busy_timeout(
+    prefix: &str,
+    busy_timeout: Duration,
+) -> (Arc<AppState>, PathBuf, String) {
+    file_backed_test_state_with_busy_timeout_and_template(
+        prefix,
+        busy_timeout,
+        current_profile_schema_template_path(),
+    )
+    .await
+}
+
+async fn file_backed_test_state_with_busy_timeout_and_template(
+    prefix: &str,
+    busy_timeout: Duration,
+    schema_template: Option<PathBuf>,
+) -> (Arc<AppState>, PathBuf, String) {
     let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("state.db");
+    if let Some(template_path) = &schema_template {
+        assert!(
+            template_path.is_file(),
+            "current-schema template must exist: {}",
+            template_path.display()
+        );
+        fs::copy(template_path, &db_path).expect("copy current-schema file template");
+    }
     let db_url = test_sqlite_url_for_path(&db_path);
     let connect_options =
         build_sqlite_connect_options(&db_url, busy_timeout).expect("build sqlite options");
@@ -1825,9 +1853,11 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         .connect_with(connect_options)
         .await
         .expect("connect sqlite pool");
-    ensure_schema(&pool)
-        .await
-        .expect("schema should initialize");
+    if schema_template.is_none() {
+        ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+    }
 
     let mut config = test_config();
     config.database_path = db_path;

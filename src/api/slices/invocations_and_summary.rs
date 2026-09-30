@@ -34250,10 +34250,23 @@ mod request_compression_query_tests {
         tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
             .await
             .expect("all-time build reaches its isolated staging point");
-        // This intentionally exceeds both the former 8-second all-time deadline and the
-        // 15-second serving freshness budget. The all-time build must keep the already-exact
-        // rolling snapshot available while its independent reconciliation remains in flight.
-        tokio::time::sleep(SUMMARY_SNAPSHOT_MAX_STALE + Duration::from_secs(1)).await;
+        // Age the rolling fixture directly while all-time publication is held.
+        let mut rolling_snapshot = (*state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("published rolling projection"))
+        .clone();
+        let stale_at = Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1);
+        rolling_snapshot.refreshed_at = Some(stale_at);
+        rolling_snapshot.freshness_lease = SummaryProjectionFreshnessLease {
+            origin: stale_at,
+            renewed_elapsed_ms: Arc::new(AtomicU64::new(0)),
+        };
+        state
+            .subscription_hub
+            .store_summary_projection(rolling_snapshot)
+            .await;
         let Json(rolling) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {

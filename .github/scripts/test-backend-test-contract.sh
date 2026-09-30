@@ -102,6 +102,10 @@ set -euo pipefail
 printf 'cargo_home=%s\n' "${CARGO_HOME:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
 printf 'cargo_target_dir=%s\n' "${CARGO_TARGET_DIR:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
 printf 'cargo_net_offline=%s\n' "${CARGO_NET_OFFLINE:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf 'lightweight_template=%s stateful_template=%s archive_template=%s\n' \
+  "${CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH:-}" \
+  "${CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH:-}" \
+  "${CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
 printf '%q ' "$@" >>"${BACKEND_CONTRACT_RECORD:?}"
 printf '\n' >>"${BACKEND_CONTRACT_RECORD:?}"
 printf '%q ' "$@"
@@ -119,8 +123,11 @@ default_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
   BACKEND_CONTRACT_RECORD="$contract_record" \
   bash "$runner" --profile lightweight 2>&1)"
 grep -q 'backend_test_network_mode=online' <<<"$default_output"
-grep -q 'backend_test_profile_test_threads_lightweight=6' <<<"$default_output"
-grep -q -- '--test-threads 6' "$contract_record"
+grep -q 'backend_test_lightweight_schema_template=prepared' <<<"$default_output"
+grep -q 'prepare_current_schema_template_for_profile' "$contract_record"
+grep -Eq 'lightweight_template=.*/lightweight-schema\.[^ ]*/current-schema.db stateful_template= archive_template=$' "$contract_record"
+grep -q 'backend_test_profile_test_threads_lightweight=4' <<<"$default_output"
+grep -q -- '--test-threads 4' "$contract_record"
 grep -q "cargo_home=$default_workspace/cargo-home" "$contract_record"
 grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
 grep -q 'maintenance::archive::archive_writers::tests' "$contract_record"
@@ -134,6 +141,8 @@ archive_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
   BACKEND_CONTRACT_RECORD="$contract_record" \
   bash "$runner" --profile archive-file-io 2>&1)"
 grep -q 'backend_test_profile=archive-file-io' <<<"$archive_output"
+grep -q 'backend_test_archive_schema_template=prepared' <<<"$archive_output"
+grep -Eq 'lightweight_template= stateful_template= archive_template=.*/archive-file-io-schema\.[^ ]*/current-schema.db$' "$contract_record"
 grep -q 'maintenance::retention::retention_recovery_race_tests' "$contract_record"
 
 valid_dot_workspace="$tmp_root/cache..v2"

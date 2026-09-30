@@ -7,8 +7,23 @@ use std::str::FromStr;
 
 pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH";
+pub(crate) const LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV: &str =
+    "CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH";
 pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH";
+
+pub(crate) fn current_profile_schema_template_path() -> Option<PathBuf> {
+    std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
+        .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
+        .or_else(|| std::env::var_os(ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV))
+        .map(PathBuf::from)
+}
+
+fn current_test_state_schema_template_path() -> Option<PathBuf> {
+    std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
+        .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
+        .map(PathBuf::from)
+}
 
 static SYSTEM_TASK_RUN_RETENTION_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -1901,13 +1916,12 @@ pub(crate) async fn write_stateful_schema_template(path: &Path) -> anyhow::Resul
 }
 
 async fn restore_stateful_schema_template(pool: &SqlitePool) -> anyhow::Result<()> {
-    let Some(template_path) = std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV) else {
+    let Some(template_path) = current_test_state_schema_template_path() else {
         return ensure_schema(pool).await;
     };
-    let template_path = PathBuf::from(template_path);
     if !template_path.is_file() {
         anyhow::bail!(
-            "stateful schema template does not exist: {}",
+            "current-profile schema template does not exist: {}",
             template_path.display()
         );
     }
