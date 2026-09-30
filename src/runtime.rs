@@ -1058,7 +1058,7 @@ where
         .await;
     }
 
-    spawn_managed_task_dispatcher(state.clone());
+    let managed_task_dispatcher_handle = spawn_managed_task_dispatcher(state.clone());
 
     let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
         .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
@@ -1078,7 +1078,7 @@ where
         );
     }
 
-    drain_runtime_after_pending_shutdown(
+    let runtime_result = drain_runtime_after_pending_shutdown(
         state,
         shutdown_watcher,
         server_handle,
@@ -1090,10 +1090,14 @@ where
         startup_backfill_handle,
         startup_hot_read_hydration_handle,
     )
-    .await
+    .await;
+    if let Err(error) = managed_task_dispatcher_handle.await {
+        warn!(error = %error, "managed task dispatcher task terminated during shutdown");
+    }
+    runtime_result
 }
 
-fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
+fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let Some(store) = crate::maintenance_store::global().cloned() else {
             return;
@@ -1102,7 +1106,12 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
         loop {
             tokio::select! {
                 _ = state.shutdown.cancelled() => {
-                    drain_managed_task_finishes_on_shutdown(&store, &mut pending_finishes).await;
+                    drain_managed_task_finishes_on_shutdown(
+                        state.as_ref(),
+                        &store,
+                        &mut pending_finishes,
+                    )
+                    .await;
                     return;
                 },
                 _ = tokio::time::sleep(Duration::from_millis(250)) => {}
@@ -1140,7 +1149,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 pending_finishes.push_back(ManagedTaskFinish {
                     run_id,
                     task_key,
-                    status: "failed".to_string(),
+                    status: SystemTaskStatus::Failed,
                     finished_at: format_utc_iso_millis(Utc::now()),
                     duration_ms: 0,
                     summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
@@ -1151,9 +1160,9 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             let started_at = Instant::now();
             let result = run_managed_task_once(&state, &task_key).await;
             let (status, summary, detail) = match result {
-                Ok(summary) => ("success", Some(summary), None),
+                Ok(summary) => (SystemTaskStatus::Success, Some(summary), None),
                 Err(error) => (
-                    "failed",
+                    SystemTaskStatus::Failed,
                     Some(format!("{task_key} 手动运行失败")),
                     Some(error.to_string()),
                 ),
@@ -1171,7 +1180,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 1,
             );
             state.performance_telemetry.record_counter(
-                if status == "success" {
+                if status == SystemTaskStatus::Success {
                     "maintenance.task_run_success_count"
                 } else {
                     "maintenance.task_run_failure_count"
@@ -1182,7 +1191,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             let finish = ManagedTaskFinish {
                 run_id,
                 task_key,
-                status: status.to_string(),
+                status,
                 finished_at: format_utc_iso_millis(Utc::now()),
                 duration_ms,
                 summary,
@@ -1198,13 +1207,13 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 pending_finishes.push_back(finish);
             }
         }
-    });
+    })
 }
 
 struct ManagedTaskFinish {
     run_id: i64,
     task_key: String,
-    status: String,
+    status: SystemTaskStatus,
     finished_at: String,
     duration_ms: i64,
     summary: Option<String>,
@@ -1221,7 +1230,7 @@ async fn finish_managed_task_run_bounded(
             MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT,
             store.finish_run(
                 finish.run_id,
-                &finish.status,
+                finish.status.as_str(),
                 &finish.finished_at,
                 finish.duration_ms,
                 finish.summary.as_deref(),
@@ -1247,15 +1256,32 @@ async fn finish_managed_task_run_bounded(
 }
 
 async fn drain_managed_task_finishes_on_shutdown(
+    state: &AppState,
     store: &crate::maintenance_store::MaintenanceStore,
     pending_finishes: &mut VecDeque<ManagedTaskFinish>,
 ) {
     while let Some(finish) = pending_finishes.pop_front() {
         if let Err(error) = finish_managed_task_run_bounded(store, &finish).await {
+            // Replay resolves the maintenance row by run_id; task_kind is legacy journal metadata.
+            let recovery = BatchedSystemTaskFinish {
+                run_id: finish.run_id,
+                task_kind: SystemTaskKind::StartupBackfill,
+                trigger_kind: "managed_dispatcher".to_string(),
+                status: finish.status,
+                summary: finish.summary.clone(),
+                detail: finish.detail.clone(),
+                finished_at: finish.finished_at.clone(),
+                duration_ms: finish.duration_ms,
+            };
+            let quarantined = state.sqlite_batch_writer.quarantine_system_task_finish(
+                &recovery,
+                "managed task finish could not be finalized before shutdown",
+            );
             warn!(
                 run_id = finish.run_id,
                 task = %finish.task_key,
                 error = %error,
+                quarantined,
                 "managed task dispatcher could not finalize a pending run before shutdown"
             );
         }
