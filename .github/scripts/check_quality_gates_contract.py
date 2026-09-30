@@ -85,6 +85,21 @@ def require(condition: bool, message: str) -> None:
         raise ContractError(message)
 
 
+def require_fail_closed_stateful_aggregate(run: str, workflow_name: str) -> None:
+    expected_lines = [
+        "set -euo pipefail",
+        'echo "Stateful SQLite shard 1/2: ${SHARD_ONE_RESULT}"',
+        'echo "Stateful SQLite shard 2/2: ${SHARD_TWO_RESULT}"',
+        'test "${SHARD_ONE_RESULT}" = success',
+        'test "${SHARD_TWO_RESULT}" = success',
+    ]
+    actual_lines = [line.strip() for line in run.splitlines() if line.strip()]
+    require(
+        actual_lines == expected_lines,
+        f"{workflow_name} Stateful SQLite aggregate must preserve the exact fail-closed script",
+    )
+
+
 def load_module(path: Path):
     spec = importlib.util.spec_from_file_location("metadata_gate", path)
     if spec is None or spec.loader is None:
@@ -756,11 +771,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "ci-pr.yml Stateful SQLite aggregate must read both shard results",
         )
         aggregate_run = str(aggregate_step.get("run", ""))
-        require(
-            'test "${SHARD_ONE_RESULT}" = success' in aggregate_run
-            and 'test "${SHARD_TWO_RESULT}" = success' in aggregate_run,
-            "ci-pr.yml Stateful SQLite aggregate must fail when either shard fails",
-        )
+        require_fail_closed_stateful_aggregate(aggregate_run, "ci-pr.yml")
 
 
 def validate_ci_main(path: Path, contract: ContractModel) -> None:
@@ -886,12 +897,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         )
         require_exact_if(aggregate_job, "always()", "ci-main.yml.jobs.backend-tests-stateful-sqlite")
         aggregate_run = str(step_config(aggregate_job, "Require both Stateful SQLite shards", "ci-main.yml.jobs.backend-tests-stateful-sqlite").get("run", ""))
-        aggregate_run_lines = {line.strip() for line in aggregate_run.splitlines()}
-        require(
-            'test "${SHARD_ONE_RESULT}" = success' in aggregate_run_lines
-            and 'test "${SHARD_TWO_RESULT}" = success' in aggregate_run_lines,
-            "ci-main.yml Stateful SQLite aggregate must fail when either shard fails",
-        )
+        require_fail_closed_stateful_aggregate(aggregate_run, "ci-main.yml")
 
         candidate_meta = job_config(workflow, "candidate-meta", "ci-main.yml")
         require(candidate_meta.get("name") == "Candidate Image Metadata", "ci-main.yml candidate metadata job name drifted")
