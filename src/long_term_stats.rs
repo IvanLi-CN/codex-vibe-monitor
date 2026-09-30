@@ -3326,7 +3326,7 @@ async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
     runtime.loaded_interval_dates.clear();
 }
 
-pub(crate) async fn flush_long_term_projection(
+async fn flush_long_term_projection(
     state: &AppState,
     trigger: &'static str,
 ) -> Result<LongTermProjectionFlushOutcome> {
@@ -3375,6 +3375,12 @@ pub(crate) async fn flush_long_term_projection(
             }
         }
     }
+}
+
+pub(crate) async fn run_long_term_projection_once(state: &AppState) -> Result<()> {
+    flush_long_term_projection(state, "managed_task")
+        .await
+        .map(|_| ())
 }
 
 async fn run_long_term_projection_flush_with_retry<T, Operation, OperationFuture>(

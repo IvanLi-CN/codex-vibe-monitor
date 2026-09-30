@@ -1181,9 +1181,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             Ok("仪表盘运行投影校对完成".to_string())
         }
         "long_term_projection" => {
-            flush_long_term_projection(state.as_ref(), "managed_task")
-                .await
-                .map_err(|error| anyhow!(error.to_string()))?;
+            run_long_term_projection_once(state.as_ref()).await?;
             Ok("长期统计投影刷新完成".to_string())
         }
         "timeseries_minute_projection" => {
