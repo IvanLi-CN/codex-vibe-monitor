@@ -258,7 +258,7 @@ jobs:
       - name: Rust source quality
         id: rust-source-quality
         env:
-          CARGO_BUILD_JOBS: 8
+          CARGO_BUILD_JOBS: 4
           CARGO_TARGET_DIR: target-clippy
         run: bash .github/scripts/run-rust-source-quality.sh
 

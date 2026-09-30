@@ -135,7 +135,7 @@ def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) ->
     require(
         quality.get("id") == "rust-source-quality"
         and quality.get("run") == "bash .github/scripts/run-rust-source-quality.sh"
-        and quality_env.get("CARGO_BUILD_JOBS") == 8
+        and quality_env.get("CARGO_BUILD_JOBS") == 4
         and quality_env.get("CARGO_TARGET_DIR") == "target-clippy",
         f"{workflow_name}.jobs.lint must preserve full source checks in the isolated Clippy cache",
     )
