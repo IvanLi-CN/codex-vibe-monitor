@@ -567,6 +567,12 @@ impl StartupBackfillTask {
             .find(|task| task.name() == name)
     }
 
+    pub(crate) fn from_managed_key(name: &str) -> Option<Self> {
+        Self::ordered_tasks().iter().copied().find(|task| {
+            crate::maintenance_store::managed_startup_backfill_suffix(task.name()) == Some(name)
+        })
+    }
+
     pub(crate) fn ordered_tasks() -> &'static [Self] {
         &[
             Self::ProxyUsage,
@@ -961,7 +967,7 @@ pub(crate) async fn load_startup_backfill_progress(
         pending.suspension_reason = Some("maintenance_database_unavailable".to_string());
         return Ok(pending);
     };
-    Ok(sqlx::query_as::<_, StartupBackfillProgressRow>(
+    let progress = sqlx::query_as::<_, StartupBackfillProgressRow>(
         r#"
         SELECT
             task_name,
@@ -984,9 +990,32 @@ pub(crate) async fn load_startup_backfill_progress(
     )
     .bind(task_name)
     .fetch_optional(pool)
-    .await?
-    .map(Into::into)
-    .unwrap_or_else(|| StartupBackfillProgress::pending(task_name.to_string())))
+    .await?;
+    if let Some(progress) = progress {
+        return Ok(progress.into());
+    }
+
+    let enabled = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+        .map(|suffix| format!("startup_backfill.{suffix}"))
+        .map(|task_key| async move {
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(task_key)
+                .fetch_optional(pool)
+                .await
+        });
+    let enabled = match enabled {
+        Some(query) => query.await?.unwrap_or(false),
+        None => false,
+    };
+    let mut pending = StartupBackfillProgress::pending(task_name.to_string());
+    pending.enabled = enabled;
+    if !enabled {
+        pending.next_run_after = Some(format_utc_iso_millis(
+            Utc::now() + ChronoDuration::days(3650),
+        ));
+        pending.suspension_reason = Some("operator_disabled".to_string());
+    }
+    Ok(pending)
 }
 
 pub(crate) async fn set_startup_backfill_task_enabled(
@@ -998,34 +1027,15 @@ pub(crate) async fn set_startup_backfill_task_enabled(
         return Ok(StartupBackfillProgress::pending(task.name().to_string()));
     };
     let task_name = task.name();
+    let like_pattern = format!("{task_name}:%");
     let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
-    sqlx::query(
-        r#"
-        INSERT INTO startup_backfill_progress (
-            task_name,
-            cursor_id,
-            next_run_after,
-            zero_update_streak,
-            last_started_at,
-            last_finished_at,
-            last_scanned,
-            last_updated,
-            last_status,
-            suspension_reason,
-            next_probe_at,
-            wake_generation,
-            enabled
-        )
-        VALUES (?1, 0, ?2, 0, NULL, NULL, 0, 0, 'idle', ?3, NULL, 0, ?4)
-        ON CONFLICT(task_name) DO UPDATE SET
-            enabled = excluded.enabled,
-            next_run_after = excluded.next_run_after,
-            suspension_reason = excluded.suspension_reason,
-            next_probe_at = NULL,
-            wake_generation = startup_backfill_progress.wake_generation + 1
-        "#,
+    let result = sqlx::query(
+        "UPDATE startup_backfill_progress
+         SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
+             wake_generation=wake_generation + 1
+         WHERE task_name=? OR task_name LIKE ?",
     )
-    .bind(task_name)
+    .bind(if enabled { 1_i64 } else { 0_i64 })
     .bind(if enabled {
         None
     } else {
@@ -1036,10 +1046,34 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     } else {
         Some("operator_disabled")
     })
-    .bind(if enabled { 1_i64 } else { 0_i64 })
+    .bind(task_name)
+    .bind(like_pattern)
     .execute(pool)
     .await
     .with_context(|| format!("failed to update startup backfill task control for {task_name}"))?;
+    if result.rows_affected() == 0 {
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress (
+                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
+        )
+        .bind(task_name)
+        .bind(if enabled {
+            None
+        } else {
+            Some(disabled_until.as_str())
+        })
+        .bind(if enabled {
+            None
+        } else {
+            Some("operator_disabled")
+        })
+        .bind(if enabled { 1_i64 } else { 0_i64 })
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to create startup backfill task control for {task_name}"))?;
+    }
 
     if enabled {
         STARTUP_BACKFILL_SCHEDULER.wake(task);

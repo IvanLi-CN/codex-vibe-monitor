@@ -223,6 +223,8 @@ pub(crate) async fn run() -> Result<()> {
         Ok(store) => {
             if let Err(error) = store.migrate_legacy_state(&pool).await {
                 warn!(error = %error, "legacy task state migration did not complete; keeping maintenance observation unavailable until the next startup retry");
+            } else if let Err(error) = store.apply_initial_task_defaults().await {
+                warn!(error = %error, "initial managed task defaults could not be applied; keeping maintenance observation unavailable until the next startup retry");
             } else {
                 match store.recover_incomplete_runs().await {
                     Ok(recovered_runs) => {

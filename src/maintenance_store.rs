@@ -19,6 +19,24 @@ const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
 const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
+const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
+const DEFAULT_ENABLED_TASKS: &[&str] = &[
+    "retention_archive",
+    "upstream_account_maintenance",
+    "forward_proxy_subscription_refresh",
+    "pool_orphan_recovery",
+    "startup_hourly_rollup_bootstrap",
+    "system_status_snapshot",
+    "invocation_timeline_snapshot",
+    "summary_snapshot",
+    "summary_coverage_recovery",
+    "dashboard_runtime_projection_reconcile",
+    "long_term_projection",
+    "timeseries_minute_projection",
+    "raw_payload_metrics_inventory",
+    "prompt_cache_materialization",
+];
 static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -324,6 +342,10 @@ fn startup_backfill_task_metadata(key: &str) -> (&'static str, &'static str) {
     }
 }
 
+pub(crate) fn task_enabled_by_default(task_key: &str, is_manual: bool) -> bool {
+    !is_manual && DEFAULT_ENABLED_TASKS.contains(&task_key)
+}
+
 pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
     let database_path = config.maintenance_database_path();
     if let Some(parent) = database_path.parent() {
@@ -515,6 +537,78 @@ fn next_trigger_at(interval_secs: Option<i64>, cron_expr: Option<&str>) -> Optio
         .map(|seconds| format_utc_iso_millis(now + ChronoDuration::seconds(seconds)))
 }
 
+pub(crate) fn managed_startup_backfill_suffix(task_name: &str) -> Option<&'static str> {
+    if task_name == crate::STARTUP_BACKFILL_TASK_PROXY_COST
+        || task_name
+            .strip_prefix(crate::STARTUP_BACKFILL_TASK_PROXY_COST)
+            .is_some_and(|suffix| suffix.starts_with(':'))
+    {
+        return Some("proxy_cost");
+    }
+
+    [
+        (crate::STARTUP_BACKFILL_TASK_PROXY_USAGE, "proxy_usage"),
+        (
+            crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY,
+            "prompt_cache_key",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION,
+            "prompt_cache_conversations_materialization",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_REQUESTED_SERVICE_TIER,
+            "requested_service_tier",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
+            "invocation_service_tier",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_REASONING_EFFORT,
+            "reasoning_effort",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
+            "failure_classification",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_LIVE,
+            "pool_attempt_public_id_live",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_ARCHIVES,
+            "pool_attempt_public_id_archives",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
+            "upstream_activity_live",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+            "upstream_activity_archives",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES,
+            "pool_upstream_node_health_archives",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_ACCOUNT_ACTIVITY_V2_COVERAGE,
+            "account_activity_v2_coverage",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_LEGACY_DETAIL_MIRRORS,
+            "legacy_detail_mirrors",
+        ),
+        (
+            crate::STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
+            "historical_rollups",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(legacy_name, managed_suffix)| (task_name == legacy_name).then_some(managed_suffix))
+}
+
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for statement in r#"
         CREATE TABLE IF NOT EXISTS managed_tasks (
@@ -552,6 +646,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_started
           ON managed_task_runs(task_key, started_at DESC);
+        CREATE TABLE IF NOT EXISTS maintenance_metadata (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
     "#
     .split(';')
     .map(str::trim)
@@ -633,13 +732,14 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 async fn seed_tasks(pool: &Pool<Sqlite>) -> Result<()> {
     let now = format_utc_iso_millis(Utc::now());
     for (key, title, description, mode, manual) in MANAGED_TASKS {
-        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,is_manual,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET title=excluded.title, description=excluded.description, trigger_mode=excluded.trigger_mode, is_manual=excluded.is_manual")
-            .bind(key).bind(title).bind(description).bind(mode).bind(*manual as i64).bind(&now).execute(pool).await?;
+        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,enabled,is_manual,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET title=excluded.title, description=excluded.description, trigger_mode=excluded.trigger_mode, is_manual=excluded.is_manual")
+            .bind(key).bind(title).bind(description).bind(mode).bind(task_enabled_by_default(key, *manual) as i64).bind(*manual as i64).bind(&now).execute(pool).await?;
     }
     for key in STARTUP_BACKFILL_TASKS {
         let (title, description) = startup_backfill_task_metadata(key);
-        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,is_manual,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET title=excluded.title, description=excluded.description, trigger_mode=excluded.trigger_mode, is_manual=excluded.is_manual")
-            .bind(format!("startup_backfill.{key}")).bind(title).bind(description).bind("event").bind(0_i64).bind(&now).execute(pool).await?;
+        let task_key = format!("startup_backfill.{key}");
+        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,enabled,is_manual,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET title=excluded.title, description=excluded.description, trigger_mode=excluded.trigger_mode, is_manual=excluded.is_manual")
+            .bind(&task_key).bind(title).bind(description).bind("event").bind(task_enabled_by_default(&task_key, false) as i64).bind(0_i64).bind(&now).execute(pool).await?;
     }
     Ok(())
 }
@@ -787,7 +887,31 @@ impl MaintenanceStore {
                 "startup_backfill" => "startup_backfill",
                 other => other,
             };
-            let error_detail = detail.as_deref().map(sanitize_task_detail);
+            let was_active = matches!(status.as_str(), "running" | "requested");
+            let migrated_status = if was_active {
+                "failed"
+            } else {
+                status.as_str()
+            };
+            let migrated_summary = if was_active {
+                Some(
+                    summary
+                        .as_deref()
+                        .unwrap_or("服务重启前运行未完成，已标记为失败"),
+                )
+            } else {
+                summary.as_deref()
+            };
+            let sanitized_detail = detail.as_deref().map(sanitize_task_detail);
+            let migrated_detail = if was_active {
+                Some(
+                    sanitized_detail
+                        .as_deref()
+                        .unwrap_or("服务重启前运行未完成"),
+                )
+            } else {
+                sanitized_detail.as_deref()
+            };
             sqlx::query(
                 "INSERT OR IGNORE INTO managed_task_runs (legacy_id,task_key,trigger_kind,started_at,finished_at,duration_ms,status,summary,error_detail) VALUES (?,?,?,?,?,?,?,?,?)",
             )
@@ -797,9 +921,9 @@ impl MaintenanceStore {
             .bind(started_at)
             .bind(finished_at)
             .bind(duration_ms)
-            .bind(status)
-            .bind(summary)
-            .bind(error_detail)
+            .bind(migrated_status)
+            .bind(migrated_summary)
+            .bind(migrated_detail)
             .execute(&self.pool)
             .await?;
         }
@@ -843,7 +967,11 @@ impl MaintenanceStore {
             .bind(enabled)
             .execute(&self.pool)
             .await?;
-            let task_key = format!("startup_backfill.{task_name}");
+            let Some(managed_suffix) = managed_startup_backfill_suffix(&task_name) else {
+                // Keep versioned or catalog-specific legacy rows without inventing a page.
+                continue;
+            };
+            let task_key = format!("startup_backfill.{managed_suffix}");
             let updated_at = last_finished_at.or(last_started_at).or(next_run_after);
             let freshness = if enabled == 0 { "stale" } else { "fresh" };
             sqlx::query(
@@ -860,6 +988,79 @@ impl MaintenanceStore {
             .await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn apply_initial_task_defaults(&self) -> Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        let already_applied: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(INITIAL_TASK_DEFAULTS_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if already_applied.is_some() {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+
+        let now = format_utc_iso_millis(Utc::now());
+        for (task_key, _, _, _, is_manual) in MANAGED_TASKS {
+            sqlx::query("UPDATE managed_tasks SET enabled=?, next_trigger_at=NULL, updated_at=? WHERE task_key=?")
+                .bind(task_enabled_by_default(task_key, *is_manual) as i64)
+                .bind(&now)
+                .bind(task_key)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        for suffix in STARTUP_BACKFILL_TASKS {
+            let task_key = format!("startup_backfill.{suffix}");
+            sqlx::query("UPDATE managed_tasks SET enabled=0, next_trigger_at=NULL, updated_at=? WHERE task_key=?")
+                .bind(&now)
+                .bind(task_key)
+                .execute(&mut *transaction)
+                .await?;
+        }
+
+        let disabled_until =
+            format_utc_iso_millis(Utc::now() + ChronoDuration::days(TASK_DISABLED_UNTIL_DAYS));
+        for task_name in [
+            crate::STARTUP_BACKFILL_TASK_PROXY_USAGE,
+            crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_KEY,
+            crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION,
+            crate::STARTUP_BACKFILL_TASK_REQUESTED_SERVICE_TIER,
+            crate::STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER,
+            crate::STARTUP_BACKFILL_TASK_PROXY_COST,
+            crate::STARTUP_BACKFILL_TASK_REASONING_EFFORT,
+            crate::STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
+            crate::STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_LIVE,
+            crate::STARTUP_BACKFILL_TASK_POOL_ATTEMPT_PUBLIC_ID_ARCHIVES,
+            crate::STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
+            crate::STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+            crate::STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES,
+            crate::STARTUP_BACKFILL_TASK_ACCOUNT_ACTIVITY_V2_COVERAGE,
+            crate::STARTUP_BACKFILL_TASK_LEGACY_DETAIL_MIRRORS,
+            crate::STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
+        ] {
+            let like_pattern = format!("{task_name}:%");
+            sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET enabled=0, next_run_after=?, suspension_reason='operator_disabled',
+                     next_probe_at=NULL, wake_generation=wake_generation + 1
+                 WHERE task_name=? OR task_name LIKE ?",
+            )
+            .bind(&disabled_until)
+            .bind(task_name)
+            .bind(like_pattern)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)")
+            .bind(INITIAL_TASK_DEFAULTS_MARKER)
+            .bind("applied")
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(true)
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
@@ -1129,7 +1330,7 @@ mod tests {
 
     use super::{
         MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, ensure_schema, next_trigger_at,
-        sanitize_task_detail, seed_tasks, validate_cron_expr,
+        sanitize_task_detail, seed_tasks, task_enabled_by_default, validate_cron_expr,
     };
 
     #[test]
@@ -1143,6 +1344,24 @@ mod tests {
             6
         );
         assert_eq!(STARTUP_BACKFILL_TASKS.len(), 16);
+    }
+
+    #[test]
+    fn disables_backfill_and_manual_tasks_by_default() {
+        assert!(!task_enabled_by_default("startup_backfill", false));
+        assert!(!task_enabled_by_default(
+            "startup_backfill.proxy_usage",
+            false
+        ));
+        assert!(!task_enabled_by_default("raw_compression", true));
+        assert!(task_enabled_by_default("retention_archive", false));
+        assert_eq!(
+            MANAGED_TASKS
+                .iter()
+                .filter(|(key, _, _, _, is_manual)| task_enabled_by_default(key, *is_manual))
+                .count(),
+            14
+        );
     }
 
     #[test]
@@ -1221,5 +1440,168 @@ mod tests {
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn applies_initial_task_defaults_only_once() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1 WHERE task_key IN ('startup_backfill','raw_compression')",
+        )
+        .execute(&pool)
+        .await
+        .expect("simulate pre-default task controls");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress (task_name,enabled) VALUES ('proxy_usage_tokens_v1',1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert backfill control row");
+
+        let store = MaintenanceStore { pool };
+        assert!(store.apply_initial_task_defaults().await.unwrap());
+        assert!(
+            !sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
+        assert!(
+            !sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='raw_compression'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT enabled FROM startup_backfill_progress WHERE task_name='proxy_usage_tokens_v1'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0
+        );
+
+        sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key='raw_compression'")
+            .execute(&store.pool)
+            .await
+            .expect("simulate operator enablement");
+        assert!(!store.apply_initial_task_defaults().await.unwrap());
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='raw_compression'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn migrates_versioned_backfill_keys_and_preserves_interrupted_history() {
+        let main_pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect legacy main test pool");
+        sqlx::query(
+            "CREATE TABLE system_task_runs (id INTEGER PRIMARY KEY, task_kind TEXT NOT NULL, trigger_kind TEXT NOT NULL, status TEXT NOT NULL, summary TEXT, detail TEXT, started_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER)",
+        )
+        .execute(&main_pool)
+        .await
+        .expect("create legacy task history table");
+        sqlx::query(
+            "CREATE TABLE startup_backfill_progress (task_name TEXT PRIMARY KEY, cursor_id INTEGER NOT NULL, next_run_after TEXT, zero_update_streak INTEGER NOT NULL, last_started_at TEXT, last_finished_at TEXT, last_scanned INTEGER NOT NULL, last_updated INTEGER NOT NULL, last_status TEXT NOT NULL, suspension_reason TEXT, next_probe_at TEXT, wake_generation INTEGER NOT NULL, enabled INTEGER NOT NULL)",
+        )
+        .execute(&main_pool)
+        .await
+        .expect("create legacy backfill table");
+        for id in 1..=3 {
+            sqlx::query(
+                "INSERT INTO system_task_runs (id,task_kind,trigger_kind,status,started_at) VALUES (?,?,?,?,?)",
+            )
+            .bind(id)
+            .bind("retention_archive")
+            .bind("startup")
+            .bind("running")
+            .bind(format!("2026-09-30T00:00:0{id}.000Z"))
+            .execute(&main_pool)
+            .await
+            .expect("insert interrupted legacy run");
+        }
+        for (id, task_name) in [
+            (4, "proxy_usage_tokens_v1"),
+            (5, "proxy_cost_v1:catalog-version"),
+        ] {
+            sqlx::query(
+                "INSERT INTO startup_backfill_progress (task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            )
+            .bind(task_name)
+            .bind(id)
+            .bind(Option::<String>::None)
+            .bind(0_i64)
+            .bind(Option::<String>::None)
+            .bind(Some("2026-09-30T00:00:00.000Z"))
+            .bind(10_i64)
+            .bind(id)
+            .bind("ok")
+            .bind(Option::<String>::None)
+            .bind(Option::<String>::None)
+            .bind(0_i64)
+            .bind(1_i64)
+            .execute(&main_pool)
+            .await
+            .expect("insert versioned legacy progress");
+        }
+
+        let maintenance_pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&maintenance_pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&maintenance_pool)
+            .await
+            .expect("seed maintenance task registry");
+        let store = MaintenanceStore {
+            pool: maintenance_pool,
+        };
+
+        store
+            .migrate_legacy_state(&main_pool)
+            .await
+            .expect("migrate legacy state");
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_task_runs")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count migrated runs"),
+            3
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM managed_task_runs WHERE status IN ('running','requested')",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .expect("count active migrated runs"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_task_progress")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count managed progress snapshots"),
+            2
+        );
     }
 }
