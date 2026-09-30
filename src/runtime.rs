@@ -1089,6 +1089,9 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             if let Err(error) = store.enqueue_due_runs().await {
                 warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
             }
+            if let Err(error) = store.cleanup_expired_history_if_due().await {
+                warn!(error = %error, "managed task dispatcher failed to clean expired history");
+            }
             let claim = match store.claim_requested_run().await {
                 Ok(claim) => claim,
                 Err(error) => {

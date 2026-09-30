@@ -5,12 +5,19 @@ use sqlx::{
     FromRow, Pool, Sqlite,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{
+    path::PathBuf,
+    str::FromStr,
+    sync::atomic::{AtomicI64, Ordering},
+    time::Duration,
+};
 
 const MIN_INTERVAL_SECS: i64 = 60;
 const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
 const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
+const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceStore {
@@ -825,6 +832,31 @@ impl MaintenanceStore {
         }
         transaction.commit().await?;
         Ok(enqueued)
+    }
+
+    pub(crate) async fn cleanup_expired_history_if_due(&self) -> Result<()> {
+        let now_ms = Utc::now().timestamp_millis();
+        let last_ms = LAST_TASK_HISTORY_CLEANUP_MS.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_ms) < TASK_HISTORY_CLEANUP_INTERVAL_MS
+            || LAST_TASK_HISTORY_CLEANUP_MS
+                .compare_exchange(last_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return Ok(());
+        }
+        let now = Utc::now();
+        let error_cutoff =
+            format_utc_iso_millis(now - ChronoDuration::days(TASK_ERROR_RETENTION_DAYS));
+        let run_cutoff = format_utc_iso_millis(now - ChronoDuration::days(TASK_RUN_RETENTION_DAYS));
+        sqlx::query("UPDATE managed_task_runs SET error_detail=NULL WHERE started_at < ?")
+            .bind(error_cutoff)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM managed_task_runs WHERE started_at < ?")
+            .bind(run_cutoff)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn begin_run(
