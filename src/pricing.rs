@@ -71,6 +71,24 @@ pub(crate) async fn ensure_managed_model_catalog(pool: &Pool<Sqlite>) -> Result<
     Ok(())
 }
 
+pub(crate) async fn ensure_pricing_settings_catalog_migrations(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET cache_read_per_1m = cache_input_per_1m
+        WHERE cache_read_per_1m IS NULL
+          AND cache_input_per_1m IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pricing_settings_models.cache_read_per_1m")?;
+    ensure_managed_model_catalog(pool)
+        .await
+        .context("failed to migrate managed model catalog")?;
+    Ok(())
+}
+
 pub(crate) async fn load_managed_model_ids(pool: &Pool<Sqlite>) -> Result<Vec<String>> {
     sqlx::query_scalar::<_, String>(
         "SELECT model FROM managed_models UNION SELECT model FROM pricing_settings_models ORDER BY model",

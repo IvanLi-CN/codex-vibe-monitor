@@ -4,6 +4,23 @@ use crate::api::{
     post_models_sync_apply,
 };
 
+#[test]
+fn normalize_enabled_preset_models_keeps_static_order_and_dynamic_models() {
+    assert_eq!(
+        normalize_enabled_preset_models(vec![
+            "custom-model".to_string(),
+            "gpt-6-sol".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "custom-model".to_string(),
+        ]),
+        vec![
+            "gpt-6-sol".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "custom-model".to_string(),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
     let state = test_state_with_openai_base(

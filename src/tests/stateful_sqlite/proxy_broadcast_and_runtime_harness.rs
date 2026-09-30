@@ -2,23 +2,6 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn normalize_enabled_preset_models_keeps_static_order_and_dynamic_models() {
-    assert_eq!(
-        normalize_enabled_preset_models(vec![
-            "custom-model".to_string(),
-            "gpt-6-sol".to_string(),
-            "gpt-5.2-codex".to_string(),
-            "custom-model".to_string(),
-        ]),
-        vec![
-            "gpt-6-sol".to_string(),
-            "gpt-5.2-codex".to_string(),
-            "custom-model".to_string(),
-        ]
-    );
-}
-
-#[test]
 fn same_origin_settings_write_rejects_mismatched_origin() {
     let mut headers = HeaderMap::new();
     headers.insert(

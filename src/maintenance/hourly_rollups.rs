@@ -3437,59 +3437,6 @@ pub(crate) fn build_health_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
         .route("/api/version", get(get_versions))
 }
 
-pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
-    router
-        .route("/api/settings", get(get_settings))
-        .route(
-            "/api/settings/external-api-keys",
-            get(list_external_api_keys).post(create_external_api_key),
-        )
-        .route(
-            "/api/settings/external-api-keys/:id/rotate",
-            post(rotate_external_api_key),
-        )
-        .route(
-            "/api/settings/external-api-keys/:id/disable",
-            post(disable_external_api_key),
-        )
-        .route(
-            "/api/settings/proxy-models",
-            any(removed_proxy_model_settings_endpoint),
-        )
-        .route("/api/settings/proxy", put(put_proxy_settings))
-        .route(
-            "/api/settings/models/sync/preview",
-            post(post_models_sync_preview),
-        )
-        .route(
-            "/api/settings/models/sync/apply",
-            post(post_models_sync_apply),
-        )
-        .route("/api/settings/models/preset", put(put_managed_model_preset))
-        .route("/api/settings/models", delete(delete_managed_model))
-        .route(
-            "/api/settings/forward-proxy",
-            put(put_forward_proxy_settings),
-        )
-        .route(
-            "/api/settings/forward-proxy/validate",
-            post(post_forward_proxy_candidate_validation),
-        )
-        .route(
-            "/api/settings/forward-proxy/refresh-subscriptions",
-            post(post_forward_proxy_refresh_subscriptions),
-        )
-        .route(
-            "/api/settings/forward-proxy/nodes/:proxy_key/test-stream",
-            get(stream_forward_proxy_node_latency_test),
-        )
-        .route(
-            "/api/settings/forward-proxy/nodes/test-stream",
-            get(stream_forward_proxy_nodes_latency_test),
-        )
-        .route("/api/settings/pricing", put(put_pricing_settings))
-}
-
 pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/invocations", get(list_invocations))
@@ -3809,7 +3756,9 @@ pub(crate) fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
     build_proxy_routes(build_event_routes(build_external_routes(
         build_pool_routes(build_system_routes(build_stats_routes(
-            build_invocation_routes(build_settings_routes(build_health_routes(Router::new()))),
+            build_invocation_routes(crate::api::build_settings_routes(build_health_routes(
+                Router::new(),
+            ))),
         ))),
     )))
     .with_state(state)
