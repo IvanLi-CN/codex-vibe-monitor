@@ -734,6 +734,9 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
     startup_priority: crate::db_pressure::DbBackgroundPriorityReservation,
 ) {
     tokio::spawn(async move {
+        if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery").await {
+            return;
+        }
         let mut next_turn =
             match SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
                 state.as_ref(),
@@ -752,6 +755,11 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(delay) => {}
+            }
+            if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery")
+                .await
+            {
+                continue;
             }
             next_turn = match SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
                 state.as_ref(),

@@ -3067,6 +3067,14 @@ function managedTaskDetail(taskKey: string) {
           freshness: "fresh",
         },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
+    performance: {
+      runCount: 12,
+      successCount: 11,
+      failureCount: 1,
+      averageDurationMs: 31_000,
+      latestDurationMs: 31_000,
+      observedAt: at,
+    },
   };
 }
 

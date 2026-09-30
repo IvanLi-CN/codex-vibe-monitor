@@ -1903,7 +1903,7 @@ pub(crate) async fn list_managed_tasks(
 }
 
 pub(crate) async fn get_managed_task(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     AxumPath(task_key): AxumPath<String>,
 ) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
     let Some(store) = crate::maintenance_store::global() else {
@@ -1911,12 +1911,17 @@ pub(crate) async fn get_managed_task(
             "maintenance database unavailable"
         )));
     };
-    store
+    let mut detail = store
         .detail(&task_key)
         .await
         .map_err(ApiError::from)?
         .map(Json)
-        .ok_or_else(|| ApiError::bad_request(anyhow!("managed task not found")))
+        .ok_or_else(|| ApiError::bad_request(anyhow!("managed task not found")))?;
+    detail.0.performance = state
+        .performance_telemetry
+        .task_run_summary(&task_key)
+        .await;
+    Ok(Json(detail.0))
 }
 
 pub(crate) async fn update_managed_task(

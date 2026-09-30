@@ -71,7 +71,7 @@ export default function SystemTaskDetailPage() {
   if (!detail)
     return <div className="surface-panel p-6 text-base-content/65">正在读取任务详情…</div>;
 
-  const { task, progress, recentRuns } = detail;
+  const { task, progress, recentRuns, performance } = detail;
   const save = async (payload: {
     enabled?: boolean;
     intervalSecs?: number | null;
@@ -279,6 +279,25 @@ export default function SystemTaskDetailPage() {
                 </div>
               ))
             )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">性能指标（性能库）</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {[
+              ["运行次数", performance?.runCount ?? "未知"],
+              ["成功次数", performance?.successCount ?? "未知"],
+              ["失败次数", performance?.failureCount ?? "未知"],
+              ["平均用时", formatDuration(performance?.averageDurationMs)],
+              ["最近用时", formatDuration(performance?.latestDurationMs)],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-md border border-base-300/60 p-3">
+                <div className="text-xs text-base-content/60">{label}</div>
+                <div className="mt-1 font-semibold">{value}</div>
+              </div>
+            ))}
           </CardContent>
         </Card>
       </div>

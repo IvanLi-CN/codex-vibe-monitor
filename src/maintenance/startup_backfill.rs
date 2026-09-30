@@ -3051,7 +3051,9 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut startup_prep_pending = prep_pending;
         let mut startup_prep_retry_at = startup_prep_pending
             .then(|| Instant::now() + Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
-        run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
+        if !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await {
+            run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
+        }
         // Register before either P2 supervisor is scheduled so long-term pruning cannot
         // reclaim a terminal event ahead of the minute projection consumer.
         state
@@ -3085,16 +3087,16 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 _ = STARTUP_BACKFILL_SCHEDULER.wait_for_wake(observed_generation) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
                     let tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
-                    if !tasks.is_empty() {
+                    if !tasks.is_empty()
+                        && !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await
+                    {
                         run_startup_backfill_maintenance_pass(state.clone(), &cancel, Some(&tasks)).await;
                     }
                 }
                 _ = gate.wait_for_eligibility_change(observed_pressure_eligibility) => {
-                    run_pressure_eligible_startup_backfill_tasks(
-                        state.clone(),
-                        &cancel,
-                        gate,
-                    ).await;
+                    if !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await {
+                        run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, gate).await;
+                    }
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
@@ -3115,7 +3117,9 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                         });
                     }
                     let due_tasks = STARTUP_BACKFILL_SCHEDULER.drain_due_tasks(Utc::now());
-                    if !due_tasks.is_empty() {
+                    if !due_tasks.is_empty()
+                        && !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await
+                    {
                         run_startup_backfill_maintenance_pass(
                             state.clone(),
                             &cancel,

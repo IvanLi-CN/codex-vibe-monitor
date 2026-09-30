@@ -137,6 +137,7 @@ export type {
   LoginSessionStatusResponse,
   ManagedTask,
   ManagedTaskDetail,
+  ManagedTaskPerformance,
   ManagedTaskProgress,
   ManagedTaskRun,
   ModelMapping,

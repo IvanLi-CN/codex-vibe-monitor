@@ -2615,10 +2615,20 @@ export interface ManagedTaskRun {
   errorDetail?: string | null;
 }
 
+export interface ManagedTaskPerformance {
+  runCount: number;
+  successCount: number;
+  failureCount: number;
+  averageDurationMs?: number | null;
+  latestDurationMs?: number | null;
+  observedAt?: string | null;
+}
+
 export interface ManagedTaskDetail {
   task: ManagedTask;
   progress?: ManagedTaskProgress | null;
   recentRuns: ManagedTaskRun[];
+  performance?: ManagedTaskPerformance | null;
 }
 
 export interface PromptCacheMaterializationRun {

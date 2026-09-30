@@ -406,6 +406,13 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
+            if crate::maintenance_store::legacy_worker_should_skip(
+                "dashboard_runtime_projection_reconcile",
+            )
+            .await
+            {
+                continue;
+            }
             let reconcile_started = Instant::now();
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let _pressure_permit = match pressure_gate

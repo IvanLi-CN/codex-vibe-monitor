@@ -750,6 +750,11 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
+            if crate::maintenance_store::legacy_worker_should_skip("invocation_timeline_snapshot")
+                .await
+            {
+                continue;
+            }
             let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool);
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,

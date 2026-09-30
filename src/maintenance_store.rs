@@ -71,6 +71,19 @@ pub(crate) struct ManagedTaskDetail {
     pub(crate) task: ManagedTask,
     pub(crate) progress: Option<TaskProgress>,
     pub(crate) recent_runs: Vec<TaskRun>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) performance: Option<ManagedTaskPerformance>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedTaskPerformance {
+    pub(crate) run_count: u64,
+    pub(crate) success_count: u64,
+    pub(crate) failure_count: u64,
+    pub(crate) average_duration_ms: Option<f64>,
+    pub(crate) latest_duration_ms: Option<f64>,
+    pub(crate) observed_at: Option<String>,
 }
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
@@ -920,6 +933,7 @@ impl MaintenanceStore {
             task,
             progress,
             recent_runs,
+            performance: None,
         }))
     }
 

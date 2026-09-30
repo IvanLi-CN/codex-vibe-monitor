@@ -1,5 +1,6 @@
 use super::*;
 use crate::db_pressure::global_db_pressure_gate;
+use crate::maintenance_store::ManagedTaskPerformance;
 use crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator;
 
 // The telemetry file is disposable state. Create the final schema once and replace the file
@@ -295,6 +296,18 @@ static METRIC_SPECS: &[MetricSpec] = &[
         section: "maintenance",
         kind: MetricKind::Duration,
         long_term: true,
+    },
+    MetricSpec {
+        id: "maintenance.task_run_duration_ms",
+        section: "maintenance",
+        kind: MetricKind::Duration,
+        long_term: false,
+    },
+    MetricSpec {
+        id: "maintenance.task_run_count",
+        section: "maintenance",
+        kind: MetricKind::Counter,
+        long_term: false,
     },
     MetricSpec {
         id: "maintenance.processed_rows",
@@ -906,6 +919,98 @@ impl PerformanceTelemetryRuntime {
     async fn allow_browser_ingest(&self, client: &str) -> bool {
         self.browser_rate_limiter.lock().await.allow(client)
     }
+
+    pub(crate) async fn task_run_summary(&self, task_key: &str) -> Option<ManagedTaskPerformance> {
+        let pool = self.pool.get()?;
+        let now = Utc::now();
+        let response = query_performance(
+            pool,
+            (now - ChronoDuration::hours(24)).timestamp(),
+            now.timestamp(),
+            3600,
+            Some("maintenance"),
+        )
+        .await
+        .ok()?;
+        let task_dimension = task_run_metric_dimension(task_key);
+        let duration_series = response.series.iter().find(|series| {
+            series.metric_id == "maintenance.task_run_duration_ms"
+                && series.dimension == task_dimension
+        });
+        let mut duration_sum = 0.0;
+        let mut duration_samples = 0_u64;
+        let mut latest_duration = None;
+        let mut latest_bucket = None;
+        if let Some(series) = duration_series {
+            for point in &series.points {
+                duration_sum += point.sum;
+                duration_samples = duration_samples.saturating_add(point.sample_count);
+                if latest_bucket.is_none_or(|bucket| point.bucket_start > bucket) {
+                    latest_bucket = Some(point.bucket_start);
+                    latest_duration = point.last;
+                }
+            }
+        }
+        let counter_sum = |dimension: &str| {
+            response
+                .series
+                .iter()
+                .find(|series| {
+                    series.metric_id == "maintenance.task_run_count"
+                        && series.dimension == dimension
+                })
+                .map(|series| {
+                    series
+                        .points
+                        .iter()
+                        .map(|point| point.sum.max(0.0).round() as u64)
+                        .sum()
+                })
+                .unwrap_or(0)
+        };
+        let success_count = counter_sum("success");
+        let failure_count = counter_sum("failed");
+        let observed_at = latest_bucket.and_then(|bucket| {
+            DateTime::<Utc>::from_timestamp(bucket, 0).map(format_utc_iso_millis)
+        });
+        Some(ManagedTaskPerformance {
+            run_count: success_count.saturating_add(failure_count),
+            success_count,
+            failure_count,
+            average_duration_ms: (duration_samples > 0)
+                .then(|| duration_sum / duration_samples as f64),
+            latest_duration_ms: latest_duration,
+            observed_at,
+        })
+    }
+}
+
+fn task_run_metric_dimension(task_key: &str) -> &'static str {
+    match task_key {
+        "retention_archive" => "retention_archive",
+        "upstream_account_maintenance" => "upstream_account_maintenance",
+        "forward_proxy_subscription_refresh" => "forward_proxy_subscription_refresh",
+        "pool_orphan_recovery" => "pool_orphan_recovery",
+        "startup_hourly_rollup_bootstrap" => "startup_hourly_rollup_bootstrap",
+        "system_status_snapshot" => "system_status_snapshot",
+        "invocation_timeline_snapshot" => "invocation_timeline_snapshot",
+        "summary_snapshot" => "summary_snapshot",
+        "summary_coverage_recovery" => "summary_coverage_recovery",
+        "dashboard_runtime_projection_reconcile" => "dashboard_runtime_projection_reconcile",
+        "long_term_projection" => "long_term_projection",
+        "timeseries_minute_projection" => "timeseries_minute_projection",
+        "raw_payload_metrics_inventory" => "raw_payload_metrics_inventory",
+        "prompt_cache_materialization" => "prompt_cache_materialization",
+        "startup_backfill" => "startup_backfill",
+        "raw_compression" => "raw_compression",
+        "archive_upstream_activity_manifest" => "archive_upstream_activity_manifest",
+        "materialize_historical_rollups" => "materialize_historical_rollups",
+        "verify_archive_storage" => "verify_archive_storage",
+        "prune_archive_batches" => "prune_archive_batches",
+        "prune_legacy_archive_batches" => "prune_legacy_archive_batches",
+        key if key.starts_with("startup_backfill.") => "startup_backfill_child",
+        _ => "unknown_managed_task",
+    }
 }
 
 fn metric_spec(metric_id: &str) -> Option<&'static MetricSpec> {
@@ -935,6 +1040,8 @@ fn metric_dimension_allowed(metric_id: &str, dimension: &str) -> bool {
         id if id.starts_with("sse.") => {
             matches!(dimension, "dashboard" | "current" | "network" | "terminal")
         }
+        "maintenance.task_run_duration_ms" => is_task_run_dimension(dimension),
+        "maintenance.task_run_count" => matches!(dimension, "success" | "failed"),
         id if id.starts_with("maintenance.") => dimension == "maintenance",
         id if id.starts_with("process.") => dimension == "process",
         "storage.main_db_bytes" => dimension == "main_db",
@@ -997,6 +1104,8 @@ fn metric_dimensions(metric_id: &str) -> &'static [&'static str] {
         "sse.publish_error_count" | "sse.publish_duration_ms" | "sse.frame_bytes" => {
             &["current", "network", "terminal"]
         }
+        "maintenance.task_run_duration_ms" => TASK_RUN_METRIC_DIMENSIONS,
+        "maintenance.task_run_count" => &["success", "failed"],
         id if id.starts_with("maintenance.") => &["maintenance"],
         id if id.starts_with("process.") => &["process"],
         "storage.main_db_bytes" => &["main_db"],
@@ -1014,6 +1123,36 @@ fn metric_dimensions(metric_id: &str) -> &'static [&'static str] {
         id if id.starts_with("browser.") => &["dashboard", "records", "system"],
         _ => &[],
     }
+}
+
+const TASK_RUN_METRIC_DIMENSIONS: &[&str] = &[
+    "retention_archive",
+    "upstream_account_maintenance",
+    "forward_proxy_subscription_refresh",
+    "pool_orphan_recovery",
+    "startup_hourly_rollup_bootstrap",
+    "system_status_snapshot",
+    "invocation_timeline_snapshot",
+    "summary_snapshot",
+    "summary_coverage_recovery",
+    "dashboard_runtime_projection_reconcile",
+    "long_term_projection",
+    "timeseries_minute_projection",
+    "raw_payload_metrics_inventory",
+    "prompt_cache_materialization",
+    "startup_backfill",
+    "raw_compression",
+    "archive_upstream_activity_manifest",
+    "materialize_historical_rollups",
+    "verify_archive_storage",
+    "prune_archive_batches",
+    "prune_legacy_archive_batches",
+    "startup_backfill_child",
+    "unknown_managed_task",
+];
+
+fn is_task_run_dimension(dimension: &str) -> bool {
+    TASK_RUN_METRIC_DIMENSIONS.contains(&dimension)
 }
 
 fn empty_performance_series(spec: &MetricSpec, dimension: &str) -> PerformanceSeries {
