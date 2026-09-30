@@ -586,6 +586,16 @@ describe("demo MSW handlers", () => {
     expect(enabled.task).toMatchObject({ enabled: true, intervalSecs: 120 });
     expect(enabled.task.nextTriggerAt).toEqual(expect.any(String));
 
+    const scheduleConflictResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intervalSecs: 120, cronExpr: "*/5 * * * *" }),
+      },
+    );
+    expect(scheduleConflictResponse.status).toBe(400);
+
     const runResponse = await fetch(
       "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
       { method: "POST" },

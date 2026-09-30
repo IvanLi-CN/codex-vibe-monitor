@@ -4396,6 +4396,11 @@ export async function handleDemoRequest(request: Request) {
     if (detail.task.isManual && (body.intervalSecs !== undefined || body.cronExpr !== undefined)) {
       return json({ error: "manual tasks do not have a schedule" }, { status: 400 });
     }
+    const hasInterval = body.intervalSecs !== undefined && body.intervalSecs !== null;
+    const hasCron = typeof body.cronExpr === "string" && body.cronExpr.trim().length > 0;
+    if (hasInterval && hasCron) {
+      return json({ error: "interval and cron schedule are mutually exclusive" }, { status: 400 });
+    }
     if (body.intervalSecs !== undefined && body.intervalSecs !== null && body.intervalSecs < 60) {
       return json({ error: "interval must be at least 60 seconds" }, { status: 400 });
     }

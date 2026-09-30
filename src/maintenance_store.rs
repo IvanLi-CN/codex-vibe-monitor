@@ -420,6 +420,12 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .execute(pool)
             .await?;
     }
+    // Keep databases written by the old dual-field form deterministic: an explicit cron wins.
+    sqlx::query(
+        "UPDATE managed_tasks SET interval_secs=NULL WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
@@ -642,6 +648,13 @@ impl MaintenanceStore {
         interval_secs: Option<i64>,
         cron_expr: Option<&str>,
     ) -> Result<bool> {
+        if interval_secs.is_some()
+            && cron_expr
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        {
+            return Err(anyhow!("interval and cron schedule are mutually exclusive"));
+        }
         Self::validate_interval(interval_secs).await?;
         validate_cron_expr(cron_expr)?;
         let Some(enabled) = sqlx::query_scalar::<_, bool>(

@@ -23,12 +23,15 @@ function formatDuration(ms?: number | null): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+type ScheduleKind = "interval" | "cron";
+
 export default function SystemTaskDetailPage() {
   const { taskKey = "" } = useParams();
   const [detail, setDetail] = useState<ManagedTaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [intervalSecs, setIntervalSecs] = useState("");
   const [cronExpr, setCronExpr] = useState("");
+  const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("interval");
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
 
@@ -39,6 +42,7 @@ export default function SystemTaskDetailPage() {
         setDetail(next);
         setIntervalSecs(next.task.intervalSecs == null ? "" : String(next.task.intervalSecs));
         setCronExpr(next.task.cronExpr ?? "");
+        setScheduleKind(next.task.cronExpr?.trim() ? "cron" : "interval");
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, [taskKey]);
@@ -75,7 +79,11 @@ export default function SystemTaskDetailPage() {
   }) => {
     setSaving(true);
     try {
-      setDetail(await updateManagedTask(task.taskKey, payload));
+      const next = await updateManagedTask(task.taskKey, payload);
+      setDetail(next);
+      setIntervalSecs(next.task.intervalSecs == null ? "" : String(next.task.intervalSecs));
+      setCronExpr(next.task.cronExpr ?? "");
+      setScheduleKind(next.task.cronExpr?.trim() ? "cron" : "interval");
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -166,33 +174,69 @@ export default function SystemTaskDetailPage() {
             </div>
             {!task.isManual ? (
               <>
-                <label className="space-y-1 text-sm">
-                  <span>间隔（秒）</span>
-                  <Input
-                    type="number"
-                    min={60}
-                    value={intervalSecs}
-                    onChange={(event) => setIntervalSecs(event.target.value)}
-                  />
-                </label>
-                <label className="space-y-1 text-sm">
-                  <span>UTC crontab</span>
-                  <Input
-                    value={cronExpr}
-                    onChange={(event) => setCronExpr(event.target.value)}
-                    placeholder="*/5 * * * *"
-                  />
-                </label>
+                <fieldset className="space-y-2 md:col-span-2 xl:col-span-4">
+                  <legend className="text-sm font-medium">计划方式</legend>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={scheduleKind === "interval" ? "default" : "outline"}
+                      disabled={saving}
+                      onClick={() => setScheduleKind("interval")}
+                    >
+                      固定间隔
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={scheduleKind === "cron" ? "default" : "outline"}
+                      disabled={saving}
+                      onClick={() => setScheduleKind("cron")}
+                    >
+                      UTC crontab
+                    </Button>
+                  </div>
+                  <p className="text-xs text-base-content/60">
+                    固定间隔和 UTC crontab 只能选择一种。
+                  </p>
+                </fieldset>
+                {scheduleKind === "interval" ? (
+                  <label className="space-y-1 text-sm">
+                    <span>间隔（秒）</span>
+                    <Input
+                      type="number"
+                      min={60}
+                      value={intervalSecs}
+                      onChange={(event) => setIntervalSecs(event.target.value)}
+                    />
+                  </label>
+                ) : (
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span>UTC crontab</span>
+                    <Input
+                      value={cronExpr}
+                      onChange={(event) => setCronExpr(event.target.value)}
+                      placeholder="*/5 * * * *"
+                    />
+                  </label>
+                )}
                 <div className="flex items-end">
                   <Button
                     type="button"
                     variant="outline"
                     disabled={saving}
                     onClick={() =>
-                      void save({
-                        intervalSecs: intervalSecs ? Number(intervalSecs) : null,
-                        cronExpr: cronExpr || null,
-                      })
+                      void save(
+                        scheduleKind === "interval"
+                          ? {
+                              intervalSecs: intervalSecs ? Number(intervalSecs) : null,
+                              cronExpr: null,
+                            }
+                          : {
+                              intervalSecs: null,
+                              cronExpr: cronExpr.trim() || null,
+                            },
+                      )
                     }
                   >
                     保存调度

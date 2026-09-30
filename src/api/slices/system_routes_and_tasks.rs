@@ -2004,6 +2004,16 @@ pub(crate) async fn update_managed_task(
             "maintenance database unavailable"
         )));
     };
+    let has_interval = request.interval_secs.is_some();
+    let has_cron = request
+        .cron_expr
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    if has_interval && has_cron {
+        return Err(ApiError::bad_request(anyhow!(
+            "interval and cron schedule are mutually exclusive"
+        )));
+    }
     if let Some(enabled) = request.enabled
         && !store
             .set_enabled(&task_key, enabled)
