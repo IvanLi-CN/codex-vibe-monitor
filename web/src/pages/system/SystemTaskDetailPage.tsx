@@ -59,12 +59,12 @@ export default function SystemTaskDetailPage() {
 
   useEffect(() => {
     if (!taskKey || !hasActiveRun) return;
-    const timer = window.setTimeout(() => {
+    const timer = window.setInterval(() => {
       void fetchManagedTask(taskKey)
         .then(setDetail)
         .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     }, 750);
-    return () => window.clearTimeout(timer);
+    return () => window.clearInterval(timer);
   }, [hasActiveRun, taskKey]);
 
   if (error && !detail) return <Alert variant="error">任务观测不可用：{error}</Alert>;
@@ -265,6 +265,12 @@ export default function SystemTaskDetailPage() {
                       {managedTaskRunStatusLabel(run.status)} · {formatDuration(run.durationMs)}
                     </span>
                   </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60">
+                    {run.triggerKind ? <span>触发：{run.triggerKind}</span> : null}
+                    {run.processedCount != null ? <span>处理：{run.processedCount}</span> : null}
+                    {run.updatedCount != null ? <span>更新：{run.updatedCount}</span> : null}
+                  </div>
+                  {run.summary ? <div>{run.summary}</div> : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
                 </div>
               ))

@@ -2604,10 +2604,12 @@ export interface ManagedTaskProgress {
 
 export interface ManagedTaskRun {
   id: number;
+  triggerKind?: string;
   startedAt: string;
   finishedAt?: string | null;
   durationMs?: number | null;
   status: string;
+  summary?: string | null;
   processedCount?: number | null;
   updatedCount?: number | null;
   errorDetail?: string | null;

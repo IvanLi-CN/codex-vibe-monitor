@@ -1040,6 +1040,8 @@ where
         .await;
     }
 
+    spawn_managed_task_dispatcher(state.clone());
+
     let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
         .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
 
@@ -1071,6 +1073,132 @@ where
         startup_hot_read_hydration_handle,
     )
     .await
+}
+
+fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let Some(store) = crate::maintenance_store::global().cloned() else {
+            return;
+        };
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+            }
+            let claim = match store.claim_requested_run().await {
+                Ok(claim) => claim,
+                Err(error) => {
+                    warn!(error = %error, "managed task dispatcher failed to claim a requested run");
+                    continue;
+                }
+            };
+            let Some((run_id, task_key, _started_at)) = claim else {
+                continue;
+            };
+            let started_at = Instant::now();
+            let result = run_managed_task_once(&state, &task_key).await;
+            let (status, summary, detail) = match result {
+                Ok(summary) => ("success", Some(summary), None),
+                Err(error) => (
+                    "failed",
+                    Some(format!("{task_key} 手动运行失败")),
+                    Some(error.to_string()),
+                ),
+            };
+            let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            if let Err(error) = store
+                .finish_run(
+                    run_id,
+                    status,
+                    &format_utc_iso_millis(Utc::now()),
+                    duration_ms,
+                    summary.as_deref(),
+                    detail.as_deref(),
+                )
+                .await
+            {
+                warn!(run_id, task = %task_key, error = %error, "managed task dispatcher failed to finalize a run");
+            }
+        }
+    });
+}
+
+async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<String> {
+    match task_key {
+        "retention_archive" => {
+            let summary =
+                run_data_retention_maintenance(&state.pool, &state.config, Some(false), None)
+                    .await?;
+            let (brief, _detail) = crate::api::summarize_retention_run_for_system_task(&summary);
+            Ok(brief)
+        }
+        "forward_proxy_subscription_refresh" => {
+            refresh_forward_proxy_subscriptions(state.clone(), false, None).await?;
+            Ok("正向代理订阅刷新完成".to_string())
+        }
+        "summary_snapshot" => {
+            crate::api::refresh_summary_snapshots(state.as_ref()).await?;
+            Ok("汇总快照刷新完成".to_string())
+        }
+        "summary_coverage_recovery" => {
+            crate::api::SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                state.as_ref(),
+                None,
+            )
+            .await?;
+            Ok("汇总覆盖恢复完成".to_string())
+        }
+        "pool_orphan_recovery" => {
+            let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await?;
+            Ok(format!(
+                "恢复连接池尝试 {} 条，调用 {} 条",
+                outcome.recovered_attempts, outcome.recovered_invocations
+            ))
+        }
+        "startup_backfill" => {
+            let pass =
+                crate::run_startup_backfill_maintenance_pass(state.clone(), &state.shutdown, None)
+                    .await;
+            if pass.had_failure {
+                bail!(
+                    pass.detail
+                        .unwrap_or_else(|| "启动回填存在失败".to_string())
+                );
+            }
+            Ok(if pass.ran_actionable_task {
+                "启动回填处理完成".to_string()
+            } else {
+                "启动回填没有可处理项".to_string()
+            })
+        }
+        key if key.starts_with("startup_backfill.") => {
+            let name = key.trim_start_matches("startup_backfill.");
+            let task = crate::StartupBackfillTask::from_name(name)
+                .ok_or_else(|| anyhow!("未知启动回填子任务: {name}"))?;
+            let catalog = state.pricing_catalog.read().await.clone();
+            crate::wake_startup_backfill_tasks_with_pricing_catalog(
+                &state.pool,
+                &[task],
+                Some(&catalog),
+                "manual_run",
+            )
+            .await?;
+            let pass = crate::run_startup_backfill_maintenance_pass(
+                state.clone(),
+                &state.shutdown,
+                Some(&[task]),
+            )
+            .await;
+            if pass.had_failure {
+                bail!(
+                    pass.detail
+                        .unwrap_or_else(|| format!("启动回填子任务失败: {name}"))
+                );
+            }
+            Ok(format!("启动回填子任务 {name} 处理完成"))
+        }
+        _ => bail!("任务暂不支持立即运行: {task_key}"),
+    }
 }
 
 pub(crate) fn begin_runtime_shutdown(cancel: &CancellationToken) {
@@ -1553,6 +1681,9 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
     cancel: &CancellationToken,
     started_at_from: &str,
 ) {
+    let Some(store) = crate::maintenance_store::global() else {
+        return;
+    };
     let deadline = Instant::now() + Duration::from_millis(250);
     loop {
         let task = tokio::time::timeout(
@@ -1560,8 +1691,8 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
             sqlx::query_as::<_, (i64, String)>(
                 r#"
                 SELECT id, trigger_kind
-                FROM system_task_runs
-                WHERE task_kind = ?1
+                FROM managed_task_runs
+                WHERE task_key = ?1
                   AND trigger_kind = 'startup'
                   AND status = ?2
                   AND summary = 'background hourly rollup bootstrap started'
@@ -1573,7 +1704,7 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
             .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
             .bind(SystemTaskStatus::Running.as_str())
             .bind(started_at_from)
-            .fetch_optional(&state.pool),
+            .fetch_optional(&store.pool),
         )
         .await;
         match task {

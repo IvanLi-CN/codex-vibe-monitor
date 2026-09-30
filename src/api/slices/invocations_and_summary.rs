@@ -103,14 +103,13 @@ pub(crate) use invocation_workflow_detail::{
 };
 
 pub(crate) use summary_projection_lifecycle::{
-    hydrate_summary_snapshots_with_deadline, refresh_summary_snapshots,
-    spawn_summary_coverage_recovery_maintenance,
+    SummaryCoverageRecoverySupervisor, hydrate_summary_snapshots_with_deadline,
+    refresh_summary_snapshots, spawn_summary_coverage_recovery_maintenance,
 };
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    SummaryCoverageRecoverySupervisor, hydrate_summary_snapshots,
-    refresh_summary_snapshots_with_mode,
+    hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
 };
 
 #[cfg(test)]

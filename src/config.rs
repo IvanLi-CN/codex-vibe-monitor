@@ -367,6 +367,28 @@ impl fmt::Debug for UpstreamAccountsKaisouMailConfig {
 }
 
 impl AppConfig {
+    fn normalized_path_identity(path: &std::path::Path) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+        let candidate = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        let mut normalized = PathBuf::new();
+        for component in candidate.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        normalized
+    }
+
     pub(crate) fn from_sources(overrides: &CliArgs) -> Result<Self> {
         reject_legacy_env_vars(LEGACY_ENV_RENAMES)?;
         let openai_upstream_base_url = env::var("OPENAI_UPSTREAM_BASE_URL")
@@ -387,8 +409,9 @@ impl AppConfig {
                 database_path.with_file_name(format!("{stem}.performance.sqlite"))
             });
         let maintenance_database_path = Self::derive_maintenance_database_path(&database_path);
-        if maintenance_database_path == database_path
-            || maintenance_database_path == performance_database_path
+        let maintenance_identity = Self::normalized_path_identity(&maintenance_database_path);
+        if maintenance_identity == Self::normalized_path_identity(&database_path)
+            || maintenance_identity == Self::normalized_path_identity(&performance_database_path)
         {
             bail!(
                 "{ENV_MAINTENANCE_DATABASE_PATH} must differ from DATABASE_PATH and PERFORMANCE_DATABASE_PATH"
