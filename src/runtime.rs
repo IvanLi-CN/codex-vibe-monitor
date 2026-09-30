@@ -1113,14 +1113,20 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 ),
             };
             let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            let task_dimension = managed_task_metric_dimension(&task_key);
+            let result_dimension = if status == "success" {
+                "success"
+            } else {
+                "failed"
+            };
             state.performance_telemetry.record_duration_ms(
                 "maintenance.task_run_duration_ms",
-                &task_key,
+                task_dimension,
                 duration_ms as f64,
             );
             state.performance_telemetry.record_counter(
                 "maintenance.task_run_count",
-                &format!("{task_key}:{status}"),
+                result_dimension,
                 1,
             );
             if let Err(error) = store
@@ -1138,6 +1144,34 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             }
         }
     });
+}
+
+fn managed_task_metric_dimension(task_key: &str) -> &'static str {
+    match task_key {
+        "retention_archive" => "retention_archive",
+        "upstream_account_maintenance" => "upstream_account_maintenance",
+        "forward_proxy_subscription_refresh" => "forward_proxy_subscription_refresh",
+        "pool_orphan_recovery" => "pool_orphan_recovery",
+        "startup_hourly_rollup_bootstrap" => "startup_hourly_rollup_bootstrap",
+        "system_status_snapshot" => "system_status_snapshot",
+        "invocation_timeline_snapshot" => "invocation_timeline_snapshot",
+        "summary_snapshot" => "summary_snapshot",
+        "summary_coverage_recovery" => "summary_coverage_recovery",
+        "dashboard_runtime_projection_reconcile" => "dashboard_runtime_projection_reconcile",
+        "long_term_projection" => "long_term_projection",
+        "timeseries_minute_projection" => "timeseries_minute_projection",
+        "raw_payload_metrics_inventory" => "raw_payload_metrics_inventory",
+        "prompt_cache_materialization" => "prompt_cache_materialization",
+        "startup_backfill" => "startup_backfill",
+        "raw_compression" => "raw_compression",
+        "archive_upstream_activity_manifest" => "archive_upstream_activity_manifest",
+        "materialize_historical_rollups" => "materialize_historical_rollups",
+        "verify_archive_storage" => "verify_archive_storage",
+        "prune_archive_batches" => "prune_archive_batches",
+        "prune_legacy_archive_batches" => "prune_legacy_archive_batches",
+        key if key.starts_with("startup_backfill.") => "startup_backfill_child",
+        _ => "unknown_managed_task",
+    }
 }
 
 async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<String> {
