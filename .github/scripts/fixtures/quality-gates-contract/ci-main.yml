@@ -263,6 +263,7 @@ jobs:
 
       - name: Save Cargo Clippy artifacts
         if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: target-clippy
@@ -270,6 +271,7 @@ jobs:
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: |

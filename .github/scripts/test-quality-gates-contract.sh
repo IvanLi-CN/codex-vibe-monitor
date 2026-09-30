@@ -128,6 +128,26 @@ expect_continue_on_error_rejected \
   .github/workflows/ci-main.yml \
   $'      - name: Require both Stateful SQLite shards\n' \
   $'      - name: Require both Stateful SQLite shards\n        continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  pr-lightweight-consumer-job \
+  .github/workflows/ci-pr.yml \
+  $'  backend-tests-lightweight:\n' \
+  $'  backend-tests-lightweight:\n    continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  pr-archive-file-io-consumer-step \
+  .github/workflows/ci-pr.yml \
+  $'      - name: Download backend test archive\n' \
+  $'      - name: Download backend test archive\n        continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  main-lightweight-consumer-job \
+  .github/workflows/ci-main.yml \
+  $'  backend-tests-lightweight:\n' \
+  $'  backend-tests-lightweight:\n    continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  main-archive-file-io-consumer-step \
+  .github/workflows/ci-main.yml \
+  $'      - name: Run archive / file I/O backend profile\n' \
+  $'      - name: Run archive / file I/O backend profile\n        continue-on-error: true\n'
 
 ci_pr_workflow="$baseline_repo/.github/workflows/ci-pr.yml"
 python3 - <<'PY' "$ci_pr_workflow"
@@ -631,6 +651,116 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
 fi
 
 grep -q "cache writes best-effort" "$tmp_dir/archive-cache-save.log"
+
+clippy_cache_save_repo="$tmp_dir/clippy-cache-save-repo"
+copy_repo_snapshot "$baseline_repo" "$clippy_cache_save_repo"
+python3 - <<'PY' "$clippy_cache_save_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = '''      - name: Save Cargo Clippy artifacts
+        if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+'''
+replacement = needle.replace("        continue-on-error: true\n", "", 1)
+if needle not in text:
+    raise SystemExit("failed to locate Clippy cache-save policy")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$clippy_cache_save_repo" --profile final >/dev/null 2>"$tmp_dir/clippy-cache-save.log"; then
+  echo "expected blocking Clippy cache-save fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must save Clippy artifacts best-effort" "$tmp_dir/clippy-cache-save.log"
+
+archive_name_repo="$tmp_dir/archive-name-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_name_repo"
+python3 - <<'PY' "$archive_name_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = '''      - name: Upload backend test archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-tests.tar.zst
+          if-no-files-found: error
+          overwrite: true
+'''
+replacement = needle.replace(
+    "backend-test-archive-${{ github.run_id }}",
+    "backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}",
+    1,
+)
+if needle not in text:
+    raise SystemExit("failed to locate PR run-scoped archive upload")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_name_repo" --profile final >/dev/null 2>"$tmp_dir/archive-name.log"; then
+  echo "expected attempt-scoped PR archive artifact fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "artifact must be run-scoped and replace the prior attempt" "$tmp_dir/archive-name.log"
+
+smoke_guard_repo="$tmp_dir/smoke-guard-repo"
+copy_repo_snapshot "$baseline_repo" "$smoke_guard_repo"
+python3 - <<'PY' "$smoke_guard_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = '''      - name: Verify smoke artifact producer
+        env:
+          PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
+        run: test "$PRODUCER_RESULT" = success
+'''
+replacement = needle.replace('run: test "$PRODUCER_RESULT" = success', "run: true", 1)
+if needle not in text:
+    raise SystemExit("failed to locate PR smoke producer-result command")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$smoke_guard_repo" --profile final >/dev/null 2>"$tmp_dir/smoke-guard.log"; then
+  echo "expected inert PR smoke producer guard fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails" "$tmp_dir/smoke-guard.log"
+
+e2e_guard_repo="$tmp_dir/e2e-guard-repo"
+copy_repo_snapshot "$baseline_repo" "$e2e_guard_repo"
+python3 - <<'PY' "$e2e_guard_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = '''      - name: Verify E2E test producer
+        env:
+          PRODUCER_RESULT: ${{ needs.records-overlay-e2e-producer.result }}
+        run: test "$PRODUCER_RESULT" = success
+'''
+replacement = needle.replace('run: test "$PRODUCER_RESULT" = success', "run: true", 1)
+if needle not in text:
+    raise SystemExit("failed to locate E2E producer-result command")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$e2e_guard_repo" --profile final >/dev/null 2>"$tmp_dir/e2e-guard.log"; then
+  echo "expected inert E2E producer guard fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml.jobs.records-overlay-e2e must fail when the E2E test producer fails" "$tmp_dir/e2e-guard.log"
 
 smoke_producer_repo="$tmp_dir/smoke-producer-repo"
 copy_repo_snapshot "$baseline_repo" "$smoke_producer_repo"

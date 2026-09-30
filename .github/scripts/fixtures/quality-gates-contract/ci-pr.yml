@@ -59,6 +59,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       - name: Restore Cargo Clippy artifacts
         id: cargo-clippy-cache
         uses: actions/cache/restore@v5
@@ -86,10 +97,21 @@ jobs:
 
       - name: Save Cargo Clippy artifacts
         if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: target-clippy
           key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -530,9 +552,10 @@ jobs:
       - name: Upload backend test archive
         uses: actions/upload-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-tests.tar.zst
           if-no-files-found: error
+          overwrite: true
 
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
@@ -590,7 +613,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
 
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
@@ -624,7 +647,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
 
       - name: Run stateful SQLite backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
@@ -647,7 +670,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
 
       - name: Run stateful SQLite backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
@@ -712,7 +735,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
 
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"

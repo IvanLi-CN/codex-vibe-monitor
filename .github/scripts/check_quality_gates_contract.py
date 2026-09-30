@@ -144,11 +144,18 @@ def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) ->
     save_with = require_mapping(save.get("with"), f"{workflow_name}.jobs.lint Clippy cache save")
     require(
         save.get("uses") == "actions/cache/save@v5"
+        and save.get("continue-on-error") is True
         and save.get("if")
         == "${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}"
         and save_with.get("path") == "target-clippy"
         and save_with.get("key") == expected_key,
-        f"{workflow_name}.jobs.lint must save Clippy artifacts only after successful source checks",
+        f"{workflow_name}.jobs.lint must save Clippy artifacts best-effort after successful source checks",
+    )
+    registry_save = step_config(lint_job, "Save Cargo registry", f"{workflow_name}.jobs.lint")
+    require(
+        registry_save.get("uses") == "actions/cache/save@v5"
+        and registry_save.get("continue-on-error") is True,
+        f"{workflow_name}.jobs.lint registry cache writes must be best-effort",
     )
 
 
@@ -396,6 +403,7 @@ def require_job_and_steps_fail_closed(
 
 def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, job_id: str) -> None:
     where = f"{workflow_name}.jobs.{job_id}"
+    require_job_and_steps_fail_closed(job, where)
     producer_check = step_config(job, "Verify backend test archive producer", where)
     producer_env = require_mapping(producer_check.get("env"), f"{where} producer result environment")
     require(
@@ -405,11 +413,8 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
     )
     download = uses_step_config(job, "Download backend test archive", "actions/download-artifact@v7", where)
     download_with = require_mapping(download.get("with"), f"{where} archive download")
-    expected_archive_name = "backend-test-archive-${{ github.run_id }}"
-    if workflow_name == "ci-pr.yml":
-        expected_archive_name += "-${{ github.run_attempt }}"
     require(
-        download_with.get("name") == expected_archive_name,
+        download_with.get("name") == "backend-test-archive-${{ github.run_id }}",
         f"{where} must download the backend test archive for its workflow run",
     )
 
@@ -741,7 +746,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         require(
             archive_download.get("uses") == "actions/download-artifact@v7"
             and archive_download.get("with", {}).get("name")
-            == "backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}"
+            == "backend-test-archive-${{ github.run_id }}"
             and archive_download.get("with", {}).get("path") == "${{ runner.temp }}",
             "ci-pr.yml representative-scale job must download the current run's archive",
         )
@@ -782,7 +787,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "ci-pr.yml.jobs.build.steps['Verify smoke artifact producer'].env",
     )
     require(
-        producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}",
+        producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}"
+        and producer_result_step.get("run") == 'test "$PRODUCER_RESULT" = success',
         "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails",
     )
     step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
@@ -800,7 +806,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "ci-pr.yml.jobs.records-overlay-e2e.steps['Verify E2E test producer'].env",
     )
     require(
-        e2e_producer_result_env.get("PRODUCER_RESULT") == "${{ needs.records-overlay-e2e-producer.result }}",
+        e2e_producer_result_env.get("PRODUCER_RESULT") == "${{ needs.records-overlay-e2e-producer.result }}"
+        and e2e_producer_result_step.get("run") == 'test "$PRODUCER_RESULT" = success',
         "ci-pr.yml.jobs.records-overlay-e2e must fail when the E2E test producer fails",
     )
 
@@ -925,8 +932,9 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         archive_upload_with = require_mapping(archive_upload.get("with"), "ci-pr.yml backend archive upload")
         require(
-            archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}",
-            "ci-pr.yml backend archive artifact must be unique to the current run attempt",
+            archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}"
+            and archive_upload_with.get("overwrite") is True,
+            "ci-pr.yml backend archive artifact must be run-scoped and replace the prior attempt",
         )
         require_exact_cargo_cache_reuse(
             archive_job,

@@ -19,7 +19,8 @@ grep -Fq 'summary_representative_scale_acceptance' "$test_file"
 grep -Fq 'nextest_args=(nextest run)' "$runner"
 grep -Fq 'backend-tests-representative-scale:' "$workflow_file"
 grep -Fq '    needs: backend-test-archive' "$workflow_file"
-grep -Fq 'name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}' "$workflow_file"
+grep -Fq 'name: backend-test-archive-${{ github.run_id }}' "$workflow_file"
+grep -Fq 'overwrite: true' "$workflow_file"
 grep -Fq -- '--archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter' "$workflow_file"
 if grep -Fq 'docker run --rm' "$workflow_file"; then
   echo "representative-scale acceptance must replay the backend archive on its matching Ubuntu runner" >&2

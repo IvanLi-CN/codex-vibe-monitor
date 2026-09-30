@@ -96,6 +96,7 @@ jobs:
 
       - name: Save Cargo Clippy artifacts
         if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: target-clippy
@@ -103,6 +104,7 @@ jobs:
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: |
@@ -584,10 +586,11 @@ jobs:
       - name: Upload backend test archive
         uses: actions/upload-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-tests.tar.zst
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -636,7 +639,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
       - name: Run lightweight backend profile
@@ -671,7 +674,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
       - name: Run stateful SQLite backend profile
@@ -706,7 +709,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
       - name: Run stateful SQLite backend profile
@@ -763,7 +766,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
       - name: Run deterministic representative-scale acceptance
@@ -798,7 +801,7 @@ jobs:
       - name: Download backend test archive
         uses: actions/download-artifact@v7
         with:
-          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-test-archive-${{ github.run_id }}
           path: ${{ runner.temp }}
 
       - name: Run archive / file I/O backend profile
