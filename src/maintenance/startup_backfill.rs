@@ -1114,6 +1114,20 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
         return Err(anyhow!("unknown startup backfill task: {task_name}"));
     }
+    if let Some(store) = crate::maintenance_store::global() {
+        let suffix = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+            .expect("validated managed startup backfill task");
+        let managed_key = format!("startup_backfill.{suffix}");
+        if !store
+            .update_control(&managed_key, Some(enabled), None, None)
+            .await
+            .with_context(|| format!("failed to update managed task control for {managed_key}"))?
+        {
+            return Err(anyhow!(
+                "managed startup backfill task not found: {managed_key}"
+            ));
+        }
+    }
     let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
     sqlx::query(
         "INSERT INTO startup_backfill_progress (

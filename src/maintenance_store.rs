@@ -1494,6 +1494,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn updates_canonical_prompt_cache_backfill_control() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        assert!(
+            store
+                .update_control(
+                    "startup_backfill.prompt_cache_conversations_materialization",
+                    Some(true),
+                    None,
+                    None,
+                )
+                .await
+                .expect("enable canonical prompt-cache control")
+        );
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .expect("load canonical prompt-cache control")
+        );
+    }
+
+    #[tokio::test]
     async fn claim_retires_requested_runs_after_a_task_is_disabled() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
