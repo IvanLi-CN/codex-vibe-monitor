@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InvocationTimelineResponse, TimeseriesResponse } from "../lib/api";
-import { fetchInvocationTimeline } from "../lib/api";
+import { fetchInvocationTimeline, releaseInvocationTimelineSnapshot } from "../lib/api";
 
 const DEFAULT_WINDOW_MS = 30 * 60 * 1_000;
 const LIVE_REFRESH_MS = 15_000;
+const LIVE_REFRESH_TIMER_GUARD_MS = 50;
 const INVOCATION_TIMELINE_PAGE_SIZE = 500;
 const INVOCATION_TIMELINE_MAX_PAGES = 1_000;
 
@@ -124,6 +125,12 @@ async function fetchInvocationTimelineSnapshot(options: {
   if (mergedRecords.length !== firstPage.total) {
     throw new Error("Invocation timeline snapshot is incomplete");
   }
+  void releaseInvocationTimelineSnapshot(asOf).catch((error: unknown) => {
+    console.debug(
+      "Invocation timeline snapshot release failed; the server TTL will reclaim it",
+      error instanceof Error ? error.message : String(error),
+    );
+  });
   return {
     ...firstPage,
     asOf,
@@ -164,13 +171,22 @@ export function useInvocationTimeline({
   const requestSequence = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const inFlightRefreshRef = useRef<Promise<void> | null>(null);
-  const pendingRefreshRef = useRef(false);
-  const pendingRefreshTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
-  const refreshRef = useRef<(() => Promise<void>) | null>(null);
+  const pendingAutomaticRefreshRef = useRef(false);
+  const automaticRefreshTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const refreshRef = useRef<((immediate?: boolean) => Promise<void>) | null>(null);
+  const scheduleAutomaticRefreshRef = useRef<(() => void) | null>(null);
+  const lastTraversalStartedAtRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
+  const retryNotBeforeRef = useRef(0);
+  const immediateRefreshRequiredRef = useRef(true);
+  const previousLiveRevisionRef = useRef(liveRevision);
+  const wasLiveRefreshAllowedRef = useRef(liveRefreshAllowed);
   const liveRefreshAllowedRef = useRef(liveRefreshAllowed);
   liveRefreshAllowedRef.current = liveRefreshAllowed;
   const hasDataRef = useRef(false);
-  const autoWindowAdvanceRef = useRef(false);
+  const pendingImmediateRefreshRef = useRef(false);
+  const requestContextRef = useRef({ bounds, closedNaturalDay, enabled, upstreamAccountId });
+  requestContextRef.current = { bounds, closedNaturalDay, enabled, upstreamAccountId };
   const [committedBoundsContextKey, setCommittedBoundsContextKey] = useState(boundsContextKey);
   const previousBoundsContextKey = useRef(boundsContextKey);
   const previousBounds = useRef<InvocationTimelineWindow | null>(bounds);
@@ -184,16 +200,16 @@ export function useInvocationTimeline({
       setCommittedBoundsContextKey(boundsContextKey);
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      inFlightRefreshRef.current = null;
-      pendingRefreshRef.current = false;
-      if (pendingRefreshTimerRef.current != null) {
-        globalThis.clearTimeout(pendingRefreshTimerRef.current);
-        pendingRefreshTimerRef.current = null;
+      pendingAutomaticRefreshRef.current = false;
+      if (automaticRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(automaticRefreshTimerRef.current);
+        automaticRefreshTimerRef.current = null;
       }
       setRequestedWindow(null);
       setCommittedSnapshot(null);
-      autoWindowAdvanceRef.current = false;
+      immediateRefreshRequiredRef.current = true;
+      retryAttemptRef.current = 0;
+      retryNotBeforeRef.current = 0;
       hasDataRef.current = false;
       setError(null);
       setIsLoading(false);
@@ -206,19 +222,19 @@ export function useInvocationTimeline({
       setCommittedBoundsContextKey(boundsContextKey);
       requestSequence.current += 1;
       abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      inFlightRefreshRef.current = null;
-      pendingRefreshRef.current = false;
-      if (pendingRefreshTimerRef.current != null) {
-        globalThis.clearTimeout(pendingRefreshTimerRef.current);
-        pendingRefreshTimerRef.current = null;
+      pendingAutomaticRefreshRef.current = false;
+      if (automaticRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(automaticRefreshTimerRef.current);
+        automaticRefreshTimerRef.current = null;
       }
       previousBounds.current = bounds;
       const initialWindow = resolveInitialWindow(response, closedNaturalDay);
       requestedWindowRef.current = initialWindow;
       setRequestedWindow(initialWindow);
       setCommittedSnapshot(null);
-      autoWindowAdvanceRef.current = false;
+      immediateRefreshRequiredRef.current = true;
+      retryAttemptRef.current = 0;
+      retryNotBeforeRef.current = 0;
       hasDataRef.current = false;
       setError(null);
       setIsLoading(enabled);
@@ -243,8 +259,10 @@ export function useInvocationTimeline({
     );
     if (next.startMs === current.startMs && next.endMs === current.endMs) return;
     requestedWindowRef.current = next;
-    autoWindowAdvanceRef.current = true;
     setRequestedWindow(next);
+    if (followsLiveEnd && hasDataRef.current) {
+      scheduleAutomaticRefreshRef.current?.();
+    }
   }, [bounds, boundsContextKey, closedNaturalDay, enabled, requestedWindow, response]);
 
   useEffect(() => {
@@ -255,27 +273,35 @@ export function useInvocationTimeline({
     setRequestedWindow(next);
   }, [bounds, requestedWindow]);
 
-  const refresh = useCallback(async () => {
-    if (!enabled || !requestedWindow) return;
+  const refresh = useCallback(async (immediate = false) => {
+    const context = requestContextRef.current;
+    const requestedTarget = requestedWindowRef.current;
+    if (!context.enabled || !requestedTarget) return;
     if (inFlightRefreshRef.current) {
-      pendingRefreshRef.current = true;
+      if (immediate) {
+        pendingImmediateRefreshRef.current = true;
+      } else {
+        pendingAutomaticRefreshRef.current = true;
+      }
       return inFlightRefreshRef.current;
     }
     const controller = new AbortController();
     const sequence = requestSequence.current;
-    const requestedTarget = requestedWindow;
     abortControllerRef.current = controller;
+    lastTraversalStartedAtRef.current = Date.now();
     setIsLoading(!hasDataRef.current);
     setIsRefreshing(hasDataRef.current);
     const request = (async () => {
       try {
         const next = await fetchInvocationTimelineSnapshot({
-          naturalDayStart: new Date(bounds?.startMs ?? requestedTarget.startMs).toISOString(),
-          naturalDayEnd: new Date(bounds?.endMs ?? requestedTarget.endMs).toISOString(),
+          naturalDayStart: new Date(
+            context.bounds?.startMs ?? requestedTarget.startMs,
+          ).toISOString(),
+          naturalDayEnd: new Date(context.bounds?.endMs ?? requestedTarget.endMs).toISOString(),
           from: new Date(requestedTarget.startMs).toISOString(),
           to: new Date(requestedTarget.endMs).toISOString(),
-          upstreamAccountId,
-          includeLive: !closedNaturalDay,
+          upstreamAccountId: context.upstreamAccountId,
+          includeLive: !context.closedNaturalDay,
           signal: controller.signal,
         });
         if (sequence !== requestSequence.current) return;
@@ -296,57 +322,138 @@ export function useInvocationTimeline({
           latestTarget.startMs !== requestedTarget.startMs ||
           latestTarget.endMs !== requestedTarget.endMs
         ) {
-          pendingRefreshRef.current = true;
+          pendingAutomaticRefreshRef.current = true;
           return;
         }
         hasDataRef.current = true;
+        retryAttemptRef.current = 0;
+        retryNotBeforeRef.current = 0;
         setCommittedSnapshot({ data: next, window: requestedTarget });
         setError(null);
       } catch (nextError) {
         if (controller.signal.aborted) return;
         if (sequence !== requestSequence.current) return;
         setError(nextError instanceof Error ? nextError.message : String(nextError));
+        retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, 3);
+        const retryBaseMs = 15_000 * 2 ** (retryAttemptRef.current - 1);
+        const retryDelayMs = retryBaseMs * (0.8 + Math.random() * 0.4);
+        retryNotBeforeRef.current = Date.now() + retryDelayMs;
+        pendingAutomaticRefreshRef.current = true;
       } finally {
-        if (sequence === requestSequence.current && abortControllerRef.current === controller) {
+        if (abortControllerRef.current === controller) {
           abortControllerRef.current = null;
           inFlightRefreshRef.current = null;
-          setIsLoading(!hasDataRef.current);
-          setIsRefreshing(false);
-          if (pendingRefreshRef.current) {
-            pendingRefreshRef.current = false;
-            const followUpSequence = sequence;
-            let followUpTimer: ReturnType<typeof globalThis.setTimeout>;
-            followUpTimer = globalThis.setTimeout(() => {
-              if (pendingRefreshTimerRef.current !== followUpTimer) return;
-              pendingRefreshTimerRef.current = null;
-              if (followUpSequence !== requestSequence.current) return;
-              if (!closedNaturalDay && !liveRefreshAllowedRef.current) {
-                pendingRefreshRef.current = false;
-                return;
-              }
-              void refreshRef.current?.();
-            }, 0);
-            pendingRefreshTimerRef.current = followUpTimer;
+          if (pendingImmediateRefreshRef.current && requestContextRef.current.enabled) {
+            pendingImmediateRefreshRef.current = false;
+            pendingAutomaticRefreshRef.current = false;
+            void refreshRef.current?.(true);
+          } else if (sequence === requestSequence.current) {
+            setIsLoading(!hasDataRef.current);
+            setIsRefreshing(false);
+            if (pendingAutomaticRefreshRef.current) {
+              scheduleAutomaticRefreshRef.current?.();
+            }
+          } else if (!requestContextRef.current.enabled) {
+            pendingImmediateRefreshRef.current = false;
+            pendingAutomaticRefreshRef.current = false;
+            setIsLoading(false);
+            setIsRefreshing(false);
           }
         }
       }
     })();
     inFlightRefreshRef.current = request;
     return request;
-  }, [bounds, closedNaturalDay, enabled, requestedWindow, upstreamAccountId]);
+  }, []);
 
   refreshRef.current = refresh;
 
+  const scheduleAutomaticRefresh = useCallback(() => {
+    const context = requestContextRef.current;
+    if (!context.enabled) return;
+    const retryPending = retryAttemptRef.current > 0;
+    if (context.closedNaturalDay && retryAttemptRef.current === 0) return;
+    if (!context.closedNaturalDay && !liveRefreshAllowedRef.current && !retryPending) return;
+    pendingAutomaticRefreshRef.current = true;
+    if (inFlightRefreshRef.current || automaticRefreshTimerRef.current != null) return;
+
+    const now = Date.now();
+    const intervalDueAt =
+      lastTraversalStartedAtRef.current == null
+        ? now
+        : lastTraversalStartedAtRef.current + LIVE_REFRESH_MS + LIVE_REFRESH_TIMER_GUARD_MS;
+    const nextAttemptAt = Math.max(intervalDueAt, retryNotBeforeRef.current);
+    const delayMs = Math.max(0, nextAttemptAt - now);
+    const timer = globalThis.setTimeout(() => {
+      if (automaticRefreshTimerRef.current !== timer) return;
+      automaticRefreshTimerRef.current = null;
+      if (!pendingAutomaticRefreshRef.current) return;
+      const currentContext = requestContextRef.current;
+      if (!currentContext.enabled) return;
+      const retryIsPending = retryAttemptRef.current > 0;
+      if (currentContext.closedNaturalDay && retryAttemptRef.current === 0) return;
+      if (!currentContext.closedNaturalDay && !liveRefreshAllowedRef.current && !retryIsPending)
+        return;
+      if (inFlightRefreshRef.current) return;
+      pendingAutomaticRefreshRef.current = false;
+      void refreshRef.current?.();
+    }, delayMs);
+    automaticRefreshTimerRef.current = timer;
+  }, []);
+
+  scheduleAutomaticRefreshRef.current = scheduleAutomaticRefresh;
+
+  const forceRefresh = useCallback(() => {
+    pendingAutomaticRefreshRef.current = false;
+    if (automaticRefreshTimerRef.current != null) {
+      globalThis.clearTimeout(automaticRefreshTimerRef.current);
+      automaticRefreshTimerRef.current = null;
+    }
+    return refreshRef.current?.(true) ?? Promise.resolve();
+  }, []);
+
+  useEffect(() => {
+    if (!enabled || !requestedWindow) return;
+    if (committedBoundsContextKey !== boundsContextKey) return;
+    if (!immediateRefreshRequiredRef.current) return;
+    immediateRefreshRequiredRef.current = false;
+    void forceRefresh();
+  }, [boundsContextKey, committedBoundsContextKey, enabled, forceRefresh, requestedWindow]);
+
+  useEffect(() => {
+    const revisionChanged = previousLiveRevisionRef.current !== liveRevision;
+    const reconnected = !wasLiveRefreshAllowedRef.current && liveRefreshAllowed;
+    previousLiveRevisionRef.current = liveRevision;
+    wasLiveRefreshAllowedRef.current = liveRefreshAllowed;
+    if (!enabled || closedNaturalDay || !liveRefreshAllowed) return;
+    if (committedBoundsContextKey !== boundsContextKey) return;
+    if (revisionChanged || reconnected) scheduleAutomaticRefresh();
+  }, [
+    boundsContextKey,
+    closedNaturalDay,
+    committedBoundsContextKey,
+    enabled,
+    liveRefreshAllowed,
+    liveRevision,
+    scheduleAutomaticRefresh,
+  ]);
+
+  useEffect(() => {
+    if (!enabled || closedNaturalDay || !liveRefreshAllowed) return;
+    const timer = globalThis.setInterval(scheduleAutomaticRefresh, LIVE_REFRESH_MS);
+    return () => globalThis.clearInterval(timer);
+  }, [closedNaturalDay, enabled, liveRefreshAllowed, scheduleAutomaticRefresh]);
+
   useEffect(() => {
     if (enabled) return;
+    immediateRefreshRequiredRef.current = true;
     requestSequence.current += 1;
     abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    inFlightRefreshRef.current = null;
-    pendingRefreshRef.current = false;
-    if (pendingRefreshTimerRef.current != null) {
-      globalThis.clearTimeout(pendingRefreshTimerRef.current);
-      pendingRefreshTimerRef.current = null;
+    pendingAutomaticRefreshRef.current = false;
+    pendingImmediateRefreshRef.current = false;
+    if (automaticRefreshTimerRef.current != null) {
+      globalThis.clearTimeout(automaticRefreshTimerRef.current);
+      automaticRefreshTimerRef.current = null;
     }
     setIsLoading(false);
     setIsRefreshing(false);
@@ -359,49 +466,14 @@ export function useInvocationTimeline({
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       inFlightRefreshRef.current = null;
-      pendingRefreshRef.current = false;
-      if (pendingRefreshTimerRef.current != null) {
-        globalThis.clearTimeout(pendingRefreshTimerRef.current);
-        pendingRefreshTimerRef.current = null;
+      pendingAutomaticRefreshRef.current = false;
+      if (automaticRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(automaticRefreshTimerRef.current);
+        automaticRefreshTimerRef.current = null;
       }
     },
     [],
   );
-
-  // liveRevision is an explicit SSE-driven refresh trigger for the stable callback.
-  const liveRefreshRevision = closedNaturalDay ? undefined : liveRevision;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: liveRefreshRevision intentionally retriggers the fetch.
-  useEffect(() => {
-    if (!enabled) return;
-    if (committedBoundsContextKey !== boundsContextKey) return;
-    if (autoWindowAdvanceRef.current) {
-      autoWindowAdvanceRef.current = false;
-      if (
-        requestedWindow &&
-        requestedWindowRef.current &&
-        (requestedWindow.startMs !== requestedWindowRef.current.startMs ||
-          requestedWindow.endMs !== requestedWindowRef.current.endMs)
-      ) {
-        return;
-      }
-    }
-    if (!closedNaturalDay && !liveRefreshAllowed && hasDataRef.current) return;
-    void refresh();
-  }, [
-    boundsContextKey,
-    closedNaturalDay,
-    committedBoundsContextKey,
-    enabled,
-    liveRefreshAllowed,
-    refresh,
-    liveRefreshRevision,
-  ]);
-
-  useEffect(() => {
-    if (!enabled || closedNaturalDay || !liveRefreshAllowed) return;
-    const timer = globalThis.setInterval(() => void refresh(), LIVE_REFRESH_MS);
-    return () => globalThis.clearInterval(timer);
-  }, [closedNaturalDay, enabled, liveRefreshAllowed, refresh]);
 
   const updateWindow = useCallback(
     (next: InvocationTimelineWindow) => {
@@ -413,6 +485,16 @@ export function useInvocationTimeline({
       ) {
         return;
       }
+      requestSequence.current += 1;
+      abortControllerRef.current?.abort();
+      pendingAutomaticRefreshRef.current = false;
+      if (automaticRefreshTimerRef.current != null) {
+        globalThis.clearTimeout(automaticRefreshTimerRef.current);
+        automaticRefreshTimerRef.current = null;
+      }
+      retryAttemptRef.current = 0;
+      retryNotBeforeRef.current = 0;
+      immediateRefreshRequiredRef.current = true;
       requestedWindowRef.current = normalized;
       setRequestedWindow(normalized);
       setCommittedSnapshot(null);
@@ -452,6 +534,6 @@ export function useInvocationTimeline({
       : null,
     bounds,
     setWindow: updateWindow,
-    refresh,
+    refresh: forceRefresh,
   };
 }

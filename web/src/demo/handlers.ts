@@ -3674,7 +3674,21 @@ function demoInvocationTimeline(url: URL) {
   const rangeStart = Number.isFinite(requestedStart)
     ? requestedStart
     : rangeEnd - 24 * 60 * 60 * 1_000;
-  const candidates = filterDemoInvocations(url).filter((record) => {
+  const capacityFixture = demoSearchParamsFromLocation().get("demoTimelineCapacity") === "1";
+  const sourceRecords = filterDemoInvocations(url);
+  const template = sourceRecords[0] ?? invocations()[0];
+  const timelineRecords =
+    capacityFixture && template
+      ? Array.from({ length: 550 }, (_, index) => ({
+          ...template,
+          id: 900_000 + index,
+          invokeId: `demo-timeline-capacity-${index}`,
+          occurredAt: new Date(rangeEnd - 15 * 60_000 + index).toISOString(),
+          tTotalMs: 120_000,
+          status: index % 23 === 0 ? "running" : template.status,
+        }))
+      : sourceRecords;
+  const candidates = timelineRecords.filter((record) => {
     const startMs = Date.parse(record.occurredAt);
     if (!Number.isFinite(startMs) || startMs >= rangeEnd) return false;
     if (record.tTotalMs == null) return startMs >= rangeStart;
@@ -3684,7 +3698,9 @@ function demoInvocationTimeline(url: URL) {
     2_000,
     Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "500", 10) || 500),
   );
-  const asOf = url.searchParams.get("asOf") ?? `demo:${rangeStart}:${rangeEnd}`;
+  const revision =
+    typeof window === "undefined" ? 0 : (window.__CVM_DEMO_TIMESERIES_REVISION__ ?? 0);
+  const asOf = url.searchParams.get("asOf") ?? `demo:${rangeStart}:${rangeEnd}:${revision}`;
   let offset = 0;
   const rawCursor = url.searchParams.get("cursor");
   if (rawCursor) {
@@ -3763,6 +3779,8 @@ export async function handleDemoRequest(request: Request) {
     return json({
       range: url.searchParams.get("range") ?? "today",
       snapshotId: 901,
+      liveRevision:
+        typeof window === "undefined" ? 0 : (window.__CVM_DEMO_TIMESERIES_REVISION__ ?? 0),
       rangeStart: "2026-07-10T00:00:00Z",
       rangeEnd: demoNow(),
       rateWindow: {
@@ -3809,7 +3827,12 @@ export async function handleDemoRequest(request: Request) {
     });
   }
   if (pathname === "/api/stats/timeseries") return json(timeseries(url.searchParams.get("range")));
-  if (pathname === "/api/stats/invocation-timeline") return json(demoInvocationTimeline(url));
+  if (pathname === "/api/stats/invocation-timeline") {
+    return json(demoInvocationTimeline(url));
+  }
+  if (request.method === "DELETE" && pathname.startsWith("/api/stats/invocation-timeline/")) {
+    return new HttpResponse(null, { status: 204 });
+  }
   if (pathname === "/api/stats/parallel-work")
     return json(parallelWork(), { headers: { ETag: "demo-parallel-work" } });
   if (pathname === "/api/stats/errors") {

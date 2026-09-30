@@ -7,6 +7,7 @@ import {
   resolveInvocationTimelineLayout,
   resolveInvocationTimelineScrollTop,
   resolveInvocationTimelineTooltipPosition,
+  resolveVisibleInvocationLaneRange,
   shouldAdvanceInvocationTimelineBars,
   shouldShowTimelineUnavailable,
 } from "./DashboardInvocationTimeline";
@@ -41,6 +42,23 @@ describe("assignInvocationTimelineLanes", () => {
 
     expect(lanes.map((item) => item.lane)).toEqual([0, 1, 0]);
     expect(lanes[2].endMs).toBeGreaterThan(lanes[2].startMs);
+  });
+
+  it("assigns dense concurrent calls without losing the lowest available lane", () => {
+    const startMs = Date.parse("2026-03-26T12:00:00.000Z");
+    const records = Array.from({ length: 550 }, (_, index) =>
+      record(`invoke-${index}`, new Date(startMs + index).toISOString(), 120_000),
+    );
+    records.push(record("invoke-after-spike", new Date(startMs + 121_000).toISOString(), 1_000));
+
+    const lanes = assignInvocationTimelineLanes(
+      records,
+      new Date(startMs + 122_000).toISOString(),
+      startMs + 122_000,
+    );
+
+    expect(getInvocationTimelineLaneCount(lanes)).toBe(550);
+    expect(lanes.at(-1)?.lane).toBe(0);
   });
 
   it("extends an in-flight bar to the current clock", () => {
@@ -169,34 +187,35 @@ describe("resolveInvocationTimelineLayout", () => {
     expect(layout.lanePlotHeight).toBe(292);
   });
 
-  it("adapts lane height and uses one-pixel gaps only above two pixels", () => {
+  it("adapts lane height within the readable range and keeps one-pixel gaps", () => {
     expect(resolveInvocationTimelineLayout(20, false).laneHeight).toBe(13);
     expect(resolveInvocationTimelineLayout(20, false).laneGap).toBe(1);
-    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(2);
-    expect(resolveInvocationTimelineLayout(100, true).laneGap).toBe(0);
-    expect(resolveInvocationTimelineLayout(300, false).laneHeight).toBe(1);
-    expect(resolveInvocationTimelineLayout(300, false).laneGap).toBe(0);
+    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(8);
+    expect(resolveInvocationTimelineLayout(100, true).laneGap).toBe(1);
+    expect(resolveInvocationTimelineLayout(300, false).laneHeight).toBe(8);
+    expect(resolveInvocationTimelineLayout(300, false).laneGap).toBe(1);
     expect(resolveInvocationTimelineLayout(2, true).laneHeight).toBe(16);
     expect(resolveInvocationTimelineLayout(2, true).chartHeightPx).toBe(336);
   });
 
-  it("compresses 190 lanes into the fixed chart viewport before scrolling", () => {
+  it("keeps 190 lanes readable and scrolls inside the fixed chart viewport", () => {
     const layout = resolveInvocationTimelineLayout(190, false);
 
     expect(layout.visibleLaneCount).toBe(190);
     expect(layout.chartHeightPx).toBe(320);
     expect(layout.laneAreaHeightPx).toBe(292);
-    expect(layout.laneHeight).toBe(1);
-    expect(layout.laneGap).toBe(0);
-    expect(layout.lanePlotHeight).toBe(layout.laneAreaHeightPx);
+    expect(layout.laneHeight).toBe(8);
+    expect(layout.laneGap).toBe(1);
+    expect(layout.lanePlotHeight).toBeGreaterThan(layout.laneAreaHeightPx);
+    expect(layout.laneContentHeight).toBe(190 * 8 + 189);
   });
 
-  it("uses internal scrolling only after one-pixel lanes still exceed the plot", () => {
+  it("preserves the minimum lane height and gap while dense rows overflow", () => {
     const layout = resolveInvocationTimelineLayout(360, false);
 
     expect(layout.chartHeightPx).toBe(320);
-    expect(layout.laneHeight).toBe(1);
-    expect(layout.laneGap).toBe(0);
+    expect(layout.laneHeight).toBe(8);
+    expect(layout.laneGap).toBe(1);
     expect(layout.lanePlotHeight).toBeGreaterThan(layout.laneAreaHeightPx);
   });
 });
@@ -236,5 +255,33 @@ describe("resolveInvocationTimelineScrollTop", () => {
     expect(resolveInvocationTimelineScrollTop(false, 48, 120)).toBe(120);
     expect(resolveInvocationTimelineScrollTop(true, 48, 120)).toBe(48);
     expect(resolveInvocationTimelineScrollTop(true, 180, 120)).toBe(120);
+  });
+});
+
+describe("resolveVisibleInvocationLaneRange", () => {
+  it("renders only the viewport and overscan while preserving both scroll boundaries", () => {
+    const layout = resolveInvocationTimelineLayout(550, false);
+    const bottom = resolveVisibleInvocationLaneRange(
+      550,
+      layout.laneStep,
+      layout.lanePlotHeight,
+      layout.laneAreaHeightPx,
+      layout.lanePlotHeight - layout.laneAreaHeightPx,
+    );
+    const top = resolveVisibleInvocationLaneRange(
+      550,
+      layout.laneStep,
+      layout.lanePlotHeight,
+      layout.laneAreaHeightPx,
+      0,
+    );
+
+    const visibleRows = Math.ceil(layout.laneAreaHeightPx / layout.laneStep);
+    expect(bottom.firstLane).toBe(0);
+    expect(bottom.lastLane).toBeGreaterThan(visibleRows - 1);
+    expect(bottom.lastLane).toBeLessThan(visibleRows + 2);
+    expect(top.firstLane).toBeGreaterThan(250);
+    expect(top.lastLane).toBe(549);
+    expect(top.lastLane - top.firstLane + 1).toBeLessThan(visibleRows + 4);
   });
 });

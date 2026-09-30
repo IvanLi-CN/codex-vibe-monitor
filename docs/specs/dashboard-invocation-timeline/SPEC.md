@@ -27,7 +27,7 @@
 
 ### REQ-DIT-002
 
-- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, and adapt each lane height between 1px and 16px within the fixed chart frame (336px compact, 320px desktop). Adjacent lanes MUST have no gap when lane height is 1px or 2px, and exactly 1 CSS pixel of gap when lane height exceeds 2px.
+- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, and adapt each lane height between 8px and 16px within the fixed chart frame (336px compact, 320px desktop). Adjacent lanes MUST always have exactly 1 CSS pixel of gap. When concurrency exceeds the available frame, lane height MUST stop shrinking and the lane body MUST scroll vertically.
 - The chart frame MUST remain fixed-height at every concurrency level. High concurrency MAY overflow only inside the invocation lane body, which MUST provide vertical scrolling; the calls axis MUST stay pinned to the frame and synchronize its vertical position with the lane body. The first overflowing snapshot MUST start at the bottom; refreshes of the same view MUST preserve the user's scroll position, clamped to the new content bounds. The chart MUST NOT introduce horizontal scrolling.
 - At high concurrency, calls-axis gridlines MUST follow the visible axis tick values rather than drawing one gridline per virtual lane.
 - Pointer hover inside the plot MUST show a floating tooltip anchored within the chart with the snapped time and parallel, running, and queued counts. The tooltip MUST not participate in document flow or change chart height, MUST remain within the chart bounds near its edges, and MUST disappear when the pointer leaves the chart. Hover details MUST NOT be rendered as an additional row below the chart.
@@ -50,11 +50,13 @@
 - A page-size limit MUST bound each response, but the limit MUST NOT cause the target chart to switch to the old aggregate chart or silently omit calls.
 - The snapshot MUST bind both invocation rows and upstream-attempt fallback rows to watermarks captured on the first page. The server MUST keep unexpired cursors valid; when the bounded snapshot cache is full, a new first-page request MUST fail explicitly rather than evicting an existing cursor.
 - Snapshot materialization MUST use a bounded durable representation. If its row or serialized-payload budget is exhausted, the endpoint MUST fail explicitly inside the new chart surface and roll back the partial snapshot; it MUST NOT silently truncate, sample, or fall back to the legacy aggregate chart.
+- A successfully materialized snapshot MUST remain pageable until the client releases it or its 30-minute TTL expires. After the client has received and merged every page of one immutable snapshot, it MUST send `DELETE /api/stats/invocation-timeline/{asOf}`. The release endpoint MUST return `204` for active, already released, and expired tokens. It MUST immediately return the token's process-local row/byte reservation and enqueue durable-row deletion for the existing pressure-gated P2 background cleaner; it MUST NOT perform a SQLite write in the HTTP request path. A bounded release queue MAY fall back to the cleaner's periodic token scan when full. Each admitted cleanup pass MUST reserve at least 16 of its maximum 64 candidates for the periodic database scan even while the explicit-release queue is saturated. An incomplete or failed traversal MUST NOT release its cursor and MUST remain recoverable until TTL expiry.
 
 ### REQ-DIT-005
 
 - The system MUST update today's live bars from the authoritative activity revision or a refresh after reconnect, pause local live extension while disconnected, and use HTTP-only data for yesterday.
-- Live revisions MUST be coalesced while a snapshot request is in flight. A completed request MUST be followed by at most one refresh for the newest revision observed during that request.
+- SSE revisions and the 15-second poll MUST share one per-timeline refresh scheduler. It MUST allow at most one complete page traversal to start in any rolling 15-second interval and at most one traversal in flight. Revisions observed during a traversal MUST coalesce into one dirty signal; after the minimum interval, at most one follow-up traversal MUST read the newest state.
+- Failed automatic refreshes MUST retain the last committed snapshot and retry with exponential delays of 15, 30, then 60 seconds, capped at 60 seconds with ±20% jitter. A successful traversal MUST reset the retry delay. A user-requested zoom/pan or natural-day/account context change MUST bypass the automatic throttle and retry delay and load the requested scope immediately.
 - A page traversal MUST use one immutable `asOf` snapshot. New records observed after that point MUST appear in the next refresh, not be mixed into later pages of the current traversal.
 - When a live update advances the followed viewport, the system MUST keep rendering the last committed timeline snapshot together with the viewport for which it was fetched until the replacement snapshot succeeds. This refresh MUST NOT present the initial-loading state or temporarily remove the chart.
 - If that live refresh fails, the last committed snapshot and its matching viewport MUST remain visible, frozen, and marked stale or unavailable. A user-requested zoom/pan or a natural-day/account context change MUST clear the prior snapshot and show loading until data for the requested window is committed.
@@ -74,19 +76,19 @@
 
 - Method: Rust timeline overlap tests and the timeline endpoint contract test fixture.
 - covers: `REQ-DIT-001`, `REQ-DIT-004`
-- Pass condition: cross-midnight records overlap correctly for a short viewport inside a distinct natural-day scope, persisted and live records older than the preceding-day bound are excluded, retries are represented once, page traversal covers the full result at one `asOf`, and no page silently truncates the result.
+- Pass condition: cross-midnight records overlap correctly for a short viewport inside a distinct natural-day scope, persisted and live records older than the preceding-day bound are excluded, retries are represented once, page traversal covers the full result at one `asOf`, completed traversal release returns `204` and frees active budget immediately, duplicate release is harmless, incomplete traversal remains valid until TTL, durable-row cleanup is deferred to the pressure-gated P2 cleaner, a saturated release queue does not starve database scanning, and no page silently truncates the result.
 
 ### VER-DIT-002
 
 - Method: frontend lane and API normalization unit tests.
 - covers: `REQ-DIT-002`, `REQ-DIT-003`, `REQ-DIT-004`
-- Pass condition: lowest idle lane, zero-duration visibility, in-flight extension, lane height and conditional gap bounds, fixed frame with internal vertical overflow, no horizontal overflow, synchronized axis scrolling, in-chart hover tooltip behavior, account filtering, valid TTFT-only rendering, page merging, and duplicate invocation folding remain stable.
+- Pass condition: lowest idle lane, zero-duration visibility, in-flight extension, lane height stays within 8–16px with a fixed 1px gap at every concurrency level, fixed frame with internal vertical overflow, no horizontal overflow, synchronized axis scrolling, in-chart hover tooltip behavior, account filtering, valid TTFT-only rendering, page merging, and duplicate invocation folding remain stable.
 
 ### VER-DIT-003
 
 - Method: responsive Storybook evidence and production-build dashboard E2E rendering checks.
 - covers: `REQ-DIT-005`, `REQ-DIT-006`
-- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a delayed live-window refresh keeps the last committed bars and matching viewport visible until replacement; a failed refresh freezes that last good timeline, while a user-requested window change shows loading for the new window.
+- Pass condition: desktop and mobile views remain readable, zoom/pan controls work, the production dashboard visibly loads invocation bars without a legacy Recharts node in the target area, unavailable/over-limit states do not mount the aggregate chart, and a delayed live-window refresh keeps the last committed bars and matching viewport visible until replacement; SSE and polling start no more than one traversal per rolling 15 seconds; failures retain the last good timeline with bounded exponential retry, while a user-requested window change shows loading for the new window and bypasses automatic retry delays.
 
 ## Related ADRs
 

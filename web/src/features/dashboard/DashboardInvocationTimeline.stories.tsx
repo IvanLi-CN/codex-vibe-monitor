@@ -130,6 +130,26 @@ async function hoverTimelineAt(canvasElement: HTMLElement, xRatio: number, yRati
   return { plot, tooltip };
 }
 
+function expectDenseLaneGeometry(laneScroll: HTMLElement, totalCalls: number): void {
+  const bars = Array.from(laneScroll.querySelectorAll<HTMLElement>("[data-call-value]"))
+    .map((bar) => {
+      const rect = bar.getBoundingClientRect();
+      return { top: rect.top, height: rect.height };
+    })
+    .sort((left, right) => left.top - right.top);
+
+  expect(laneScroll.scrollHeight).toBeGreaterThan(laneScroll.clientHeight);
+  expect(bars.length).toBeGreaterThan(0);
+  expect(bars.length).toBeLessThan(totalCalls);
+  for (const bar of bars) {
+    expect(bar.height).toBeGreaterThanOrEqual(8);
+    expect(bar.height).toBeLessThanOrEqual(16);
+  }
+  for (let index = 1; index < bars.length; index += 1) {
+    expect(bars[index]!.top - bars[index - 1]!.top - bars[index - 1]!.height).toBe(1);
+  }
+}
+
 function RefreshableOverflowTimeline() {
   const [timelineData, setTimelineData] = useState(overflowRecords);
   return (
@@ -281,9 +301,14 @@ export const LiveTraffic: Story = {
     }
     const controls = canvasElement.querySelectorAll("button.icon-button");
     expect(controls).toHaveLength(4);
-    const controlsAreCentered = Array.from(controls).every((control) => {
-      const icon = control.querySelector("[data-icon]");
-      if (!(icon instanceof HTMLElement)) return false;
+    const controlAlignmentIssues: string[] = [];
+    for (const control of controls) {
+      const icon = control.querySelector("svg, [data-icon]");
+      const label = control.getAttribute("aria-label") ?? "unlabeled control";
+      if (!icon) {
+        controlAlignmentIssues.push(`${label}: missing icon`);
+        continue;
+      }
       const buttonRect = control.getBoundingClientRect();
       const iconRect = icon.getBoundingClientRect();
       const buttonCenter = {
@@ -294,11 +319,17 @@ export const LiveTraffic: Story = {
         x: iconRect.left + iconRect.width / 2,
         y: iconRect.top + iconRect.height / 2,
       };
-      return (
-        Math.abs(buttonCenter.x - iconCenter.x) <= 1 && Math.abs(buttonCenter.y - iconCenter.y) <= 1
-      );
-    });
-    expect(controlsAreCentered).toBe(true);
+      const offset = {
+        x: buttonCenter.x - iconCenter.x,
+        y: buttonCenter.y - iconCenter.y,
+      };
+      if (Math.abs(offset.x) > 1 || Math.abs(offset.y) > 1) {
+        controlAlignmentIssues.push(
+          `${label}: icon center offset (${offset.x.toFixed(2)}, ${offset.y.toFixed(2)})`,
+        );
+      }
+    }
+    expect(controlAlignmentIssues).toEqual([]);
     const firstBarRect = bars[0]?.getBoundingClientRect();
     const secondBarRect = bars[1]?.getBoundingClientRect();
     if (!firstBarRect || !secondBarRect) {
@@ -477,10 +508,11 @@ export const DenseConcurrency190: Story = {
     const expectedChartHeight = window.matchMedia("(max-width: 768px)").matches ? 336 : 320;
     expect(frameElement.getBoundingClientRect().height).toBe(expectedChartHeight);
     expect(laneScrollElement.clientHeight).toBe(expectedChartHeight - 28);
-    expect(laneScrollElement.scrollHeight).toBe(laneScrollElement.clientHeight);
-    const bars = laneScrollElement.querySelectorAll("[data-call-value]");
-    expect(bars).toHaveLength(190);
-    expect(Array.from(bars).every((bar) => bar.getBoundingClientRect().height === 1)).toBe(true);
+    expect(frameElement.dataset.totalLanes).toBe("190");
+    expect(laneScrollElement.scrollTop).toBe(
+      laneScrollElement.scrollHeight - laneScrollElement.clientHeight,
+    );
+    expectDenseLaneGeometry(laneScrollElement, 190);
     expect(laneScrollElement.querySelectorAll("[data-call-axis-grid]").length).toBeLessThanOrEqual(
       5,
     );
@@ -511,6 +543,7 @@ export const OverflowConcurrency360: Story = {
     expect(laneScroll.scrollWidth).toBeLessThanOrEqual(laneScroll.clientWidth);
     expect(laneScroll.querySelectorAll("[data-call-axis-grid]").length).toBeLessThanOrEqual(5);
     expect(axisScroll.scrollTop).toBe(laneScroll.scrollTop);
+    expectDenseLaneGeometry(laneScroll, 360);
   },
 };
 
@@ -560,6 +593,7 @@ export const MobileOverflowConcurrency360: Story = {
     expect(frame.scrollWidth).toBeLessThanOrEqual(frame.clientWidth);
     expect(laneScroll.scrollWidth).toBeLessThanOrEqual(laneScroll.clientWidth);
     expect(axisScroll.scrollTop).toBe(laneScroll.scrollTop);
+    expectDenseLaneGeometry(laneScroll, 360);
 
     const { plot, tooltip } = await hoverTimelineAt(canvasElement, 0.669, 0.45);
     const plotRect = plot.getBoundingClientRect();

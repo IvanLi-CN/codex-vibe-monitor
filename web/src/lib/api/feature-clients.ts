@@ -133,6 +133,7 @@ export {
   preflightApiKeyGroupMigration,
   refreshForwardProxySubscriptions,
   refreshUpstreamAccountModels,
+  releaseInvocationTimelineSnapshot,
   reloginUpstreamAccount,
   resetPromptCacheConversationAffinity,
   resetUpstreamAccountModelRouting,

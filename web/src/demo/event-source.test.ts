@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DemoRealtimePayload } from "./events";
 
 const mocks = vi.hoisted(() => ({
   resolveDemoTopicPayload: vi.fn(),
@@ -61,6 +62,37 @@ describe("DemoTopicEventSource", () => {
     expect(events).toEqual(["open", "error"]);
     expect(source.readyState).toBe(DemoTopicEventSource.CLOSED);
     expect(mocks.subscribeToDemoRealtime).not.toHaveBeenCalled();
+  });
+
+  it("limits empty-record revisions to the dashboard activity topic", async () => {
+    vi.useFakeTimers();
+    mocks.resolveDemoTopicPayload.mockResolvedValue({ liveRevision: 1 });
+    let publishRealtime: ((payload: DemoRealtimePayload) => void) | undefined;
+    mocks.subscribeToDemoRealtime.mockImplementation((listener) => {
+      publishRealtime = listener;
+      return vi.fn();
+    });
+    const topics = [
+      { topic: "dashboard.activity.current" },
+      { topic: "stats.timeseries.open-window" },
+    ];
+    const encodedTopics = btoa(JSON.stringify(topics));
+    const source = new DemoTopicEventSource(`/events?topics=${encodedTopics}`);
+    const liveTopics: string[] = [];
+    source.addEventListener("message", (event) => {
+      const envelope = JSON.parse((event as MessageEvent<string>).data) as {
+        type: string;
+        topic: { topic: string };
+      };
+      if (envelope.type === "live") liveTopics.push(envelope.topic.topic);
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    publishRealtime?.({ type: "records", records: [] });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(liveTopics).toEqual(["dashboard.activity.current"]);
+    source.close();
   });
 
   it("matches the topic SSE endpoint beneath a deploy base", () => {
