@@ -780,12 +780,28 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
 impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(&self) -> Result<Option<(i64, String, String)>> {
         let mut transaction = self.pool.begin().await?;
+        let finished_at = format_utc_iso_millis(Utc::now());
+        sqlx::query(
+            "UPDATE managed_task_runs
+             SET status='failed', finished_at=?, duration_ms=0,
+                 summary='任务已停用，未执行', error_detail=NULL
+             WHERE status='requested'
+               AND task_key IN (
+                   SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
+               )",
+        )
+        .bind(&finished_at)
+        .execute(&mut *transaction)
+        .await?;
         let claimed = sqlx::query_as::<_, (i64, String, String)>(
             "UPDATE managed_task_runs
              SET status='running'
              WHERE id = (
                  SELECT id FROM managed_task_runs
                  WHERE status='requested'
+                   AND task_key IN (
+                       SELECT task_key FROM managed_tasks WHERE enabled!=0 OR is_manual!=0
+                   )
                  ORDER BY id
                  LIMIT 1
              )
@@ -835,27 +851,30 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn request_run(&self, task_key: &str) -> Result<i64> {
-        let Some((enabled, is_manual)) = sqlx::query_as::<_, (bool, bool)>(
-            "SELECT enabled,is_manual FROM managed_tasks WHERE task_key=?",
+        let exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM managed_tasks WHERE task_key=?")
+                .bind(task_key)
+                .fetch_optional(&self.pool)
+                .await?;
+        if exists.is_none() {
+            return Err(anyhow!("managed task not found"));
+        }
+        let result = sqlx::query_scalar(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,error_detail)
+             SELECT task_key,'manual',?,'requested','手动运行请求',NULL
+             FROM managed_tasks
+             WHERE task_key=? AND (enabled!=0 OR is_manual!=0)
+             RETURNING id",
         )
+        .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
         .fetch_optional(&self.pool)
-        .await?
-        else {
-            return Err(anyhow!("managed task not found"));
+        .await;
+        let result = match result {
+            Ok(Some(run_id)) => Ok(run_id),
+            Ok(None) => Err(anyhow!("task is disabled; enable it before run-now")),
+            Err(error) => Err(error.into()),
         };
-        if !enabled && !is_manual {
-            return Err(anyhow!("task is disabled; enable it before run-now"));
-        }
-        let result = sqlx::query_scalar("INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,error_detail) VALUES (?,?,?,?,?,?) RETURNING id")
-            .bind(task_key)
-            .bind("manual")
-            .bind(format_utc_iso_millis(Utc::now()))
-            .bind("requested")
-            .bind("手动运行请求")
-            .bind(Option::<String>::None)
-            .fetch_one(&self.pool)
-            .await;
         result.map_err(|error| {
             if error
                 .to_string()
@@ -1472,6 +1491,45 @@ mod tests {
             .await
             .expect("manual task should allow run-now while disabled");
         assert!(run_id > 0);
+    }
+
+    #[tokio::test]
+    async fn claim_retires_requested_runs_after_a_task_is_disabled() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        assert!(
+            store
+                .set_enabled("startup_backfill.proxy_usage", true)
+                .await
+                .expect("enable scheduled task")
+        );
+        store
+            .request_run("startup_backfill.proxy_usage")
+            .await
+            .expect("queue enabled task run");
+        assert!(
+            store
+                .set_enabled("startup_backfill.proxy_usage", false)
+                .await
+                .expect("disable scheduled task")
+        );
+
+        assert!(store.claim_requested_run().await.unwrap().is_none());
+        let row = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status,summary FROM managed_task_runs WHERE task_key='startup_backfill.proxy_usage'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load retired requested run");
+        assert_eq!(row.0, "failed");
+        assert_eq!(row.1.as_deref(), Some("任务已停用，未执行"));
     }
 
     #[tokio::test]

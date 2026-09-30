@@ -995,17 +995,26 @@ pub(crate) async fn load_startup_backfill_progress(
         return Ok(progress.into());
     }
 
-    let enabled = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
-        .map(|suffix| format!("startup_backfill.{suffix}"))
-        .map(|task_key| async move {
+    let managed_tasks_present = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+        != 0;
+    let enabled = match (
+        managed_tasks_present,
+        crate::maintenance_store::managed_startup_backfill_suffix(task_name),
+    ) {
+        (false, Some(_)) => true,
+        (true, Some(suffix)) => {
             sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
-                .bind(task_key)
+                .bind(format!("startup_backfill.{suffix}"))
                 .fetch_optional(pool)
-                .await
-        });
-    let enabled = match enabled {
-        Some(query) => query.await?.unwrap_or(false),
-        None => false,
+                .await?
+                .unwrap_or(false)
+        }
+        _ => false,
     };
     let mut pending = StartupBackfillProgress::pending(task_name.to_string());
     pending.enabled = enabled;
@@ -3350,6 +3359,11 @@ mod startup_backfill_tests {
                 .expect("wake legacy startup backfill pool"),
             1
         );
+        let progress =
+            load_startup_backfill_progress(&pool, StartupBackfillTask::ProxyUsage.name())
+                .await
+                .expect("load legacy startup backfill progress");
+        assert!(progress.enabled);
     }
 
     #[tokio::test]
