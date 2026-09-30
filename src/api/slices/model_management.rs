@@ -312,7 +312,7 @@ pub(crate) async fn delete_managed_model(
         .execute(&mut *tx)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let next_pricing = load_pricing_catalog_from_connection(&mut *tx)
+    let next_pricing = load_pricing_catalog_from_connection(&mut tx)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     tx.commit()

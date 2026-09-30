@@ -164,7 +164,7 @@ pub(crate) async fn upsert_synced_model_prices(
         .execute(&mut *tx)
         .await
         .context("failed to update pricing catalog timestamp")?;
-    let next = load_pricing_catalog_from_connection(&mut *tx).await?;
+    let next = load_pricing_catalog_from_connection(&mut tx).await?;
     tx.commit()
         .await
         .context("failed to commit models.dev price apply transaction")?;
