@@ -73,6 +73,28 @@ fi
 grep -q "must run partition hash:1/2" "$tmp_dir/ci-pr-shard.log"
 cp "$fixtures_root/ci-pr.yml" "$ci_pr_workflow"
 
+ci_main_workflow="$baseline_repo/.github/workflows/ci-main.yml"
+python3 - <<'PY' "$ci_main_workflow"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '          test "${SHARD_TWO_RESULT}" = success\n'
+replacement = '          echo "Shard 2 failure would be ignored"\n'
+if needle not in text:
+    raise SystemExit("failed to locate CI Main Stateful SQLite shard guard")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final >/dev/null 2>"$tmp_dir/ci-main-shard-aggregate.log"; then
+  echo "expected CI Main aggregate without the shard 2 success guard to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-main.yml Stateful SQLite aggregate must fail when either shard fails" "$tmp_dir/ci-main-shard-aggregate.log"
+cp "$fixtures_root/ci-main.yml" "$ci_main_workflow"
+
 python3 - <<'PY' "$ci_pr_workflow"
 from pathlib import Path
 import sys

@@ -886,7 +886,12 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         )
         require_exact_if(aggregate_job, "always()", "ci-main.yml.jobs.backend-tests-stateful-sqlite")
         aggregate_run = str(step_config(aggregate_job, "Require both Stateful SQLite shards", "ci-main.yml.jobs.backend-tests-stateful-sqlite").get("run", ""))
-        require("SHARD_ONE_RESULT" in aggregate_run and "SHARD_TWO_RESULT" in aggregate_run, "ci-main.yml Stateful SQLite aggregate must inspect both shard results")
+        aggregate_run_lines = {line.strip() for line in aggregate_run.splitlines()}
+        require(
+            'test "${SHARD_ONE_RESULT}" = success' in aggregate_run_lines
+            and 'test "${SHARD_TWO_RESULT}" = success' in aggregate_run_lines,
+            "ci-main.yml Stateful SQLite aggregate must fail when either shard fails",
+        )
 
         candidate_meta = job_config(workflow, "candidate-meta", "ci-main.yml")
         require(candidate_meta.get("name") == "Candidate Image Metadata", "ci-main.yml candidate metadata job name drifted")
