@@ -119,8 +119,8 @@ default_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
   BACKEND_CONTRACT_RECORD="$contract_record" \
   bash "$runner" --profile lightweight 2>&1)"
 grep -q 'backend_test_network_mode=online' <<<"$default_output"
-grep -q 'backend_test_profile_test_threads_lightweight=2' <<<"$default_output"
-grep -q -- '--test-threads 2' "$contract_record"
+grep -q 'backend_test_profile_test_threads_lightweight=4' <<<"$default_output"
+grep -q -- '--test-threads 4' "$contract_record"
 grep -q "cargo_home=$default_workspace/cargo-home" "$contract_record"
 grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
 grep -q 'maintenance::archive::archive_writers::tests' "$contract_record"

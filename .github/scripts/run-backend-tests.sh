@@ -299,8 +299,8 @@ run_profile() {
   case "$selected_profile" in
     lightweight)
       filter_expr='(test(/^(tests|upstream_accounts::tests)::lightweight::/)) or (not test(/^(tests|upstream_accounts::tests|maintenance::archive::archive_writers::tests|maintenance::retention::retention_recovery_race_tests)::/))'
-      # Allow limited overlap while bounding SQLite connection-pool contention.
-      test_threads="2"
+      # Keep enough overlap to shorten the large profile without oversubscribing SQLite fixtures.
+      test_threads="4"
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
