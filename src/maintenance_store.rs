@@ -882,7 +882,7 @@ impl MaintenanceStore {
             {
                 anyhow!("task already has an active run")
             } else {
-                error.into()
+                error
             }
         })
     }
