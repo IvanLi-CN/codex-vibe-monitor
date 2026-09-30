@@ -596,21 +596,24 @@ pub(crate) fn global() -> Option<&'static std::sync::Arc<MaintenanceStore>> {
 impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(&self) -> Result<Option<(i64, String, String)>> {
         let mut transaction = self.pool.begin().await?;
-        let Some((id, task_key, started_at)) = sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT id,task_key,started_at FROM managed_task_runs WHERE status='requested' ORDER BY id LIMIT 1",
+        let claimed = sqlx::query_as::<_, (i64, String, String)>(
+            "UPDATE managed_task_runs
+             SET status='running'
+             WHERE id = (
+                 SELECT id FROM managed_task_runs
+                 WHERE status='requested'
+                 ORDER BY id
+                 LIMIT 1
+             )
+             AND status='requested'
+             RETURNING id,task_key,started_at",
         )
         .fetch_optional(&mut *transaction)
-        .await?
-        else {
+        .await?;
+        let Some((id, task_key, started_at)) = claimed else {
             transaction.commit().await?;
             return Ok(None);
         };
-        sqlx::query(
-            "UPDATE managed_task_runs SET status='running' WHERE id=? AND status='requested'",
-        )
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
         transaction.commit().await?;
         Ok(Some((id, task_key, started_at)))
     }

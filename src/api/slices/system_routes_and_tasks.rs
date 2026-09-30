@@ -1490,8 +1490,7 @@ pub(crate) async fn begin_system_task_run(
     })
 }
 
-/// Record a task start without allowing SQLite's configured busy timeout to outlive shutdown.
-/// This uses a short-lived connection so the normal pool timeout remains unchanged for callers.
+/// Record a task start through the isolated maintenance database.
 pub(crate) async fn begin_system_task_run_nonblocking(
     _database_url: &str,
     task_kind: SystemTaskKind,
