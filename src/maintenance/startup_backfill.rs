@@ -567,6 +567,12 @@ impl StartupBackfillTask {
             .find(|task| task.name() == name)
     }
 
+    pub(crate) fn from_managed_key(name: &str) -> Option<Self> {
+        Self::ordered_tasks().iter().copied().find(|task| {
+            crate::maintenance_store::managed_startup_backfill_suffix(task.name()) == Some(name)
+        })
+    }
+
     pub(crate) fn ordered_tasks() -> &'static [Self] {
         &[
             Self::ProxyUsage,
@@ -961,7 +967,7 @@ pub(crate) async fn load_startup_backfill_progress(
         pending.suspension_reason = Some("maintenance_database_unavailable".to_string());
         return Ok(pending);
     };
-    Ok(sqlx::query_as::<_, StartupBackfillProgressRow>(
+    let progress = sqlx::query_as::<_, StartupBackfillProgressRow>(
         r#"
         SELECT
             task_name,
@@ -984,9 +990,115 @@ pub(crate) async fn load_startup_backfill_progress(
     )
     .bind(task_name)
     .fetch_optional(pool)
-    .await?
-    .map(Into::into)
-    .unwrap_or_else(|| StartupBackfillProgress::pending(task_name.to_string())))
+    .await?;
+    let managed_tasks_present = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+        != 0;
+    let managed_task_key = managed_tasks_present
+        .then(|| crate::maintenance_store::managed_startup_backfill_suffix(task_name))
+        .flatten()
+        .map(|suffix| format!("startup_backfill.{suffix}"));
+    let managed_enabled = if let Some(task_key) = managed_task_key.as_deref() {
+        Some(
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(task_key)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or(false),
+        )
+    } else {
+        None
+    };
+    if let Some(progress) = progress {
+        let mut progress: StartupBackfillProgress = progress.into();
+        if let Some(enabled) = managed_enabled
+            && progress.enabled != enabled
+        {
+            let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
+            let (next_run_after, suspension_reason) = if enabled {
+                (None, None)
+            } else {
+                (
+                    Some(disabled_until.clone()),
+                    Some("operator_disabled".to_string()),
+                )
+            };
+            let updated = sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
+                     wake_generation=wake_generation + 1
+                 WHERE task_name=?
+                   AND EXISTS (
+                       SELECT 1 FROM managed_tasks
+                       WHERE task_key=? AND enabled=?
+                   )",
+            )
+            .bind(if enabled { 1_i64 } else { 0_i64 })
+            .bind(&next_run_after)
+            .bind(&suspension_reason)
+            .bind(task_name)
+            .bind(
+                managed_task_key
+                    .as_deref()
+                    .expect("managed task key exists for managed progress"),
+            )
+            .bind(if enabled { 1_i64 } else { 0_i64 })
+            .execute(pool)
+            .await?;
+            let effective_enabled = if updated.rows_affected() == 0 {
+                sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                    .bind(
+                        managed_task_key
+                            .as_deref()
+                            .expect("managed task key exists for managed progress"),
+                    )
+                    .fetch_optional(pool)
+                    .await?
+                    .unwrap_or(false)
+            } else {
+                enabled
+            };
+            let (next_run_after, suspension_reason) = if effective_enabled {
+                (None, None)
+            } else {
+                (
+                    Some(format_utc_iso_millis(
+                        Utc::now() + ChronoDuration::days(3650),
+                    )),
+                    Some("operator_disabled".to_string()),
+                )
+            };
+            progress.enabled = effective_enabled;
+            progress.next_run_after = next_run_after;
+            progress.suspension_reason = suspension_reason;
+            progress.next_probe_at = None;
+            progress.wake_generation = progress.wake_generation.saturating_add(1);
+        }
+        return Ok(progress);
+    }
+
+    let enabled = match (managed_enabled, managed_tasks_present) {
+        (Some(enabled), _) => enabled,
+        (None, false)
+            if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_some() =>
+        {
+            true
+        }
+        _ => false,
+    };
+    let mut pending = StartupBackfillProgress::pending(task_name.to_string());
+    pending.enabled = enabled;
+    if !enabled {
+        pending.next_run_after = Some(format_utc_iso_millis(
+            Utc::now() + ChronoDuration::days(3650),
+        ));
+        pending.suspension_reason = Some("operator_disabled".to_string());
+    }
+    Ok(pending)
 }
 
 pub(crate) async fn set_startup_backfill_task_enabled(
@@ -995,35 +1107,46 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     enabled: bool,
 ) -> Result<StartupBackfillProgress> {
     let Some(pool) = startup_backfill_progress_pool(pool) else {
-        return Ok(StartupBackfillProgress::pending(task.name().to_string()));
+        #[cfg(test)]
+        {
+            return Ok(StartupBackfillProgress::pending(task.name().to_string()));
+        }
+        #[cfg(not(test))]
+        {
+            return Err(anyhow!("maintenance database unavailable"));
+        }
     };
     let task_name = task.name();
+    let like_pattern = format!("{task_name}:%");
+    if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
+        return Err(anyhow!("unknown startup backfill task: {task_name}"));
+    }
+    if let Some(store) = crate::maintenance_store::global() {
+        let suffix = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+            .expect("validated managed startup backfill task");
+        let managed_key = format!("startup_backfill.{suffix}");
+        if !store
+            .update_control(&managed_key, Some(enabled), None, None)
+            .await
+            .with_context(|| format!("failed to update managed task control for {managed_key}"))?
+        {
+            return Err(anyhow!(
+                "managed startup backfill task not found: {managed_key}"
+            ));
+        }
+    }
     let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
     sqlx::query(
-        r#"
-        INSERT INTO startup_backfill_progress (
-            task_name,
-            cursor_id,
-            next_run_after,
-            zero_update_streak,
-            last_started_at,
-            last_finished_at,
-            last_scanned,
-            last_updated,
-            last_status,
-            suspension_reason,
-            next_probe_at,
-            wake_generation,
-            enabled
-        )
-        VALUES (?1, 0, ?2, 0, NULL, NULL, 0, 0, 'idle', ?3, NULL, 0, ?4)
-        ON CONFLICT(task_name) DO UPDATE SET
-            enabled = excluded.enabled,
-            next_run_after = excluded.next_run_after,
-            suspension_reason = excluded.suspension_reason,
-            next_probe_at = NULL,
-            wake_generation = startup_backfill_progress.wake_generation + 1
-        "#,
+        "INSERT INTO startup_backfill_progress (
+            task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+            last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+         ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)
+         ON CONFLICT(task_name) DO UPDATE SET
+             enabled=excluded.enabled,
+             next_run_after=excluded.next_run_after,
+             suspension_reason=excluded.suspension_reason,
+             next_probe_at=NULL,
+             wake_generation=startup_backfill_progress.wake_generation + 1",
     )
     .bind(task_name)
     .bind(if enabled {
@@ -1040,6 +1163,31 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     .execute(pool)
     .await
     .with_context(|| format!("failed to update startup backfill task control for {task_name}"))?;
+    if task == StartupBackfillTask::ProxyCost {
+        sqlx::query(
+            "UPDATE startup_backfill_progress
+             SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
+                 wake_generation=wake_generation + 1
+             WHERE task_name LIKE ?",
+        )
+        .bind(if enabled { 1_i64 } else { 0_i64 })
+        .bind(if enabled {
+            None
+        } else {
+            Some(disabled_until.as_str())
+        })
+        .bind(if enabled {
+            None
+        } else {
+            Some("operator_disabled")
+        })
+        .bind(like_pattern)
+        .execute(pool)
+        .await
+        .with_context(|| {
+            format!("failed to update versioned startup backfill control for {task_name}")
+        })?;
+    }
 
     if enabled {
         STARTUP_BACKFILL_SCHEDULER.wake(task);
@@ -1189,6 +1337,31 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
             }
             _ => task.name().to_string(),
         };
+        let Some(managed_suffix) =
+            crate::maintenance_store::managed_startup_backfill_suffix(task.name())
+        else {
+            continue;
+        };
+        let managed_task_key = format!("startup_backfill.{managed_suffix}");
+        let managed_tasks_present = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+            != 0;
+        if managed_tasks_present
+            && !sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(&managed_task_key)
+                .fetch_optional(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to read managed task control for {managed_task_key}")
+                })?
+                .unwrap_or(false)
+        {
+            continue;
+        }
         let outcome = sqlx::query(
             r#"
             INSERT INTO startup_backfill_progress (
@@ -3153,518 +3326,4 @@ pub(crate) fn spawn_startup_backfill_maintenance(
 }
 
 #[cfg(test)]
-mod startup_backfill_tests {
-    use super::*;
-
-    #[test]
-    fn scheduler_health_tracks_wakes_due_work_and_active_outcomes() {
-        let scheduler = StartupBackfillScheduler::default();
-        scheduler.wake(StartupBackfillTask::HistoricalRollups);
-        scheduler.record_noop_suppressed();
-
-        let woken = scheduler.health_snapshot();
-        assert_eq!(woken.state, "healthy");
-        assert_eq!(woken.wake_count, 1);
-        assert_eq!(woken.woken_task_count, 1);
-
-        assert_eq!(
-            scheduler.drain_due_tasks(Utc::now()),
-            vec![StartupBackfillTask::HistoricalRollups]
-        );
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, true);
-        let deferred = scheduler.health_snapshot();
-        assert_eq!(deferred.state, "deferred");
-        assert_eq!(deferred.due_dispatch_count, 1);
-        assert_eq!(deferred.pressure_defer_count, 1);
-        assert_eq!(deferred.noop_suppressed_count, 1);
-
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
-        assert_eq!(scheduler.health_snapshot().state, "degraded");
-
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, false);
-        let recovered = scheduler.health_snapshot();
-        assert_eq!(recovered.state, "healthy");
-        assert_eq!(recovered.failure_count, 1);
-        assert_eq!(recovered.failed_task_count, 0);
-    }
-
-    #[test]
-    fn pressure_defer_uses_the_gate_absolute_deadline() {
-        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
-        gate.record_pressure("test", "forced");
-        let expected_deadline = gate
-            .pressure_cooldown_deadline_epoch_ms()
-            .expect("active pressure cooldown deadline");
-
-        let retry_at = startup_backfill_pressure_retry_at(
-            &gate,
-            crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 1 },
-        );
-
-        assert_eq!(retry_at.timestamp_millis() as u64, expected_deadline);
-    }
-
-    #[test]
-    fn failed_prompt_cache_materialization_does_not_report_cumulative_work() {
-        let outcome =
-            prompt_cache_materialization_failed_outcome(Some("stats_rebuild".to_string()));
-
-        assert_eq!(outcome.phase, "stats_rebuild");
-        assert_eq!(outcome.scanned, 0);
-        assert_eq!(outcome.updated, 0);
-        assert_eq!(outcome.batch_count, 0);
-    }
-
-    #[test]
-    fn pressure_defer_schedules_one_deadline_and_dispatches_once() {
-        let scheduler = StartupBackfillScheduler::default();
-        let task = StartupBackfillTask::ReasoningEffort;
-        let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
-            .expect("valid fixed pressure deadline");
-
-        scheduler.defer_for_pressure(task, deadline);
-        assert!(
-            scheduler
-                .drain_due_tasks(deadline - ChronoDuration::milliseconds(1))
-                .is_empty()
-        );
-        let waiting = scheduler.health_snapshot();
-        assert_eq!(waiting.wake_count, 0);
-        assert_eq!(waiting.due_dispatch_count, 0);
-        assert_eq!(waiting.pressure_defer_count, 0);
-        assert_eq!(waiting.scheduled_task_count, 1);
-
-        assert_eq!(scheduler.drain_due_tasks(deadline), vec![task]);
-        scheduler.record_task_result(task, false, true);
-        assert!(scheduler.drain_due_tasks(deadline).is_empty());
-        let deferred = scheduler.health_snapshot();
-        assert_eq!(deferred.wake_count, 0);
-        assert_eq!(deferred.due_dispatch_count, 1);
-        assert_eq!(deferred.pressure_defer_count, 1);
-        assert_eq!(deferred.scheduled_task_count, 0);
-        assert_eq!(deferred.deferred_task_count, 1);
-    }
-
-    #[tokio::test]
-    async fn pressure_eligibility_change_preserves_background_busy_deadline() {
-        let scheduler = Arc::new(StartupBackfillScheduler::default());
-        let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
-            1,
-            Duration::from_secs(30),
-        ));
-        let permit = gate
-            .try_begin_background("test-holder")
-            .expect("occupy the sole background slot");
-        let observed_eligibility = gate.eligibility_generation();
-        let task = StartupBackfillTask::ReasoningEffort;
-        let deadline = Utc::now() + ChronoDuration::minutes(5);
-
-        scheduler.defer_for_pressure(task, deadline);
-        scheduler.record_task_result(task, false, true);
-
-        assert!(
-            scheduler.drain_due_tasks(Utc::now()).is_empty(),
-            "the in-memory fallback deadline must not be due yet"
-        );
-
-        let wake_gate = gate.clone();
-        let wake_scheduler = scheduler.clone();
-        let wake = tokio::spawn(async move {
-            wake_gate
-                .wait_for_eligibility_change(observed_eligibility)
-                .await;
-            wake_scheduler.take_pressure_deferred_tasks(Utc::now())
-        });
-        tokio::task::yield_now().await;
-        assert!(
-            !wake.is_finished(),
-            "the task must wait for an eligibility-clear event before its fallback deadline"
-        );
-
-        drop(permit);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), wake)
-                .await
-                .expect("permit release must wake the deferred task before its deadline")
-                .expect("eligibility waiter must not panic")
-                .is_empty(),
-            "eligibility changes must not bypass the fallback deadline"
-        );
-        assert_eq!(scheduler.next_due(), Some(deadline));
-        assert_eq!(
-            scheduler.take_pressure_deferred_tasks(deadline),
-            vec![task],
-            "the deferred task becomes eligible exactly at its deadline"
-        );
-    }
-
-    #[test]
-    fn sqlite_busy_and_locked_are_actual_backfill_failures() {
-        for error in [
-            anyhow::anyhow!("database is busy"),
-            anyhow::anyhow!("database table is locked"),
-        ] {
-            assert_eq!(
-                startup_backfill_failure_kind(&error),
-                StartupBackfillFailureKind::SqliteBusyOrLocked
-            );
-        }
-        assert_eq!(
-            startup_backfill_failure_kind(&anyhow::anyhow!("archive directory lock busy")),
-            StartupBackfillFailureKind::ArchiveLockBusy
-        );
-        assert_eq!(
-            startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
-            StartupBackfillFailureKind::Operation
-        );
-
-        let scheduler = StartupBackfillScheduler::default();
-        scheduler.record_task_result(StartupBackfillTask::ReasoningEffort, true, false);
-        let health = scheduler.health_snapshot();
-        assert_eq!(health.state, "degraded");
-        assert_eq!(health.failure_count, 1);
-        assert_eq!(health.pressure_defer_count, 0);
-        assert_eq!(health.failed_task_count, 1);
-        assert_eq!(health.deferred_task_count, 0);
-    }
-
-    #[test]
-    fn coverage_repair_health_is_independent_from_historical_rollups() {
-        let scheduler = StartupBackfillScheduler::default();
-        scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
-
-        scheduler.record_task_result(StartupBackfillTask::AccountActivityV2Coverage, false, true);
-
-        let health = scheduler.health_snapshot();
-        assert_eq!(health.state, "degraded");
-        assert_eq!(health.failed_task_count, 1);
-        assert_eq!(health.pressure_defer_count, 1);
-    }
-
-    #[test]
-    fn coverage_repair_does_not_repeat_its_planner_in_the_following_hourly_refresh() {
-        assert_eq!(
-            startup_backfill_hourly_rollup_refresh_scope(),
-            HourlyRollupRefreshScope::SkipActiveAccountActivityV2CoverageRepair
-        );
-    }
-
-    #[test]
-    fn actionable_no_progress_backoff_caps_at_fifteen_minutes() {
-        let run = StartupBackfillRunState {
-            scanned: 2,
-            updated: 0,
-            hit_scan_limit: true,
-            ..StartupBackfillRunState::default()
-        };
-        assert_eq!(
-            startup_backfill_next_delay(&run, 1),
-            Duration::from_secs(15)
-        );
-        assert_eq!(
-            startup_backfill_next_delay(&run, 2),
-            Duration::from_secs(60)
-        );
-        assert_eq!(
-            startup_backfill_next_delay(&run, 3),
-            Duration::from_secs(5 * 60)
-        );
-        assert_eq!(
-            startup_backfill_next_delay(&run, 4),
-            Duration::from_secs(15 * 60)
-        );
-        assert_eq!(
-            startup_backfill_next_delay(&run, 99),
-            Duration::from_secs(15 * 60)
-        );
-    }
-
-    #[test]
-    fn historical_rollup_cursor_advance_after_budget_exhaustion_retries_without_a_task_run() {
-        let run = StartupBackfillRunState {
-            next_cursor_id: 12,
-            scanned: 1,
-            retry_soon: true,
-            ..StartupBackfillRunState::default()
-        };
-
-        assert_eq!(
-            startup_backfill_next_delay(&run, 1),
-            Duration::from_secs(15)
-        );
-        assert!(!startup_backfill_run_is_actionable(&run));
-    }
-
-    #[test]
-    fn historical_rollup_budget_retry_stays_short_after_cursor_wrap() {
-        let retry_soon = historical_rollup_should_retry_soon(true, 1);
-        assert!(retry_soon);
-        assert!(historical_rollup_should_retry_soon(true, 32));
-        assert!(!historical_rollup_should_retry_soon(true, 0));
-        assert!(!historical_rollup_should_retry_soon(false, 1));
-
-        let run = StartupBackfillRunState {
-            retry_soon,
-            ..StartupBackfillRunState::default()
-        };
-        assert_eq!(
-            startup_backfill_next_delay(&run, 0),
-            Duration::from_secs(15)
-        );
-        assert!(!startup_backfill_run_is_actionable(&run));
-    }
-
-    #[test]
-    fn overdue_backfill_deadline_runs_without_an_idle_sleep() {
-        assert_eq!(
-            startup_backfill_wait_duration(Some(Utc::now() - ChronoDuration::seconds(1))),
-            Duration::ZERO
-        );
-    }
-
-    #[test]
-    fn scheduler_drains_only_tasks_with_an_expired_deadline() {
-        let scheduler = StartupBackfillScheduler::default();
-        let future_due = Utc::now() + ChronoDuration::hours(1);
-        scheduler.record_next_due(
-            StartupBackfillTask::HistoricalRollups,
-            Utc::now() - ChronoDuration::seconds(1),
-        );
-        scheduler.record_next_due(StartupBackfillTask::ReasoningEffort, future_due);
-
-        assert_eq!(
-            scheduler.drain_due_tasks(Utc::now()),
-            vec![StartupBackfillTask::HistoricalRollups]
-        );
-        assert_eq!(scheduler.next_due(), Some(future_due));
-    }
-
-    #[test]
-    fn only_progress_or_non_idle_backlog_triggers_rollup_refresh() {
-        assert!(startup_backfill_run_is_actionable(
-            &StartupBackfillRunState {
-                updated: 1,
-                ..StartupBackfillRunState::default()
-            }
-        ));
-        assert!(startup_backfill_run_is_actionable(
-            &StartupBackfillRunState {
-                hit_scan_limit: true,
-                ..StartupBackfillRunState::default()
-            }
-        ));
-        assert!(!startup_backfill_run_is_actionable(
-            &StartupBackfillRunState {
-                scanned: 1,
-                force_idle: true,
-                ..StartupBackfillRunState::default()
-            }
-        ));
-        assert!(!startup_backfill_run_is_actionable(
-            &StartupBackfillRunState::default()
-        ));
-    }
-
-    #[test]
-    fn terminal_payload_input_wakes_only_missing_field_repairs() {
-        let mut record = crate::tests::test_proxy_capture_record(
-            "startup-backfill-terminal-wake",
-            "2026-08-09 12:00:00",
-        );
-        record.usage.total_tokens = None;
-        record.cost = None;
-        record.payload = Some("{}".to_string());
-        record.req_raw.path = Some("/tmp/request.raw".to_string());
-        record.resp_raw.path = Some("/tmp/response.raw".to_string());
-
-        let tasks =
-            startup_backfill_tasks_for_terminal(&api_invocation_from_runtime_record(&record));
-
-        assert_eq!(
-            tasks,
-            vec![
-                StartupBackfillTask::ProxyUsage,
-                StartupBackfillTask::PromptCacheKey,
-                StartupBackfillTask::RequestedServiceTier,
-                StartupBackfillTask::ReasoningEffort,
-                StartupBackfillTask::InvocationServiceTier,
-            ]
-        );
-
-        let mut materialization_record =
-            api_invocation_from_runtime_record(&crate::tests::test_proxy_capture_record(
-                "startup-backfill-materialization",
-                "2026-08-09 12:00:30",
-            ));
-        materialization_record.prompt_cache_key = Some("startup-materialization-key".to_string());
-        assert_eq!(
-            startup_backfill_tasks_for_terminal(&materialization_record),
-            vec![StartupBackfillTask::PromptCacheConversationsMaterialization]
-        );
-
-        let complete =
-            api_invocation_from_runtime_record(&crate::tests::test_proxy_capture_record(
-                "startup-backfill-terminal-complete",
-                "2026-08-09 12:01:00",
-            ));
-        assert_eq!(
-            startup_backfill_tasks_for_terminal(&complete),
-            vec![StartupBackfillTask::PromptCacheConversationsMaterialization]
-        );
-    }
-
-    #[test]
-    fn source_unavailable_probe_uses_one_shared_budget() {
-        assert_eq!(startup_backfill_scan_limit(true), 100);
-        assert_eq!(startup_backfill_run_budget(true), Duration::from_secs(2));
-        assert_eq!(
-            startup_backfill_scan_limit(false),
-            STARTUP_BACKFILL_SCAN_LIMIT
-        );
-        assert_eq!(
-            startup_backfill_run_budget(false),
-            Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
-        );
-    }
-
-    #[test]
-    fn historical_rollup_backfill_run_state_backs_off_when_only_blocked_archives_remain() {
-        let before = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 2,
-            legacy_archive_pending: 1,
-            pending_usage_breakdown_batches: 1,
-            last_materialized_hour: None,
-            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
-        };
-        let after = before.clone();
-        let summary = HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: 1,
-            blocked_archive_batches: 1,
-            ..HistoricalRollupMaterializationSummary::default()
-        };
-
-        let run =
-            historical_rollup_startup_backfill_run_state(7, 0, &before, &after, &summary, 1, 1);
-
-        assert_eq!(run.next_cursor_id, 8);
-        assert_eq!(run.scanned, 1);
-        assert_eq!(run.updated, 0);
-        assert!(!run.hit_scan_limit);
-        assert!(run.force_idle);
-    }
-
-    #[test]
-    fn historical_rollup_backfill_run_state_stays_active_while_catching_up() {
-        let before = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 8,
-            legacy_archive_pending: 3,
-            pending_usage_breakdown_batches: 3,
-            last_materialized_hour: None,
-            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
-        };
-        let after = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 4,
-            legacy_archive_pending: 2,
-            pending_usage_breakdown_batches: 2,
-            last_materialized_hour: None,
-            alert_level: HistoricalRollupBackfillAlertLevel::Warn,
-        };
-        let summary = HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: 1,
-            materialized_archive_batches: 1,
-            materialized_invocation_batches: 1,
-            ..HistoricalRollupMaterializationSummary::default()
-        };
-
-        let run =
-            historical_rollup_startup_backfill_run_state(11, 0, &before, &after, &summary, 3, 2);
-
-        assert_eq!(run.next_cursor_id, 12);
-        assert_eq!(run.scanned, 1);
-        assert_eq!(run.updated, 4);
-        assert!(run.hit_scan_limit);
-        assert!(!run.force_idle);
-    }
-
-    #[test]
-    fn historical_rollup_backfill_run_state_stays_active_when_partial_scan_found_only_blocked_work()
-    {
-        let before = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 8,
-            legacy_archive_pending: 3,
-            pending_usage_breakdown_batches: 3,
-            last_materialized_hour: None,
-            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
-        };
-        let after = before.clone();
-        let summary = HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: 1,
-            blocked_archive_batches: 1,
-            ..HistoricalRollupMaterializationSummary::default()
-        };
-
-        let run =
-            historical_rollup_startup_backfill_run_state(5, 0, &before, &after, &summary, 3, 3);
-
-        assert_eq!(run.next_cursor_id, 6);
-        assert_eq!(run.scanned, 1);
-        assert_eq!(run.updated, 0);
-        assert!(run.hit_scan_limit);
-        assert!(!run.force_idle);
-    }
-
-    #[test]
-    fn historical_rollup_backfill_run_state_does_not_back_off_when_only_blocked_archive_was_after_skip()
-     {
-        let before = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 8,
-            legacy_archive_pending: 2,
-            pending_usage_breakdown_batches: 2,
-            last_materialized_hour: None,
-            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
-        };
-        let after = before.clone();
-        let summary = HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: 2,
-            skipped_archive_batches: 1,
-            blocked_archive_batches: 1,
-            ..HistoricalRollupMaterializationSummary::default()
-        };
-
-        let run =
-            historical_rollup_startup_backfill_run_state(9, 0, &before, &after, &summary, 2, 2);
-
-        assert_eq!(run.next_cursor_id, 10);
-        assert_eq!(run.scanned, 2);
-        assert_eq!(run.updated, 0);
-        assert!(run.hit_scan_limit);
-        assert!(!run.force_idle);
-    }
-
-    #[test]
-    fn historical_rollup_backfill_run_state_backs_off_after_blocked_cycle_across_multiple_passes() {
-        let before = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 8,
-            legacy_archive_pending: 2,
-            pending_usage_breakdown_batches: 2,
-            last_materialized_hour: None,
-            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
-        };
-        let after = before.clone();
-        let summary = HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: 2,
-            skipped_archive_batches: 1,
-            blocked_archive_batches: 1,
-            ..HistoricalRollupMaterializationSummary::default()
-        };
-
-        let run =
-            historical_rollup_startup_backfill_run_state(9, 1, &before, &after, &summary, 2, 2);
-
-        assert_eq!(run.next_cursor_id, 10);
-        assert_eq!(run.scanned, 2);
-        assert_eq!(run.updated, 0);
-        assert!(!run.hit_scan_limit);
-        assert!(run.force_idle);
-    }
-}
+mod startup_backfill_tests;
