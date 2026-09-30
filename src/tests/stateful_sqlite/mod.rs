@@ -137,6 +137,7 @@ mod routing_failover_terminal_reasoning;
 )]
 mod routing_timeout_and_overload_failover;
 mod runtime_overlay_and_group_rule_behaviors;
+mod schema_templates;
 mod startup_rebuild_and_retention_basics;
 mod system_status_and_account_roster;
 
@@ -146,4 +147,5 @@ pub(crate) use proxy_pool_roundtrip_and_retry_servers::*;
 pub(crate) use request_preparation_and_handshake_failures::*;
 pub(crate) use routing_failover_terminal_reasoning::*;
 pub(crate) use runtime_overlay_and_group_rule_behaviors::*;
+pub(crate) use schema_templates::*;
 pub(crate) use system_status_and_account_roster::*;

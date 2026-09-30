@@ -3221,7 +3221,7 @@ async fn retention_test_pool_and_config_with_connections(
 async fn retention_file_fixture_copies_current_schema_template_without_leaking_mutations() {
     let template_dir = make_temp_test_dir("retention-current-schema-template");
     let template_path = template_dir.join("current-schema.db");
-    write_stateful_schema_template(&template_path)
+    write_current_schema_template(&template_path)
         .await
         .expect("build current-schema template");
 

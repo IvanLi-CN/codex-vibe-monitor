@@ -19,8 +19,9 @@
 - Run `36713261886` used four nextest threads: Lightweight test execution was `190.294s` and job wall time was `222s`.
 - Run `36715063348` used six nextest threads: Lightweight test execution rose to `198.478s` and job wall time to `230s`; higher parallelism added SQLite contention instead of improving elapsed time.
 - The same six-thread run completed Archive / File I/O in `158s`. The current candidate moves one raw gzip file-I/O test there; its assertions and total suite coverage remain intact.
-- The current candidate returns Lightweight to four threads, prepares one profile-private current-schema template per runner, copies it into isolated in-memory/file-backed fixtures, and replaces a 16-second freshness sleep with an explicitly aged projection fixture.
-- Current-head GitHub Actions timings and test totals are recorded after the next PR run; no performance target is claimed from ancestor runs.
+- The current candidate returns Lightweight to four threads, prepares one profile-private current-schema template per runner, and copies it into isolated in-memory/file-backed fixtures. It replaces the 16-second freshness sleep by aging the fixture and invoking the same generation-fenced freshness renewal helper used by production maintenance before asserting the rolling response.
+- Run `36723460863` failed the Lightweight freshness regression after the initial candidate aged the snapshot without renewing its lease; the test reported the expected stale projection. The Archive / File I/O job passed in `149s`, and Stateful SQLite completed in `304s`. The test now exercises the actual renewal path without wall-clock sleeping; current-head Actions validation is pending.
+- Current-head GitHub Actions timings and test totals will be recorded after the repair run; no performance target is claimed from ancestor runs.
 
 ## Coverage / rollout summary
 

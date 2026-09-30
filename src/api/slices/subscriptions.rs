@@ -19641,12 +19641,11 @@ mod tests {
 
     #[tokio::test]
     async fn working_conversations_snapshot_builder_uses_one_transaction_snapshot() {
-        let (state, temp_dir, _) =
-            crate::tests::file_backed_test_state_with_current_schema_template_and_busy_timeout(
-                "working-conversations-snapshot",
-                Duration::from_secs(1),
-            )
-            .await;
+        let (state, temp_dir, _) = crate::tests::file_backed_test_state_from_current_schema(
+            "working-conversations-snapshot",
+            Duration::from_secs(1),
+        )
+        .await;
         sqlx::query("PRAGMA journal_mode = WAL")
             .execute(&state.pool)
             .await

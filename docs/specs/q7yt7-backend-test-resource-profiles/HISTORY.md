@@ -36,6 +36,7 @@
 - PR run `31873891811` 验证 smoke 拆分后 `Build Artifacts` 为 `41s`、Stateful critical path 为 `332s`；但将 Web Demo 改为两个 fully-parallel worker 后，两条 scene route 在同一 Vite server 上反复 `page.goto` 超时，E2E job 以 `317s` 失败。该并行实验被撤回。完整 E2E 继续采用两个隔离 server 和每套单 worker；它移入显式 `PR E2E Test Producer`，`Records Overlay E2E` required gate 以 `always()` 运行并检查 producer result，确保每个 PR 和 merge-group 仍失败关闭而不是跳过覆盖。
 - Archive fresh file fixture 重放 `ensure_schema` 时固定单连接，避免 SQLite 多语句 DDL 在 pooled connection 间切换而把测试隔离故障误报为已存在 trigger。普通 current-schema template copy 保留多连接可见性覆盖；gzip、路径和其他真实文件语义测试显式选用 fresh fixture。quality-gates contract 也明确检查 E2E producer 的两套 spec、隔离结果目录与 mock-only endpoint，避免仅保留 required gate 而遗漏实际 E2E 覆盖。
 - 2026-09-30：PR [#1056](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1056) 的基线 CI 显示 Lightweight 在 4 threads 下为 `222s`，6 threads 下为 `230s`；因此不继续加线程，转向减少 current-schema 重复初始化、真实 freshness 等待与 Lightweight 中的 gzip file I/O。该 PR 的 Actions 验收结果待本轮更新。
+- 2026-09-30：PR #1056 的首轮优化 run `36723460863` 中，Archive / File I/O `149s`，Lightweight `115s` 但因 freshness 回归失败，Stateful SQLite `304s`。失败说明测试仅把 rolling 快照时间改旧、却没有像 production maintenance 一样通过 generation fence 续租 freshness；修复为直接调用该生产 helper，并把共享 schema-template 支撑代码移入独立测试模块以恢复 Rust 文件行数预算。修复后的同一 PR head Actions 结果待记录。
 
 ## Key Reasons / Replacements
 

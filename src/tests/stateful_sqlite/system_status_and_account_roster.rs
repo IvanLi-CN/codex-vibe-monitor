@@ -1,29 +1,5 @@
 use super::*;
-use libsqlite3_sys::{
-    SQLITE_DONE, SQLITE_OK, sqlite3_backup_finish, sqlite3_backup_init, sqlite3_backup_step,
-};
 use serde_json::json;
-use std::str::FromStr;
-
-pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
-    "CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH";
-pub(crate) const LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV: &str =
-    "CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH";
-pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
-    "CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH";
-
-pub(crate) fn current_profile_schema_template_path() -> Option<PathBuf> {
-    std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
-        .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
-        .or_else(|| std::env::var_os(ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV))
-        .map(PathBuf::from)
-}
-
-fn current_test_state_schema_template_path() -> Option<PathBuf> {
-    std::env::var_os(STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
-        .or_else(|| std::env::var_os(LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH_ENV))
-        .map(PathBuf::from)
-}
 
 static SYSTEM_TASK_RUN_RETENTION_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -1765,7 +1741,7 @@ pub(crate) async fn test_current_schema_pool() -> SqlitePool {
         .connect(&db_url)
         .await
         .expect("connect in-memory sqlite");
-    restore_stateful_schema_template(&pool)
+    restore_test_state_schema_template(&pool)
         .await
         .expect("initialize current-schema test pool");
     pool
@@ -1788,7 +1764,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         .connect(&db_url)
         .await
         .expect("connect in-memory sqlite");
-    restore_stateful_schema_template(&pool)
+    restore_test_state_schema_template(&pool)
         .await
         .expect("schema should initialize from the stateful template");
     complete_prompt_cache_conversation_materialization_for_test(&pool).await;
@@ -1885,103 +1861,6 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     })
 }
 
-pub(crate) async fn write_stateful_schema_template(path: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "create stateful schema template directory {}",
-                parent.display()
-            )
-        })?;
-    }
-    if path.exists() {
-        fs::remove_file(path)
-            .with_context(|| format!("remove stale stateful schema template {}", path.display()))?;
-    }
-
-    let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(path))
-        .context("build stateful schema template sqlite options")?
-        .create_if_missing(true);
-    let pool = SqlitePoolOptions::new()
-        .min_connections(1)
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .with_context(|| format!("open stateful schema template {}", path.display()))?;
-    ensure_schema(&pool)
-        .await
-        .context("initialize stateful schema template")?;
-    pool.close().await;
-    Ok(())
-}
-
-async fn restore_stateful_schema_template(pool: &SqlitePool) -> anyhow::Result<()> {
-    let Some(template_path) = current_test_state_schema_template_path() else {
-        return ensure_schema(pool).await;
-    };
-    if !template_path.is_file() {
-        anyhow::bail!(
-            "current-profile schema template does not exist: {}",
-            template_path.display()
-        );
-    }
-    restore_stateful_schema_template_from_path(pool, &template_path).await
-}
-
-async fn restore_stateful_schema_template_from_path(
-    pool: &SqlitePool,
-    template_path: &Path,
-) -> anyhow::Result<()> {
-    let options = SqliteConnectOptions::from_str(&test_sqlite_url_for_path(template_path))
-        .context("build stateful schema template reader options")?
-        .read_only(true)
-        .create_if_missing(false);
-    let mut source = SqliteConnection::connect_with(&options)
-        .await
-        .with_context(|| format!("open stateful schema template {}", template_path.display()))?;
-    let mut destination = pool
-        .acquire()
-        .await
-        .context("acquire stateful test sqlite")?;
-    let mut destination_handle = destination
-        .lock_handle()
-        .await
-        .context("lock stateful test sqlite handle")?;
-    let mut source_handle = source
-        .lock_handle()
-        .await
-        .context("lock stateful schema template handle")?;
-
-    // The SQLite backup API copies the already-built template without replaying DDL per test.
-    let backup = unsafe {
-        sqlite3_backup_init(
-            destination_handle.as_raw_handle().as_ptr(),
-            c"main".as_ptr(),
-            source_handle.as_raw_handle().as_ptr(),
-            c"main".as_ptr(),
-        )
-    };
-    if backup.is_null() {
-        anyhow::bail!("start stateful schema SQLite backup");
-    }
-    let step_code = unsafe { sqlite3_backup_step(backup, -1) };
-    let finish_code = unsafe { sqlite3_backup_finish(backup) };
-    if step_code != SQLITE_DONE || finish_code != SQLITE_OK {
-        anyhow::bail!(
-            "copy stateful schema SQLite backup failed: step={step_code}, finish={finish_code}"
-        );
-    }
-
-    drop(source_handle);
-    drop(destination_handle);
-    drop(destination);
-    source
-        .close()
-        .await
-        .context("close stateful schema template")?;
-    Ok(())
-}
-
 fn quote_sqlite_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -2051,7 +1930,7 @@ async fn schema_default_data_signature(pool: &SqlitePool) -> Vec<(String, Vec<St
 async fn stateful_schema_template_matches_fresh_schema_and_keeps_pooled_databases_isolated() {
     let temp_dir = make_temp_test_dir("stateful-schema-template-parity");
     let template_path = temp_dir.join("current-schema.db");
-    write_stateful_schema_template(&template_path)
+    write_current_schema_template(&template_path)
         .await
         .expect("write stateful schema template");
 
@@ -2069,7 +1948,7 @@ async fn stateful_schema_template_matches_fresh_schema_and_keeps_pooled_database
         .connect(&template_url)
         .await
         .expect("connect template schema parity sqlite");
-    restore_stateful_schema_template_from_path(&template_pool, &template_path)
+    restore_current_schema_template_from_path(&template_pool, &template_path)
         .await
         .expect("restore template schema parity sqlite");
     let fresh_pool = SqlitePoolOptions::new()
@@ -2131,7 +2010,7 @@ async fn stateful_schema_template_matches_fresh_schema_and_keeps_pooled_database
         .connect(&isolated_url)
         .await
         .expect("connect isolated template sqlite");
-    restore_stateful_schema_template_from_path(&isolated_pool, &template_path)
+    restore_current_schema_template_from_path(&isolated_pool, &template_path)
         .await
         .expect("restore isolated template sqlite");
     let isolated_count: i64 = sqlx::query_scalar(

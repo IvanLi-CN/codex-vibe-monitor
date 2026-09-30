@@ -1818,7 +1818,7 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
     file_backed_test_state_with_busy_timeout_and_template(prefix, busy_timeout, None).await
 }
 
-pub(crate) async fn file_backed_test_state_with_current_schema_template_and_busy_timeout(
+pub(crate) async fn file_backed_test_state_from_current_schema(
     prefix: &str,
     busy_timeout: Duration,
 ) -> (Arc<AppState>, PathBuf, String) {

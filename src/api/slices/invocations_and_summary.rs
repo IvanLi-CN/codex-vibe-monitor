@@ -34274,6 +34274,12 @@ mod request_compression_query_tests {
             .subscription_hub
             .store_summary_projection(rolling_snapshot)
             .await;
+        assert!(
+            renew_summary_projection_freshness_if_generation_matches(state.as_ref())
+                .await
+                .expect("renew unchanged rolling projection while all-time build is held"),
+            "the unchanged durable generation should renew the stale rolling projection"
+        );
         let Json(rolling) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
