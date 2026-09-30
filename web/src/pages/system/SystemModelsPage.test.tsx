@@ -174,6 +174,17 @@ function clickButton(label: string) {
   act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 }
 
+function clickModelAction(model: string, label: string) {
+  const button = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(
+    (item) => {
+      if (item.getAttribute("aria-label") !== label) return false;
+      return item.closest("tr, article")?.textContent?.includes(model) ?? false;
+    },
+  );
+  expect(button).toBeTruthy();
+  act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+}
+
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   expect(setter).toBeTruthy();
@@ -181,6 +192,15 @@ function setInputValue(input: HTMLInputElement, value: string) {
     setter?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
+}
+
+function setLabeledInput(labelText: string, value: string) {
+  const label = Array.from(document.body.querySelectorAll("label")).find(
+    (item) => item.querySelector("span")?.textContent?.trim() === labelText,
+  );
+  const input = label?.querySelector("input");
+  expect(input).toBeTruthy();
+  setInputValue(input!, value);
 }
 
 describe("SystemModelsPage", () => {
@@ -215,6 +235,116 @@ describe("SystemModelsPage", () => {
     expect(text).toContain("priced-only-model");
     expect(text).toContain("custom-model");
     expect(text).toContain("—");
+  });
+
+  it("shows the initial loading state until settings are available", async () => {
+    let resolveSettings!: (settings: SettingsPayload) => void;
+    apiMocks.fetchSettings.mockImplementationOnce(
+      () => new Promise<SettingsPayload>((resolve) => (resolveSettings = resolve)),
+    );
+
+    renderPage();
+    expect(host?.querySelector('[aria-busy="true"]')).toBeTruthy();
+    expect(host?.textContent).not.toContain("preset-without-price");
+
+    await act(async () => resolveSettings(makeSettings()));
+    expect(host?.textContent).toContain("preset-without-price");
+  });
+
+  it("adds a manual price as a custom catalog entry", async () => {
+    renderPage();
+    await flushEffects();
+    clickButton("新增模型");
+
+    setLabeledInput("模型", "manual-new-model");
+    setLabeledInput("输入 / 1M", "0.25");
+    setLabeledInput("输出 / 1M", "0.75");
+    setLabeledInput("缓存读取 / 1M", "0.1");
+    clickButton("保存价格");
+    await flushEffects();
+
+    expect(apiMocks.updatePricingSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            model: "manual-new-model",
+            inputPer1m: 0.25,
+            outputPer1m: 0.75,
+            cacheReadPer1m: 0.1,
+            source: "custom",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("edits an existing price and saves it as a custom entry", async () => {
+    renderPage();
+    await flushEffects();
+    clickModelAction("custom-model", "编辑价格");
+
+    setLabeledInput("输入 / 1M", "4");
+    setLabeledInput("输出 / 1M", "8");
+    clickButton("保存价格");
+    await flushEffects();
+
+    expect(apiMocks.updatePricingSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            model: "custom-model",
+            inputPer1m: 4,
+            outputPer1m: 8,
+            source: "custom",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("updates the proxy preset when its switch is enabled", async () => {
+    renderPage();
+    await flushEffects();
+    const presetSwitch = document.body.querySelector<HTMLButtonElement>(
+      'button[role="switch"][aria-label="在代理模型列表中启用 preset-without-price"]',
+    );
+    expect(presetSwitch?.getAttribute("aria-checked")).toBe("false");
+    apiMocks.updateManagedModelPreset.mockResolvedValueOnce({
+      ...makeSettings().proxy,
+      enabledModels: ["preset-without-price", "shared-model"],
+    });
+
+    act(() => presetSwitch?.click());
+    await flushEffects();
+
+    expect(apiMocks.updateManagedModelPreset).toHaveBeenCalledWith("preset-without-price", true);
+    expect(
+      document.body
+        .querySelector<HTMLButtonElement>(
+          'button[role="switch"][aria-label="在代理模型列表中启用 preset-without-price"]',
+        )
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("confirms deletion and removes the model through the delete API", async () => {
+    renderPage();
+    await flushEffects();
+    clickModelAction("shared-model", "删除");
+    await flushEffects();
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog?.textContent).toContain("shared-model");
+    expect(apiMocks.deleteManagedModel).not.toHaveBeenCalled();
+    const confirmButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "删除",
+    );
+    expect(confirmButton).toBeTruthy();
+    act(() => confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushEffects();
+
+    expect(apiMocks.deleteManagedModel).toHaveBeenCalledWith("shared-model");
+    expect(document.body.textContent).not.toContain("shared-model");
   });
 
   it("requires a provider choice and applies only the selected preview prices", async () => {
