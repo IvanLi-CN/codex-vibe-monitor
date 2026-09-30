@@ -43,9 +43,9 @@ pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecution
         .unwrap_or(task_key);
     #[cfg(test)]
     {
-        return Some(TaskExecutionLease {
+        Some(TaskExecutionLease {
             task_key: canonical_task_key.to_string(),
-        });
+        })
     }
     #[cfg(not(test))]
     {

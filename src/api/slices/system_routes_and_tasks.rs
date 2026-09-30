@@ -1486,7 +1486,7 @@ pub(crate) async fn begin_system_task_run(
                 SystemTaskKind::HourlyRollupBootstrap => "hourly_rollup_bootstrap",
                 _ => task_kind.as_str(),
             };
-            let id = sqlx::query_scalar::<_, i64>(
+            sqlx::query_scalar::<_, i64>(
                 r#"
                 INSERT INTO system_task_runs (
                     task_kind,
@@ -1505,8 +1505,7 @@ pub(crate) async fn begin_system_task_run(
             .bind(summary)
             .bind(&started_at)
             .fetch_one(_pool)
-            .await?;
-            id
+            .await?
         }
         #[cfg(not(test))]
         {
