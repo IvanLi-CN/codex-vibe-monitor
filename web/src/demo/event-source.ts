@@ -80,7 +80,13 @@ export class DemoTopicEventSource implements EventTarget {
       return;
     }
     if (this.readyState !== DemoTopicEventSource.OPEN) return;
-    this.#unsubscribe = subscribeToDemoRealtime(() => void this.publish(topics, "live"));
+    this.#unsubscribe = subscribeToDemoRealtime((payload) => {
+      const changedTopics =
+        payload.type === "records" && payload.records.length === 0
+          ? topics.filter((topic) => topic.topic === "dashboard.activity.current")
+          : topics;
+      if (changedTopics.length > 0) void this.publish(changedTopics, "live");
+    });
   }
 
   private async publish(topics: SubscriptionTopicDescriptor[], type: "snapshot" | "live") {

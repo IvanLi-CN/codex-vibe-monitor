@@ -3520,7 +3520,7 @@ pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<A
 }
 
 pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
-    router
+    let router = router
         .route("/api/stats", get(fetch_stats))
         .route(
             "/api/stats/long-term/overview",
@@ -3536,7 +3536,6 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             "/api/stats/dashboard-activity/recent",
             get(fetch_dashboard_activity_recent),
         )
-        .route("/api/stats/invocation-timeline", get(fetch_timeline))
         .route(
             "/api/stats/dashboard-network-timeseries",
             get(fetch_dashboard_network_timeseries),
@@ -3587,7 +3586,8 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             get(get_prompt_cache_conversation_binding)
                 .patch(patch_prompt_cache_conversation_binding),
         )
-        .route("/api/quota/latest", get(latest_quota_snapshot))
+        .route("/api/quota/latest", get(latest_quota_snapshot));
+    register_invocation_timeline_routes(router)
 }
 
 pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {

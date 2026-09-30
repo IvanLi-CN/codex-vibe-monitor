@@ -17,6 +17,7 @@
     "test-storybook": "vitest run --project=storybook",
     "preview": "vite preview",
     "test:e2e": "playwright test",
+    "test:e2e:timeline-capacity": "E2E_TIMELINE_CAPACITY=1 playwright test tests/e2e/dashboard-timeline-capacity.spec.ts",
     "test:e2e:pwa": "playwright test -c playwright.pwa.config.ts",
     "pwa:test-server": "bun run build:pwa-test && bun tests/pwa/test-server.mjs",
     "storybook": "bun run scripts/run-storybook.mjs",

@@ -38,6 +38,18 @@ describe("demo MSW handlers", () => {
     expect(longTermPayload.series).toHaveLength(22);
   });
 
+  it("accepts completed timeline snapshot release requests", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/stats/invocation-timeline/demo-snapshot",
+      {
+        method: "DELETE",
+      },
+    );
+
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
+  });
+
   it("treats zero-millisecond TTFT as responding in account attempts", () => {
     expect(demoAttemptPhase("running", 0)).toBe("responding");
     expect(demoAttemptPhase("running", null)).toBe("requesting");

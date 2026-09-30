@@ -38,6 +38,49 @@ export interface LaneRecord {
   lane: number;
 }
 
+interface LaneEnd {
+  endMs: number;
+  lane: number;
+}
+
+function pushMinHeap<T>(heap: T[], value: T, compare: (left: T, right: T) => number) {
+  let index = heap.length;
+  heap.push(value);
+  while (index > 0) {
+    const parentIndex = Math.floor((index - 1) / 2);
+    const parent = heap[parentIndex];
+    if (parent === undefined || compare(parent, value) <= 0) break;
+    heap[index] = parent;
+    index = parentIndex;
+  }
+  heap[index] = value;
+}
+
+function popMinHeap<T>(heap: T[], compare: (left: T, right: T) => number): T | undefined {
+  const first = heap[0];
+  if (first === undefined) return undefined;
+  const last = heap.pop();
+  if (last === undefined) return first;
+  if (heap.length === 0) return first;
+
+  let index = 0;
+  while (true) {
+    const leftIndex = index * 2 + 1;
+    const rightIndex = leftIndex + 1;
+    if (leftIndex >= heap.length) break;
+    const left = heap[leftIndex];
+    if (left === undefined) break;
+    const right = heap[rightIndex];
+    const childIndex = right !== undefined && compare(right, left) < 0 ? rightIndex : leftIndex;
+    const child = heap[childIndex];
+    if (child === undefined || compare(last, child) <= 0) break;
+    heap[index] = child;
+    index = childIndex;
+  }
+  heap[index] = last;
+  return first;
+}
+
 export function getInvocationTimelineLaneCount(lanes: LaneRecord[]) {
   return Math.max(1, ...lanes.map((item) => item.lane + 1));
 }
@@ -166,7 +209,7 @@ const INVOCATION_MIN_VISIBLE_LANES = 4;
 const INVOCATION_CHART_HEIGHT_COMPACT_PX = 336;
 const INVOCATION_CHART_HEIGHT_DESKTOP_PX = 320;
 const INVOCATION_X_AXIS_HEIGHT_PX = 28;
-const INVOCATION_LANE_MIN_HEIGHT_PX = 1;
+const INVOCATION_LANE_MIN_HEIGHT_PX = 8;
 const INVOCATION_LANE_MAX_HEIGHT_PX = 16;
 const INVOCATION_LANE_GAP_PX = 1;
 const INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX = 16;
@@ -183,6 +226,11 @@ export interface InvocationTimelineLayout {
   visibleLaneCount: number;
 }
 
+export interface InvocationTimelineVisibleLaneRange {
+  firstLane: number;
+  lastLane: number;
+}
+
 export function resolveInvocationTimelineLayout(
   actualLaneCount: number,
   isCompactViewport: boolean,
@@ -195,14 +243,11 @@ export function resolveInvocationTimelineLayout(
   const heightWithGap = Math.floor(
     (laneAreaHeightPx - (visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX) / visibleLaneCount,
   );
-  const laneHeight =
-    heightWithGap > 2
-      ? Math.min(INVOCATION_LANE_MAX_HEIGHT_PX, heightWithGap)
-      : Math.max(
-          INVOCATION_LANE_MIN_HEIGHT_PX,
-          Math.min(2, Math.floor(laneAreaHeightPx / visibleLaneCount)),
-        );
-  const laneGap = laneHeight > 2 ? INVOCATION_LANE_GAP_PX : 0;
+  const laneHeight = Math.min(
+    INVOCATION_LANE_MAX_HEIGHT_PX,
+    Math.max(INVOCATION_LANE_MIN_HEIGHT_PX, heightWithGap),
+  );
+  const laneGap = INVOCATION_LANE_GAP_PX;
   const laneStep = laneHeight + laneGap;
   const laneContentHeight =
     visibleLaneCount * laneHeight + Math.max(0, visibleLaneCount - 1) * laneGap;
@@ -255,6 +300,22 @@ export function resolveInvocationTimelineScrollTop(
   return maxScrollTop;
 }
 
+export function resolveVisibleInvocationLaneRange(
+  laneCount: number,
+  laneStep: number,
+  lanePlotHeight: number,
+  laneAreaHeight: number,
+  scrollTop: number,
+  overscan = 2,
+): InvocationTimelineVisibleLaneRange {
+  if (laneCount <= 0 || laneStep <= 0) return { firstLane: 0, lastLane: -1 };
+  const firstVisibleLane = Math.floor((lanePlotHeight - (scrollTop + laneAreaHeight)) / laneStep);
+  const lastVisibleLane = Math.ceil((lanePlotHeight - scrollTop) / laneStep) - 1;
+  return {
+    firstLane: Math.max(0, firstVisibleLane - overscan),
+    lastLane: Math.min(laneCount - 1, lastVisibleLane + overscan),
+  };
+}
 export function assignInvocationTimelineLanes(
   records: InvocationTimelineRecord[],
   asOf: string,
@@ -263,7 +324,9 @@ export function assignInvocationTimelineLanes(
   snapshotAtMs?: number,
 ): LaneRecord[] {
   const referenceNowMs = snapshotAtMs ?? parseEpoch(asOf) ?? nowMs;
-  const laneEnds: number[] = [];
+  const activeLanes: LaneEnd[] = [];
+  const availableLanes: number[] = [];
+  let nextLane = 0;
   return records
     .map((record) => ({ record, startMs: parseEpoch(record.occurredAt) }))
     .filter(
@@ -274,10 +337,21 @@ export function assignInvocationTimelineLanes(
       const endMs = record.isInFlight
         ? Math.max(referenceNowMs, advanceInFlight ? nowMs : referenceNowMs, startMs + 1)
         : Math.max(resolveTerminalEndMs(record, startMs), startMs + 1);
-      const laneEndMs = endMs;
-      let lane = laneEnds.findIndex((laneEnd) => laneEnd <= startMs);
-      if (lane < 0) lane = laneEnds.length;
-      laneEnds[lane] = laneEndMs;
+      while (activeLanes[0]?.endMs !== undefined && activeLanes[0].endMs <= startMs) {
+        const availableLane = popMinHeap(
+          activeLanes,
+          (left, right) => left.endMs - right.endMs || left.lane - right.lane,
+        );
+        if (availableLane) {
+          pushMinHeap(availableLanes, availableLane.lane, (left, right) => left - right);
+        }
+      }
+      const lane = popMinHeap(availableLanes, (left, right) => left - right) ?? nextLane++;
+      pushMinHeap(
+        activeLanes,
+        { lane, endMs },
+        (left, right) => left.endMs - right.endMs || left.lane - right.lane,
+      );
       return { record, startMs, endMs, lane };
     });
 }
@@ -393,6 +467,16 @@ export function DashboardInvocationTimeline({
   const laneCount = getInvocationTimelineLaneCount(lanes);
   const laneLayout = resolveInvocationTimelineLayout(laneCount, isCompactViewport);
   const tooltipTheme = usePortaledTheme(plotRef.current);
+  const visibleLaneRange = resolveVisibleInvocationLaneRange(
+    laneLayout.visibleLaneCount,
+    laneLayout.laneStep,
+    laneLayout.lanePlotHeight,
+    laneLayout.laneAreaHeightPx,
+    laneScrollTop,
+  );
+  const visibleLanes = lanes.filter(
+    (item) => item.lane >= visibleLaneRange.firstLane && item.lane <= visibleLaneRange.lastLane,
+  );
   const hasInFlightLanes = lanes.some((item) => item.record.isInFlight);
   const plotWindow = timeline.window;
   const autoScrollViewKey = `${timeline.bounds?.startMs ?? "empty"}:${closedNaturalDay}:${upstreamAccountId ?? "all"}:${timelineDataOverride ? "override" : "remote"}`;
@@ -655,6 +739,8 @@ export function DashboardInvocationTimeline({
           <div className="min-w-0 p-3">
             <div
               data-testid="dashboard-invocation-timeline-lanes"
+              data-total-calls={renderedData?.total ?? 0}
+              data-total-lanes={laneCount}
               className="relative h-[21rem] overflow-hidden overscroll-contain desktop:h-80"
               style={{ height: `${chartHeightPx}px` }}
             >
@@ -773,7 +859,7 @@ export function DashboardInvocationTimeline({
                     ref={laneScrollRef}
                     className="absolute inset-x-0 top-0 overflow-y-auto overscroll-contain"
                     tabIndex={0}
-                    aria-label={t("dashboard.activityOverview.timelineTitle")}
+                    aria-label={`${t("dashboard.activityOverview.timelineTitle")}, ${t("dashboard.activityOverview.timelineCalls", { count: renderedData?.total ?? 0 })}`}
                     style={{ height: `${laneAreaHeightPx}px` }}
                     onScroll={(event) => {
                       const scrollTop = event.currentTarget.scrollTop;
@@ -801,7 +887,7 @@ export function DashboardInvocationTimeline({
                             }}
                           />
                         ))}
-                        {lanes.map((item) => {
+                        {visibleLanes.map((item) => {
                           const status = resolveStatus(item.record);
                           const left = Math.max(0, Math.min(100, xFor(item.startMs)));
                           const right = Math.max(left, Math.min(100, xFor(item.endMs)));
@@ -844,7 +930,7 @@ export function DashboardInvocationTimeline({
                               role="img"
                               key={`${item.record.invokeId}:${item.record.occurredAt}`}
                               data-call-value={item.lane + 1}
-                              className={`absolute flex appearance-none items-center overflow-visible ${laneHeight > 2 ? "rounded border shadow-sm" : "rounded-sm"} ${statusClass(status)}`}
+                              className={`absolute flex appearance-none items-center overflow-visible rounded border shadow-sm ${statusClass(status)}`}
                               aria-label={accessibleLabel}
                               style={{
                                 left: `${left}%`,
@@ -852,7 +938,6 @@ export function DashboardInvocationTimeline({
                                 width: `${width}%`,
                                 minWidth: "8px",
                                 height: `${laneHeight}px`,
-                                borderWidth: laneHeight > 2 ? undefined : 0,
                               }}
                               title={accessibleLabel}
                             />
