@@ -1107,7 +1107,14 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     enabled: bool,
 ) -> Result<StartupBackfillProgress> {
     let Some(pool) = startup_backfill_progress_pool(pool) else {
-        return Ok(StartupBackfillProgress::pending(task.name().to_string()));
+        #[cfg(test)]
+        {
+            return Ok(StartupBackfillProgress::pending(task.name().to_string()));
+        }
+        #[cfg(not(test))]
+        {
+            return Err(anyhow!("maintenance database unavailable"));
+        }
     };
     let task_name = task.name();
     let like_pattern = format!("{task_name}:%");
