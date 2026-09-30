@@ -991,10 +991,6 @@ pub(crate) async fn load_startup_backfill_progress(
     .bind(task_name)
     .fetch_optional(pool)
     .await?;
-    if let Some(progress) = progress {
-        return Ok(progress.into());
-    }
-
     let managed_tasks_present = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
     )
@@ -1002,17 +998,61 @@ pub(crate) async fn load_startup_backfill_progress(
     .await
     .unwrap_or(0)
         != 0;
-    let enabled = match (
+    let managed_enabled = match (
         managed_tasks_present,
         crate::maintenance_store::managed_startup_backfill_suffix(task_name),
     ) {
-        (false, Some(_)) => true,
-        (true, Some(suffix)) => {
+        (false, _) => None,
+        (true, Some(suffix)) => Some(
             sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
                 .bind(format!("startup_backfill.{suffix}"))
                 .fetch_optional(pool)
                 .await?
-                .unwrap_or(false)
+                .unwrap_or(false),
+        ),
+        _ => None,
+    };
+    if let Some(progress) = progress {
+        let mut progress: StartupBackfillProgress = progress.into();
+        if let Some(enabled) = managed_enabled
+            && progress.enabled != enabled
+        {
+            let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
+            let (next_run_after, suspension_reason) = if enabled {
+                (None, None)
+            } else {
+                (
+                    Some(disabled_until.clone()),
+                    Some("operator_disabled".to_string()),
+                )
+            };
+            sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
+                     wake_generation=wake_generation + 1
+                 WHERE task_name=?",
+            )
+            .bind(if enabled { 1_i64 } else { 0_i64 })
+            .bind(&next_run_after)
+            .bind(&suspension_reason)
+            .bind(task_name)
+            .execute(pool)
+            .await?;
+            progress.enabled = enabled;
+            progress.next_run_after = next_run_after;
+            progress.suspension_reason = suspension_reason;
+            progress.next_probe_at = None;
+            progress.wake_generation = progress.wake_generation.saturating_add(1);
+        }
+        return Ok(progress);
+    }
+
+    let enabled = match (managed_enabled, managed_tasks_present) {
+        (Some(enabled), _) => enabled,
+        (None, false)
+            if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_some() =>
+        {
+            true
         }
         _ => false,
     };
@@ -3364,6 +3404,45 @@ mod startup_backfill_tests {
                 .await
                 .expect("load legacy startup backfill progress");
         assert!(progress.enabled);
+    }
+
+    #[tokio::test]
+    async fn load_reconciles_existing_progress_with_managed_task_control() {
+        let pool = control_test_pool().await;
+        let task_name = StartupBackfillTask::ProxyUsage.name();
+        sqlx::query(
+            "INSERT INTO managed_tasks (task_key,enabled) VALUES ('startup_backfill.proxy_usage',0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert disabled task control");
+        sqlx::query("INSERT INTO startup_backfill_progress (task_name,enabled) VALUES (?,1)")
+            .bind(task_name)
+            .execute(&pool)
+            .await
+            .expect("insert stale enabled progress");
+
+        let disabled = load_startup_backfill_progress(&pool, task_name)
+            .await
+            .expect("reconcile disabled progress");
+        assert!(!disabled.enabled);
+        assert_eq!(
+            disabled.suspension_reason.as_deref(),
+            Some("operator_disabled")
+        );
+
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1 WHERE task_key='startup_backfill.proxy_usage'",
+        )
+        .execute(&pool)
+        .await
+        .expect("enable task control");
+        let enabled = load_startup_backfill_progress(&pool, task_name)
+            .await
+            .expect("reconcile enabled progress");
+        assert!(enabled.enabled);
+        assert!(enabled.next_run_after.is_none());
+        assert!(enabled.suspension_reason.is_none());
     }
 
     #[tokio::test]
