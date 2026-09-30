@@ -1499,22 +1499,6 @@ fn managed_startup_backfill_task(name: &str) -> Result<crate::StartupBackfillTas
         .ok_or_else(|| anyhow!("未知启动回填子任务: {name}"))
 }
 
-#[cfg(test)]
-mod managed_task_dispatch_tests {
-    use super::managed_startup_backfill_task;
-
-    #[test]
-    fn all_registered_startup_backfill_children_resolve_for_run_now() {
-        for key in crate::maintenance_store::STARTUP_BACKFILL_TASKS {
-            assert!(
-                managed_startup_backfill_task(key).is_ok(),
-                "registered child task {key} cannot run"
-            );
-        }
-        assert!(managed_startup_backfill_task("unknown_child").is_err());
-    }
-}
-
 pub(crate) fn begin_runtime_shutdown(cancel: &CancellationToken) {
     if !cancel.is_cancelled() {
         info!("shutdown signal received; beginning graceful shutdown");
@@ -2284,4 +2268,20 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod managed_task_dispatch_tests {
+    use super::managed_startup_backfill_task;
+
+    #[test]
+    fn all_registered_startup_backfill_children_resolve_for_run_now() {
+        for key in crate::maintenance_store::STARTUP_BACKFILL_TASKS {
+            assert!(
+                managed_startup_backfill_task(key).is_ok(),
+                "registered child task {key} cannot run"
+            );
+        }
+        assert!(managed_startup_backfill_task("unknown_child").is_err());
+    }
 }
