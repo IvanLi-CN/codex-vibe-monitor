@@ -1482,6 +1482,7 @@ pub(crate) struct HttpClients {
     pub(crate) shared: Client,
     pub(crate) pool_upstream: Client,
     pub(crate) proxy: Client,
+    pub(crate) models_dev: Client,
     pub(crate) timeout: Duration,
     pub(crate) user_agent: String,
 }
@@ -1495,6 +1496,12 @@ impl HttpClients {
             .pool_max_idle_per_host(config.shared_connection_parallelism)
             .build()
             .context("failed to construct shared HTTP client")?;
+
+        let models_dev = Self::builder(Some(timeout), &user_agent)
+            .pool_max_idle_per_host(config.shared_connection_parallelism)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to construct models.dev HTTP client")?;
 
         // Pool live upstream traffic can legitimately stream well past REQUEST_TIMEOUT_SECS.
         // Handshake and upload budgets are enforced by route-specific timeout wrappers instead.
@@ -1514,6 +1521,7 @@ impl HttpClients {
             shared,
             pool_upstream,
             proxy,
+            models_dev,
             timeout,
             user_agent,
         })

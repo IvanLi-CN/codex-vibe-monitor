@@ -1003,7 +1003,8 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
     let pool = &state.pool;
 
     let mut legacy_proxy = state.proxy_model_settings.read().await.clone();
-    legacy_proxy.enabled_preset_models = vec!["gpt-5.4".to_string()];
+    legacy_proxy.enabled_preset_models =
+        vec!["gpt-5.4".to_string(), "legacy-dynamic-model".to_string()];
     save_proxy_model_settings(pool, legacy_proxy.clone())
         .await
         .expect("save legacy enabled preset state");
@@ -1041,11 +1042,39 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
             .iter()
             .any(|model| model == "legacy-priced-model")
     );
+    assert!(
+        migrated_models
+            .iter()
+            .any(|model| model == "legacy-dynamic-model")
+    );
     assert_eq!(
         load_proxy_model_settings(pool)
             .await
             .expect("load migrated proxy settings")
             .enabled_preset_models,
+        legacy_proxy.enabled_preset_models
+    );
+
+    let Json(updated_proxy) = put_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ProxyModelSettingsUpdateRequest {
+            hijack_enabled: legacy_proxy.hijack_enabled,
+            merge_upstream_enabled: legacy_proxy.merge_upstream_enabled,
+            fast_mode_rewrite_mode: None,
+            upstream_429_max_retries: None,
+            websocket_enabled: None,
+            upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
+            encrypted_session_owner_routing_enabled: None,
+            enabled_models: legacy_proxy.enabled_preset_models.clone(),
+        }),
+    )
+    .await
+    .expect("proxy settings update should preserve enabled legacy models");
+    assert_eq!(
+        updated_proxy.enabled_models,
         legacy_proxy.enabled_preset_models
     );
 
@@ -1088,6 +1117,14 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
             .enabled_preset_models
             .iter()
             .any(|model| model == "gpt-5.4")
+    );
+    assert!(
+        load_proxy_model_settings(pool)
+            .await
+            .expect("load remaining proxy settings after restart")
+            .enabled_preset_models
+            .iter()
+            .any(|model| model == "legacy-dynamic-model")
     );
     let historical_cost = sqlx::query_scalar::<_, f64>(
         "SELECT cost FROM codex_invocations WHERE invoke_id = 'model-delete-history'",

@@ -78,7 +78,7 @@ pub(crate) async fn post_models_sync_preview(
 
     let response = state
         .http_clients
-        .shared
+        .models_dev
         .get(MODELS_DEV_API_URL)
         .send()
         .await

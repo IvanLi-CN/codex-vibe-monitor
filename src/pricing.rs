@@ -54,6 +54,21 @@ pub(crate) async fn ensure_managed_model_catalog(pool: &Pool<Sqlite>) -> Result<
                 .await
                 .context("failed to import a legacy preset model")?;
         }
+        let enabled_preset_models_json = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT enabled_preset_models_json FROM proxy_model_settings WHERE id = ?1",
+        )
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to read legacy enabled preset models")?
+        .flatten();
+        for model in decode_enabled_preset_models(enabled_preset_models_json.as_deref()) {
+            sqlx::query("INSERT OR IGNORE INTO managed_models (model) VALUES (?1)")
+                .bind(model)
+                .execute(&mut *tx)
+                .await
+                .context("failed to import an enabled legacy preset model")?;
+        }
         sqlx::query(
             "INSERT OR IGNORE INTO managed_models (model) SELECT model FROM pricing_settings_models",
         )

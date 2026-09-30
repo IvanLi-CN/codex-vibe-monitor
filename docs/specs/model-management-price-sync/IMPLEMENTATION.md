@@ -14,7 +14,7 @@
 - `REQ-MODEL-MGMT-004` through `REQ-MODEL-MGMT-010`: `src/api/slices/model_management.rs` implements on-demand models.dev parsing, supported token-price normalization, conflict candidates, selected apply, and source links; `web/src/pages/system/SystemModelsPage.tsx` implements the editable list and review dialog.
 - `web/src/App.tsx`, `web/src/features/app-shell/navigation.ts`, `web/src/lib/api/`, `web/src/i18n/translations.ts`, and `web/src/pages/Settings.tsx` add the route, navigation, clients, translations, and remove duplicate legacy panels.
 - Verification: stateful SQLite profile 1373 passed; Web unit suite 1663 passed and 6 skipped; focused models.dev parser tests 3 passed; model workspace Storybook stories 26 passed; Rust check, formatting, Web typecheck, and production build passed.
-- Rollout facts: schema migration preserves static candidates and enabled membership once; durable suppressions keep deleted built-in rows absent after restart; explicit price re-add clears suppression and does not enable the preset.
+- Rollout facts: the one-time schema migration imports built-in candidates, existing priced models, and previously enabled preset IDs (including dynamic IDs); durable suppressions keep deleted built-in rows absent after restart; explicit price re-add clears suppression and does not enable the preset.
 
 ## Coverage / rollout summary
 
