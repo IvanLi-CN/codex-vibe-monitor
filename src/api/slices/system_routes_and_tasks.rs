@@ -1675,8 +1675,9 @@ pub(crate) async fn finish_system_task_run_batched(
     }
 }
 
-const SYSTEM_TASK_FINISH_RETRY_ATTEMPTS: usize = 20;
+const SYSTEM_TASK_FINISH_RETRY_ATTEMPTS: usize = 4;
 const SYSTEM_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) async fn finish_system_task_run_reliably(
     state: &AppState,
@@ -1729,25 +1730,66 @@ pub(crate) async fn finish_system_task_run_reliably(
         let status_text = status.as_str();
         let mut last_error = None;
         for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
-            match store
-                .finish_run(
-                    handle.id,
-                    status_text,
-                    &finished_at,
-                    duration_ms,
-                    summary.as_deref(),
-                    detail.as_deref(),
+            let finish_result = if let Some(cancel) = cancel {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    result = tokio::time::timeout(
+                        SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT,
+                        store.finish_run(
+                            handle.id,
+                            status_text,
+                            &finished_at,
+                            duration_ms,
+                            summary.as_deref(),
+                            detail.as_deref(),
+                        ),
+                    ) => Some(result),
+                }
+            } else {
+                Some(
+                    tokio::time::timeout(
+                        SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT,
+                        store.finish_run(
+                            handle.id,
+                            status_text,
+                            &finished_at,
+                            duration_ms,
+                            summary.as_deref(),
+                            detail.as_deref(),
+                        ),
+                    )
+                    .await,
                 )
-                .await
-            {
-                Ok(()) => return true,
+            };
+            let Some(finish_result) = finish_result else {
+                break;
+            };
+            match finish_result {
+                Ok(result) => match result {
+                    Ok(()) => return true,
+                    Err(error) => {
+                        warn!(
+                            task_kind = handle.task_kind.as_str(),
+                            trigger_kind = %handle.trigger_kind,
+                            attempt,
+                            error = %error,
+                            "failed to finalize task history in maintenance database"
+                        );
+                        last_error = Some(error);
+                    }
+                },
                 Err(error) => {
+                    let error = anyhow!(
+                        "maintenance database task-history finish timed out after {} ms: {error}",
+                        SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT.as_millis()
+                    );
                     warn!(
                         task_kind = handle.task_kind.as_str(),
                         trigger_kind = %handle.trigger_kind,
                         attempt,
                         error = %error,
-                        "failed to finalize task history in maintenance database"
+                        "timed out finalizing task history in maintenance database"
                     );
                     last_error = Some(error);
                 }
