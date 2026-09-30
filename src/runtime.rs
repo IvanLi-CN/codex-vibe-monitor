@@ -218,9 +218,10 @@ pub(crate) async fn run() -> Result<()> {
     let _maintenance_store = match crate::maintenance_store::open(&config).await {
         Ok(store) => {
             if let Err(error) = store.migrate_legacy_state(&pool).await {
-                warn!(error = %error, "legacy task state migration did not complete; will retry on next startup");
+                warn!(error = %error, "legacy task state migration did not complete; keeping maintenance observation unavailable until the next startup retry");
+            } else {
+                crate::maintenance_store::set_global(Arc::new(store.clone()));
             }
-            crate::maintenance_store::set_global(Arc::new(store.clone()));
             Some(Arc::new(store))
         }
         Err(error) => {
@@ -1085,6 +1086,9 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(Duration::from_millis(250)) => {}
             }
+            if let Err(error) = store.enqueue_due_runs().await {
+                warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
+            }
             let claim = match store.claim_requested_run().await {
                 Ok(claim) => claim,
                 Err(error) => {
@@ -1154,6 +1158,92 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 "恢复连接池尝试 {} 条，调用 {} 条",
                 outcome.recovered_attempts, outcome.recovered_invocations
             ))
+        }
+        "upstream_account_maintenance" => {
+            run_upstream_account_maintenance_once(state.clone()).await?;
+            Ok("上游账号维护完成".to_string())
+        }
+        "system_status_snapshot" => {
+            hydrate_system_status_snapshot(state.as_ref()).await?;
+            Ok("系统状态快照刷新完成".to_string())
+        }
+        "invocation_timeline_snapshot" => {
+            let result = cleanup_timeline_snapshot_rows_once(&state.pool).await?;
+            Ok(format!("调用时间线快照清理完成：{result:?}"))
+        }
+        "dashboard_runtime_projection_reconcile" => {
+            let result = reconcile_dashboard_runtime_projection_once(state.as_ref())
+                .await
+                .map_err(|error| anyhow!(error.to_string()))?;
+            Ok(format!("仪表盘运行投影校对完成：{result:?}"))
+        }
+        "long_term_projection" => {
+            flush_long_term_projection(state.as_ref(), "managed_task")
+                .await
+                .map_err(|error| anyhow!(error.to_string()))?;
+            Ok("长期统计投影刷新完成".to_string())
+        }
+        "timeseries_minute_projection" => {
+            crate::api::flush_timeseries_minute_projection(state.as_ref(), "managed_task")
+                .await
+                .map_err(|error| anyhow!(error.to_string()))?;
+            Ok("分钟时序投影刷新完成".to_string())
+        }
+        "raw_payload_metrics_inventory" => {
+            let reset = resume_retention_raw_payload_metrics_inventory(state.as_ref()).await?;
+            Ok(if reset {
+                "原始载荷指标盘点已推进".to_string()
+            } else {
+                "原始载荷指标盘点无需处理".to_string()
+            })
+        }
+        "prompt_cache_materialization" => {
+            let task = crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
+            let pass = crate::run_startup_backfill_maintenance_pass(
+                state.clone(),
+                &state.shutdown,
+                Some(&[task]),
+            )
+            .await;
+            if pass.had_failure {
+                bail!(
+                    pass.detail
+                        .unwrap_or_else(|| "Prompt 缓存物化失败".to_string())
+                );
+            }
+            Ok("Prompt 缓存物化完成".to_string())
+        }
+        "raw_compression" => {
+            let summary = compress_cold_proxy_raw_payloads(
+                &state.pool,
+                &state.config,
+                state.config.database_path.parent(),
+                false,
+            )
+            .await?;
+            Ok(format!("原始载荷压缩完成：{summary:?}"))
+        }
+        "archive_upstream_activity_manifest" => {
+            let summary =
+                refresh_archive_upstream_activity_manifest(&state.pool, &state.config, false)
+                    .await?;
+            Ok(format!("上游活动归档清单完成：{summary:?}"))
+        }
+        "materialize_historical_rollups" => {
+            let summary = materialize_historical_rollups(&state.pool, &state.config, false).await?;
+            Ok(format!("历史汇总物化完成：{summary:?}"))
+        }
+        "verify_archive_storage" => {
+            let summary = verify_archive_storage(&state.pool, &state.config).await?;
+            Ok(format!("归档存储校验完成：{summary:?}"))
+        }
+        "prune_archive_batches" => {
+            let summary = prune_archive_batches(&state.pool, &state.config, false).await?;
+            Ok(format!("归档批次清理完成：{summary:?}"))
+        }
+        "prune_legacy_archive_batches" => {
+            let summary = prune_legacy_archive_batches(&state.pool, &state.config, false).await?;
+            Ok(format!("旧归档批次清理完成：{summary:?}"))
         }
         "startup_backfill" => {
             let pass =

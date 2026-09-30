@@ -738,10 +738,12 @@ impl StartupBackfillProgress {
     }
 
     pub(crate) fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.next_run_after
-            .as_deref()
-            .and_then(parse_to_utc_datetime)
-            .is_none_or(|deadline| deadline <= now)
+        self.enabled
+            && self
+                .next_run_after
+                .as_deref()
+                .and_then(parse_to_utc_datetime)
+                .is_none_or(|deadline| deadline <= now)
     }
 }
 
@@ -954,7 +956,10 @@ pub(crate) async fn load_startup_backfill_progress(
     task_name: &str,
 ) -> Result<StartupBackfillProgress> {
     let Some(pool) = startup_backfill_progress_pool(pool) else {
-        return Ok(StartupBackfillProgress::pending(task_name.to_string()));
+        let mut pending = StartupBackfillProgress::pending(task_name.to_string());
+        pending.enabled = false;
+        pending.suspension_reason = Some("maintenance_database_unavailable".to_string());
+        return Ok(pending);
     };
     Ok(sqlx::query_as::<_, StartupBackfillProgressRow>(
         r#"

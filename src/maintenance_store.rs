@@ -725,7 +725,7 @@ impl MaintenanceStore {
         ) in progress
         {
             sqlx::query(
-                "INSERT INTO startup_backfill_progress (task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_name) DO UPDATE SET cursor_id=excluded.cursor_id,next_run_after=excluded.next_run_after,zero_update_streak=excluded.zero_update_streak,last_started_at=excluded.last_started_at,last_finished_at=excluded.last_finished_at,last_scanned=excluded.last_scanned,last_updated=excluded.last_updated,last_status=excluded.last_status,suspension_reason=excluded.suspension_reason,next_probe_at=excluded.next_probe_at,wake_generation=excluded.wake_generation,enabled=excluded.enabled",
+                "INSERT OR IGNORE INTO startup_backfill_progress (task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             )
             .bind(&task_name)
             .bind(cursor_id)
@@ -746,7 +746,7 @@ impl MaintenanceStore {
             let updated_at = last_finished_at.or(last_started_at).or(next_run_after);
             let freshness = if enabled == 0 { "stale" } else { "fresh" };
             sqlx::query(
-                "INSERT INTO managed_task_progress (task_key,total,completed,phase,checkpoint,updated_at,freshness) VALUES (?,?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET completed=excluded.completed,phase=excluded.phase,checkpoint=excluded.checkpoint,updated_at=excluded.updated_at,freshness=excluded.freshness",
+                "INSERT OR IGNORE INTO managed_task_progress (task_key,total,completed,phase,checkpoint,updated_at,freshness) VALUES (?,?,?,?,?,?,?)",
             )
             .bind(task_key)
             .bind(Option::<i64>::None)
@@ -759,6 +759,49 @@ impl MaintenanceStore {
             .await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
+        let now = Utc::now();
+        let now_text = format_utc_iso_millis(now);
+        let mut transaction = self.pool.begin().await?;
+        let due_tasks = sqlx::query_as::<_, (String, Option<i64>, Option<String>)>(
+            "SELECT task_key,interval_secs,cron_expr
+             FROM managed_tasks
+             WHERE enabled=1 AND is_manual=0 AND next_trigger_at IS NOT NULL
+               AND next_trigger_at <= ?
+             ORDER BY next_trigger_at, task_key",
+        )
+        .bind(&now_text)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let mut enqueued = 0_u64;
+        for (task_key, interval_secs, cron_expr) in due_tasks {
+            let next_trigger = next_trigger_at(interval_secs, cron_expr.as_deref());
+            let inserted = sqlx::query(
+                "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary)
+                 VALUES (?,?,?,?,?)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(&task_key)
+            .bind("schedule")
+            .bind(&now_text)
+            .bind("requested")
+            .bind("按计划触发")
+            .execute(&mut *transaction)
+            .await?;
+            enqueued += inserted.rows_affected();
+            sqlx::query(
+                "UPDATE managed_tasks SET next_trigger_at=?, updated_at=? WHERE task_key=?",
+            )
+            .bind(next_trigger)
+            .bind(&now_text)
+            .bind(task_key)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(enqueued)
     }
 
     pub(crate) async fn begin_run(
