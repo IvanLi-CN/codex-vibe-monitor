@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 已完成全量 PR required-job 成本收敛候选；保持三个独立 backend profiles，并以当前 PR head 完成冷/热两轮三分钟预算验收
+- Implementation: 三个 backend profiles 与 CI topology 已落地；PR #1056 repair run `36726941619` 将目标 Lightweight job 验收到 `113s` 且所有 checks 通过，但全部 required jobs 的 `180s` 目标仍未达成，Stateful SQLite 与其他 jobs 仍需后续收敛
 - Lifecycle: active
 - Project-owned validation target: `Dockerfile` `backend-test` (`rust:1.96.0-bookworm`, `cargo-nextest 0.9.138`, checksum-verified amd64 asset, rustfmt/clippy) invokes the profile runner with an isolated writable run workspace and optional external Cargo directories.
 - Shared-testbox entrypoint: `compose.backend-test.yml` builds that same target without fixing Cargo paths or changing the profile command/test-thread contract; the runner is an adapter, not a project dependency.
@@ -13,6 +13,16 @@
 - Representative-scale acceptance: `src/tests/stateful_sqlite/representative_scale_acceptance.rs` is a deterministic, data-blind exact-oracle test selected by `--test-filter`; it crosses the retired 64 MiB aggregate source boundary and enforces 30-second bootstrap / 1800-second all-time budgets.
 - Release consumes the same target SHA's successful CI Main result and runtime-image smoke. Representative-scale acceptance remains a deterministic PR/Main gate and has no external receipt or production-copy input.
 - Catalog note: 三路 backend profile 合同保持不变；本轮收敛可移植 Rust 编译缓存输入、Archive file fixture、PR smoke build 与非 backend required-job 资源边界
+
+## Lightweight runtime investigation
+
+- Run `36713261886` used four nextest threads: Lightweight test execution was `190.294s` and job wall time was `222s`.
+- Run `36715063348` used six nextest threads: Lightweight test execution rose to `198.478s` and job wall time to `230s`; higher parallelism added SQLite contention instead of improving elapsed time.
+- The same six-thread run completed Archive / File I/O in `158s`. The current candidate moves one raw gzip file-I/O test there; its assertions and total suite coverage remain intact.
+- The current candidate returns Lightweight to four threads, prepares one profile-private current-schema template per runner, and copies it into isolated in-memory/file-backed fixtures. It replaces the 16-second freshness sleep by aging the fixture and invoking the same generation-fenced freshness renewal helper used by production maintenance before asserting the rolling response.
+- Run `36723460863` failed the Lightweight freshness regression after the initial candidate aged the snapshot without renewing its lease; the test reported the expected stale projection. The Archive / File I/O job passed in `149s`, and Stateful SQLite completed in `304s`. The test now exercises the actual renewal path without wall-clock sleeping.
+- Repair run `36726941619` passed every PR check on head `844d691cd481fba242cee66f4f27eb792ed18765`: Lightweight ran `1,228/1,228` tests in `77.715s` (`80s` runner-reported; `113s` job wall), Archive / File I/O ran `299/299` in `105.101s` (`107s` reported; `146s` job wall), and Stateful SQLite ran `1,370/1,370` in `277.965s` (`281s` reported; `314s` job wall). Compared with linked run `36693515319`, Lightweight test execution fell from `427.558s` to `77.715s` and job wall time from about `464s` to `113s`.
+- This PR meets the linked Lightweight job's `<=180s` target. The topic's all-required-jobs `<=180s` target remains open: the same run recorded Stateful SQLite `314s`, Representative Scale `314s`, and Lint & Format Check `190s`. No whole-workflow runtime target is claimed from this single run.
 
 ## Coverage / rollout summary
 
