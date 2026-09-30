@@ -414,7 +414,7 @@ fn cron_field_matches(field: &str, value: u32, minimum: u32, maximum: u32) -> bo
             return false;
         }
         if base == "*" {
-            return (value - minimum) % step == 0;
+            return (value - minimum).is_multiple_of(step);
         }
         if let Some((start, end)) = base.split_once('-') {
             let Ok(start) = start.parse::<u32>() else {
@@ -428,7 +428,7 @@ fn cron_field_matches(field: &str, value: u32, minimum: u32, maximum: u32) -> bo
                 && start <= end
                 && value >= start
                 && value <= end
-                && (value - start) % step == 0;
+                && (value - start).is_multiple_of(step);
         }
         base.parse::<u32>()
             .is_ok_and(|exact| exact == value && exact >= minimum && exact <= maximum)

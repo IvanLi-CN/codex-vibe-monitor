@@ -7,7 +7,7 @@ const STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT: u64 = 128;
 const STARTUP_LEGACY_DETAIL_MIRROR_BUDGET_SECS: u64 = 6;
 const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
 
-fn startup_backfill_progress_pool<'a>(pool: &'a Pool<Sqlite>) -> Option<&'a Pool<Sqlite>> {
+fn startup_backfill_progress_pool(pool: &Pool<Sqlite>) -> Option<&Pool<Sqlite>> {
     if let Some(store) = crate::maintenance_store::global() {
         return Some(&store.pool);
     }
