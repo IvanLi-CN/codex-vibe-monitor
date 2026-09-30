@@ -498,6 +498,13 @@ jobs:
     name: Backend Test Archive Producer
     runs-on: ubuntu-24.04
     steps:
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
       - name: Restore Cargo test artifacts
         id: cargo-test-cache
         uses: actions/cache/restore@v5
@@ -520,12 +527,28 @@ jobs:
         id: build-backend-test-archive
         run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
+      - name: Upload backend test archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-tests.tar.zst
+          if-no-files-found: error
+
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: target
           key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
   backend-tests-lightweight:
     needs: backend-test-archive
@@ -534,6 +557,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -559,8 +587,13 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
   backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
@@ -569,6 +602,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -598,6 +636,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
@@ -636,6 +679,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -661,8 +709,13 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
   build-pr-smoke-artifacts:
     name: PR Smoke Artifact Producer

@@ -537,6 +537,101 @@ fi
 
 grep -q "target cache must save only after a successful archive build" "$tmp_dir/archive-cache.log"
 
+archive_consumer_repo="$tmp_dir/archive-consumer-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_consumer_repo"
+python3 - <<'PY' "$archive_consumer_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = '''  backend-tests-lightweight:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Lightweight)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+'''
+replacement = needle.replace(
+    '''      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+''',
+    "",
+    1,
+)
+if needle not in text:
+    raise SystemExit("failed to locate PR lightweight producer-result guard")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_consumer_repo" --profile final >/dev/null 2>"$tmp_dir/archive-consumer.log"; then
+  echo "expected missing backend archive producer-result guard fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "missing step 'Verify backend test archive producer'" "$tmp_dir/archive-consumer.log"
+
+main_archive_consumer_repo="$tmp_dir/main-archive-consumer-repo"
+copy_repo_snapshot "$baseline_repo" "$main_archive_consumer_repo"
+python3 - <<'PY' "$main_archive_consumer_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-main.yml"
+text = path.read_text()
+needle = '''      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
+'''
+if needle not in text:
+    raise SystemExit("failed to locate Main archive consumer producer-result guard")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$main_archive_consumer_repo" --profile final >/dev/null 2>"$tmp_dir/main-archive-consumer.log"; then
+  echo "expected missing Main backend archive producer-result guard fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "missing step 'Verify backend test archive producer'" "$tmp_dir/main-archive-consumer.log"
+
+archive_cache_save_repo="$tmp_dir/archive-cache-save-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_cache_save_repo"
+python3 - <<'PY' "$archive_cache_save_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = '''      - name: Save Cargo test artifacts
+        if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+'''
+replacement = needle.replace("        continue-on-error: true\n", "", 1)
+if needle not in text:
+    raise SystemExit("failed to locate backend archive cache-save policy")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_cache_save_repo" --profile final >/dev/null 2>"$tmp_dir/archive-cache-save.log"; then
+  echo "expected blocking backend cache-save fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "cache writes best-effort" "$tmp_dir/archive-cache-save.log"
+
 smoke_producer_repo="$tmp_dir/smoke-producer-repo"
 copy_repo_snapshot "$baseline_repo" "$smoke_producer_repo"
 python3 - <<'PY' "$smoke_producer_repo"

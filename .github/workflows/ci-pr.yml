@@ -591,6 +591,7 @@ jobs:
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: |
@@ -600,6 +601,7 @@ jobs:
 
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: target
@@ -612,6 +614,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -642,6 +649,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -672,6 +684,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -759,6 +776,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 

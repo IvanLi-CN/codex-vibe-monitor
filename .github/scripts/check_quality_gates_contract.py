@@ -377,13 +377,41 @@ def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     require(mapping.get("continue-on-error") in (None, False), f"{where}.continue-on-error must not ignore failures")
 
 
-def require_job_and_steps_fail_closed(job: dict[str, Any], where: str) -> None:
+def require_job_and_steps_fail_closed(
+    job: dict[str, Any],
+    where: str,
+    best_effort_steps: tuple[str, ...] = (),
+) -> None:
     require_fail_closed(job, where)
     steps = job.get("steps")
     require(isinstance(steps, list), f"{where}.steps must be a list")
     for index, value in enumerate(steps):
         step = require_mapping(value, f"{where}.steps[{index}]")
-        require_fail_closed(step, f"{where}.steps[{step.get('name', index)}]")
+        step_where = f"{where}.steps[{step.get('name', index)}]"
+        if step.get("name") in best_effort_steps:
+            require(step.get("continue-on-error") is True, f"{step_where}.continue-on-error must keep cache writes best-effort")
+        else:
+            require_fail_closed(step, step_where)
+
+
+def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, job_id: str) -> None:
+    where = f"{workflow_name}.jobs.{job_id}"
+    producer_check = step_config(job, "Verify backend test archive producer", where)
+    producer_env = require_mapping(producer_check.get("env"), f"{where} producer result environment")
+    require(
+        producer_env.get("PRODUCER_RESULT") == "${{ needs.backend-test-archive.result }}"
+        and producer_check.get("run") == 'test "$PRODUCER_RESULT" = success',
+        f"{where} must fail when its backend archive producer fails",
+    )
+    download = uses_step_config(job, "Download backend test archive", "actions/download-artifact@v7", where)
+    download_with = require_mapping(download.get("with"), f"{where} archive download")
+    expected_archive_name = "backend-test-archive-${{ github.run_id }}"
+    if workflow_name == "ci-pr.yml":
+        expected_archive_name += "-${{ github.run_attempt }}"
+    require(
+        download_with.get("name") == expected_archive_name,
+        f"{where} must download the backend test archive for its workflow run",
+    )
 
 
 def require_exact_cargo_cache_reuse(job: dict[str, Any], step_name: str, cache_id: str, where: str) -> None:
@@ -695,6 +723,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "ci-pr.yml representative-scale job must replay the current run's backend archive",
         )
         require_exact_if(representative_job, "always()", "ci-pr.yml.jobs.backend-tests-representative-scale")
+        require_backend_archive_consumer(representative_job, "ci-pr.yml", "backend-tests-representative-scale")
         producer_check = step_config(
             representative_job,
             "Verify backend test archive producer",
@@ -855,7 +884,11 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "ci-pr.yml.jobs.backend-test-archive must be the declared archive producer",
         )
         require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
-        require_fail_closed(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        require_job_and_steps_fail_closed(
+            archive_job,
+            "ci-pr.yml.jobs.backend-test-archive",
+            best_effort_steps=("Save Cargo registry", "Save Cargo test artifacts"),
+        )
         require_cargo_test_cache_restore(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-pr.yml.jobs.backend-test-archive")
         require(
@@ -878,6 +911,23 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             and target_cache_save_with.get("key") == CARGO_TEST_CACHE_KEY,
             "ci-pr.yml.jobs.backend-test-archive: save the source/toolchain-keyed Cargo test artifacts",
         )
+        registry_cache_save_step = step_config(archive_job, "Save Cargo registry", "ci-pr.yml.jobs.backend-test-archive")
+        require(
+            registry_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and registry_cache_save_step.get("continue-on-error") is True,
+            "ci-pr.yml.jobs.backend-test-archive: registry cache writes must be best-effort",
+        )
+        archive_upload = uses_step_config(
+            archive_job,
+            "Upload backend test archive",
+            "actions/upload-artifact@v7",
+            "ci-pr.yml.jobs.backend-test-archive",
+        )
+        archive_upload_with = require_mapping(archive_upload.get("with"), "ci-pr.yml backend archive upload")
+        require(
+            archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}",
+            "ci-pr.yml backend archive artifact must be unique to the current run attempt",
+        )
         require_exact_cargo_cache_reuse(
             archive_job,
             "Prepare exact Cargo test cache reuse",
@@ -894,6 +944,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-pr.yml.jobs.{backend_job_id}",
             )
+            require_backend_archive_consumer(job_config(workflow, backend_job_id, "ci-pr.yml"), "ci-pr.yml", backend_job_id)
         for shard_id, partition, expected_name in (
             (
                 "backend-tests-stateful-sqlite-shard-1",
@@ -914,6 +965,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             require_job_and_steps_fail_closed(shard_job, f"ci-pr.yml.jobs.{shard_id}")
             require(shard_job.get("needs") == "backend-test-archive", f"ci-pr.yml.jobs.{shard_id}.needs must use the archive producer")
             require_exact_if(shard_job, "always()", f"ci-pr.yml.jobs.{shard_id}")
+            require_backend_archive_consumer(shard_job, "ci-pr.yml", shard_id)
             shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-pr.yml.jobs.{shard_id}").get("run", ""))
             require_backend_partition_command(shard_run, partition, f"ci-pr.yml.jobs.{shard_id}")
         aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-pr.yml")
@@ -1031,7 +1083,11 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             "ci-main.yml.jobs.backend-test-archive must be the declared archive producer",
         )
         require_no_if(archive_job, "ci-main.yml.jobs.backend-test-archive")
-        require_fail_closed(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        require_job_and_steps_fail_closed(
+            archive_job,
+            "ci-main.yml.jobs.backend-test-archive",
+            best_effort_steps=("Save Cargo registry", "Save Cargo test artifacts"),
+        )
         require_cargo_test_cache_restore(archive_job, "ci-main.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-main.yml.jobs.backend-test-archive")
         require(
@@ -1054,6 +1110,24 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             and target_cache_save_with.get("key") == CARGO_TEST_CACHE_KEY,
             "ci-main.yml.jobs.backend-test-archive: save the source/toolchain-keyed Cargo test artifacts",
         )
+        registry_cache_save_step = step_config(archive_job, "Save Cargo registry", "ci-main.yml.jobs.backend-test-archive")
+        require(
+            registry_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and registry_cache_save_step.get("continue-on-error") is True,
+            "ci-main.yml.jobs.backend-test-archive: registry cache writes must be best-effort",
+        )
+        archive_upload = uses_step_config(
+            archive_job,
+            "Upload backend test archive",
+            "actions/upload-artifact@v7",
+            "ci-main.yml.jobs.backend-test-archive",
+        )
+        archive_upload_with = require_mapping(archive_upload.get("with"), "ci-main.yml backend archive upload")
+        require(
+            archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}"
+            and archive_upload_with.get("overwrite") is True,
+            "ci-main.yml backend archive artifact must be run-scoped and replace the prior attempt",
+        )
         require_exact_cargo_cache_reuse(
             archive_job,
             "Prepare exact Cargo test cache reuse",
@@ -1070,6 +1144,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-main.yml.jobs.{backend_job_id}",
             )
+            require_backend_archive_consumer(job_config(workflow, backend_job_id, "ci-main.yml"), "ci-main.yml", backend_job_id)
         for shard_id, partition in (
             ("backend-tests-stateful-sqlite-shard-1", "hash:1/2"),
             ("backend-tests-stateful-sqlite-shard-2", "hash:2/2"),
@@ -1078,6 +1153,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             require_job_and_steps_fail_closed(shard_job, f"ci-main.yml.jobs.{shard_id}")
             require(shard_job.get("needs") == "backend-test-archive", f"ci-main.yml.jobs.{shard_id}.needs must use the archive producer")
             require_exact_if(shard_job, "always()", f"ci-main.yml.jobs.{shard_id}")
+            require_backend_archive_consumer(shard_job, "ci-main.yml", shard_id)
             shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-main.yml.jobs.{shard_id}").get("run", ""))
             require_backend_partition_command(shard_run, partition, f"ci-main.yml.jobs.{shard_id}")
         aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-main.yml")
