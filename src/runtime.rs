@@ -1,8 +1,12 @@
 use super::*;
+use std::collections::VecDeque;
 
 const STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const STARTUP_HOT_READ_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(30);
 const STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX: Duration = Duration::from_secs(300);
+const MANAGED_TASK_FINISH_RETRY_ATTEMPTS: usize = 4;
+const MANAGED_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) fn next_startup_hourly_rollup_p2_preemption_retry(current: Duration) -> Duration {
     current
@@ -215,6 +219,33 @@ pub(crate) async fn run() -> Result<()> {
 
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
+    let _maintenance_store = match crate::maintenance_store::open(&config).await {
+        Ok(store) => {
+            if let Err(error) = store.migrate_legacy_state(&pool).await {
+                warn!(error = %error, "legacy task state migration did not complete; keeping maintenance observation unavailable until the next startup retry");
+            } else {
+                match store.recover_incomplete_runs().await {
+                    Ok(recovered_runs) => {
+                        if recovered_runs > 0 {
+                            warn!(
+                                recovered_runs,
+                                "recovered incomplete managed task runs at startup"
+                            );
+                        }
+                        crate::maintenance_store::set_global(Arc::new(store.clone()));
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "incomplete managed task runs could not be recovered; keeping maintenance observation unavailable until the next startup retry");
+                    }
+                }
+            }
+            Some(Arc::new(store))
+        }
+        Err(error) => {
+            warn!(error = %error, path = %config.maintenance_database_path().display(), "maintenance database unavailable; operational observation will be stale");
+            None
+        }
+    };
     log_startup_phase("schema", schema_started_at);
     if should_recover_pending_pool_attempts_on_startup(&cli) {
         let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
@@ -1027,6 +1058,8 @@ where
         .await;
     }
 
+    let managed_task_dispatcher_handle = spawn_managed_task_dispatcher(state.clone());
+
     let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
         .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
 
@@ -1045,7 +1078,7 @@ where
         );
     }
 
-    drain_runtime_after_pending_shutdown(
+    let runtime_result = drain_runtime_after_pending_shutdown(
         state,
         shutdown_watcher,
         server_handle,
@@ -1057,7 +1090,407 @@ where
         startup_backfill_handle,
         startup_hot_read_hydration_handle,
     )
-    .await
+    .await;
+    if let Err(error) = managed_task_dispatcher_handle.await {
+        warn!(error = %error, "managed task dispatcher task terminated during shutdown");
+    }
+    runtime_result
+}
+
+fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let Some(store) = crate::maintenance_store::global().cloned() else {
+            return;
+        };
+        let mut pending_finishes = VecDeque::new();
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => {
+                    drain_managed_task_finishes_on_shutdown(
+                        state.as_ref(),
+                        &store,
+                        &mut pending_finishes,
+                    )
+                    .await;
+                    return;
+                },
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+            }
+            if let Some(finish) = pending_finishes.pop_front()
+                && let Err(error) = finish_managed_task_run_bounded(&store, &finish).await
+            {
+                warn!(
+                    run_id = finish.run_id,
+                    task = %finish.task_key,
+                    error = %error,
+                    "managed task dispatcher deferred task-history finalization"
+                );
+                pending_finishes.push_back(finish);
+            }
+            if let Err(error) = store.enqueue_due_runs().await {
+                warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
+            }
+            if let Err(error) = store.cleanup_expired_history_if_due().await {
+                warn!(error = %error, "managed task dispatcher failed to clean expired history");
+            }
+            let claim = match store.claim_requested_run().await {
+                Ok(claim) => claim,
+                Err(error) => {
+                    warn!(error = %error, "managed task dispatcher failed to claim a requested run");
+                    continue;
+                }
+            };
+            let Some((run_id, task_key, _started_at)) = claim else {
+                continue;
+            };
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution(&task_key)
+            else {
+                pending_finishes.push_back(ManagedTaskFinish {
+                    run_id,
+                    task_key,
+                    status: SystemTaskStatus::Failed,
+                    finished_at: format_utc_iso_millis(Utc::now()),
+                    duration_ms: 0,
+                    summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
+                    detail: None,
+                });
+                continue;
+            };
+            let started_at = Instant::now();
+            let result = run_managed_task_once(&state, &task_key).await;
+            let (status, summary, detail) = match result {
+                Ok(summary) => (SystemTaskStatus::Success, Some(summary), None),
+                Err(error) => (
+                    SystemTaskStatus::Failed,
+                    Some(format!("{task_key} 手动运行失败")),
+                    Some(error.to_string()),
+                ),
+            };
+            let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            let task_dimension = managed_task_metric_dimension(&task_key);
+            state.performance_telemetry.record_duration_ms(
+                "maintenance.task_run_duration_ms",
+                task_dimension,
+                duration_ms as f64,
+            );
+            state.performance_telemetry.record_counter(
+                "maintenance.task_run_count",
+                task_dimension,
+                1,
+            );
+            state.performance_telemetry.record_counter(
+                if status == SystemTaskStatus::Success {
+                    "maintenance.task_run_success_count"
+                } else {
+                    "maintenance.task_run_failure_count"
+                },
+                task_dimension,
+                1,
+            );
+            let finish = ManagedTaskFinish {
+                run_id,
+                task_key,
+                status,
+                finished_at: format_utc_iso_millis(Utc::now()),
+                duration_ms,
+                summary,
+                detail,
+            };
+            if let Err(error) = finish_managed_task_run_bounded(&store, &finish).await {
+                warn!(
+                    run_id = finish.run_id,
+                    task = %finish.task_key,
+                    error = %error,
+                    "managed task dispatcher deferred task-history finalization"
+                );
+                pending_finishes.push_back(finish);
+            }
+        }
+    })
+}
+
+struct ManagedTaskFinish {
+    run_id: i64,
+    task_key: String,
+    status: SystemTaskStatus,
+    finished_at: String,
+    duration_ms: i64,
+    summary: Option<String>,
+    detail: Option<String>,
+}
+
+async fn finish_managed_task_run_bounded(
+    store: &crate::maintenance_store::MaintenanceStore,
+    finish: &ManagedTaskFinish,
+) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 0..=MANAGED_TASK_FINISH_RETRY_ATTEMPTS {
+        match tokio::time::timeout(
+            MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT,
+            store.finish_run(
+                finish.run_id,
+                finish.status.as_str(),
+                &finish.finished_at,
+                finish.duration_ms,
+                finish.summary.as_deref(),
+                finish.detail.as_deref(),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => last_error = Some(error),
+            Err(error) => {
+                last_error = Some(anyhow!(
+                    "managed task finish timed out after {} ms: {error}",
+                    MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT.as_millis()
+                ));
+            }
+        }
+        if attempt < MANAGED_TASK_FINISH_RETRY_ATTEMPTS {
+            tokio::time::sleep(MANAGED_TASK_FINISH_RETRY_INTERVAL).await;
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("managed task finish failed without an error")))
+}
+
+async fn drain_managed_task_finishes_on_shutdown(
+    state: &AppState,
+    store: &crate::maintenance_store::MaintenanceStore,
+    pending_finishes: &mut VecDeque<ManagedTaskFinish>,
+) {
+    while let Some(finish) = pending_finishes.pop_front() {
+        if let Err(error) = finish_managed_task_run_bounded(store, &finish).await {
+            // Replay resolves the maintenance row by run_id; task_kind is legacy journal metadata.
+            let recovery = BatchedSystemTaskFinish {
+                run_id: finish.run_id,
+                task_kind: SystemTaskKind::StartupBackfill,
+                trigger_kind: "managed_dispatcher".to_string(),
+                status: finish.status,
+                summary: finish.summary.clone(),
+                detail: finish.detail.clone(),
+                finished_at: finish.finished_at.clone(),
+                duration_ms: finish.duration_ms,
+            };
+            let quarantined = state.sqlite_batch_writer.quarantine_system_task_finish(
+                &recovery,
+                "managed task finish could not be finalized before shutdown",
+            );
+            warn!(
+                run_id = finish.run_id,
+                task = %finish.task_key,
+                error = %error,
+                quarantined,
+                "managed task dispatcher could not finalize a pending run before shutdown"
+            );
+        }
+    }
+}
+
+fn managed_task_metric_dimension(task_key: &str) -> &'static str {
+    match task_key {
+        "retention_archive" => "retention_archive",
+        "upstream_account_maintenance" => "upstream_account_maintenance",
+        "forward_proxy_subscription_refresh" => "forward_proxy_subscription_refresh",
+        "pool_orphan_recovery" => "pool_orphan_recovery",
+        "startup_hourly_rollup_bootstrap" => "startup_hourly_rollup_bootstrap",
+        "system_status_snapshot" => "system_status_snapshot",
+        "invocation_timeline_snapshot" => "invocation_timeline_snapshot",
+        "summary_snapshot" => "summary_snapshot",
+        "summary_coverage_recovery" => "summary_coverage_recovery",
+        "dashboard_runtime_projection_reconcile" => "dashboard_runtime_projection_reconcile",
+        "long_term_projection" => "long_term_projection",
+        "timeseries_minute_projection" => "timeseries_minute_projection",
+        "raw_payload_metrics_inventory" => "raw_payload_metrics_inventory",
+        "prompt_cache_materialization" => "prompt_cache_materialization",
+        "startup_backfill" => "startup_backfill",
+        "raw_compression" => "raw_compression",
+        "archive_upstream_activity_manifest" => "archive_upstream_activity_manifest",
+        "materialize_historical_rollups" => "materialize_historical_rollups",
+        "verify_archive_storage" => "verify_archive_storage",
+        "prune_archive_batches" => "prune_archive_batches",
+        "prune_legacy_archive_batches" => "prune_legacy_archive_batches",
+        key if key.starts_with("startup_backfill.") => "startup_backfill_child",
+        _ => "unknown_managed_task",
+    }
+}
+
+async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<String> {
+    match task_key {
+        "retention_archive" => {
+            let summary =
+                run_data_retention_maintenance(&state.pool, &state.config, Some(false), None)
+                    .await?;
+            let (brief, _detail) = crate::api::summarize_retention_run_for_system_task(&summary);
+            Ok(brief)
+        }
+        "forward_proxy_subscription_refresh" => {
+            refresh_forward_proxy_subscriptions(state.clone(), false, None).await?;
+            Ok("正向代理订阅刷新完成".to_string())
+        }
+        "summary_snapshot" => {
+            crate::api::refresh_summary_snapshots(state.as_ref()).await?;
+            Ok("汇总快照刷新完成".to_string())
+        }
+        "summary_coverage_recovery" => {
+            crate::api::SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                state.as_ref(),
+                None,
+            )
+            .await?;
+            Ok("汇总覆盖恢复完成".to_string())
+        }
+        "pool_orphan_recovery" => {
+            let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await?;
+            Ok(format!(
+                "恢复连接池尝试 {} 条，调用 {} 条",
+                outcome.recovered_attempts, outcome.recovered_invocations
+            ))
+        }
+        "upstream_account_maintenance" => {
+            run_upstream_account_maintenance_once(state.clone()).await?;
+            Ok("上游账号维护完成".to_string())
+        }
+        "system_status_snapshot" => {
+            hydrate_system_status_snapshot(state.as_ref()).await?;
+            Ok("系统状态快照刷新完成".to_string())
+        }
+        "invocation_timeline_snapshot" => {
+            cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .map_err(|_| anyhow!("调用时间线快照清理失败"))?;
+            Ok("调用时间线快照清理完成".to_string())
+        }
+        "dashboard_runtime_projection_reconcile" => {
+            let result = reconcile_dashboard_runtime_projection_once(state.as_ref())
+                .await
+                .map_err(|_| anyhow!("仪表盘运行投影校对失败"))?;
+            let _ = result;
+            Ok("仪表盘运行投影校对完成".to_string())
+        }
+        "long_term_projection" => {
+            run_long_term_projection_once_managed(state.as_ref()).await?;
+            Ok("长期统计投影刷新完成".to_string())
+        }
+        "timeseries_minute_projection" => {
+            crate::api::flush_timeseries_minute_projection_managed(state.as_ref(), "managed_task")
+                .await
+                .map_err(|_| anyhow!("分钟时序投影刷新失败"))?;
+            Ok("分钟时序投影刷新完成".to_string())
+        }
+        "raw_payload_metrics_inventory" => {
+            let reset =
+                resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await?;
+            Ok(if reset {
+                "原始载荷指标盘点已推进".to_string()
+            } else {
+                "原始载荷指标盘点无需处理".to_string()
+            })
+        }
+        "prompt_cache_materialization" => {
+            let task = crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
+            let pass = crate::run_startup_backfill_maintenance_pass_managed(
+                state.clone(),
+                &state.shutdown,
+                Some(&[task]),
+            )
+            .await;
+            if pass.had_failure {
+                bail!(
+                    pass.detail
+                        .unwrap_or_else(|| "Prompt 缓存物化失败".to_string())
+                );
+            }
+            Ok("Prompt 缓存物化完成".to_string())
+        }
+        "startup_hourly_rollup_bootstrap" => {
+            bootstrap_hourly_rollups_for_runtime_startup(
+                &state.pool,
+                Some(state.config.invocation_max_days),
+            )
+            .await?;
+            Ok("启动时小时汇总补齐完成".to_string())
+        }
+        "raw_compression" => {
+            let summary = compress_cold_proxy_raw_payloads(
+                &state.pool,
+                &state.config,
+                state.config.database_path.parent(),
+                false,
+            )
+            .await?;
+            Ok(format!("原始载荷压缩完成：{summary:?}"))
+        }
+        "archive_upstream_activity_manifest" => {
+            let summary =
+                refresh_archive_upstream_activity_manifest(&state.pool, &state.config, false)
+                    .await?;
+            Ok(format!("上游活动归档清单完成：{summary:?}"))
+        }
+        "materialize_historical_rollups" => {
+            let summary = materialize_historical_rollups(&state.pool, &state.config, false).await?;
+            Ok(format!("历史汇总物化完成：{summary:?}"))
+        }
+        "verify_archive_storage" => {
+            let summary = verify_archive_storage(&state.pool, &state.config).await?;
+            Ok(format!("归档存储校验完成：{summary:?}"))
+        }
+        "prune_archive_batches" => {
+            let summary = prune_archive_batches(&state.pool, &state.config, false).await?;
+            Ok(format!("归档批次清理完成：{summary:?}"))
+        }
+        "prune_legacy_archive_batches" => {
+            let summary = prune_legacy_archive_batches(&state.pool, &state.config, false).await?;
+            Ok(format!("旧归档批次清理完成：{summary:?}"))
+        }
+        "startup_backfill" => {
+            let pass = crate::run_startup_backfill_maintenance_pass_managed(
+                state.clone(),
+                &state.shutdown,
+                None,
+            )
+            .await;
+            if pass.had_failure {
+                bail!(
+                    pass.detail
+                        .unwrap_or_else(|| "启动回填存在失败".to_string())
+                );
+            }
+            Ok(if pass.ran_actionable_task {
+                "启动回填处理完成".to_string()
+            } else {
+                "启动回填没有可处理项".to_string()
+            })
+        }
+        key if key.starts_with("startup_backfill.") => {
+            let name = key.trim_start_matches("startup_backfill.");
+            let task = crate::StartupBackfillTask::from_name(name)
+                .ok_or_else(|| anyhow!("未知启动回填子任务: {name}"))?;
+            let catalog = state.pricing_catalog.read().await.clone();
+            crate::wake_startup_backfill_tasks_with_pricing_catalog(
+                &state.pool,
+                &[task],
+                Some(&catalog),
+                "manual_run",
+            )
+            .await?;
+            let pass = crate::run_startup_backfill_maintenance_pass_managed(
+                state.clone(),
+                &state.shutdown,
+                Some(&[task]),
+            )
+            .await;
+            if pass.had_failure {
+                bail!(
+                    pass.detail
+                        .unwrap_or_else(|| format!("启动回填子任务失败: {name}"))
+                );
+            }
+            Ok(format!("启动回填子任务 {name} 处理完成"))
+        }
+        _ => bail!("任务暂不支持立即运行: {task_key}"),
+    }
 }
 
 pub(crate) fn begin_runtime_shutdown(cancel: &CancellationToken) {
@@ -1195,6 +1628,11 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if crate::maintenance_store::legacy_worker_should_skip("startup_hourly_rollup_bootstrap")
+            .await
+        {
+            return;
+        }
         let started_at = Instant::now();
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
@@ -1206,6 +1644,22 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS);
         let mut p2_preemption_retry = initial_p2_preemption_retry;
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip(
+                "startup_hourly_rollup_bootstrap",
+            )
+            .await
+            {
+                return;
+            }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "startup_hourly_rollup_bootstrap",
+            ) else {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            };
             // Task history is admitted and recorded before waiting for the synchronization lock,
             // but both permits are released immediately so a lock wait cannot occupy the only
             // background pressure slot.
@@ -1540,6 +1994,9 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
     cancel: &CancellationToken,
     started_at_from: &str,
 ) {
+    let Some(store) = crate::maintenance_store::global() else {
+        return;
+    };
     let deadline = Instant::now() + Duration::from_millis(250);
     loop {
         let task = tokio::time::timeout(
@@ -1547,8 +2004,8 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
             sqlx::query_as::<_, (i64, String)>(
                 r#"
                 SELECT id, trigger_kind
-                FROM system_task_runs
-                WHERE task_kind = ?1
+                FROM managed_task_runs
+                WHERE task_key = ?1
                   AND trigger_kind = 'startup'
                   AND status = ?2
                   AND summary = 'background hourly rollup bootstrap started'
@@ -1560,7 +2017,7 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
             .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
             .bind(SystemTaskStatus::Running.as_str())
             .bind(started_at_from)
-            .fetch_optional(&state.pool),
+            .fetch_optional(&store.pool),
         )
         .await;
         match task {
@@ -1637,46 +2094,59 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             info!("forward proxy maintenance skipped because shutdown is already in progress");
             return;
         }
-        let startup_run = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return,
-            result = begin_system_task_run_admitted(
-                state.as_ref(),
-                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-                SystemTaskKind::ForwardProxySubscriptionRefresh,
-                "startup",
-                Some("forward proxy subscription refresh started".to_string()),
-            ) => result.ok(),
-        };
-        if let Err(err) = refresh_forward_proxy_subscriptions(
-            state.clone(),
-            true,
-            Some(startup_known_subscription_keys),
-        )
-        .await
+        if crate::maintenance_store::legacy_worker_should_skip("forward_proxy_subscription_refresh")
+            .await
         {
-            if let Some(run) = startup_run.as_ref() {
+            info!("forward proxy legacy worker skipped by managed task control");
+            return;
+        }
+        {
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "forward_proxy_subscription_refresh",
+            ) else {
+                return;
+            };
+            let startup_run = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                result = begin_system_task_run_admitted(
+                    state.as_ref(),
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                    SystemTaskKind::ForwardProxySubscriptionRefresh,
+                    "startup",
+                    Some("forward proxy subscription refresh started".to_string()),
+                ) => result.ok(),
+            };
+            if let Err(err) = refresh_forward_proxy_subscriptions(
+                state.clone(),
+                true,
+                Some(startup_known_subscription_keys),
+            )
+            .await
+            {
+                if let Some(run) = startup_run.as_ref() {
+                    let _ = finish_system_task_run_reliably(
+                        state.as_ref(),
+                        Some(&cancel),
+                        run,
+                        SystemTaskStatus::Failed,
+                        Some("forward proxy startup refresh failed".to_string()),
+                        Some(err.to_string()),
+                    )
+                    .await;
+                }
+                warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+            } else if let Some(run) = startup_run.as_ref() {
                 let _ = finish_system_task_run_reliably(
                     state.as_ref(),
                     Some(&cancel),
                     run,
-                    SystemTaskStatus::Failed,
-                    Some("forward proxy startup refresh failed".to_string()),
-                    Some(err.to_string()),
+                    SystemTaskStatus::Success,
+                    Some("forward proxy startup refresh completed".to_string()),
+                    None,
                 )
                 .await;
             }
-            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
-        } else if let Some(run) = startup_run.as_ref() {
-            let _ = finish_system_task_run_reliably(
-                state.as_ref(),
-                Some(&cancel),
-                run,
-                SystemTaskStatus::Success,
-                Some("forward proxy startup refresh completed".to_string()),
-                None,
-            )
-            .await;
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -1688,6 +2158,20 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if crate::maintenance_store::legacy_worker_should_skip(
+                        "forward_proxy_subscription_refresh",
+                    )
+                    .await
+                    {
+                        continue;
+                    }
+                    let Some(_execution_lease) =
+                        crate::maintenance_store::try_acquire_task_execution(
+                            "forward_proxy_subscription_refresh",
+                        )
+                    else {
+                        continue;
+                    };
                     let task_run = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => break,
@@ -1752,6 +2236,14 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if crate::maintenance_store::legacy_worker_should_skip("pool_orphan_recovery").await {
+                        continue;
+                    }
+                    let Some(_execution_lease) =
+                        crate::maintenance_store::try_acquire_task_execution("pool_orphan_recovery")
+                    else {
+                        continue;
+                    };
                     match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {

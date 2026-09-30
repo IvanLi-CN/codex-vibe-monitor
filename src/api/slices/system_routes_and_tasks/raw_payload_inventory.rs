@@ -606,6 +606,19 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip("raw_payload_metrics_inventory")
+                .await
+            {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => continue,
+                }
+            }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "raw_payload_metrics_inventory",
+            ) else {
+                continue;
+            };
             if let Err(error) =
                 crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
             {

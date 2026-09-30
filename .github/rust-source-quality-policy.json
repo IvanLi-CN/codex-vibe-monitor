@@ -21,13 +21,13 @@
     {
       "path": "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings.rs",
       "role": "production",
-      "line_budget": 3980,
+      "line_budget": 3981,
       "next_module_workstream": "Split prompt-cache conversation binding endpoints, hydration, and persistence operations."
     },
     {
       "path": "src/api/slices/prompt_cache_and_timeseries/timeseries.rs",
       "role": "production",
-      "line_budget": 5881,
+      "line_budget": 5932,
       "next_module_workstream": "Split prompt-cache timeseries query, aggregation, and flush/restart lifecycle."
     },
     {
@@ -57,19 +57,19 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4454,
+      "line_budget": 4463,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11497,
+      "line_budget": 11509,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3600,
+      "line_budget": 3670,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {
@@ -123,7 +123,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 5843,
+      "line_budget": 5852,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {

@@ -8095,6 +8095,18 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
+    if crate::maintenance_store::legacy_worker_should_skip("retention_archive").await {
+        debug!(
+            trigger,
+            "retention legacy worker skipped by managed task control"
+        );
+        return true;
+    }
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("retention_archive")
+    else {
+        return true;
+    };
     let started_at = Instant::now();
     match run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &state.pool,

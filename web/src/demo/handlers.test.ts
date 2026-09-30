@@ -1,6 +1,6 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { apiHandlers, demoAttemptPhase } from "./handlers";
+import { apiHandlers, demoAttemptPhase, resetDemoManagedTaskState } from "./handlers";
 import { DEMO_API_KEY_DISPLAY_NAMES, demoModel } from "./model";
 
 const server = setupServer(...apiHandlers);
@@ -9,6 +9,7 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   demoModel.setScene("operational");
   demoModel.reset();
+  resetDemoManagedTaskState();
 });
 afterAll(() => server.close());
 
@@ -536,6 +537,91 @@ describe("demo MSW handlers", () => {
     expect(account.id).toBe(selectedRecord?.upstreamAccountId);
     expect(account.history).toHaveLength(8);
     expect(account.recentActions.length).toBeGreaterThan(0);
+  });
+
+  it("serves the complete managed task registry in the demo", async () => {
+    const response = await fetch("http://demo.invalid/api/system/managed-tasks");
+    const tasks = (await response.json()) as Array<{
+      taskKey: string;
+      isManual: boolean;
+    }>;
+
+    expect(tasks).toHaveLength(37);
+    expect(tasks.filter((task) => task.taskKey.startsWith("startup_backfill.")).length).toBe(16);
+    expect(tasks.filter((task) => task.isManual).length).toBe(6);
+    expect(tasks.map((task) => task.taskKey)).toEqual(
+      expect.arrayContaining([
+        "retention_archive",
+        "prompt_cache_materialization",
+        "startup_backfill",
+        "startup_backfill.proxy_usage",
+        "startup_backfill.historical_rollups",
+        "prune_legacy_archive_batches",
+      ]),
+    );
+  });
+
+  it("persists task controls, exposes the next run, and rejects duplicate active runs", async () => {
+    const initialResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+    );
+    const initial = (await initialResponse.json()) as {
+      task: { title: string; nextTriggerAt: string | null };
+    };
+    expect(initial.task.title).toBe("汇总覆盖恢复");
+    expect(initial.task.nextTriggerAt).toEqual(expect.any(String));
+
+    const disabledResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: false }),
+      },
+    );
+    const disabled = (await disabledResponse.json()) as {
+      task: { enabled: boolean; nextTriggerAt: string | null };
+    };
+    expect(disabled.task).toMatchObject({ enabled: false, nextTriggerAt: null });
+
+    const enabledResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: true, intervalSecs: 120 }),
+      },
+    );
+    const enabled = (await enabledResponse.json()) as {
+      task: { enabled: boolean; intervalSecs: number; nextTriggerAt: string | null };
+    };
+    expect(enabled.task).toMatchObject({ enabled: true, intervalSecs: 120 });
+    expect(enabled.task.nextTriggerAt).toEqual(expect.any(String));
+
+    const scheduleConflictResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intervalSecs: 120, cronExpr: "*/5 * * * *" }),
+      },
+    );
+    expect(scheduleConflictResponse.status).toBe(400);
+
+    const runResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
+      { method: "POST" },
+    );
+    const running = (await runResponse.json()) as {
+      recentRuns: Array<{ status: string }>;
+    };
+    expect(running.recentRuns[0]?.status).toBe("running");
+
+    const conflictResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
+      { method: "POST" },
+    );
+    expect(conflictResponse.status).toBe(409);
   });
 
   it("scopes invocation summaries to the same conversation filters as invocation lists", async () => {

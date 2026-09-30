@@ -7,6 +7,16 @@ const STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT: u64 = 128;
 const STARTUP_LEGACY_DETAIL_MIRROR_BUDGET_SECS: u64 = 6;
 const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
 
+fn startup_backfill_progress_pool(pool: &Pool<Sqlite>) -> Option<&Pool<Sqlite>> {
+    if cfg!(test) {
+        return Some(pool);
+    }
+    if let Some(store) = crate::maintenance_store::global() {
+        return Some(&store.pool);
+    }
+    None
+}
+
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
         samples.push(sample);
@@ -550,6 +560,13 @@ fn startup_backfill_pressure_error_defer_outcome_if_recorded(
 }
 
 impl StartupBackfillTask {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ordered_tasks()
+            .iter()
+            .copied()
+            .find(|task| task.name() == name)
+    }
+
     pub(crate) fn ordered_tasks() -> &'static [Self] {
         &[
             Self::ProxyUsage,
@@ -721,10 +738,12 @@ impl StartupBackfillProgress {
     }
 
     pub(crate) fn is_due(&self, now: DateTime<Utc>) -> bool {
-        self.next_run_after
-            .as_deref()
-            .and_then(parse_to_utc_datetime)
-            .is_none_or(|deadline| deadline <= now)
+        self.enabled
+            && self
+                .next_run_after
+                .as_deref()
+                .and_then(parse_to_utc_datetime)
+                .is_none_or(|deadline| deadline <= now)
     }
 }
 
@@ -936,6 +955,12 @@ pub(crate) async fn load_startup_backfill_progress(
     pool: &Pool<Sqlite>,
     task_name: &str,
 ) -> Result<StartupBackfillProgress> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        let mut pending = StartupBackfillProgress::pending(task_name.to_string());
+        pending.enabled = false;
+        pending.suspension_reason = Some("maintenance_database_unavailable".to_string());
+        return Ok(pending);
+    };
     Ok(sqlx::query_as::<_, StartupBackfillProgressRow>(
         r#"
         SELECT
@@ -969,6 +994,9 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     task: StartupBackfillTask,
     enabled: bool,
 ) -> Result<StartupBackfillProgress> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        return Ok(StartupBackfillProgress::pending(task.name().to_string()));
+    };
     let task_name = task.name();
     let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
     sqlx::query(
@@ -1026,6 +1054,9 @@ pub(crate) async fn mark_startup_backfill_running(
     task_name: &str,
     cursor_id: i64,
 ) -> Result<()> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        return Ok(());
+    };
     let now = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -1076,6 +1107,9 @@ pub(crate) async fn save_startup_backfill_progress(
     task_name: &str,
     update: StartupBackfillProgressUpdate<'_>,
 ) -> Result<()> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        return Ok(());
+    };
     let finished_at = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -1139,6 +1173,9 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
     pricing_catalog: Option<&PricingCatalog>,
     wake_reason: &'static str,
 ) -> Result<u64> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        return Ok(0);
+    };
     let mut woken = 0;
     let mut proxy_cost_catalog_missing = false;
     for task in tasks {
@@ -1351,6 +1388,10 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
     pool: &Pool<Sqlite>,
     wake_reason: &'static str,
 ) -> Result<u64> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        STARTUP_BACKFILL_SCHEDULER.wake(StartupBackfillTask::AccountActivityV2Coverage);
+        return Ok(0);
+    };
     let task = StartupBackfillTask::AccountActivityV2Coverage;
     let task_name = task.name();
     let progress = load_startup_backfill_progress(pool, task_name).await?;
@@ -1691,7 +1732,26 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillMaintenancePass {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("startup_backfill")
+    else {
+        return StartupBackfillMaintenancePass::default();
+    };
     run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate).await
+}
+
+pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) -> StartupBackfillMaintenancePass {
+    run_startup_backfill_maintenance_pass_with_gate_inner(
+        state,
+        cancel,
+        selected_tasks,
+        crate::db_pressure::global_db_pressure_gate(),
+    )
+    .await
 }
 
 async fn begin_startup_backfill_audit(
@@ -2989,7 +3049,7 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
         task_count = tasks.len(),
         "pressure eligibility changed; dispatching deferred startup backfill tasks"
     );
-    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, Some(&tasks), gate).await;
+    run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate).await;
 }
 
 pub(crate) fn spawn_startup_backfill_maintenance(
@@ -3010,14 +3070,22 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut startup_prep_pending = prep_pending;
         let mut startup_prep_retry_at = startup_prep_pending
             .then(|| Instant::now() + Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
-        run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
+        if !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await {
+            run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
+        }
         // Register before either P2 supervisor is scheduled so long-term pruning cannot
         // reclaim a terminal event ahead of the minute projection consumer.
         state
             .terminal_projection_hub
             .activate_timeseries_consumer(0);
-        spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
-        spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone());
+        if !crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await {
+            spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
+        }
+        if !crate::maintenance_store::legacy_worker_should_skip("timeseries_minute_projection")
+            .await
+        {
+            spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone());
+        }
 
         let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
 
@@ -3038,16 +3106,16 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 _ = STARTUP_BACKFILL_SCHEDULER.wait_for_wake(observed_generation) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
                     let tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
-                    if !tasks.is_empty() {
+                    if !tasks.is_empty()
+                        && !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await
+                    {
                         run_startup_backfill_maintenance_pass(state.clone(), &cancel, Some(&tasks)).await;
                     }
                 }
                 _ = gate.wait_for_eligibility_change(observed_pressure_eligibility) => {
-                    run_pressure_eligible_startup_backfill_tasks(
-                        state.clone(),
-                        &cancel,
-                        gate,
-                    ).await;
+                    if !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await {
+                        run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, gate).await;
+                    }
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
@@ -3068,7 +3136,9 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                         });
                     }
                     let due_tasks = STARTUP_BACKFILL_SCHEDULER.drain_due_tasks(Utc::now());
-                    if !due_tasks.is_empty() {
+                    if !due_tasks.is_empty()
+                        && !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await
+                    {
                         run_startup_backfill_maintenance_pass(
                             state.clone(),
                             &cancel,

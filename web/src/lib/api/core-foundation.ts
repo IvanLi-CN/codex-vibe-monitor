@@ -2580,6 +2580,57 @@ export interface SystemTaskRunsResponse {
   nextCursor?: string;
 }
 
+export interface ManagedTask {
+  taskKey: string;
+  title: string;
+  description: string;
+  triggerMode: string;
+  enabled: boolean;
+  intervalSecs?: number | null;
+  cronExpr?: string | null;
+  nextTriggerAt?: string | null;
+  isManual: boolean;
+}
+
+export interface ManagedTaskProgress {
+  total?: number | null;
+  completed?: number | null;
+  phase?: string | null;
+  checkpoint?: string | null;
+  etaSeconds?: number | null;
+  updatedAt?: string | null;
+  freshness: string;
+}
+
+export interface ManagedTaskRun {
+  id: number;
+  triggerKind?: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  status: string;
+  summary?: string | null;
+  processedCount?: number | null;
+  updatedCount?: number | null;
+  errorDetail?: string | null;
+}
+
+export interface ManagedTaskPerformance {
+  runCount: number;
+  successCount: number;
+  failureCount: number;
+  averageDurationMs?: number | null;
+  latestDurationMs?: number | null;
+  observedAt?: string | null;
+}
+
+export interface ManagedTaskDetail {
+  task: ManagedTask;
+  progress?: ManagedTaskProgress | null;
+  recentRuns: ManagedTaskRun[];
+  performance?: ManagedTaskPerformance | null;
+}
+
 export interface PromptCacheMaterializationRun {
   id: number;
   startedAt: string;
@@ -5360,6 +5411,33 @@ export async function fetchSystemTaskRuns(params?: {
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const response = await fetchJson<unknown>(`/api/system/tasks${suffix}`);
   return normalizeSystemTaskRunsResponse(response);
+}
+
+export async function fetchManagedTasks(): Promise<ManagedTask[]> {
+  return fetchJson<ManagedTask[]>("/api/system/managed-tasks");
+}
+
+export async function fetchManagedTask(taskKey: string): Promise<ManagedTaskDetail> {
+  return fetchJson<ManagedTaskDetail>(`/api/system/managed-tasks/${encodeURIComponent(taskKey)}`);
+}
+
+export async function updateManagedTask(
+  taskKey: string,
+  payload: { enabled?: boolean; intervalSecs?: number | null; cronExpr?: string | null },
+): Promise<ManagedTaskDetail> {
+  return fetchJson<ManagedTaskDetail>(`/api/system/managed-tasks/${encodeURIComponent(taskKey)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runManagedTaskNow(taskKey: string): Promise<ManagedTaskDetail> {
+  return fetchJson<ManagedTaskDetail>(
+    `/api/system/managed-tasks/${encodeURIComponent(taskKey)}/run`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 export async function fetchExternalApiKeys(): Promise<ExternalApiKeyListResponse> {

@@ -2565,6 +2565,12 @@ pub(crate) fn spawn_long_term_projection_supervisor(
         daily_verify_ticker.tick().await;
 
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 _ = wait_for_long_term_projection_pressure_retry(
@@ -3330,6 +3336,20 @@ async fn flush_long_term_projection(
     state: &AppState,
     trigger: &'static str,
 ) -> Result<LongTermProjectionFlushOutcome> {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("long_term_projection")
+    else {
+        return Ok(LongTermProjectionFlushOutcome::DeferredByPressure {
+            retry_at: Some(Instant::now() + Duration::from_secs(1)),
+        });
+    };
+    flush_long_term_projection_unlocked(state, trigger).await
+}
+
+async fn flush_long_term_projection_unlocked(
+    state: &AppState,
+    trigger: &'static str,
+) -> Result<LongTermProjectionFlushOutcome> {
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
     let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
         flush_long_term_projection_inner(state, trigger)
@@ -3375,6 +3395,18 @@ async fn flush_long_term_projection(
             }
         }
     }
+}
+
+pub(crate) async fn run_long_term_projection_once(state: &AppState) -> Result<()> {
+    flush_long_term_projection(state, "managed_task")
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn run_long_term_projection_once_managed(state: &AppState) -> Result<()> {
+    flush_long_term_projection_unlocked(state, "managed_task")
+        .await
+        .map(|_| ())
 }
 
 async fn run_long_term_projection_flush_with_retry<T, Operation, OperationFuture>(

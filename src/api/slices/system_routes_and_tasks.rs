@@ -1453,6 +1453,14 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
+            if crate::maintenance_store::legacy_worker_should_skip("system_status_snapshot").await {
+                continue;
+            }
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("system_status_snapshot")
+            else {
+                continue;
+            };
             if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
                 warn!(
                     ?error,
@@ -1464,33 +1472,56 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
 }
 
 pub(crate) async fn begin_system_task_run(
-    pool: &Pool<Sqlite>,
+    _pool: &Pool<Sqlite>,
     task_kind: SystemTaskKind,
     trigger_kind: impl Into<String>,
     summary: Option<String>,
 ) -> Result<SystemTaskRunHandle> {
     let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
-    let id = sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO system_task_runs (
-            task_kind,
-            trigger_kind,
-            status,
-            summary,
-            started_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5)
-        RETURNING id
-        "#,
-    )
-    .bind(task_kind.as_str())
-    .bind(&trigger_kind)
-    .bind(SystemTaskStatus::Running.as_str())
-    .bind(summary)
-    .bind(&started_at)
-    .fetch_one(pool)
-    .await?;
+    let id = {
+        #[cfg(test)]
+        {
+            let stored_task_kind = match task_kind {
+                SystemTaskKind::HourlyRollupBootstrap => "hourly_rollup_bootstrap",
+                _ => task_kind.as_str(),
+            };
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                INSERT INTO system_task_runs (
+                    task_kind,
+                    trigger_kind,
+                    status,
+                    summary,
+                    started_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                RETURNING id
+                "#,
+            )
+            .bind(stored_task_kind)
+            .bind(&trigger_kind)
+            .bind(SystemTaskStatus::Running.as_str())
+            .bind(summary)
+            .bind(&started_at)
+            .fetch_one(_pool)
+            .await?
+        }
+        #[cfg(not(test))]
+        {
+            let store = crate::maintenance_store::global().ok_or_else(|| {
+                anyhow!("maintenance database unavailable; task run is not recorded")
+            })?;
+            store
+                .begin_run(
+                    task_kind.as_str(),
+                    &started_at,
+                    &trigger_kind,
+                    summary.as_deref(),
+                )
+                .await?
+        }
+    };
 
     Ok(SystemTaskRunHandle {
         id,
@@ -1500,44 +1531,25 @@ pub(crate) async fn begin_system_task_run(
     })
 }
 
-/// Record a task start without allowing SQLite's configured busy timeout to outlive shutdown.
-/// This uses a short-lived connection so the normal pool timeout remains unchanged for callers.
+/// Record a task start through the isolated maintenance database.
 pub(crate) async fn begin_system_task_run_nonblocking(
-    database_url: &str,
+    _database_url: &str,
     task_kind: SystemTaskKind,
     trigger_kind: impl Into<String>,
     summary: Option<String>,
 ) -> Result<SystemTaskRunHandle> {
-    let options = SqliteConnectOptions::from_str(database_url)
-        .context("invalid sqlite database url")?
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::ZERO);
-    let mut connection = SqliteConnection::connect_with(&options).await?;
-    let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
-    let result = sqlx::query_scalar::<_, i64>(
-        r#"
-        INSERT INTO system_task_runs (
-            task_kind,
-            trigger_kind,
-            status,
-            summary,
-            started_at
+    let store = crate::maintenance_store::global()
+        .ok_or_else(|| anyhow!("maintenance database unavailable; task run is not recorded"))?;
+    let started_at = format_utc_iso_millis(Utc::now());
+    let id = store
+        .begin_run(
+            task_kind.as_str(),
+            &started_at,
+            &trigger_kind,
+            summary.as_deref(),
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
-        RETURNING id
-        "#,
-    )
-    .bind(task_kind.as_str())
-    .bind(&trigger_kind)
-    .bind(SystemTaskStatus::Running.as_str())
-    .bind(summary)
-    .bind(&started_at)
-    .fetch_one(&mut connection)
-    .await;
-    connection.close().await?;
-    let id = result?;
+        .await?;
 
     Ok(SystemTaskRunHandle {
         id,
@@ -1588,35 +1600,61 @@ pub(crate) async fn finish_system_task_run(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    if let Err(err) = sqlx::query(
-        r#"
-        UPDATE system_task_runs
-        SET status = ?1,
-            summary = COALESCE(?2, summary),
-            detail = ?3,
-            finished_at = ?4,
-            duration_ms = ?5
-        WHERE id = ?6
-        "#,
-    )
-    .bind(status.as_str())
-    .bind(summary)
-    .bind(detail)
-    .bind(&finished_at)
-    .bind(duration_ms)
-    .bind(handle.id)
-    .execute(pool)
-    .await
+    #[cfg(test)]
     {
-        warn!(
-            task_kind = handle.task_kind.as_str(),
-            trigger_kind = %handle.trigger_kind,
-            error = %err,
-            "failed to finalize system task run"
-        );
-        false
-    } else {
-        true
+        if let Err(error) = sqlx::query(
+            r#"
+            UPDATE system_task_runs
+            SET status = ?1,
+                summary = COALESCE(?2, summary),
+                detail = ?3,
+                finished_at = ?4,
+                duration_ms = ?5
+            WHERE id = ?6
+            "#,
+        )
+        .bind(status.as_str())
+        .bind(summary)
+        .bind(detail)
+        .bind(&finished_at)
+        .bind(duration_ms)
+        .bind(handle.id)
+        .execute(pool)
+        .await
+        {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                error = %error,
+                "failed to finalize system task run"
+            );
+            false
+        } else {
+            true
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let _ = pool;
+        let Some(store) = crate::maintenance_store::global() else {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                "maintenance database unavailable; task run finish is stale"
+            );
+            return false;
+        };
+        store
+            .finish_run(
+                handle.id,
+                status.as_str(),
+                &finished_at,
+                duration_ms,
+                summary.as_deref(),
+                detail.as_deref(),
+            )
+            .await
+            .is_ok()
     }
 }
 
@@ -1636,8 +1674,9 @@ pub(crate) async fn finish_system_task_run_batched(
     }
 }
 
-const SYSTEM_TASK_FINISH_RETRY_ATTEMPTS: usize = 20;
+const SYSTEM_TASK_FINISH_RETRY_ATTEMPTS: usize = 4;
 const SYSTEM_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) async fn finish_system_task_run_reliably(
     state: &AppState,
@@ -1647,24 +1686,9 @@ pub(crate) async fn finish_system_task_run_reliably(
     summary: Option<String>,
     detail: Option<String>,
 ) -> bool {
-    let recovery_finish = BatchedSystemTaskFinish {
-        run_id: handle.id,
-        task_kind: handle.task_kind,
-        trigger_kind: handle.trigger_kind.clone(),
-        status,
-        summary: summary.clone(),
-        detail: detail.clone(),
-        finished_at: format_utc_iso_millis(Utc::now()),
-        duration_ms: handle
-            .started_at
-            .elapsed()
-            .as_millis()
-            .min(i64::MAX as u128) as i64,
-    };
-    for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
-        // Journal and enqueue first. A cancellation path must never perform a direct SQL update
-        // while holding a P2 permit: SQLite's busy timeout could otherwise block P1/interactive
-        // writers behind a lock held by an external connection.
+    #[cfg(test)]
+    {
+        let _ = cancel;
         if try_enqueue_system_task_run_finish(
             state,
             handle,
@@ -1674,33 +1698,137 @@ pub(crate) async fn finish_system_task_run_reliably(
         ) {
             return true;
         }
-
-        if attempt < SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
-            if let Some(cancel) = cancel {
+        return finish_system_task_run(&state.pool, handle, status, summary, detail).await;
+    }
+    #[cfg(not(test))]
+    {
+        let Some(store) = crate::maintenance_store::global().cloned() else {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                "maintenance database unavailable; task run finish is not persisted"
+            );
+            return false;
+        };
+        let finished_at = format_utc_iso_millis(Utc::now());
+        let duration_ms = handle
+            .started_at
+            .elapsed()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        let recovery_finish = BatchedSystemTaskFinish {
+            run_id: handle.id,
+            task_kind: handle.task_kind,
+            trigger_kind: handle.trigger_kind.clone(),
+            status,
+            summary: summary.clone(),
+            detail: detail.clone(),
+            finished_at: finished_at.clone(),
+            duration_ms,
+        };
+        let status_text = status.as_str();
+        let mut last_error = None;
+        for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+            let finish_result = if let Some(cancel) = cancel {
                 tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => break,
-                    _ = tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL) => {}
+                    _ = cancel.cancelled() => None,
+                    result = tokio::time::timeout(
+                        SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT,
+                        store.finish_run(
+                            handle.id,
+                            status_text,
+                            &finished_at,
+                            duration_ms,
+                            summary.as_deref(),
+                            detail.as_deref(),
+                        ),
+                    ) => Some(result),
                 }
             } else {
-                tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL).await;
+                Some(
+                    tokio::time::timeout(
+                        SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT,
+                        store.finish_run(
+                            handle.id,
+                            status_text,
+                            &finished_at,
+                            duration_ms,
+                            summary.as_deref(),
+                            detail.as_deref(),
+                        ),
+                    )
+                    .await,
+                )
+            };
+            let Some(finish_result) = finish_result else {
+                break;
+            };
+            match finish_result {
+                Ok(result) => match result {
+                    Ok(()) => return true,
+                    Err(error) => {
+                        warn!(
+                            task_kind = handle.task_kind.as_str(),
+                            trigger_kind = %handle.trigger_kind,
+                            attempt,
+                            error = %error,
+                            "failed to finalize task history in maintenance database"
+                        );
+                        last_error = Some(error);
+                    }
+                },
+                Err(error) => {
+                    let error = anyhow!(
+                        "maintenance database task-history finish timed out after {} ms: {error}",
+                        SYSTEM_TASK_FINISH_ATTEMPT_TIMEOUT.as_millis()
+                    );
+                    warn!(
+                        task_kind = handle.task_kind.as_str(),
+                        trigger_kind = %handle.trigger_kind,
+                        attempt,
+                        error = %error,
+                        "timed out finalizing task history in maintenance database"
+                    );
+                    last_error = Some(error);
+                }
+            }
+            if attempt < SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+                if let Some(cancel) = cancel {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL) => {}
+                    }
+                } else {
+                    tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL).await;
+                }
             }
         }
-    }
-    let persisted = state.sqlite_batch_writer.quarantine_system_task_finish(
-        &recovery_finish,
-        "task-history finish exceeded bounded enqueue retries",
-    );
-    if !persisted {
-        warn!(
-            task_kind = handle.task_kind.as_str(),
-            trigger_kind = %handle.trigger_kind,
-            "failed to persist task-history finish recovery record"
+        if let Some(error) = last_error {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                error = %error,
+                "task-history finish exceeded bounded maintenance database retries"
+            );
+        }
+        let persisted = state.sqlite_batch_writer.quarantine_system_task_finish(
+            &recovery_finish,
+            "task-history finish exceeded bounded maintenance database retries",
         );
+        if !persisted {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                "failed to persist task-history finish recovery record"
+            );
+        }
+        persisted
     }
-    persisted
 }
 
+#[cfg(test)]
 pub(crate) fn try_enqueue_system_task_run_finish(
     state: &AppState,
     handle: &SystemTaskRunHandle,
@@ -1714,35 +1842,20 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    let finish = BatchedSystemTaskFinish {
-        run_id: handle.id,
-        task_kind: handle.task_kind,
-        trigger_kind: handle.trigger_kind.clone(),
-        status,
-        summary,
-        detail,
-        finished_at,
-        duration_ms,
-    };
-    let journaled = state.sqlite_batch_writer.quarantine_system_task_finish(
-        &finish,
-        "task-history finish admitted for durable recovery",
-    );
-    if !journaled {
-        warn!(
-            run_id = handle.id,
-            task_kind = handle.task_kind.as_str(),
-            durability_mode = "memory_fallback",
-            "task-history finish journal unavailable; enqueueing with reduced durability"
-        );
-    }
-    let enqueued = state
+    state
         .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::SystemTaskFinish(finish));
-    if !enqueued {
-        return false;
-    }
-    true
+        .enqueue(SqliteBatchWrite::SystemTaskFinish(
+            BatchedSystemTaskFinish {
+                run_id: handle.id,
+                task_kind: handle.task_kind,
+                trigger_kind: handle.trigger_kind.clone(),
+                status,
+                summary,
+                detail,
+                finished_at,
+                duration_ms,
+            },
+        ))
 }
 
 pub(crate) async fn fetch_system_status(
@@ -1805,9 +1918,19 @@ pub(crate) async fn list_system_task_runs(
     let page = query.page.unwrap_or(1).max(1);
     let limit = i64::from(page_size);
     let offset = i64::from(page.saturating_sub(1)) * limit;
+    let maintenance_store = crate::maintenance_store::global();
+    let run_pool = maintenance_store
+        .map(|store| &store.pool)
+        .unwrap_or(&state.pool);
+    let run_source = if maintenance_store.is_some() {
+        "(SELECT id, task_key AS task_kind, trigger_kind, status, summary, error_detail AS detail, started_at, finished_at, duration_ms FROM managed_task_runs)"
+    } else {
+        "(SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM system_task_runs)"
+    };
     let mut builder = QueryBuilder::<Sqlite>::new(
-        "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM system_task_runs WHERE 1 = 1",
+        "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM ",
     );
+    builder.push(run_source).push(" WHERE 1 = 1");
     if let Some(task_kind) = query
         .task_kind
         .as_deref()
@@ -1852,11 +1975,11 @@ pub(crate) async fn list_system_task_runs(
         .push_bind(offset);
     let mut rows = builder
         .build_query_as::<SystemTaskRunRow>()
-        .fetch_all(&state.pool)
+        .fetch_all(run_pool)
         .await?;
 
-    let mut count_builder =
-        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as total FROM system_task_runs WHERE 1 = 1");
+    let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as total FROM ");
+    count_builder.push(run_source).push(" WHERE 1 = 1");
     if let Some(task_kind) = query
         .task_kind
         .as_deref()
@@ -1888,7 +2011,7 @@ pub(crate) async fn list_system_task_runs(
     }
     let total = count_builder
         .build_query_scalar::<i64>()
-        .fetch_one(&state.pool)
+        .fetch_one(run_pool)
         .await?;
 
     let has_next_page = rows.len() > page_size as usize;
@@ -1907,6 +2030,98 @@ pub(crate) async fn list_system_task_runs(
         page_size,
         next_cursor,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedTaskControlRequest {
+    pub(crate) enabled: Option<bool>,
+    // Nested options preserve the difference between an omitted schedule field
+    // and an explicit null used to clear the current schedule.
+    pub(crate) interval_secs: Option<Option<i64>>,
+    pub(crate) cron_expr: Option<Option<String>>,
+}
+
+pub(crate) async fn list_managed_tasks(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<Vec<crate::maintenance_store::ManagedTask>>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    store.list_tasks().await.map(Json).map_err(ApiError::from)
+}
+
+pub(crate) async fn get_managed_task(
+    State(state): State<Arc<AppState>>,
+    AxumPath(task_key): AxumPath<String>,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    let mut detail = store
+        .detail(&task_key)
+        .await
+        .map_err(ApiError::from)?
+        .map(Json)
+        .ok_or_else(|| ApiError::bad_request(anyhow!("managed task not found")))?;
+    detail.0.performance = state
+        .performance_telemetry
+        .task_run_summary(&task_key)
+        .await;
+    Ok(Json(detail.0))
+}
+
+pub(crate) async fn update_managed_task(
+    State(state): State<Arc<AppState>>,
+    AxumPath(task_key): AxumPath<String>,
+    Json(request): Json<ManagedTaskControlRequest>,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    let ManagedTaskControlRequest {
+        enabled,
+        interval_secs,
+        cron_expr,
+    } = request;
+    let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
+    if !store
+        .update_control(&task_key, enabled, interval_secs, cron_expr)
+        .await
+        .map_err(ApiError::bad_request)?
+    {
+        return Err(ApiError::bad_request(anyhow!("managed task not found")));
+    }
+    if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
+        && let Some(task) = crate::StartupBackfillTask::from_name(task_name)
+    {
+        crate::set_startup_backfill_task_enabled(&state.pool, task, enabled)
+            .await
+            .map_err(ApiError::from)?;
+    }
+    get_managed_task(State(state), AxumPath(task_key)).await
+}
+
+pub(crate) async fn run_managed_task_now(
+    State(state): State<Arc<AppState>>,
+    AxumPath(task_key): AxumPath<String>,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    store
+        .request_run(&task_key)
+        .await
+        .map_err(ApiError::conflict)?;
+    get_managed_task(State(state), AxumPath(task_key)).await
 }
 
 pub(crate) fn summarize_retention_run_for_system_task(
