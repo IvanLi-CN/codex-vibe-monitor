@@ -46,23 +46,23 @@ export default function SystemTasksPage() {
             <Link
               key={task.taskKey}
               to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
-              className="block"
+              className="block w-full min-w-0"
             >
-              <Card className="h-full transition-colors hover:border-primary/60">
+              <Card className="h-full min-w-0 w-full transition-colors hover:border-primary/60">
                 <CardHeader className="gap-2">
-                  <div className="flex items-start justify-between gap-3">
-                    <CardTitle className="text-base">{task.title}</CardTitle>
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <CardTitle className="min-w-0 break-words text-base">{task.title}</CardTitle>
                     <span
-                      className={`text-xs font-semibold ${task.enabled ? "text-success" : "text-base-content/50"}`}
+                      className={`shrink-0 text-xs font-semibold ${task.enabled ? "text-success" : "text-base-content/50"}`}
                     >
                       {task.enabled ? "已启用" : "已停用"}
                     </span>
                   </div>
                   <CardDescription>{task.description}</CardDescription>
                 </CardHeader>
-                <CardContent className="flex items-center justify-between text-xs text-base-content/60">
-                  <span>{task.taskKey}</span>
-                  <span>{task.isManual ? "手动" : task.triggerMode}</span>
+                <CardContent className="flex min-w-0 items-center justify-between gap-3 text-xs text-base-content/60">
+                  <span className="min-w-0 break-all">{task.taskKey}</span>
+                  <span className="shrink-0">{task.isManual ? "手动" : task.triggerMode}</span>
                 </CardContent>
               </Card>
             </Link>
