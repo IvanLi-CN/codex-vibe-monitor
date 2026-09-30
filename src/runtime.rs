@@ -1101,7 +1101,10 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
         let mut pending_finishes = VecDeque::new();
         loop {
             tokio::select! {
-                _ = state.shutdown.cancelled() => return,
+                _ = state.shutdown.cancelled() => {
+                    drain_managed_task_finishes_on_shutdown(&store, &mut pending_finishes).await;
+                    return;
+                },
                 _ = tokio::time::sleep(Duration::from_millis(250)) => {}
             }
             if let Some(finish) = pending_finishes.pop_front()
@@ -1241,6 +1244,22 @@ async fn finish_managed_task_run_bounded(
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow!("managed task finish failed without an error")))
+}
+
+async fn drain_managed_task_finishes_on_shutdown(
+    store: &crate::maintenance_store::MaintenanceStore,
+    pending_finishes: &mut VecDeque<ManagedTaskFinish>,
+) {
+    while let Some(finish) = pending_finishes.pop_front() {
+        if let Err(error) = finish_managed_task_run_bounded(store, &finish).await {
+            warn!(
+                run_id = finish.run_id,
+                task = %finish.task_key,
+                error = %error,
+                "managed task dispatcher could not finalize a pending run before shutdown"
+            );
+        }
+    }
 }
 
 fn managed_task_metric_dimension(task_key: &str) -> &'static str {
