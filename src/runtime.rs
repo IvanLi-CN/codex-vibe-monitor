@@ -1113,6 +1113,16 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 ),
             };
             let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            state.performance_telemetry.record_duration_ms(
+                "maintenance.task_run_duration_ms",
+                &task_key,
+                duration_ms as f64,
+            );
+            state.performance_telemetry.record_counter(
+                "maintenance.task_run_count",
+                &format!("{task_key}:{status}"),
+                1,
+            );
             if let Err(error) = store
                 .finish_run(
                     run_id,

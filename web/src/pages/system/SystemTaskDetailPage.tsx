@@ -172,6 +172,10 @@ export default function SystemTaskDetailPage() {
               <div className="text-xs text-base-content/60">下次运行</div>
               <div className="mt-1 font-medium">{managedTaskNextTriggerLabel(task)}</div>
             </div>
+            <div className="md:col-span-2 xl:col-span-4">
+              <div className="text-xs text-base-content/60">检查点</div>
+              <div className="mt-1 break-all font-medium">{progress?.checkpoint ?? "未知"}</div>
+            </div>
             {!task.isManual ? (
               <>
                 <fieldset className="space-y-2 md:col-span-2 xl:col-span-4">
