@@ -43,6 +43,8 @@ type ModelCandidateGroup = {
   candidates: ModelsDevPriceCandidate[];
 };
 
+type SyncSelectionOverrides = Record<string, Record<string, boolean>>;
+
 const PRICE_FIELDS = [
   ["inputPer1m", "input"],
   ["outputPer1m", "output"],
@@ -130,7 +132,7 @@ export default function SystemModelsPage() {
   const [syncSearch, setSyncSearch] = useState("");
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(() => new Set());
   const [providerChoices, setProviderChoices] = useState<Record<string, string>>({});
-  const [selectionOverrides, setSelectionOverrides] = useState<Record<string, boolean>>({});
+  const [selectionOverrides, setSelectionOverrides] = useState<SyncSelectionOverrides>({});
   const [syncResultCount, setSyncResultCount] = useState(0);
 
   const reloadSettings = useCallback(async () => {
@@ -245,7 +247,8 @@ export default function SystemModelsPage() {
       if (!candidate || !candidate.importable || pricesEqual(local, candidate)) continue;
       const defaultSelected = group.candidates.length === 1 || Boolean(selectedProvider);
       const checked =
-        selectionOverrides[group.model] ?? (defaultSelected && local?.source !== "custom");
+        selectionOverrides[group.model]?.[candidate.providerId] ??
+        (defaultSelected && local?.source !== "custom");
       if (!checked) continue;
       entries.push({
         model: candidate.model,
@@ -835,7 +838,6 @@ export default function SystemModelsPage() {
                               new Set(syncPreview.providers.map((provider) => provider.id)),
                             );
                             setProviderChoices({});
-                            setSelectionOverrides({});
                           }}
                         >
                           {t("system.models.selectAll")}
@@ -847,7 +849,6 @@ export default function SystemModelsPage() {
                           onClick={() => {
                             setSelectedProviders(new Set());
                             setProviderChoices({});
-                            setSelectionOverrides({});
                           }}
                         >
                           {t("system.models.clearAll")}
@@ -869,7 +870,6 @@ export default function SystemModelsPage() {
                                 else next.delete(provider.id);
                                 setSelectedProviders(next);
                                 setProviderChoices({});
-                                setSelectionOverrides({});
                               }}
                             />
                             <span className="min-w-0 flex-1 truncate">{provider.name}</span>
@@ -913,7 +913,7 @@ export default function SystemModelsPage() {
                         );
                         const checked =
                           candidate && candidate.importable && changed
-                            ? (selectionOverrides[group.model] ??
+                            ? (selectionOverrides[group.model]?.[candidate.providerId] ??
                               (defaultSelected && local?.source !== "custom"))
                             : false;
                         return (
@@ -952,11 +952,6 @@ export default function SystemModelsPage() {
                                       ...current,
                                       [group.model]: providerId,
                                     }));
-                                    setSelectionOverrides((current) => {
-                                      const next = { ...current };
-                                      delete next[group.model];
-                                      return next;
-                                    });
                                   }}
                                 />
                               ) : candidate ? (
@@ -1047,12 +1042,16 @@ export default function SystemModelsPage() {
                                 aria-label={t("system.models.syncModelPrice", {
                                   model: group.model,
                                 })}
-                                onChange={(event) =>
+                                onChange={(event) => {
+                                  if (!candidate) return;
                                   setSelectionOverrides((current) => ({
                                     ...current,
-                                    [group.model]: event.target.checked,
-                                  }))
-                                }
+                                    [group.model]: {
+                                      ...current[group.model],
+                                      [candidate.providerId]: event.target.checked,
+                                    },
+                                  }));
+                                }}
                               />
                             </div>
                           </article>

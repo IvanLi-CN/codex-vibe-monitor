@@ -253,4 +253,36 @@ describe("SystemModelsPage", () => {
       }),
     ]);
   });
+
+  it("preserves explicit price deselection when provider filters change", async () => {
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const priceCheckbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    expect(priceCheckbox?.checked).toBe(true);
+    act(() => priceCheckbox?.click());
+    await flushEffects();
+    expect(priceCheckbox?.checked).toBe(false);
+
+    const providerBFilter = Array.from(
+      document.body.querySelectorAll<HTMLInputElement>('details input[type="checkbox"]'),
+    ).find((input) => input.parentElement?.textContent?.includes("provider-b"));
+    expect(providerBFilter?.checked).toBe(true);
+    act(() => providerBFilter?.click());
+    await flushEffects();
+
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 new-model 的价格"]')
+        ?.checked,
+    ).toBe(false);
+    clickButton("同步所选");
+    await flushEffects();
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
+      expect.not.arrayContaining([expect.objectContaining({ model: "new-model" })]),
+    );
+  });
 });

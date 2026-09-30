@@ -94,26 +94,31 @@ pub(crate) async fn post_models_sync_preview(
             format!("models.dev returned HTTP {}", response.status()),
         ));
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > MODELS_DEV_MAX_RESPONSE_BYTES as u64)
-    {
+    let content_length = response.content_length();
+    if content_length.is_some_and(|length| length > MODELS_DEV_MAX_RESPONSE_BYTES as u64) {
         return Err((
             StatusCode::BAD_GATEWAY,
             "models.dev response exceeds the 32 MiB limit".to_string(),
         ));
     }
-    let body = response.bytes().await.map_err(|err| {
+    let mut body = Vec::with_capacity(
+        content_length
+            .unwrap_or_default()
+            .min(MODELS_DEV_MAX_RESPONSE_BYTES as u64) as usize,
+    );
+    let mut response = response;
+    while let Some(chunk) = response.chunk().await.map_err(|err| {
         (
             StatusCode::BAD_GATEWAY,
             format!("models.dev response read failed: {err}"),
         )
-    })?;
-    if body.len() > MODELS_DEV_MAX_RESPONSE_BYTES {
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            "models.dev response exceeds the 32 MiB limit".to_string(),
-        ));
+    })? {
+        if !append_limited_response_chunk(&mut body, &chunk, MODELS_DEV_MAX_RESPONSE_BYTES) {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "models.dev response exceeds the 32 MiB limit".to_string(),
+            ));
+        }
     }
     let payload: Value = serde_json::from_slice(&body).map_err(|err| {
         (
@@ -129,6 +134,17 @@ pub(crate) async fn post_models_sync_preview(
         )
     })?;
     Ok(Json(preview))
+}
+
+fn append_limited_response_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+    let Some(next_len) = body.len().checked_add(chunk.len()) else {
+        return false;
+    };
+    if next_len > limit {
+        return false;
+    }
+    body.extend_from_slice(chunk);
+    true
 }
 
 pub(crate) async fn post_models_sync_apply(
@@ -512,5 +528,13 @@ mod tests {
             }
         }));
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn models_dev_response_body_stops_at_the_configured_limit() {
+        let mut body = Vec::new();
+        assert!(append_limited_response_chunk(&mut body, b"1234", 4));
+        assert!(!append_limited_response_chunk(&mut body, b"5", 4));
+        assert_eq!(body, b"1234");
     }
 }
