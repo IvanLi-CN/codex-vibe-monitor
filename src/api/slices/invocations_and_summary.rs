@@ -16481,6 +16481,11 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             if !dirty {
                 continue;
             }
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("summary_snapshot")
+            else {
+                continue;
+            };
             let now = Instant::now();
             if !summary_snapshot_refresh_is_due(last_refresh_attempt, retry_not_before, now) {
                 continue;

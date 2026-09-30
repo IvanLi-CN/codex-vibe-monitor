@@ -8102,6 +8102,11 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
         );
         return true;
     }
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("retention_archive")
+    else {
+        return true;
+    };
     let started_at = Instant::now();
     match run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &state.pool,

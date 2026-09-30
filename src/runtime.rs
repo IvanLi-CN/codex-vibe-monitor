@@ -1102,6 +1102,30 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             let Some((run_id, task_key, _started_at)) = claim else {
                 continue;
             };
+            let _execution_lease = if matches!(
+                task_key.as_str(),
+                "long_term_projection" | "timeseries_minute_projection" | "startup_backfill"
+            ) {
+                None
+            } else if task_key.starts_with("startup_backfill.") {
+                None
+            } else {
+                let Some(lease) = crate::maintenance_store::try_acquire_task_execution(&task_key)
+                else {
+                    let _ = store
+                        .finish_run(
+                            run_id,
+                            "failed",
+                            &format_utc_iso_millis(Utc::now()),
+                            0,
+                            Some("检测到同一任务正在运行，未重复执行"),
+                            None,
+                        )
+                        .await;
+                    continue;
+                };
+                Some(lease)
+            };
             let started_at = Instant::now();
             let result = run_managed_task_once(&state, &task_key).await;
             let (status, summary, detail) = match result {
@@ -1114,11 +1138,6 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             };
             let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
             let task_dimension = managed_task_metric_dimension(&task_key);
-            let result_dimension = if status == "success" {
-                "success"
-            } else {
-                "failed"
-            };
             state.performance_telemetry.record_duration_ms(
                 "maintenance.task_run_duration_ms",
                 task_dimension,
@@ -1126,7 +1145,16 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             );
             state.performance_telemetry.record_counter(
                 "maintenance.task_run_count",
-                result_dimension,
+                task_dimension,
+                1,
+            );
+            state.performance_telemetry.record_counter(
+                if status == "success" {
+                    "maintenance.task_run_success_count"
+                } else {
+                    "maintenance.task_run_failure_count"
+                },
+                task_dimension,
                 1,
             );
             if let Err(error) = store
@@ -1483,6 +1511,11 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        if crate::maintenance_store::legacy_worker_should_skip("startup_hourly_rollup_bootstrap")
+            .await
+        {
+            return;
+        }
         let started_at = Instant::now();
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
@@ -1494,6 +1527,22 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS);
         let mut p2_preemption_retry = initial_p2_preemption_retry;
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip(
+                "startup_hourly_rollup_bootstrap",
+            )
+            .await
+            {
+                return;
+            }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "startup_hourly_rollup_bootstrap",
+            ) else {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            };
             // Task history is admitted and recorded before waiting for the synchronization lock,
             // but both permits are released immediately so a lock wait cannot occupy the only
             // background pressure slot.
@@ -1934,46 +1983,53 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             info!("forward proxy legacy worker skipped by managed task control");
             return;
         }
-        let startup_run = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return,
-            result = begin_system_task_run_admitted(
-                state.as_ref(),
-                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-                SystemTaskKind::ForwardProxySubscriptionRefresh,
-                "startup",
-                Some("forward proxy subscription refresh started".to_string()),
-            ) => result.ok(),
-        };
-        if let Err(err) = refresh_forward_proxy_subscriptions(
-            state.clone(),
-            true,
-            Some(startup_known_subscription_keys),
-        )
-        .await
         {
-            if let Some(run) = startup_run.as_ref() {
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "forward_proxy_subscription_refresh",
+            ) else {
+                return;
+            };
+            let startup_run = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                result = begin_system_task_run_admitted(
+                    state.as_ref(),
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                    SystemTaskKind::ForwardProxySubscriptionRefresh,
+                    "startup",
+                    Some("forward proxy subscription refresh started".to_string()),
+                ) => result.ok(),
+            };
+            if let Err(err) = refresh_forward_proxy_subscriptions(
+                state.clone(),
+                true,
+                Some(startup_known_subscription_keys),
+            )
+            .await
+            {
+                if let Some(run) = startup_run.as_ref() {
+                    let _ = finish_system_task_run_reliably(
+                        state.as_ref(),
+                        Some(&cancel),
+                        run,
+                        SystemTaskStatus::Failed,
+                        Some("forward proxy startup refresh failed".to_string()),
+                        Some(err.to_string()),
+                    )
+                    .await;
+                }
+                warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+            } else if let Some(run) = startup_run.as_ref() {
                 let _ = finish_system_task_run_reliably(
                     state.as_ref(),
                     Some(&cancel),
                     run,
-                    SystemTaskStatus::Failed,
-                    Some("forward proxy startup refresh failed".to_string()),
-                    Some(err.to_string()),
+                    SystemTaskStatus::Success,
+                    Some("forward proxy startup refresh completed".to_string()),
+                    None,
                 )
                 .await;
             }
-            warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
-        } else if let Some(run) = startup_run.as_ref() {
-            let _ = finish_system_task_run_reliably(
-                state.as_ref(),
-                Some(&cancel),
-                run,
-                SystemTaskStatus::Success,
-                Some("forward proxy startup refresh completed".to_string()),
-                None,
-            )
-            .await;
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -1992,6 +2048,13 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     {
                         continue;
                     }
+                    let Some(_execution_lease) =
+                        crate::maintenance_store::try_acquire_task_execution(
+                            "forward_proxy_subscription_refresh",
+                        )
+                    else {
+                        continue;
+                    };
                     let task_run = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => break,
@@ -2059,6 +2122,11 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     if crate::maintenance_store::legacy_worker_should_skip("pool_orphan_recovery").await {
                         continue;
                     }
+                    let Some(_execution_lease) =
+                        crate::maintenance_store::try_acquire_task_execution("pool_orphan_recovery")
+                    else {
+                        continue;
+                    };
                     match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {

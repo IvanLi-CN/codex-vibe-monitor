@@ -755,6 +755,11 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
             {
                 continue;
             }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "invocation_timeline_snapshot",
+            ) else {
+                continue;
+            };
             let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool);
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,

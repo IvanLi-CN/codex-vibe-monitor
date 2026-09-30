@@ -310,6 +310,18 @@ static METRIC_SPECS: &[MetricSpec] = &[
         long_term: false,
     },
     MetricSpec {
+        id: "maintenance.task_run_success_count",
+        section: "maintenance",
+        kind: MetricKind::Counter,
+        long_term: false,
+    },
+    MetricSpec {
+        id: "maintenance.task_run_failure_count",
+        section: "maintenance",
+        kind: MetricKind::Counter,
+        long_term: false,
+    },
+    MetricSpec {
         id: "maintenance.processed_rows",
         section: "maintenance",
         kind: MetricKind::Counter,
@@ -951,14 +963,11 @@ impl PerformanceTelemetryRuntime {
                 }
             }
         }
-        let counter_sum = |dimension: &str| {
+        let counter_sum = |metric_id: &str| {
             response
                 .series
                 .iter()
-                .find(|series| {
-                    series.metric_id == "maintenance.task_run_count"
-                        && series.dimension == dimension
-                })
+                .find(|series| series.metric_id == metric_id && series.dimension == task_dimension)
                 .map(|series| {
                     series
                         .points
@@ -968,13 +977,14 @@ impl PerformanceTelemetryRuntime {
                 })
                 .unwrap_or(0)
         };
-        let success_count = counter_sum("success");
-        let failure_count = counter_sum("failed");
+        let run_count = counter_sum("maintenance.task_run_count");
+        let success_count = counter_sum("maintenance.task_run_success_count");
+        let failure_count = counter_sum("maintenance.task_run_failure_count");
         let observed_at = latest_bucket.and_then(|bucket| {
             DateTime::<Utc>::from_timestamp(bucket, 0).map(format_utc_iso_millis)
         });
         Some(ManagedTaskPerformance {
-            run_count: success_count.saturating_add(failure_count),
+            run_count,
             success_count,
             failure_count,
             average_duration_ms: (duration_samples > 0)
@@ -1041,7 +1051,9 @@ fn metric_dimension_allowed(metric_id: &str, dimension: &str) -> bool {
             matches!(dimension, "dashboard" | "current" | "network" | "terminal")
         }
         "maintenance.task_run_duration_ms" => is_task_run_dimension(dimension),
-        "maintenance.task_run_count" => matches!(dimension, "success" | "failed"),
+        "maintenance.task_run_count"
+        | "maintenance.task_run_success_count"
+        | "maintenance.task_run_failure_count" => is_task_run_dimension(dimension),
         id if id.starts_with("maintenance.") => dimension == "maintenance",
         id if id.starts_with("process.") => dimension == "process",
         "storage.main_db_bytes" => dimension == "main_db",
@@ -1105,7 +1117,9 @@ fn metric_dimensions(metric_id: &str) -> &'static [&'static str] {
             &["current", "network", "terminal"]
         }
         "maintenance.task_run_duration_ms" => TASK_RUN_METRIC_DIMENSIONS,
-        "maintenance.task_run_count" => &["success", "failed"],
+        "maintenance.task_run_count"
+        | "maintenance.task_run_success_count"
+        | "maintenance.task_run_failure_count" => TASK_RUN_METRIC_DIMENSIONS,
         id if id.starts_with("maintenance.") => &["maintenance"],
         id if id.starts_with("process.") => &["process"],
         "storage.main_db_bytes" => &["main_db"],

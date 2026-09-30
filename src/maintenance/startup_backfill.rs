@@ -1758,6 +1758,11 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillMaintenancePass {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("startup_backfill")
+    else {
+        return StartupBackfillMaintenancePass::default();
+    };
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;

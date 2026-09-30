@@ -6,9 +6,11 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
+    collections::HashSet,
     path::PathBuf,
     str::FromStr,
     sync::atomic::{AtomicI64, Ordering},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
@@ -18,6 +20,32 @@ const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
+static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+pub(crate) struct TaskExecutionLease {
+    task_key: String,
+}
+
+impl Drop for TaskExecutionLease {
+    fn drop(&mut self) {
+        if let Some(active) = ACTIVE_TASK_EXECUTIONS.get()
+            && let Ok(mut active) = active.lock()
+        {
+            active.remove(&self.task_key);
+        }
+    }
+}
+
+pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecutionLease> {
+    let active = ACTIVE_TASK_EXECUTIONS.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut active = active.lock().ok()?;
+    if !active.insert(task_key.to_string()) {
+        return None;
+    }
+    Some(TaskExecutionLease {
+        task_key: task_key.to_string(),
+    })
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceStore {

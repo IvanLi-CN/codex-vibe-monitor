@@ -3336,6 +3336,13 @@ async fn flush_long_term_projection(
     state: &AppState,
     trigger: &'static str,
 ) -> Result<LongTermProjectionFlushOutcome> {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("long_term_projection")
+    else {
+        return Ok(LongTermProjectionFlushOutcome::DeferredByPressure {
+            retry_at: Some(Instant::now() + Duration::from_secs(1)),
+        });
+    };
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
     let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
         flush_long_term_projection_inner(state, trigger)

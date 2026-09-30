@@ -413,6 +413,11 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
             {
                 continue;
             }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "dashboard_runtime_projection_reconcile",
+            ) else {
+                continue;
+            };
             let reconcile_started = Instant::now();
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let _pressure_permit = match pressure_gate

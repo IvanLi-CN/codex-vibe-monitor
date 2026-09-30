@@ -2078,6 +2078,15 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
     if timeseries_minute_projection_is_cancelled(cancellation) {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("timeseries_minute_projection")
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(
+            TimeseriesMinuteProjectionDeferred {
+                retry_after: Some(Duration::from_secs(1)),
+            },
+        ));
+    };
     if timeseries_minute_projection_recovery_pending(&state.pool).await? {
         let startup_cancellation = cancellation
             .cloned()

@@ -1456,6 +1456,11 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
             if crate::maintenance_store::legacy_worker_should_skip("system_status_snapshot").await {
                 continue;
             }
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("system_status_snapshot")
+            else {
+                continue;
+            };
             if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
                 warn!(
                     ?error,

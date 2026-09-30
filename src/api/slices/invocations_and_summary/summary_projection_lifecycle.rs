@@ -737,7 +737,12 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
         if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery").await {
             return;
         }
-        let mut next_turn =
+        let mut next_turn = {
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("summary_coverage_recovery")
+            else {
+                return;
+            };
             match SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
                 state.as_ref(),
                 startup_priority,
@@ -749,7 +754,8 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                     warn!(error = ?error, "initial summary historical coverage recovery deferred");
                     SummaryCoverageRecoveryNextTurn::Idle
                 }
-            };
+            }
+        };
         loop {
             let delay = summary_coverage_recovery_next_turn_delay(next_turn);
             tokio::select! {
@@ -761,6 +767,11 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             {
                 continue;
             }
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("summary_coverage_recovery")
+            else {
+                continue;
+            };
             next_turn = match SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
                 state.as_ref(),
                 None,
