@@ -220,7 +220,20 @@ pub(crate) async fn run() -> Result<()> {
             if let Err(error) = store.migrate_legacy_state(&pool).await {
                 warn!(error = %error, "legacy task state migration did not complete; keeping maintenance observation unavailable until the next startup retry");
             } else {
-                crate::maintenance_store::set_global(Arc::new(store.clone()));
+                match store.recover_incomplete_runs().await {
+                    Ok(recovered_runs) => {
+                        if recovered_runs > 0 {
+                            warn!(
+                                recovered_runs,
+                                "recovered incomplete managed task runs at startup"
+                            );
+                        }
+                        crate::maintenance_store::set_global(Arc::new(store.clone()));
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "incomplete managed task runs could not be recovered; keeping maintenance observation unavailable until the next startup retry");
+                    }
+                }
             }
             Some(Arc::new(store))
         }

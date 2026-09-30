@@ -4274,6 +4274,7 @@ pub(crate) async fn flush_pending_batch_inner(
                     error = %error,
                     "failed to finalize task history in maintenance database"
                 );
+                return Err(error);
             }
         }
     }

@@ -702,6 +702,23 @@ impl MaintenanceStore {
         Ok(Some((id, task_key, started_at)))
     }
 
+    pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
+        let finished_at = format_utc_iso_millis(Utc::now());
+        let result = sqlx::query(
+            "UPDATE managed_task_runs
+             SET status='failed', finished_at=?, duration_ms=0,
+                 summary=COALESCE(summary, ?),
+                 error_detail=COALESCE(error_detail, ?)
+             WHERE status='running'",
+        )
+        .bind(&finished_at)
+        .bind("服务重启前运行未完成，已标记为失败")
+        .bind("服务重启时回收未完成运行")
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub(crate) async fn validate_schedule(
         interval_secs: Option<i64>,
         cron_expr: Option<&str>,
@@ -950,8 +967,11 @@ impl MaintenanceStore {
         detail: Option<&str>,
     ) -> Result<()> {
         let sanitized = detail.map(sanitize_task_detail);
-        sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=? WHERE id=?")
+        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=? WHERE id=?")
             .bind(status).bind(finished_at).bind(duration_ms).bind(summary).bind(sanitized).bind(id).execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow!("managed task run {id} was not found"));
+        }
         Ok(())
     }
 
@@ -1105,10 +1125,11 @@ pub(crate) fn path(config: &AppConfig) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use chrono::{Timelike, Utc};
+    use sqlx::SqlitePool;
 
     use super::{
-        MANAGED_TASKS, STARTUP_BACKFILL_TASKS, next_trigger_at, sanitize_task_detail,
-        validate_cron_expr,
+        MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, ensure_schema, next_trigger_at,
+        sanitize_task_detail, seed_tasks, validate_cron_expr,
     };
 
     #[test]
@@ -1170,5 +1191,35 @@ mod tests {
         assert!(!detail.contains("secret"));
         assert!(!detail.contains("abc"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
+    }
+
+    #[tokio::test]
+    async fn recovers_incomplete_runs_idempotently() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('retention_archive','startup','2026-09-30T00:00:00.000Z','running','started')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert incomplete managed task run");
+
+        let store = MaintenanceStore { pool };
+        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 1);
+        let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load recovered managed task run");
+        assert_eq!(row.0, "failed");
+        assert!(row.1.is_some());
+        assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
+        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
     }
 }

@@ -1686,33 +1686,9 @@ pub(crate) async fn finish_system_task_run_reliably(
     summary: Option<String>,
     detail: Option<String>,
 ) -> bool {
-    #[cfg(not(test))]
-    if crate::maintenance_store::global().is_none() {
-        warn!(
-            task_kind = handle.task_kind.as_str(),
-            trigger_kind = %handle.trigger_kind,
-            "maintenance database unavailable; task run finish is not persisted"
-        );
-        return false;
-    }
-    let recovery_finish = BatchedSystemTaskFinish {
-        run_id: handle.id,
-        task_kind: handle.task_kind,
-        trigger_kind: handle.trigger_kind.clone(),
-        status,
-        summary: summary.clone(),
-        detail: detail.clone(),
-        finished_at: format_utc_iso_millis(Utc::now()),
-        duration_ms: handle
-            .started_at
-            .elapsed()
-            .as_millis()
-            .min(i64::MAX as u128) as i64,
-    };
-    for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
-        // Journal and enqueue first. A cancellation path must never perform a direct SQL update
-        // while holding a P2 permit: SQLite's busy timeout could otherwise block P1/interactive
-        // writers behind a lock held by an external connection.
+    #[cfg(test)]
+    {
+        let _ = cancel;
         if try_enqueue_system_task_run_finish(
             state,
             handle,
@@ -1722,33 +1698,96 @@ pub(crate) async fn finish_system_task_run_reliably(
         ) {
             return true;
         }
-
-        if attempt < SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
-            if let Some(cancel) = cancel {
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => break,
-                    _ = tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL) => {}
+        return finish_system_task_run(&state.pool, handle, status, summary, detail).await;
+    }
+    #[cfg(not(test))]
+    {
+        let Some(store) = crate::maintenance_store::global().cloned() else {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                "maintenance database unavailable; task run finish is not persisted"
+            );
+            return false;
+        };
+        let finished_at = format_utc_iso_millis(Utc::now());
+        let duration_ms = handle
+            .started_at
+            .elapsed()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        let recovery_finish = BatchedSystemTaskFinish {
+            run_id: handle.id,
+            task_kind: handle.task_kind,
+            trigger_kind: handle.trigger_kind.clone(),
+            status,
+            summary: summary.clone(),
+            detail: detail.clone(),
+            finished_at: finished_at.clone(),
+            duration_ms,
+        };
+        let status_text = status.as_str();
+        let mut last_error = None;
+        for attempt in 0..=SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+            match store
+                .finish_run(
+                    handle.id,
+                    status_text,
+                    &finished_at,
+                    duration_ms,
+                    summary.as_deref(),
+                    detail.as_deref(),
+                )
+                .await
+            {
+                Ok(()) => return true,
+                Err(error) => {
+                    warn!(
+                        task_kind = handle.task_kind.as_str(),
+                        trigger_kind = %handle.trigger_kind,
+                        attempt,
+                        error = %error,
+                        "failed to finalize task history in maintenance database"
+                    );
+                    last_error = Some(error);
                 }
-            } else {
-                tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL).await;
+            }
+            if attempt < SYSTEM_TASK_FINISH_RETRY_ATTEMPTS {
+                if let Some(cancel) = cancel {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL) => {}
+                    }
+                } else {
+                    tokio::time::sleep(SYSTEM_TASK_FINISH_RETRY_INTERVAL).await;
+                }
             }
         }
-    }
-    let persisted = state.sqlite_batch_writer.quarantine_system_task_finish(
-        &recovery_finish,
-        "task-history finish exceeded bounded enqueue retries",
-    );
-    if !persisted {
-        warn!(
-            task_kind = handle.task_kind.as_str(),
-            trigger_kind = %handle.trigger_kind,
-            "failed to persist task-history finish recovery record"
+        if let Some(error) = last_error {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                error = %error,
+                "task-history finish exceeded bounded maintenance database retries"
+            );
+        }
+        let persisted = state.sqlite_batch_writer.quarantine_system_task_finish(
+            &recovery_finish,
+            "task-history finish exceeded bounded maintenance database retries",
         );
+        if !persisted {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                "failed to persist task-history finish recovery record"
+            );
+        }
+        persisted
     }
-    persisted
 }
 
+#[cfg(test)]
 pub(crate) fn try_enqueue_system_task_run_finish(
     state: &AppState,
     handle: &SystemTaskRunHandle,
@@ -1762,47 +1801,20 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    #[cfg(test)]
-    {
-        return state
-            .sqlite_batch_writer
-            .enqueue(SqliteBatchWrite::SystemTaskFinish(
-                BatchedSystemTaskFinish {
-                    run_id: handle.id,
-                    task_kind: handle.task_kind,
-                    trigger_kind: handle.trigger_kind.clone(),
-                    status,
-                    summary,
-                    detail,
-                    finished_at,
-                    duration_ms,
-                },
-            ));
-    }
-    #[cfg(not(test))]
-    if let Some(store) = crate::maintenance_store::global().cloned() {
-        let id = handle.id;
-        let status_text = status.as_str().to_string();
-        let detail_text = detail.clone();
-        let summary_text = summary.clone();
-        tokio::spawn(async move {
-            let _ = store
-                .finish_run(
-                    id,
-                    &status_text,
-                    &finished_at,
-                    duration_ms,
-                    summary_text.as_deref(),
-                    detail_text.as_deref(),
-                )
-                .await;
-        });
-        return true;
-    }
-    #[cfg(not(test))]
-    let _ = (state, status, summary, detail, finished_at, duration_ms);
-    #[cfg(not(test))]
-    false
+    state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::SystemTaskFinish(
+            BatchedSystemTaskFinish {
+                run_id: handle.id,
+                task_kind: handle.task_kind,
+                trigger_kind: handle.trigger_kind.clone(),
+                status,
+                summary,
+                detail,
+                finished_at,
+                duration_ms,
+            },
+        ))
 }
 
 pub(crate) async fn fetch_system_status(
