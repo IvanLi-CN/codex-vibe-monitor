@@ -1,4 +1,5 @@
 use crate::{AppConfig, OnceCell, Result, Utc, anyhow, format_utc_iso_millis};
+use chrono::{Datelike, Duration as ChronoDuration, Timelike};
 use serde::Serialize;
 use sqlx::{
     FromRow, Pool, Sqlite,
@@ -23,6 +24,7 @@ pub(crate) struct ManagedTask {
     pub(crate) enabled: bool,
     pub(crate) interval_secs: Option<i64>,
     pub(crate) cron_expr: Option<String>,
+    pub(crate) next_trigger_at: Option<String>,
     pub(crate) is_manual: bool,
 }
 
@@ -62,148 +64,148 @@ pub(crate) struct ManagedTaskDetail {
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
     (
         "retention_archive",
-        "Retention archive",
-        "Retention and archive maintenance",
+        "数据保留与归档",
+        "按保留策略归档并清理历史数据",
         "interval",
         false,
     ),
     (
         "upstream_account_maintenance",
-        "Upstream account maintenance",
-        "Account sync and routing maintenance",
+        "上游账号维护",
+        "同步账号状态、配额与路由健康信息",
         "interval",
         false,
     ),
     (
         "forward_proxy_subscription_refresh",
-        "Forward proxy subscription refresh",
-        "Refresh configured subscription proxies",
+        "正向代理订阅刷新",
+        "刷新代理订阅并更新代理节点状态",
         "event",
         false,
     ),
     (
         "pool_orphan_recovery",
-        "Pool orphan recovery",
-        "Recover stale pool rows",
+        "连接池孤儿记录恢复",
+        "恢复超时或中断的连接池记录",
         "interval",
         false,
     ),
     (
         "startup_hourly_rollup_bootstrap",
-        "Hourly rollup bootstrap",
-        "Repair missing startup rollups",
+        "启动时小时汇总补齐",
+        "补齐启动阶段缺失的小时汇总数据",
         "startup",
         false,
     ),
     (
         "system_status_snapshot",
-        "System status snapshot",
-        "Refresh system status read model",
+        "系统状态快照",
+        "更新系统状态展示快照",
         "interval",
         false,
     ),
     (
         "invocation_timeline_snapshot",
-        "Invocation timeline snapshot",
-        "Clean and refresh timeline snapshot",
+        "调用时间线快照",
+        "生成调用时间线展示所需的异步快照",
         "interval",
         false,
     ),
     (
         "summary_snapshot",
-        "Summary snapshot",
-        "Publish summary projection snapshot",
+        "汇总快照",
+        "更新统计汇总展示快照",
         "event",
         false,
     ),
     (
         "summary_coverage_recovery",
-        "Summary coverage recovery",
-        "Repair summary coverage gaps",
+        "汇总覆盖恢复",
+        "修复统计汇总的覆盖缺口",
         "interval",
         false,
     ),
     (
         "dashboard_runtime_projection_reconcile",
-        "Dashboard projection reconcile",
-        "Reconcile dashboard runtime projection",
+        "仪表盘运行投影校对",
+        "校对仪表盘运行状态投影",
         "event",
         false,
     ),
     (
         "long_term_projection",
-        "Long term projection",
-        "Refresh long term statistics",
+        "长期统计投影",
+        "更新长期统计投影",
         "interval",
         false,
     ),
     (
         "timeseries_minute_projection",
-        "Timeseries minute projection",
-        "Refresh minute projections",
+        "分钟时序投影",
+        "更新分钟级时序投影",
         "interval",
         false,
     ),
     (
         "raw_payload_metrics_inventory",
-        "Raw payload inventory",
-        "Inventory raw payload metrics",
+        "原始载荷指标盘点",
+        "盘点原始请求与响应载荷的指标",
         "interval",
         false,
     ),
     (
         "prompt_cache_materialization",
-        "Prompt cache materialization",
-        "Materialize prompt cache conversations",
+        "Prompt 缓存物化",
+        "将 Prompt 缓存会话信息物化到展示投影",
         "event",
         false,
     ),
     (
         "startup_backfill",
-        "Startup backfill",
-        "Startup backfill parent task",
+        "启动回填",
+        "补齐历史字段并维护回填进度",
         "startup",
         false,
     ),
     (
         "raw_compression",
-        "Raw compression",
-        "Compress cold raw payloads",
+        "原始载荷压缩",
+        "压缩冷数据原始载荷",
         "manual",
         true,
     ),
     (
         "archive_upstream_activity_manifest",
-        "Archive activity manifest",
-        "Refresh archive activity manifests",
+        "上游活动归档清单",
+        "生成上游活动归档清单",
         "manual",
         true,
     ),
     (
         "materialize_historical_rollups",
-        "Historical rollups",
-        "Materialize historical rollups",
+        "历史汇总物化",
+        "物化历史归档批次的统计汇总",
         "manual",
         true,
     ),
     (
         "verify_archive_storage",
-        "Verify archive storage",
-        "Verify archive files and manifests",
+        "归档存储校验",
+        "校验归档文件、清单与记录一致性",
         "manual",
         true,
     ),
     (
         "prune_archive_batches",
-        "Prune archive batches",
-        "Prune safe archive batches",
+        "归档批次清理",
+        "清理符合安全条件的归档批次",
         "manual",
         true,
     ),
     (
         "prune_legacy_archive_batches",
-        "Prune legacy archive batches",
-        "Prune legacy archive batches",
+        "旧归档批次清理",
+        "清理符合条件的旧版归档批次",
         "manual",
         true,
     ),
@@ -227,6 +229,34 @@ pub(crate) const STARTUP_BACKFILL_TASKS: &[&str] = &[
     "legacy_detail_mirrors",
     "historical_rollups",
 ];
+
+fn startup_backfill_task_metadata(key: &str) -> (&'static str, &'static str) {
+    match key {
+        "proxy_usage" => ("代理用量回填", "回填代理用量字段并记录处理进度"),
+        "prompt_cache_key" => ("Prompt 缓存键回填", "回填 Prompt 缓存键并建立关联"),
+        "prompt_cache_conversations_materialization" => {
+            ("Prompt 缓存会话物化", "物化 Prompt 缓存会话信息")
+        }
+        "requested_service_tier" => ("请求服务等级回填", "回填请求使用的服务等级"),
+        "invocation_service_tier" => ("调用服务等级回填", "回填调用最终使用的服务等级"),
+        "proxy_cost" => ("代理成本回填", "根据已记录的调用数据回填代理成本"),
+        "reasoning_effort" => ("推理强度回填", "回填调用请求中的推理强度"),
+        "failure_classification" => ("失败分类回填", "补齐失败类型与可处理性分类"),
+        "pool_attempt_public_id_live" => ("在线连接池尝试 ID 回填", "回填在线连接池尝试的公共 ID"),
+        "pool_attempt_public_id_archives" => {
+            ("归档连接池尝试 ID 回填", "回填归档连接池尝试的公共 ID")
+        }
+        "upstream_activity_live" => ("在线上游活动回填", "回填在线上游活动记录"),
+        "upstream_activity_archives" => ("归档上游活动回填", "回填归档上游活动记录"),
+        "pool_upstream_node_health_archives" => {
+            ("上游节点健康归档回填", "回填连接池上游节点的历史健康状态")
+        }
+        "account_activity_v2_coverage" => ("账号活动 v2 覆盖回填", "补齐账号活动 v2 的覆盖范围"),
+        "legacy_detail_mirrors" => ("旧详情镜像回填", "维护旧详情字段的兼容镜像"),
+        "historical_rollups" => ("历史汇总回填", "回填历史归档批次的统计汇总"),
+        _ => ("启动回填子任务", "执行启动回填的一项历史字段补齐工作"),
+    }
+}
 
 pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
     let database_path = config.maintenance_database_path();
@@ -269,12 +299,84 @@ fn validate_cron_expr(expr: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn cron_field_matches(field: &str, value: u32, minimum: u32, maximum: u32) -> bool {
+    field.split(',').any(|part| {
+        let (base, step) = part
+            .split_once('/')
+            .map_or((part, 1), |(base, step)| (base, step.parse().unwrap_or(0)));
+        if step == 0 {
+            return false;
+        }
+        if base == "*" {
+            return (value - minimum) % step == 0;
+        }
+        if let Some((start, end)) = base.split_once('-') {
+            let Ok(start) = start.parse::<u32>() else {
+                return false;
+            };
+            let Ok(end) = end.parse::<u32>() else {
+                return false;
+            };
+            return start >= minimum
+                && end <= maximum
+                && start <= end
+                && value >= start
+                && value <= end
+                && (value - start) % step == 0;
+        }
+        base.parse::<u32>()
+            .is_ok_and(|exact| exact == value && exact >= minimum && exact <= maximum)
+    })
+}
+
+fn cron_field_is_unrestricted(field: &str) -> bool {
+    field == "*" || field.starts_with("*/")
+}
+
+fn next_trigger_at(interval_secs: Option<i64>, cron_expr: Option<&str>) -> Option<String> {
+    let now = Utc::now();
+    if let Some(expr) = cron_expr.map(str::trim).filter(|value| !value.is_empty()) {
+        let fields: Vec<&str> = expr.split_whitespace().collect();
+        if fields.len() != 5 {
+            return None;
+        }
+        let base = now
+            - ChronoDuration::seconds(i64::from(now.second()))
+            - ChronoDuration::nanoseconds(i64::from(now.nanosecond()));
+        let dom_unrestricted = cron_field_is_unrestricted(fields[2]);
+        let dow_unrestricted = cron_field_is_unrestricted(fields[4]);
+        for offset in 1..=(366 * 24 * 60) {
+            let candidate = base + ChronoDuration::minutes(offset);
+            let dom_match = cron_field_matches(fields[2], candidate.day(), 1, 31);
+            let dow_match =
+                cron_field_matches(fields[4], candidate.weekday().num_days_from_sunday(), 0, 6);
+            let day_match = if dom_unrestricted || dow_unrestricted {
+                dom_match && dow_match
+            } else {
+                dom_match || dow_match
+            };
+            if cron_field_matches(fields[0], candidate.minute(), 0, 59)
+                && cron_field_matches(fields[1], candidate.hour(), 0, 23)
+                && cron_field_matches(fields[3], candidate.month(), 1, 12)
+                && day_match
+            {
+                return Some(format_utc_iso_millis(candidate));
+            }
+        }
+        return None;
+    }
+    interval_secs
+        .filter(|seconds| *seconds >= MIN_INTERVAL_SECS)
+        .map(|seconds| format_utc_iso_millis(now + ChronoDuration::seconds(seconds)))
+}
+
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for statement in r#"
         CREATE TABLE IF NOT EXISTS managed_tasks (
           task_key TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
           trigger_mode TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-          interval_secs INTEGER, cron_expr TEXT, is_manual INTEGER NOT NULL DEFAULT 0,
+          interval_secs INTEGER, cron_expr TEXT, next_trigger_at TEXT,
+          is_manual INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS managed_task_progress (
@@ -308,6 +410,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .execute(pool)
             .await?;
     }
+    let has_next_trigger_at: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM pragma_table_info('managed_tasks') WHERE name = 'next_trigger_at'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if has_next_trigger_at.is_none() {
+        sqlx::query("ALTER TABLE managed_tasks ADD COLUMN next_trigger_at TEXT")
+            .execute(pool)
+            .await?;
+    }
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
@@ -321,8 +433,9 @@ async fn seed_tasks(pool: &Pool<Sqlite>) -> Result<()> {
             .bind(key).bind(title).bind(description).bind(mode).bind(*manual as i64).bind(&now).execute(pool).await?;
     }
     for key in STARTUP_BACKFILL_TASKS {
-        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,is_manual,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(task_key) DO NOTHING")
-            .bind(format!("startup_backfill.{key}")).bind(*key).bind("Startup backfill child task").bind("event").bind(0_i64).bind(&now).execute(pool).await?;
+        let (title, description) = startup_backfill_task_metadata(key);
+        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,is_manual,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET title=excluded.title, description=excluded.description, trigger_mode=excluded.trigger_mode, is_manual=excluded.is_manual")
+            .bind(format!("startup_backfill.{key}")).bind(title).bind(description).bind("event").bind(0_i64).bind(&now).execute(pool).await?;
     }
     Ok(())
 }
@@ -463,12 +576,12 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
-        Ok(sqlx::query_as("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,is_manual FROM managed_tasks ORDER BY task_key")
+        Ok(sqlx::query_as("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual FROM managed_tasks ORDER BY task_key")
         .fetch_all(&self.pool).await?)
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
-        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,is_manual FROM managed_tasks WHERE task_key=?")
+        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual FROM managed_tasks WHERE task_key=?")
         .bind(task_key).fetch_optional(&self.pool).await?;
         let Some(task) = task else {
             return Ok(None);
@@ -485,14 +598,31 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn set_enabled(&self, task_key: &str, enabled: bool) -> Result<bool> {
-        let result =
-            sqlx::query("UPDATE managed_tasks SET enabled=?, updated_at=? WHERE task_key=?")
-                .bind(enabled as i64)
-                .bind(format_utc_iso_millis(Utc::now()))
-                .bind(task_key)
-                .execute(&self.pool)
-                .await?;
-        Ok(result.rows_affected() > 0)
+        let Some((interval_secs, cron_expr, is_manual)) =
+            sqlx::query_as::<_, (Option<i64>, Option<String>, bool)>(
+                "SELECT interval_secs,cron_expr,is_manual FROM managed_tasks WHERE task_key=?",
+            )
+            .bind(task_key)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let next_trigger_at = if enabled && !is_manual {
+            next_trigger_at(interval_secs, cron_expr.as_deref())
+        } else {
+            None
+        };
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=?, next_trigger_at=?, updated_at=? WHERE task_key=?",
+        )
+        .bind(enabled as i64)
+        .bind(next_trigger_at)
+        .bind(format_utc_iso_millis(Utc::now()))
+        .bind(task_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(true)
     }
 
     pub(crate) async fn validate_interval(interval_secs: Option<i64>) -> Result<()> {
@@ -514,9 +644,23 @@ impl MaintenanceStore {
     ) -> Result<bool> {
         Self::validate_interval(interval_secs).await?;
         validate_cron_expr(cron_expr)?;
-        let result = sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, updated_at=? WHERE task_key=? AND is_manual=0")
-        .bind(interval_secs).bind(cron_expr).bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&self.pool).await?;
-        Ok(result.rows_affected() > 0)
+        let Some(enabled) = sqlx::query_scalar::<_, bool>(
+            "SELECT enabled FROM managed_tasks WHERE task_key=? AND is_manual=0",
+        )
+        .bind(task_key)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(false);
+        };
+        let next_trigger_at = if enabled {
+            next_trigger_at(interval_secs, cron_expr)
+        } else {
+            None
+        };
+        sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, next_trigger_at=?, updated_at=? WHERE task_key=? AND is_manual=0")
+        .bind(interval_secs).bind(cron_expr).bind(next_trigger_at).bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&self.pool).await?;
+        Ok(true)
     }
 }
 
@@ -526,7 +670,9 @@ pub(crate) fn path(config: &AppConfig) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{MANAGED_TASKS, STARTUP_BACKFILL_TASKS};
+    use chrono::{Timelike, Utc};
+
+    use super::{MANAGED_TASKS, STARTUP_BACKFILL_TASKS, next_trigger_at, validate_cron_expr};
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
@@ -539,5 +685,38 @@ mod tests {
             6
         );
         assert_eq!(STARTUP_BACKFILL_TASKS.len(), 16);
+    }
+
+    #[test]
+    fn computes_interval_next_trigger_after_the_minimum_safety_window() {
+        let before = Utc::now();
+        let next = next_trigger_at(Some(60), None).expect("interval should produce a trigger");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&next)
+            .expect("next trigger should be RFC3339")
+            .with_timezone(&Utc);
+
+        assert!(parsed >= before + chrono::Duration::seconds(59));
+        assert!(parsed <= before + chrono::Duration::seconds(61));
+    }
+
+    #[test]
+    fn computes_the_next_utc_cron_minute() {
+        let now = Utc::now();
+        let next = next_trigger_at(None, Some("*/5 * * * *"))
+            .expect("five-minute cron should produce a trigger");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&next)
+            .expect("next trigger should be RFC3339")
+            .with_timezone(&Utc);
+
+        assert!(parsed > now);
+        assert_eq!(parsed.minute() % 5, 0);
+        assert_eq!(parsed.second(), 0);
+        assert_eq!(parsed.nanosecond(), 0);
+    }
+
+    #[test]
+    fn rejects_cron_expressions_without_five_utc_fields() {
+        assert!(validate_cron_expr(Some("*/5 * * *")).is_err());
+        assert!(validate_cron_expr(Some("*/5 * * * *")).is_ok());
     }
 }

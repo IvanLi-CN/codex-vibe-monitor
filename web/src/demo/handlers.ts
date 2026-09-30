@@ -2702,8 +2702,8 @@ function systemTasks() {
       taskKind: "archive_rollup",
       triggerKind: "scheduler",
       status: "success",
-      summary: "Hourly invocation archive rollup completed.",
-      detail: "Rolled up 12 completed archive batches and compacted aggregate counters.",
+      summary: "调用归档小时汇总已完成。",
+      detail: "已汇总 12 个归档批次，并压缩聚合计数。",
       startedAt: at(3),
       finishedAt: at(2),
       durationMs: 14_203,
@@ -2713,8 +2713,8 @@ function systemTasks() {
       taskKind: "upstream_account_sync",
       triggerKind: "scheduler",
       status: "success",
-      summary: "Production pool quota snapshot completed.",
-      detail: "Synchronized 6 production accounts through the assigned relay nodes.",
+      summary: "上游账号配额快照已完成。",
+      detail: "已通过分配的代理节点同步 6 个账号。",
       startedAt: at(9),
       finishedAt: at(8),
       durationMs: 22_118,
@@ -2724,8 +2724,8 @@ function systemTasks() {
       taskKind: "forward_proxy_subscription_refresh",
       triggerKind: "manual",
       status: "success",
-      summary: "Relay subscription refreshed.",
-      detail: "Five demo relay nodes were retained and their health probes completed.",
+      summary: "正向代理订阅已刷新。",
+      detail: "已保留 5 个代理节点，并完成健康探测。",
       startedAt: at(18),
       finishedAt: at(18),
       durationMs: 8_447,
@@ -2735,8 +2735,8 @@ function systemTasks() {
       taskKind: "raw_body_compression",
       triggerKind: "scheduler",
       status: "running",
-      summary: "Compressing retained invocation response bodies.",
-      detail: "The demo task is intentionally in progress to populate active task status.",
+      summary: "正在压缩保留的调用响应原始载荷。",
+      detail: "任务正在处理保留数据，当前运行状态已写入任务运行记录。",
       startedAt: at(32),
       durationMs: 1_920_000,
     },
@@ -2745,8 +2745,8 @@ function systemTasks() {
       taskKind: "pricing_catalog_refresh",
       triggerKind: "scheduler",
       status: "success",
-      summary: "Pricing catalog is current.",
-      detail: "Validated three configured models against the demo pricing catalog.",
+      summary: "定价目录已是最新。",
+      detail: "已根据定价目录校验 3 个已配置模型。",
       startedAt: at(47),
       finishedAt: at(47),
       durationMs: 3_126,
@@ -2756,9 +2756,8 @@ function systemTasks() {
       taskKind: "upstream_account_sync",
       triggerKind: "scheduler",
       status: "failed",
-      summary: "Standby account health check timed out.",
-      detail:
-        "The recovery relay exceeded the simulated upstream timeout threshold; retry is queued.",
+      summary: "备用账号健康检查超时。",
+      detail: "恢复代理超过上游超时阈值，下一次执行将继续检查。",
       startedAt: at(66),
       finishedAt: at(65),
       durationMs: 31_022,
@@ -2768,8 +2767,8 @@ function systemTasks() {
       taskKind: "historical_backfill",
       triggerKind: "manual",
       status: "skipped",
-      summary: "No historical gaps require backfill.",
-      detail: "The demo datastore already contains all required hourly buckets.",
+      summary: "没有发现需要回填的历史缺口。",
+      detail: "当前数据已经包含所需的小时数据桶。",
       startedAt: at(91),
       finishedAt: at(91),
       durationMs: 862,
@@ -2779,8 +2778,8 @@ function systemTasks() {
       taskKind: "forward_proxy_latency_probe",
       triggerKind: "scheduler",
       status: "success",
-      summary: "All relay latency probes completed.",
-      detail: "Measured egress, OAuth upstream, and responses latency for five relay nodes.",
+      summary: "代理节点延迟探测已完成。",
+      detail: "已测量 5 个代理节点的出口、OAuth 上游和响应延迟。",
       startedAt: at(113),
       finishedAt: at(112),
       durationMs: 42_907,
@@ -2790,8 +2789,8 @@ function systemTasks() {
       taskKind: "prompt_cache_cleanup",
       triggerKind: "scheduler",
       status: "success",
-      summary: "Prompt cache retention sweep completed.",
-      detail: "Retained active conversations and removed no demo records.",
+      summary: "Prompt 缓存保留清理已完成。",
+      detail: "已保留活跃会话，没有删除业务记录。",
       startedAt: at(146),
       finishedAt: at(145),
       durationMs: 9_441,
@@ -2801,13 +2800,56 @@ function systemTasks() {
       taskKind: "usage_snapshot_reconciliation",
       triggerKind: "manual",
       status: "success",
-      summary: "Usage window reconciliation completed.",
-      detail: "Compared current primary and secondary windows across all demo accounts.",
+      summary: "用量窗口校对已完成。",
+      detail: "已比较全部账号的主窗口和次窗口状态。",
       startedAt: at(188),
       finishedAt: at(187),
       durationMs: 27_630,
     },
   ];
+}
+
+type DemoManagedTaskOverride = {
+  enabled?: boolean;
+  intervalSecs?: number | null;
+  cronExpr?: string | null;
+  nextTriggerAt?: string | null;
+};
+
+type DemoManagedTaskRun = {
+  id: number;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  status: string;
+  processedCount: number | null;
+  updatedCount: number | null;
+  errorDetail: string | null;
+};
+
+const managedTaskOverrides = new Map<string, DemoManagedTaskOverride>();
+const managedTaskRuns = new Map<string, DemoManagedTaskRun[]>();
+let nextManagedTaskRunId = 100;
+
+export function resetDemoManagedTaskState(): void {
+  managedTaskOverrides.clear();
+  managedTaskRuns.clear();
+  nextManagedTaskRunId = 100;
+}
+
+function demoNextTriggerAt(
+  enabled: boolean,
+  intervalSecs: number | null,
+  cronExpr: string | null,
+): string | null {
+  if (!enabled) return null;
+  if (cronExpr?.trim()) {
+    const step = cronExpr.trim().match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/)?.[1];
+    const minutes = step ? Math.max(1, Number(step)) : 5;
+    return new Date(Date.parse(demoNow()) + minutes * 60_000).toISOString();
+  }
+  if (intervalSecs == null) return null;
+  return new Date(Date.parse(demoNow()) + intervalSecs * 1000).toISOString();
 }
 
 function managedTasks() {
@@ -2819,71 +2861,171 @@ function managedTasks() {
     enabled: boolean;
     intervalSecs: number | null;
     cronExpr: string | null;
+    nextTriggerAt: string | null;
     isManual: boolean;
   };
-  const tasks: Array<[string, string, string, boolean]> = [
-    ["retention_archive", "Retention archive", "interval", false],
-    ["upstream_account_maintenance", "Upstream account maintenance", "interval", false],
-    ["forward_proxy_subscription_refresh", "Forward proxy subscription refresh", "event", false],
-    ["pool_orphan_recovery", "Pool orphan recovery", "interval", false],
-    ["startup_hourly_rollup_bootstrap", "Hourly rollup bootstrap", "startup", false],
-    ["system_status_snapshot", "System status snapshot", "interval", false],
-    ["invocation_timeline_snapshot", "Invocation timeline snapshot", "interval", false],
-    ["summary_snapshot", "Summary snapshot", "event", false],
-    ["summary_coverage_recovery", "Summary coverage recovery", "interval", false],
-    ["dashboard_runtime_projection_reconcile", "Dashboard projection reconcile", "event", false],
-    ["long_term_projection", "Long term projection", "interval", false],
-    ["timeseries_minute_projection", "Timeseries minute projection", "interval", false],
-    ["raw_payload_metrics_inventory", "Raw payload inventory", "interval", false],
-    ["prompt_cache_materialization", "Prompt cache materialization", "event", false],
-    ["startup_backfill", "Startup backfill", "startup", false],
-    ["raw_compression", "Raw compression", "manual", true],
-    ["archive_upstream_activity_manifest", "Archive activity manifest", "manual", true],
-    ["materialize_historical_rollups", "Historical rollups", "manual", true],
-    ["verify_archive_storage", "Verify archive storage", "manual", true],
-    ["prune_archive_batches", "Prune archive batches", "manual", true],
-    ["prune_legacy_archive_batches", "Prune legacy archive batches", "manual", true],
+  const tasks: Array<[string, string, string, string, boolean]> = [
+    ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
+    [
+      "upstream_account_maintenance",
+      "上游账号维护",
+      "同步账号状态、配额与路由健康信息",
+      "interval",
+      false,
+    ],
+    [
+      "forward_proxy_subscription_refresh",
+      "正向代理订阅刷新",
+      "刷新代理订阅并更新代理节点状态",
+      "event",
+      false,
+    ],
+    ["pool_orphan_recovery", "连接池孤儿记录恢复", "恢复超时或中断的连接池记录", "interval", false],
+    [
+      "startup_hourly_rollup_bootstrap",
+      "启动时小时汇总补齐",
+      "补齐启动阶段缺失的小时汇总数据",
+      "startup",
+      false,
+    ],
+    ["system_status_snapshot", "系统状态快照", "更新系统状态展示快照", "interval", false],
+    [
+      "invocation_timeline_snapshot",
+      "调用时间线快照",
+      "生成调用时间线展示所需的异步快照",
+      "interval",
+      false,
+    ],
+    ["summary_snapshot", "汇总快照", "更新统计汇总展示快照", "event", false],
+    ["summary_coverage_recovery", "汇总覆盖恢复", "修复统计汇总的覆盖缺口", "interval", false],
+    [
+      "dashboard_runtime_projection_reconcile",
+      "仪表盘运行投影校对",
+      "校对仪表盘运行状态投影",
+      "event",
+      false,
+    ],
+    ["long_term_projection", "长期统计投影", "更新长期统计投影", "interval", false],
+    ["timeseries_minute_projection", "分钟时序投影", "更新分钟级时序投影", "interval", false],
+    [
+      "raw_payload_metrics_inventory",
+      "原始载荷指标盘点",
+      "盘点原始请求与响应载荷的指标",
+      "interval",
+      false,
+    ],
+    [
+      "prompt_cache_materialization",
+      "Prompt 缓存物化",
+      "将 Prompt 缓存会话信息物化到展示投影",
+      "event",
+      false,
+    ],
+    ["startup_backfill", "启动回填", "补齐历史字段并维护回填进度", "startup", false],
+    ["raw_compression", "原始载荷压缩", "压缩冷数据原始载荷", "manual", true],
+    [
+      "archive_upstream_activity_manifest",
+      "上游活动归档清单",
+      "生成上游活动归档清单",
+      "manual",
+      true,
+    ],
+    [
+      "materialize_historical_rollups",
+      "历史汇总物化",
+      "物化历史归档批次的统计汇总",
+      "manual",
+      true,
+    ],
+    ["verify_archive_storage", "归档存储校验", "校验归档文件、清单与记录一致性", "manual", true],
+    ["prune_archive_batches", "归档批次清理", "清理符合安全条件的归档批次", "manual", true],
+    [
+      "prune_legacy_archive_batches",
+      "旧归档批次清理",
+      "清理符合条件的旧版归档批次",
+      "manual",
+      true,
+    ],
   ];
-  const startupChildren = [
-    "proxy_usage",
-    "prompt_cache_key",
-    "prompt_cache_conversations_materialization",
-    "requested_service_tier",
-    "invocation_service_tier",
-    "proxy_cost",
-    "reasoning_effort",
-    "failure_classification",
-    "pool_attempt_public_id_live",
-    "pool_attempt_public_id_archives",
-    "upstream_activity_live",
-    "upstream_activity_archives",
-    "pool_upstream_node_health_archives",
-    "account_activity_v2_coverage",
-    "legacy_detail_mirrors",
-    "historical_rollups",
-  ].map((key) => [`startup_backfill.${key}`, key, "event", false] as const);
+  const startupChildren: Array<[string, string, string, string]> = [
+    ["proxy_usage", "代理用量回填", "回填代理用量字段并记录处理进度", "event"],
+    ["prompt_cache_key", "Prompt 缓存键回填", "回填 Prompt 缓存键并建立关联", "event"],
+    [
+      "prompt_cache_conversations_materialization",
+      "Prompt 缓存会话物化",
+      "物化 Prompt 缓存会话信息",
+      "event",
+    ],
+    ["requested_service_tier", "请求服务等级回填", "回填请求使用的服务等级", "event"],
+    ["invocation_service_tier", "调用服务等级回填", "回填调用最终使用的服务等级", "event"],
+    ["proxy_cost", "代理成本回填", "根据已记录的调用数据回填代理成本", "event"],
+    ["reasoning_effort", "推理强度回填", "回填调用请求中的推理强度", "event"],
+    ["failure_classification", "失败分类回填", "补齐失败类型与可处理性分类", "event"],
+    [
+      "pool_attempt_public_id_live",
+      "在线连接池尝试 ID 回填",
+      "回填在线连接池尝试的公共 ID",
+      "event",
+    ],
+    [
+      "pool_attempt_public_id_archives",
+      "归档连接池尝试 ID 回填",
+      "回填归档连接池尝试的公共 ID",
+      "event",
+    ],
+    ["upstream_activity_live", "在线上游活动回填", "回填在线上游活动记录", "event"],
+    ["upstream_activity_archives", "归档上游活动回填", "回填归档上游活动记录", "event"],
+    [
+      "pool_upstream_node_health_archives",
+      "上游节点健康归档回填",
+      "回填连接池上游节点的历史健康状态",
+      "event",
+    ],
+    ["account_activity_v2_coverage", "账号活动 v2 覆盖回填", "补齐账号活动 v2 的覆盖范围", "event"],
+    ["legacy_detail_mirrors", "旧详情镜像回填", "维护旧详情字段的兼容镜像", "event"],
+    ["historical_rollups", "历史汇总回填", "回填历史归档批次的统计汇总", "event"],
+  ].map(([key, title, description, triggerMode]) => [
+    `startup_backfill.${key}`,
+    title,
+    description,
+    triggerMode,
+  ]);
   const baseTasks: DemoManagedTask[] = tasks.map(
-    ([taskKey, title, triggerMode, isManual], index) => ({
+    ([taskKey, title, description, triggerMode, isManual]) => ({
+      ...(() => {
+        const override = managedTaskOverrides.get(taskKey);
+        const enabled = override?.enabled ?? true;
+        const intervalSecs =
+          override?.intervalSecs !== undefined ? override.intervalSecs : isManual ? null : 300;
+        const cronExpr = override?.cronExpr !== undefined ? override.cronExpr : null;
+        return {
+          enabled,
+          intervalSecs,
+          cronExpr,
+          nextTriggerAt:
+            override?.nextTriggerAt !== undefined
+              ? override.nextTriggerAt
+              : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
+        };
+      })(),
       taskKey,
       title,
-      description: "Demo task operations state",
+      description,
       triggerMode,
-      enabled: index !== 5,
-      intervalSecs: isManual ? null : 300,
-      cronExpr: null,
       isManual,
     }),
   );
   const childTasks: DemoManagedTask[] = startupChildren.map(
-    ([taskKey, title, triggerMode, isManual]) => ({
+    ([taskKey, title, description, triggerMode]) => ({
       taskKey,
       title,
-      description: "Startup backfill child task",
+      description,
       triggerMode,
       enabled: true,
       intervalSecs: null,
       cronExpr: null,
-      isManual,
+      nextTriggerAt: null,
+      isManual: false,
     }),
   );
   return baseTasks.concat(childTasks);
@@ -2893,6 +3035,16 @@ function managedTaskDetail(taskKey: string) {
   const task = managedTasks().find((item) => item.taskKey === taskKey);
   if (!task) return null;
   const at = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
+  const defaultRun: DemoManagedTaskRun = {
+    id: 1,
+    startedAt: at,
+    finishedAt: demoNow(),
+    durationMs: 31_000,
+    status: "success",
+    processedCount: task.isManual ? null : 1842,
+    updatedCount: task.isManual ? null : 1780,
+    errorDetail: null,
+  };
   return {
     task,
     progress: task.isManual
@@ -2914,18 +3066,7 @@ function managedTaskDetail(taskKey: string) {
           updatedAt: at,
           freshness: "fresh",
         },
-    recentRuns: [
-      {
-        id: 1,
-        startedAt: at,
-        finishedAt: demoNow(),
-        durationMs: 31_000,
-        status: "success",
-        processedCount: 1842,
-        updatedCount: 1780,
-        errorDetail: null,
-      },
-    ],
+    recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
   };
 }
 
@@ -4244,13 +4385,62 @@ export async function handleDemoRequest(request: Request) {
     return detail ? json(detail) : json({ error: "not found" }, { status: 404 });
   }
   if (managedTaskMatch && request.method === "PATCH") {
-    const detail = managedTaskDetail(decodeURIComponent(managedTaskMatch[1]));
-    return detail ? json(detail) : json({ error: "not found" }, { status: 404 });
+    const taskKey = decodeURIComponent(managedTaskMatch[1]);
+    const detail = managedTaskDetail(taskKey);
+    if (!detail) return json({ error: "not found" }, { status: 404 });
+    const body = (await request.json().catch(() => ({}))) as {
+      enabled?: boolean;
+      intervalSecs?: number | null;
+      cronExpr?: string | null;
+    };
+    if (detail.task.isManual && (body.intervalSecs !== undefined || body.cronExpr !== undefined)) {
+      return json({ error: "manual tasks do not have a schedule" }, { status: 400 });
+    }
+    if (body.intervalSecs !== undefined && body.intervalSecs !== null && body.intervalSecs < 60) {
+      return json({ error: "interval must be at least 60 seconds" }, { status: 400 });
+    }
+    const previous = managedTaskOverrides.get(taskKey) ?? {};
+    const next = { ...previous };
+    if (body.enabled !== undefined) next.enabled = body.enabled;
+    if (body.intervalSecs !== undefined) next.intervalSecs = body.intervalSecs;
+    if (body.cronExpr !== undefined) next.cronExpr = body.cronExpr;
+    const enabled = next.enabled ?? detail.task.enabled;
+    const intervalSecs =
+      next.intervalSecs !== undefined ? next.intervalSecs : (detail.task.intervalSecs ?? null);
+    const cronExpr = next.cronExpr !== undefined ? next.cronExpr : (detail.task.cronExpr ?? null);
+    next.nextTriggerAt = demoNextTriggerAt(enabled, intervalSecs, cronExpr);
+    managedTaskOverrides.set(taskKey, next);
+    return json(managedTaskDetail(taskKey));
   }
   const managedRunMatch = pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)\/run$/);
   if (managedRunMatch && request.method === "POST") {
-    const detail = managedTaskDetail(decodeURIComponent(managedRunMatch[1]));
-    return detail ? json(detail) : json({ error: "not found" }, { status: 404 });
+    const taskKey = decodeURIComponent(managedRunMatch[1]);
+    const detail = managedTaskDetail(taskKey);
+    if (!detail) return json({ error: "not found" }, { status: 404 });
+    const runs = managedTaskRuns.get(taskKey) ?? detail.recentRuns;
+    if (runs.some((run) => run.status === "running" || run.status === "requested")) {
+      return json({ error: "task already has an active run" }, { status: 409 });
+    }
+    const startedAt = demoNow();
+    const run: DemoManagedTaskRun = {
+      id: nextManagedTaskRunId++,
+      startedAt,
+      finishedAt: null,
+      durationMs: null,
+      status: "running",
+      processedCount: null,
+      updatedCount: null,
+      errorDetail: null,
+    };
+    managedTaskRuns.set(taskKey, [run, ...runs].slice(0, 10));
+    setTimeout(() => {
+      run.status = "success";
+      run.finishedAt = new Date(Date.parse(startedAt) + 1_200).toISOString();
+      run.durationMs = 1_200;
+      run.processedCount = detail.task.isManual ? null : 1842;
+      run.updatedCount = detail.task.isManual ? null : 1780;
+    }, 600);
+    return json(managedTaskDetail(taskKey));
   }
 
   if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")

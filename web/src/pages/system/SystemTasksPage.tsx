@@ -10,6 +10,7 @@ import {
 } from "../../components/ui/card";
 import { ListBodyState } from "../../features/shared/ListBodyState";
 import { fetchManagedTasks, type ManagedTask } from "../../lib/api";
+import { managedTaskTriggerLabel } from "./taskLabels";
 
 export default function SystemTasksPage() {
   const [tasks, setTasks] = useState<ManagedTask[]>([]);
@@ -62,7 +63,7 @@ export default function SystemTasksPage() {
                 </CardHeader>
                 <CardContent className="flex min-w-0 items-center justify-between gap-3 text-xs text-base-content/60">
                   <span className="min-w-0 break-all">{task.taskKey}</span>
-                  <span className="shrink-0">{task.isManual ? "手动" : task.triggerMode}</span>
+                  <span className="shrink-0">{managedTaskTriggerLabel(task)}</span>
                 </CardContent>
               </Card>
             </Link>

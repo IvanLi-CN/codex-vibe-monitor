@@ -10,6 +10,13 @@ import {
   runManagedTaskNow,
   updateManagedTask,
 } from "../../lib/api";
+import {
+  managedTaskFreshnessLabel,
+  managedTaskNextTriggerLabel,
+  managedTaskPhaseLabel,
+  managedTaskRunStatusLabel,
+  managedTaskTriggerLabel,
+} from "./taskLabels";
 
 function formatDuration(ms?: number | null): string {
   if (ms == null) return "—";
@@ -42,6 +49,19 @@ export default function SystemTaskDetailPage() {
     if (total == null || completed == null || total <= 0) return null;
     return Math.min(100, Math.max(0, (completed / total) * 100));
   }, [detail]);
+
+  const activeRunStatus = detail?.recentRuns[0]?.status;
+  const hasActiveRun = activeRunStatus === "running" || activeRunStatus === "requested";
+
+  useEffect(() => {
+    if (!taskKey || !hasActiveRun) return;
+    const timer = window.setTimeout(() => {
+      void fetchManagedTask(taskKey)
+        .then(setDetail)
+        .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [hasActiveRun, taskKey]);
 
   if (error && !detail) return <Alert variant="error">任务观测不可用：{error}</Alert>;
   if (!detail)
@@ -84,25 +104,24 @@ export default function SystemTaskDetailPage() {
               返回任务目录
             </Link>
             <h2 className="section-title text-2xl">{task.title}</h2>
-            <p className="section-description">
-              {task.description} · {task.taskKey}
-            </p>
+            <p className="section-description">{task.description}</p>
+            <p className="text-xs text-base-content/55">任务标识：{task.taskKey}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
               variant="outline"
-              disabled={saving || runningNow}
+              disabled={saving || runningNow || hasActiveRun}
               onClick={() => void runNow()}
             >
-              立即运行
+              {runningNow ? "请求中…" : hasActiveRun ? "运行中" : "立即运行"}
             </Button>
             <Button
               type="button"
               disabled={saving || runningNow}
               onClick={() => void save({ enabled: !task.enabled })}
             >
-              {task.enabled ? "停用任务" : "启用任务"}
+              {saving ? "保存中…" : task.enabled ? "停用任务" : "启用任务"}
             </Button>
           </div>
         </div>
@@ -126,18 +145,24 @@ export default function SystemTaskDetailPage() {
           <CardHeader>
             <CardTitle className="text-base">调度与观测</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-3">
+          <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div>
               <div className="text-xs text-base-content/60">触发方式</div>
-              <div className="mt-1 font-medium">{task.isManual ? "手动" : task.triggerMode}</div>
+              <div className="mt-1 font-medium">{managedTaskTriggerLabel(task)}</div>
             </div>
             <div>
               <div className="text-xs text-base-content/60">阶段</div>
-              <div className="mt-1 font-medium">{progress?.phase ?? "—"}</div>
+              <div className="mt-1 font-medium">{managedTaskPhaseLabel(progress?.phase)}</div>
             </div>
             <div>
               <div className="text-xs text-base-content/60">观测新鲜度</div>
-              <div className="mt-1 font-medium">{progress?.freshness ?? "missing"}</div>
+              <div className="mt-1 font-medium">
+                {managedTaskFreshnessLabel(progress?.freshness)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-base-content/60">下次运行</div>
+              <div className="mt-1 font-medium">{managedTaskNextTriggerLabel(task)}</div>
             </div>
             {!task.isManual ? (
               <>
@@ -193,7 +218,7 @@ export default function SystemTaskDetailPage() {
                   <div className="flex flex-wrap justify-between gap-2">
                     <span>{run.startedAt}</span>
                     <span className="font-medium">
-                      {run.status} · {formatDuration(run.durationMs)}
+                      {managedTaskRunStatusLabel(run.status)} · {formatDuration(run.durationMs)}
                     </span>
                   </div>
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}

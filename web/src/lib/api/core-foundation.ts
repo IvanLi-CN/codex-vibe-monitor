@@ -2588,6 +2588,7 @@ export interface ManagedTask {
   enabled: boolean;
   intervalSecs?: number | null;
   cronExpr?: string | null;
+  nextTriggerAt?: string | null;
   isManual: boolean;
 }
 

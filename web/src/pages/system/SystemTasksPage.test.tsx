@@ -41,8 +41,8 @@ describe("SystemTasksPage", () => {
     apiMocks.fetchManagedTasks.mockResolvedValue([
       {
         taskKey: "retention_archive",
-        title: "Retention archive",
-        description: "Archive maintenance",
+        title: "数据保留与归档",
+        description: "按保留策略归档并清理历史数据",
         triggerMode: "interval",
         enabled: true,
         intervalSecs: 300,
@@ -51,8 +51,8 @@ describe("SystemTasksPage", () => {
       },
       {
         taskKey: "raw_compression",
-        title: "Raw compression",
-        description: "Compress raw payloads",
+        title: "原始载荷压缩",
+        description: "压缩冷数据原始载荷",
         triggerMode: "manual",
         enabled: false,
         intervalSecs: null,
@@ -73,14 +73,14 @@ describe("SystemTasksPage", () => {
     renderPage();
     await flushEffects();
     expect(apiMocks.fetchManagedTasks).toHaveBeenCalledTimes(1);
-    expect(host?.textContent).toContain("Retention archive");
+    expect(host?.textContent).toContain("数据保留与归档");
     expect(host?.textContent).toContain("raw_compression");
   });
 
   it("shows manual and scheduled task modes", async () => {
     renderPage();
     await flushEffects();
-    expect(host?.textContent).toContain("interval");
+    expect(host?.textContent).toContain("固定间隔");
     expect(host?.textContent).toContain("手动");
     expect(host?.textContent).toContain("已停用");
   });
