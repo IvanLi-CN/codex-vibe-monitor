@@ -174,6 +174,15 @@ function clickButton(label: string) {
   act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  expect(setter).toBeTruthy();
+  act(() => {
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 describe("SystemModelsPage", () => {
   beforeEach(() => {
     window.localStorage.setItem("codex-vibe-monitor.locale", "zh");
@@ -283,6 +292,83 @@ describe("SystemModelsPage", () => {
     await flushEffects();
     expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
       expect.not.arrayContaining([expect.objectContaining({ model: "new-model" })]),
+    );
+  });
+
+  it("keeps provider conflicts explicit when searching by provider", async () => {
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="搜索供应商或模型"]',
+    );
+    expect(search).toBeTruthy();
+    setInputValue(search!, "Provider A");
+    await flushEffects();
+
+    expect(
+      document.body.querySelector<HTMLButtonElement>(
+        'button[aria-label="为 shared-model 选择一个供应商报价"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 shared-model 的价格"]')
+        ?.checked,
+    ).toBe(false);
+
+    clickButton("同步所选");
+    await flushEffects();
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
+      expect.not.arrayContaining([expect.objectContaining({ model: "shared-model" })]),
+    );
+  });
+
+  it("applies selected candidates hidden by the search filter", async () => {
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const newModelCheckbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    expect(newModelCheckbox?.checked).toBe(true);
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="搜索供应商或模型"]',
+    );
+    expect(search).toBeTruthy();
+    setInputValue(search!, "shared-model");
+    await flushEffects();
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 new-model 的价格"]'),
+    ).toBeNull();
+
+    const providerTrigger = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="为 shared-model 选择一个供应商报价"]',
+    );
+    expect(providerTrigger).toBeTruthy();
+    act(() => providerTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const providerOption = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+      (option) => option.textContent?.includes("Provider B (provider-b)"),
+    );
+    expect(providerOption).toBeTruthy();
+    act(() => providerOption?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushEffects();
+
+    clickButton("同步所选");
+    await flushEffects();
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "new-model", source: "models.dev" }),
+        expect.objectContaining({
+          model: "shared-model",
+          inputPer1m: 9,
+          outputPer1m: 10,
+          source: "models.dev",
+        }),
+      ]),
     );
   });
 });

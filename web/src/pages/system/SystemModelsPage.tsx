@@ -213,7 +213,6 @@ export default function SystemModelsPage() {
 
   const candidateGroups = useMemo<ModelCandidateGroup[]>(() => {
     if (!syncPreview) return [];
-    const query = syncSearch.trim().toLocaleLowerCase();
     const groups = new Map<string, ModelsDevPriceCandidate[]>();
     for (const candidate of syncPreview.candidates) {
       if (!selectedProviders.has(candidate.providerId)) continue;
@@ -221,20 +220,25 @@ export default function SystemModelsPage() {
       existing.push(candidate);
       groups.set(candidate.model, existing);
     }
-    return Array.from(groups, ([model, candidates]) => ({ model, candidates }))
-      .filter(
-        ({ model, candidates }) =>
-          !query ||
-          model.toLocaleLowerCase().includes(query) ||
-          candidates.some(
-            (candidate) =>
-              candidate.name.toLocaleLowerCase().includes(query) ||
-              candidate.providerName.toLocaleLowerCase().includes(query) ||
-              candidate.providerId.toLocaleLowerCase().includes(query),
-          ),
-      )
-      .sort((a, b) => a.model.localeCompare(b.model));
-  }, [selectedProviders, syncPreview, syncSearch]);
+    return Array.from(groups, ([model, candidates]) => ({ model, candidates })).sort((a, b) =>
+      a.model.localeCompare(b.model),
+    );
+  }, [selectedProviders, syncPreview]);
+
+  const visibleCandidateGroups = useMemo(() => {
+    const query = syncSearch.trim().toLocaleLowerCase();
+    if (!query) return candidateGroups;
+    return candidateGroups.filter(
+      ({ model, candidates }) =>
+        model.toLocaleLowerCase().includes(query) ||
+        candidates.some(
+          (candidate) =>
+            candidate.name.toLocaleLowerCase().includes(query) ||
+            candidate.providerName.toLocaleLowerCase().includes(query) ||
+            candidate.providerId.toLocaleLowerCase().includes(query),
+        ),
+    );
+  }, [candidateGroups, syncSearch]);
 
   const selectedSyncEntries = useMemo(() => {
     const entries: PricingEntry[] = [];
@@ -894,13 +898,13 @@ export default function SystemModelsPage() {
                 </div>
 
                 <div className="mt-3 min-h-0 flex-1 overflow-y-auto border-y border-base-300/70">
-                  {candidateGroups.length === 0 ? (
+                  {visibleCandidateGroups.length === 0 ? (
                     <div className="px-2 py-10 text-center text-sm text-base-content/65">
                       {t("system.models.noMatches")}
                     </div>
                   ) : (
                     <div className="divide-y divide-base-300/60">
-                      {candidateGroups.map((group) => {
+                      {visibleCandidateGroups.map((group) => {
                         const local = pricesByModel.get(group.model);
                         const selectedProvider = providerChoices[group.model];
                         const candidate =
