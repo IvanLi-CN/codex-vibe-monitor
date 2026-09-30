@@ -1479,16 +1479,46 @@ pub(crate) async fn begin_system_task_run(
 ) -> Result<SystemTaskRunHandle> {
     let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
-    let store = crate::maintenance_store::global()
-        .ok_or_else(|| anyhow!("maintenance database unavailable; task run is not recorded"))?;
-    let id = store
-        .begin_run(
-            task_kind.as_str(),
-            &started_at,
-            &trigger_kind,
-            summary.as_deref(),
-        )
-        .await?;
+    let id = if let Some(store) = crate::maintenance_store::global() {
+        store
+            .begin_run(
+                task_kind.as_str(),
+                &started_at,
+                &trigger_kind,
+                summary.as_deref(),
+            )
+            .await?
+    } else {
+        #[cfg(test)]
+        {
+            sqlx::query_scalar::<_, i64>(
+                r#"
+                INSERT INTO system_task_runs (
+                    task_kind,
+                    trigger_kind,
+                    status,
+                    summary,
+                    started_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                RETURNING id
+                "#,
+            )
+            .bind(task_kind.as_str())
+            .bind(&trigger_kind)
+            .bind(SystemTaskStatus::Running.as_str())
+            .bind(summary)
+            .bind(&started_at)
+            .fetch_one(_pool)
+            .await?
+        }
+        #[cfg(not(test))]
+        {
+            return Err(anyhow!(
+                "maintenance database unavailable; task run is not recorded"
+            ));
+        }
+    };
 
     Ok(SystemTaskRunHandle {
         id,
@@ -1580,13 +1610,49 @@ pub(crate) async fn finish_system_task_run(
             .await
             .is_ok();
     }
-    let _ = pool;
-    warn!(
-        task_kind = handle.task_kind.as_str(),
-        trigger_kind = %handle.trigger_kind,
-        "maintenance database unavailable; task run finish is stale"
-    );
-    false
+    #[cfg(test)]
+    {
+        if let Err(error) = sqlx::query(
+            r#"
+            UPDATE system_task_runs
+            SET status = ?1,
+                summary = COALESCE(?2, summary),
+                detail = ?3,
+                finished_at = ?4,
+                duration_ms = ?5
+            WHERE id = ?6
+            "#,
+        )
+        .bind(status.as_str())
+        .bind(summary)
+        .bind(detail)
+        .bind(&finished_at)
+        .bind(duration_ms)
+        .bind(handle.id)
+        .execute(pool)
+        .await
+        {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                error = %error,
+                "failed to finalize system task run"
+            );
+            false
+        } else {
+            true
+        }
+    }
+    #[cfg(not(test))]
+    {
+        let _ = pool;
+        warn!(
+            task_kind = handle.task_kind.as_str(),
+            trigger_kind = %handle.trigger_kind,
+            "maintenance database unavailable; task run finish is stale"
+        );
+        false
+    }
 }
 
 pub(crate) async fn finish_system_task_run_batched(

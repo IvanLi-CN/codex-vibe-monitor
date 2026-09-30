@@ -3270,7 +3270,7 @@ mod tests {
     fn metric_registry_stays_bounded_and_rejects_dynamic_dimensions() {
         let recent_count = METRIC_SPECS.iter().filter(|spec| !spec.long_term).count();
         let long_term_count = METRIC_SPECS.iter().filter(|spec| spec.long_term).count();
-        assert_eq!(recent_count, 55);
+        assert_eq!(recent_count, 59);
         assert_eq!(long_term_count, 22);
         let recent_series_count = METRIC_SPECS
             .iter()
@@ -3283,7 +3283,7 @@ mod tests {
             .map(|spec| metric_dimensions(spec.id).len())
             .sum::<usize>();
         assert_eq!(
-            recent_series_count, 104,
+            recent_series_count, 196,
             "recent series: {recent_series_count}"
         );
         assert_eq!(
