@@ -1892,8 +1892,10 @@ pub(crate) async fn list_system_task_runs(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ManagedTaskControlRequest {
     pub(crate) enabled: Option<bool>,
-    pub(crate) interval_secs: Option<i64>,
-    pub(crate) cron_expr: Option<String>,
+    // Nested options preserve the difference between an omitted schedule field
+    // and an explicit null used to clear the current schedule.
+    pub(crate) interval_secs: Option<Option<i64>>,
+    pub(crate) cron_expr: Option<Option<String>>,
 }
 
 pub(crate) async fn list_managed_tasks(
@@ -1940,12 +1942,14 @@ pub(crate) async fn update_managed_task(
         )));
     };
     let update_schedule = request.interval_secs.is_some() || request.cron_expr.is_some();
+    let interval_secs = request.interval_secs.flatten();
+    let cron_expr = request.cron_expr.flatten();
     if !store
         .update_control(
             &task_key,
             request.enabled,
-            request.interval_secs,
-            request.cron_expr.as_deref(),
+            interval_secs,
+            cron_expr.as_deref(),
             update_schedule,
         )
         .await
