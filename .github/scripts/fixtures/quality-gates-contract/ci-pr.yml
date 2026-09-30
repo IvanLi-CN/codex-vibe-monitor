@@ -614,6 +614,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
 
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
@@ -648,6 +649,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
 
       - name: Run stateful SQLite backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
@@ -671,6 +673,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
 
       - name: Run stateful SQLite backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
@@ -736,6 +739,7 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
 
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"

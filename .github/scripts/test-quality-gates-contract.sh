@@ -627,6 +627,52 @@ fi
 
 grep -q "missing step 'Verify backend test archive producer'" "$tmp_dir/main-archive-consumer.log"
 
+archive_profile_repo="$tmp_dir/archive-profile-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_profile_repo"
+python3 - <<'PY' "$archive_profile_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
+text = path.read_text()
+needle = "run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file \"$RUNNER_TEMP/backend-tests.tar.zst\""
+replacement = "run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file \"$RUNNER_TEMP/backend-tests.tar.zst\""
+if needle not in text:
+    raise SystemExit("failed to locate PR lightweight backend replay command")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_profile_repo" --profile final >/dev/null 2>"$tmp_dir/archive-profile.log"; then
+  echo "expected incorrect backend archive profile fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "backend-tests-lightweight must replay the expected backend profile from the workflow archive" "$tmp_dir/archive-profile.log"
+
+archive_download_path_repo="$tmp_dir/archive-download-path-repo"
+copy_repo_snapshot "$baseline_repo" "$archive_download_path_repo"
+python3 - <<'PY' "$archive_download_path_repo"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1]) / ".github/workflows/ci-main.yml"
+text = path.read_text()
+start = text.index("  backend-tests-archive-file-io:\n")
+end = text.index("\n  release-snapshot:", start)
+job = text[start:end]
+needle = "          path: ${{ runner.temp }}"
+if needle not in job:
+    raise SystemExit("failed to locate Main archive/file-I/O download path")
+path.write_text(text[:start] + job.replace(needle, "          path: ${{ github.workspace }}", 1) + text[end:])
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$archive_download_path_repo" --profile final >/dev/null 2>"$tmp_dir/archive-download-path.log"; then
+  echo "expected incorrect backend archive download path fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "backend-tests-archive-file-io must download the backend test archive to runner.temp" "$tmp_dir/archive-download-path.log"
+
 archive_cache_save_repo="$tmp_dir/archive-cache-save-repo"
 copy_repo_snapshot "$baseline_repo" "$archive_cache_save_repo"
 python3 - <<'PY' "$archive_cache_save_repo"

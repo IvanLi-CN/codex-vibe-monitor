@@ -417,6 +417,47 @@ def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, jo
         download_with.get("name") == "backend-test-archive-${{ github.run_id }}",
         f"{where} must download the backend test archive for its workflow run",
     )
+    require(
+        download_with.get("path") == "${{ runner.temp }}",
+        f"{where} must download the backend test archive to runner.temp",
+    )
+
+    expected_profiles = {
+        "backend-tests-lightweight": (
+            "Run lightweight backend profile",
+            [
+                "bash",
+                ".github/scripts/run-backend-tests.sh",
+                "--profile",
+                "lightweight",
+                "--archive-file",
+                "$RUNNER_TEMP/backend-tests.tar.zst",
+            ],
+        ),
+        "backend-tests-archive-file-io": (
+            "Run archive / file I/O backend profile",
+            [
+                "bash",
+                ".github/scripts/run-backend-tests.sh",
+                "--profile",
+                "archive-file-io",
+                "--archive-file",
+                "$RUNNER_TEMP/backend-tests.tar.zst",
+            ],
+        ),
+    }
+    expected_profile = expected_profiles.get(job_id)
+    if expected_profile is not None:
+        step_name, expected_args = expected_profile
+        replay = step_config(job, step_name, where)
+        try:
+            actual_args = shlex.split(str(replay.get("run", "")))
+        except ValueError:
+            actual_args = []
+        require(
+            actual_args == expected_args,
+            f"{where} must replay the expected backend profile from the workflow archive",
+        )
 
 
 def require_exact_cargo_cache_reuse(job: dict[str, Any], step_name: str, cache_id: str, where: str) -> None:
