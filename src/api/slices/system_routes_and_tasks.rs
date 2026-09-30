@@ -1954,8 +1954,7 @@ pub(crate) async fn update_managed_task(
     {
         return Err(ApiError::bad_request(anyhow!("managed task not found")));
     }
-    if let (Some(enabled), Some(task_name)) =
-        (request.enabled, task_key.strip_prefix("startup_backfill."))
+    if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
         && let Some(task) = crate::StartupBackfillTask::from_name(task_name)
     {
         crate::set_startup_backfill_task_enabled(&state.pool, task, enabled)
