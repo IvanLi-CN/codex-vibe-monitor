@@ -1479,19 +1479,14 @@ pub(crate) async fn begin_system_task_run(
 ) -> Result<SystemTaskRunHandle> {
     let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
-    let id = if let Some(store) = crate::maintenance_store::global() {
-        store
-            .begin_run(
-                task_kind.as_str(),
-                &started_at,
-                &trigger_kind,
-                summary.as_deref(),
-            )
-            .await?
-    } else {
+    let id = {
         #[cfg(test)]
         {
-            sqlx::query_scalar::<_, i64>(
+            let stored_task_kind = match task_kind {
+                SystemTaskKind::HourlyRollupBootstrap => "hourly_rollup_bootstrap",
+                _ => task_kind.as_str(),
+            };
+            let id = sqlx::query_scalar::<_, i64>(
                 r#"
                 INSERT INTO system_task_runs (
                     task_kind,
@@ -1504,19 +1499,28 @@ pub(crate) async fn begin_system_task_run(
                 RETURNING id
                 "#,
             )
-            .bind(task_kind.as_str())
+            .bind(stored_task_kind)
             .bind(&trigger_kind)
             .bind(SystemTaskStatus::Running.as_str())
             .bind(summary)
             .bind(&started_at)
             .fetch_one(_pool)
-            .await?
+            .await?;
+            id
         }
         #[cfg(not(test))]
         {
-            return Err(anyhow!(
-                "maintenance database unavailable; task run is not recorded"
-            ));
+            let store = crate::maintenance_store::global().ok_or_else(|| {
+                anyhow!("maintenance database unavailable; task run is not recorded")
+            })?;
+            store
+                .begin_run(
+                    task_kind.as_str(),
+                    &started_at,
+                    &trigger_kind,
+                    summary.as_deref(),
+                )
+                .await?
         }
     };
 
@@ -1597,19 +1601,6 @@ pub(crate) async fn finish_system_task_run(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    if let Some(store) = crate::maintenance_store::global() {
-        return store
-            .finish_run(
-                handle.id,
-                status.as_str(),
-                &finished_at,
-                duration_ms,
-                summary.as_deref(),
-                detail.as_deref(),
-            )
-            .await
-            .is_ok();
-    }
     #[cfg(test)]
     {
         if let Err(error) = sqlx::query(
@@ -1646,12 +1637,25 @@ pub(crate) async fn finish_system_task_run(
     #[cfg(not(test))]
     {
         let _ = pool;
-        warn!(
-            task_kind = handle.task_kind.as_str(),
-            trigger_kind = %handle.trigger_kind,
-            "maintenance database unavailable; task run finish is stale"
-        );
-        false
+        let Some(store) = crate::maintenance_store::global() else {
+            warn!(
+                task_kind = handle.task_kind.as_str(),
+                trigger_kind = %handle.trigger_kind,
+                "maintenance database unavailable; task run finish is stale"
+            );
+            return false;
+        };
+        store
+            .finish_run(
+                handle.id,
+                status.as_str(),
+                &finished_at,
+                duration_ms,
+                summary.as_deref(),
+                detail.as_deref(),
+            )
+            .await
+            .is_ok()
     }
 }
 
@@ -1682,6 +1686,7 @@ pub(crate) async fn finish_system_task_run_reliably(
     summary: Option<String>,
     detail: Option<String>,
 ) -> bool {
+    #[cfg(not(test))]
     if crate::maintenance_store::global().is_none() {
         warn!(
             task_kind = handle.task_kind.as_str(),
@@ -1757,6 +1762,24 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
+    #[cfg(test)]
+    {
+        return state
+            .sqlite_batch_writer
+            .enqueue(SqliteBatchWrite::SystemTaskFinish(
+                BatchedSystemTaskFinish {
+                    run_id: handle.id,
+                    task_kind: handle.task_kind,
+                    trigger_kind: handle.trigger_kind.clone(),
+                    status,
+                    summary,
+                    detail,
+                    finished_at,
+                    duration_ms,
+                },
+            ));
+    }
+    #[cfg(not(test))]
     if let Some(store) = crate::maintenance_store::global().cloned() {
         let id = handle.id;
         let status_text = status.as_str().to_string();
@@ -1776,7 +1799,9 @@ pub(crate) fn try_enqueue_system_task_run_finish(
         });
         return true;
     }
+    #[cfg(not(test))]
     let _ = (state, status, summary, detail, finished_at, duration_ms);
+    #[cfg(not(test))]
     false
 }
 
