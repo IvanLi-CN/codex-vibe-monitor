@@ -95,6 +95,7 @@
 - 需要验证正式时间预算的用例显式清除 retry override；需要验证真实文件语义的用例继续走默认 threshold 与真实文件 fixture。
 - 普通 Stateful test state 的 current-schema template 只能由 runner 的真实 fresh schema 生成，SQLite backup 后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 shared-memory serialize/deserialize 或逐条 SQL dump 作为最终测试路径。Archive 的普通 file-DB tests 以唯一文件副本获得 current schema，不得把这一路径扩展到 migration 或真实文件语义测试。
 - Lightweight 普通 current-schema test state 可使用该 profile 私有、由真实 `ensure_schema` 生成一次的 template；shared-memory state 通过 SQLite backup 隔离复制，file-backed current-schema fixture 通过独立文件副本隔离。fresh-schema/migration 测试仍须从空库执行 schema 初始化，真实文件语义测试仍留在 Archive/File I/O。
+- runner 每次只向当前 profile 暴露其 schema-template 路径；执行或准备其他 profile 前必须清除未选 profile 的 template 环境变量。
 - archive build/distribution 是可逆实验。若采用 auxiliary producer，quality-gates 必须显式列出它但不得将它加入 GitHub required checks；仅在同一 PR head 的连续两次 CI 同时满足关键路径与总 runner 成本门槛时，才可保留这条 workflow 拓扑。
 - production-copy 验证必须在 staged SQLite 副本内重定位 archive manifest；验证器不得依赖测试机的 `/workspace`、`/codex-scratch` 或镜像 `/srv/app/data` 布局，也不得修改原始生产路径。
 - production-copy 验证器的 Runtime Workspace、`TMPDIR`、外部 Cargo 目录和 staged copy 必须与 source snapshot 分离；backend-test 镜像必须提供 exactness oracle 所需的 Python 运行时。
