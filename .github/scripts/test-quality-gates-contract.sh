@@ -908,14 +908,14 @@ import sys
 
 path = Path(sys.argv[1]) / ".github/workflows/ci-pr.yml"
 text = path.read_text()
-needle = "CARGO_BUILD_JOBS: 4"
+needle = "CARGO_BUILD_JOBS: 8"
 if needle not in text:
     raise SystemExit("failed to locate Clippy parallelism contract")
-path.write_text(text.replace(needle, "CARGO_BUILD_JOBS: 8", 1))
+path.write_text(text.replace(needle, "CARGO_BUILD_JOBS: 4", 1))
 PY
 
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$clippy_parallelism_repo" --profile final >/dev/null 2>"$tmp_dir/clippy-parallelism.log"; then
-  echo "expected oversubscribed Clippy parallelism fixture to fail" >&2
+  echo "expected changed Clippy parallelism fixture to fail" >&2
   exit 1
 fi
 
@@ -929,14 +929,14 @@ import sys
 
 path = Path(sys.argv[1]) / ".github/workflows/ci-main.yml"
 text = path.read_text()
-needle = "CARGO_BUILD_JOBS: 4"
+needle = "CARGO_BUILD_JOBS: 8"
 if needle not in text:
     raise SystemExit("failed to locate Main Clippy parallelism contract")
-path.write_text(text.replace(needle, "CARGO_BUILD_JOBS: 8", 1))
+path.write_text(text.replace(needle, "CARGO_BUILD_JOBS: 4", 1))
 PY
 
 if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$clippy_main_parallelism_repo" --profile final >/dev/null 2>"$tmp_dir/clippy-main-parallelism.log"; then
-  echo "expected oversubscribed Main Clippy parallelism fixture to fail" >&2
+  echo "expected changed Main Clippy parallelism fixture to fail" >&2
   exit 1
 fi
 
