@@ -835,13 +835,17 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn request_run(&self, task_key: &str) -> Result<i64> {
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM managed_tasks WHERE task_key=?")
-                .bind(task_key)
-                .fetch_optional(&self.pool)
-                .await?;
-        if exists.is_none() {
+        let Some((enabled, is_manual)) = sqlx::query_as::<_, (bool, bool)>(
+            "SELECT enabled,is_manual FROM managed_tasks WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
             return Err(anyhow!("managed task not found"));
+        };
+        if !enabled && !is_manual {
+            return Err(anyhow!("task is disabled; enable it before run-now"));
         }
         let result = sqlx::query_scalar("INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,error_detail) VALUES (?,?,?,?,?,?) RETURNING id")
             .bind(task_key)
@@ -1055,12 +1059,14 @@ impl MaintenanceStore {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)")
-            .bind(INITIAL_TASK_DEFAULTS_MARKER)
-            .bind("applied")
-            .bind(&now)
-            .execute(&mut *transaction)
-            .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
+        )
+        .bind(INITIAL_TASK_DEFAULTS_MARKER)
+        .bind("applied")
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
         transaction.commit().await?;
         Ok(true)
     }
@@ -1442,6 +1448,30 @@ mod tests {
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_run_now_for_disabled_scheduled_tasks_but_allows_manual_tasks() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        let error = store
+            .request_run("startup_backfill.proxy_usage")
+            .await
+            .expect_err("disabled scheduled task should reject run-now");
+        assert!(error.to_string().contains("task is disabled"));
+
+        let run_id = store
+            .request_run("raw_compression")
+            .await
+            .expect("manual task should allow run-now while disabled");
+        assert!(run_id > 0);
     }
 
     #[tokio::test]

@@ -1239,6 +1239,25 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
             continue;
         };
         let managed_task_key = format!("startup_backfill.{managed_suffix}");
+        let managed_tasks_present = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+            != 0;
+        if managed_tasks_present
+            && !sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(&managed_task_key)
+                .fetch_optional(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to read managed task control for {managed_task_key}")
+                })?
+                .unwrap_or(false)
+        {
+            continue;
+        }
         let outcome = sqlx::query(
             r#"
             INSERT INTO startup_backfill_progress (
@@ -1253,12 +1272,9 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
                 last_status,
                 suspension_reason,
                 next_probe_at,
-                wake_generation,
-                enabled
+                wake_generation
             )
-            SELECT ?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1,
-                   COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?3), 0)
-            WHERE COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?3), 0) != 0
+            VALUES (?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1)
             ON CONFLICT(task_name) DO UPDATE SET
                 next_run_after = NULL,
                 next_probe_at = NULL,
@@ -1270,7 +1286,6 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
         )
         .bind(&task_name)
         .bind(STARTUP_BACKFILL_STATUS_IDLE)
-        .bind(&managed_task_key)
         .execute(pool)
         .await
         .with_context(|| {
@@ -3299,6 +3314,40 @@ mod startup_backfill_tests {
                 .fetch_one(&pool)
                 .await
                 .expect("read enabled progress row"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_preserves_legacy_test_pools_without_task_registry() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect legacy startup backfill test pool");
+        sqlx::query(
+            "CREATE TABLE startup_backfill_progress (
+                task_name TEXT PRIMARY KEY,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                next_run_after TEXT,
+                zero_update_streak INTEGER NOT NULL DEFAULT 0,
+                last_started_at TEXT,
+                last_finished_at TEXT,
+                last_scanned INTEGER NOT NULL DEFAULT 0,
+                last_updated INTEGER NOT NULL DEFAULT 0,
+                last_status TEXT NOT NULL DEFAULT 'idle',
+                suspension_reason TEXT,
+                next_probe_at TEXT,
+                wake_generation INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy startup backfill controls");
+
+        assert_eq!(
+            wake_startup_backfill_tasks(&pool, &[StartupBackfillTask::ProxyUsage], "legacy_test")
+                .await
+                .expect("wake legacy startup backfill pool"),
             1
         );
     }
