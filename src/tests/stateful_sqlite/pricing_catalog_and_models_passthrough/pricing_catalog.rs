@@ -1,4 +1,8 @@
 use super::*;
+use crate::api::{
+    ManagedModelDeleteRequest, ModelsDevSyncApplyRequest, delete_managed_model,
+    post_models_sync_apply,
+};
 
 #[tokio::test]
 async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
@@ -971,4 +975,205 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     assert_eq!(gpt_5_6_sol.cache_write_per_1m, Some(7.5));
     assert_eq!(gpt_5_6_sol.reasoning_per_1m, Some(1.5));
     assert_eq!(gpt_5_6_sol.source, "custom");
+}
+
+#[tokio::test]
+async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscovery() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let pool = &state.pool;
+
+    let mut legacy_proxy = state.proxy_model_settings.read().await.clone();
+    legacy_proxy.enabled_preset_models = vec!["gpt-5.4".to_string()];
+    save_proxy_model_settings(pool, legacy_proxy.clone())
+        .await
+        .expect("save legacy enabled preset state");
+    *state.proxy_model_settings.write().await = legacy_proxy.clone();
+
+    sqlx::query("DELETE FROM managed_models")
+        .execute(pool)
+        .await
+        .expect("remove catalog to simulate the previous schema");
+    sqlx::query("DELETE FROM managed_model_catalog_migrations")
+        .execute(pool)
+        .await
+        .expect("remove migration marker to simulate the previous schema");
+    sqlx::query(
+        r#"
+        INSERT OR REPLACE INTO pricing_settings_models (
+            model, input_per_1m, output_per_1m, cache_input_per_1m,
+            cache_read_per_1m, cache_write_per_1m, reasoning_per_1m, source
+        ) VALUES ('legacy-priced-model', 1.0, 2.0, NULL, NULL, NULL, NULL, 'custom')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("seed legacy priced model");
+
+    ensure_managed_model_catalog(pool)
+        .await
+        .expect("migrate legacy model candidates");
+    let migrated_models = load_managed_model_ids(pool)
+        .await
+        .expect("load migrated model IDs");
+    assert!(migrated_models.iter().any(|model| model == "gpt-5.4"));
+    assert!(
+        migrated_models
+            .iter()
+            .any(|model| model == "legacy-priced-model")
+    );
+    assert_eq!(
+        load_proxy_model_settings(pool)
+            .await
+            .expect("load migrated proxy settings")
+            .enabled_preset_models,
+        legacy_proxy.enabled_preset_models
+    );
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, cost, raw_response) VALUES ('model-delete-history', '2026-09-01 00:00:00', 'proxy', 'success', 0.123, '{}')",
+    )
+    .execute(pool)
+    .await
+    .expect("insert historical invocation cost");
+
+    let Json(deleted) = delete_managed_model(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ManagedModelDeleteRequest {
+            model: "gpt-5.4".to_string(),
+        }),
+    )
+    .await
+    .expect("delete managed model");
+    assert_eq!(deleted.deleted_model, "gpt-5.4");
+
+    ensure_managed_model_catalog(pool)
+        .await
+        .expect("repeat catalog initialization after restart");
+    let pricing_after_restart = load_pricing_catalog(pool)
+        .await
+        .expect("load pricing after restart");
+    assert!(!pricing_after_restart.models.contains_key("gpt-5.4"));
+    assert!(
+        !load_managed_model_ids(pool)
+            .await
+            .expect("load model IDs after restart")
+            .iter()
+            .any(|model| model == "gpt-5.4")
+    );
+    assert!(
+        !load_proxy_model_settings(pool)
+            .await
+            .expect("load proxy settings after restart")
+            .enabled_preset_models
+            .iter()
+            .any(|model| model == "gpt-5.4")
+    );
+    let historical_cost = sqlx::query_scalar::<_, f64>(
+        "SELECT cost FROM codex_invocations WHERE invoke_id = 'model-delete-history'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("read historical invocation cost");
+    assert_eq!(historical_cost, 0.123);
+
+    upsert_synced_model_prices(
+        pool,
+        &[PricingEntry {
+            model: "gpt-5.4".to_string(),
+            input_per_1m: 3.0,
+            output_per_1m: 9.0,
+            cache_input_per_1m: Some(0.3),
+            cache_read_per_1m: Some(0.3),
+            cache_write_per_1m: Some(0.4),
+            reasoning_per_1m: None,
+            source: "models.dev".to_string(),
+        }],
+    )
+    .await
+    .expect("rediscover model from source");
+    let rediscovered_proxy = load_proxy_model_settings(pool)
+        .await
+        .expect("load proxy settings after rediscovery");
+    assert!(
+        !rediscovered_proxy
+            .enabled_preset_models
+            .iter()
+            .any(|model| model == "gpt-5.4")
+    );
+    assert!(
+        load_managed_model_ids(pool)
+            .await
+            .expect("load rediscovered model IDs")
+            .iter()
+            .any(|model| model == "gpt-5.4")
+    );
+}
+
+#[tokio::test]
+async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT OR REPLACE INTO pricing_settings_models (
+            model, input_per_1m, output_per_1m, cache_input_per_1m,
+            cache_read_per_1m, cache_write_per_1m, reasoning_per_1m, source
+        ) VALUES ('selected-model', 10.0, 20.0, NULL, NULL, NULL, NULL, 'custom'),
+                 ('unselected-model', 30.0, 40.0, NULL, NULL, NULL, NULL, 'custom')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed local model prices");
+
+    let Json(applied) = post_models_sync_apply(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ModelsDevSyncApplyRequest {
+            entries: vec![PricingEntry {
+                model: "selected-model".to_string(),
+                input_per_1m: 1.5,
+                output_per_1m: 2.5,
+                cache_input_per_1m: None,
+                cache_read_per_1m: Some(0.15),
+                cache_write_per_1m: Some(0.2),
+                reasoning_per_1m: Some(3.5),
+                source: "custom".to_string(),
+            }],
+        }),
+    )
+    .await
+    .expect("apply selected models.dev prices");
+
+    let selected = applied
+        .entries
+        .iter()
+        .find(|entry| entry.model == "selected-model")
+        .expect("selected model price returned");
+    assert_eq!(selected.input_per_1m, 1.5);
+    assert_eq!(selected.output_per_1m, 2.5);
+    assert_eq!(selected.source, "models.dev");
+    let unselected = applied
+        .entries
+        .iter()
+        .find(|entry| entry.model == "unselected-model")
+        .expect("unselected model price returned");
+    assert_eq!(unselected.input_per_1m, 30.0);
+    assert_eq!(unselected.output_per_1m, 40.0);
+    assert_eq!(unselected.source, "custom");
+    assert!(
+        !state
+            .proxy_model_settings
+            .read()
+            .await
+            .enabled_preset_models
+            .iter()
+            .any(|model| model == "selected-model")
+    );
 }

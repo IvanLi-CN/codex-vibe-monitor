@@ -4,6 +4,8 @@
 
 Accepted
 
+The prohibition on online price synchronization is superseded by [ADR 0023: Model Management and Manual Price Synchronization](./0023-model-management-and-manual-price-synchronization.md). The GPT-6 pricing, usage, and cost-estimation decisions below remain in force.
+
 ## Decision
 
 OpenAI's official API pricing documentation is the authority for the GPT-6 model set and price snapshot. Sub2API's bundled LiteLLM mirror is a secondary source only; the checked snapshot contains no entries for `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`, so it cannot cross-check their numeric prices. The application will not import its full catalog or synchronize prices online. The repo-managed GPT-6 set is `gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna`. The pre-existing `gpt-6-terra` row remains compatibility-only and is excluded from official model discovery.

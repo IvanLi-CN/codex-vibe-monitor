@@ -3458,6 +3458,16 @@ pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc
         )
         .route("/api/settings/proxy", put(put_proxy_settings))
         .route(
+            "/api/settings/models/sync/preview",
+            post(post_models_sync_preview),
+        )
+        .route(
+            "/api/settings/models/sync/apply",
+            post(post_models_sync_apply),
+        )
+        .route("/api/settings/models/preset", put(put_managed_model_preset))
+        .route("/api/settings/models", delete(delete_managed_model))
+        .route(
             "/api/settings/forward-proxy",
             put(put_forward_proxy_settings),
         )

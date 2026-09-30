@@ -5114,6 +5114,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to backfill pricing_settings_models.cache_read_per_1m")?;
 
+    ensure_managed_model_catalog(pool)
+        .await
+        .context("failed to migrate managed model catalog")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS oauth_bridge_settings (

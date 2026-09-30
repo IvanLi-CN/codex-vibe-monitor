@@ -2017,7 +2017,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   </p>
                 </div>
 
-                <div className="surface-inset space-y-3 rounded-xl p-4">
+                <div hidden={mode !== "all"} className="surface-inset space-y-3 rounded-xl p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-medium">{t("settings.proxy.presetModels")}</div>
                     <span className="text-xs text-base-content/70">
@@ -2132,7 +2132,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
               </Card>
             )}
 
-            <Card className="mobile-flat-surface overflow-hidden">
+            <Card hidden={mode !== "all"} className="mobile-flat-surface overflow-hidden">
               <CardHeader className="mobile-flat-surface-header flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
                 <div className="space-y-1.5">
                   <CardTitle>{t("settings.pricing.title")}</CardTitle>

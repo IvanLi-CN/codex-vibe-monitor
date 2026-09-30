@@ -12,12 +12,12 @@ const UpstreamAccountsPage = lazy(() => import("./pages/account-pool/UpstreamAcc
 const DashboardPage = lazy(() => import("./pages/Dashboard"));
 const LivePage = lazy(() => import("./pages/Live"));
 const RecordsPage = lazy(() => import("./pages/Records"));
-const SettingsPage = lazy(() => import("./pages/Settings"));
 const StatsPage = lazy(() => import("./pages/Stats"));
 const SystemLayout = lazy(() => import("./pages/system/SystemLayout"));
 const SystemProxyPage = lazy(() => import("./pages/system/SystemProxyPage"));
 const SystemPerformancePage = lazy(() => import("./pages/system/SystemPerformancePage"));
 const SystemSettingsPage = lazy(() => import("./pages/system/SystemSettingsPage"));
+const SystemModelsPage = lazy(() => import("./pages/system/SystemModelsPage"));
 const SystemStatusPage = lazy(() => import("./pages/system/SystemStatusPage"));
 const SystemTasksPage = lazy(() => import("./pages/system/SystemTasksPage"));
 const SystemTaskDetailPage = lazy(() => import("./pages/system/SystemTaskDetailPage"));
@@ -123,10 +123,11 @@ function App() {
               <Route path="tasks/:taskKey" element={<SystemTaskDetailPage />} />
               <Route path="prompt-cache" element={<SystemPromptCachePage />} />
               <Route path="settings" element={<SystemSettingsPage />} />
+              <Route path="models" element={<SystemModelsPage />} />
               <Route path="proxy" element={<SystemProxyPage />} />
             </Route>
             <Route path="settings" element={<Navigate to="/system/settings" replace />} />
-            <Route path="settings/legacy" element={<SettingsPage mode="all" />} />
+            <Route path="settings/legacy" element={<Navigate to="/system/settings" replace />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Route>
         </Routes>

@@ -68,6 +68,9 @@ vi.mock("./pages/system/SystemTasksPage", () => ({
 vi.mock("./pages/system/SystemSettingsPage", () => ({
   default: () => <div>system settings page</div>,
 }));
+vi.mock("./pages/system/SystemModelsPage", () => ({
+  default: () => <div>system models page</div>,
+}));
 
 vi.mock("./pages/system/SystemProxyPage", () => ({
   default: () => <div>system proxy page</div>,
@@ -113,6 +116,15 @@ describe("App routes", () => {
 
     expect(host?.textContent ?? "").toContain("system settings page");
     expect(host?.querySelector('[data-testid="location"]')?.textContent).toBe("/system/settings");
+  });
+
+  it("opens the system models route", async () => {
+    await act(async () => {
+      renderApp("/system/models");
+    });
+
+    expect(host?.textContent ?? "").toContain("system models page");
+    expect(host?.querySelector('[data-testid="location"]')?.textContent).toBe("/system/models");
   });
 
   it("keeps a rejected lazy route recoverable", async () => {

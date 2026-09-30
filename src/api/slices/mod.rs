@@ -12,6 +12,7 @@ mod error_distribution_and_sse;
 )]
 mod invocations_and_summary;
 mod long_term_stats_api;
+mod model_management;
 mod prompt_cache_and_timeseries;
 mod public_blog_runtime;
 mod settings_models_and_cache;
@@ -21,6 +22,7 @@ mod system_routes_and_tasks;
 pub(crate) use error_distribution_and_sse::*;
 pub(crate) use invocations_and_summary::*;
 pub(crate) use long_term_stats_api::*;
+pub(crate) use model_management::*;
 pub(crate) use prompt_cache_and_timeseries::prompt_cache_and_timeseries_shared;
 pub(crate) use prompt_cache_and_timeseries::*;
 pub(crate) use public_blog_runtime::*;
