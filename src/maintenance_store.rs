@@ -912,6 +912,12 @@ impl MaintenanceStore {
             } else {
                 sanitized_detail.as_deref()
             };
+            let migrated_finished_at = if was_active {
+                Some(format_utc_iso_millis(Utc::now()))
+            } else {
+                finished_at
+            };
+            let migrated_duration_ms = if was_active { Some(0) } else { duration_ms };
             sqlx::query(
                 "INSERT OR IGNORE INTO managed_task_runs (legacy_id,task_key,trigger_kind,started_at,finished_at,duration_ms,status,summary,error_detail) VALUES (?,?,?,?,?,?,?,?,?)",
             )
@@ -919,8 +925,8 @@ impl MaintenanceStore {
             .bind(task_key)
             .bind(trigger_kind)
             .bind(started_at)
-            .bind(finished_at)
-            .bind(duration_ms)
+            .bind(migrated_finished_at)
+            .bind(migrated_duration_ms)
             .bind(migrated_status)
             .bind(migrated_summary)
             .bind(migrated_detail)
@@ -1002,23 +1008,9 @@ impl MaintenanceStore {
             return Ok(false);
         }
 
+        // `seed_tasks` applies defaults only when a task row is first created. Do not
+        // rewrite existing controls here: an upgrade must preserve operator choices.
         let now = format_utc_iso_millis(Utc::now());
-        for (task_key, _, _, _, is_manual) in MANAGED_TASKS {
-            sqlx::query("UPDATE managed_tasks SET enabled=?, next_trigger_at=NULL, updated_at=? WHERE task_key=?")
-                .bind(task_enabled_by_default(task_key, *is_manual) as i64)
-                .bind(&now)
-                .bind(task_key)
-                .execute(&mut *transaction)
-                .await?;
-        }
-        for suffix in STARTUP_BACKFILL_TASKS {
-            let task_key = format!("startup_backfill.{suffix}");
-            sqlx::query("UPDATE managed_tasks SET enabled=0, next_trigger_at=NULL, updated_at=? WHERE task_key=?")
-                .bind(&now)
-                .bind(task_key)
-                .execute(&mut *transaction)
-                .await?;
-        }
 
         let disabled_until =
             format_utc_iso_millis(Utc::now() + ChronoDuration::days(TASK_DISABLED_UNTIL_DAYS));
@@ -1041,13 +1033,23 @@ impl MaintenanceStore {
             crate::STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
         ] {
             let like_pattern = format!("{task_name}:%");
+            let Some(managed_suffix) = managed_startup_backfill_suffix(task_name) else {
+                continue;
+            };
+            let managed_key = format!("startup_backfill.{managed_suffix}");
             sqlx::query(
                 "UPDATE startup_backfill_progress
-                 SET enabled=0, next_run_after=?, suspension_reason='operator_disabled',
-                     next_probe_at=NULL, wake_generation=wake_generation + 1
+                 SET enabled=COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0),
+                     next_run_after=CASE WHEN COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0)=0 THEN ? ELSE next_run_after END,
+                     suspension_reason=CASE WHEN COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0)=0 THEN 'operator_disabled' ELSE suspension_reason END,
+                     next_probe_at=CASE WHEN COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0)=0 THEN NULL ELSE next_probe_at END
                  WHERE task_name=? OR task_name LIKE ?",
             )
+            .bind(&managed_key)
+            .bind(&managed_key)
             .bind(&disabled_until)
+            .bind(&managed_key)
+            .bind(&managed_key)
             .bind(task_name)
             .bind(like_pattern)
             .execute(&mut *transaction)
@@ -1467,7 +1469,7 @@ mod tests {
         let store = MaintenanceStore { pool };
         assert!(store.apply_initial_task_defaults().await.unwrap());
         assert!(
-            !sqlx::query_scalar::<_, bool>(
+            sqlx::query_scalar::<_, bool>(
                 "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill'",
             )
             .fetch_one(&store.pool)
@@ -1475,7 +1477,7 @@ mod tests {
             .unwrap()
         );
         assert!(
-            !sqlx::query_scalar::<_, bool>(
+            sqlx::query_scalar::<_, bool>(
                 "SELECT enabled FROM managed_tasks WHERE task_key='raw_compression'",
             )
             .fetch_one(&store.pool)
@@ -1603,5 +1605,23 @@ mod tests {
                 .expect("count managed progress snapshots"),
             2
         );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM managed_task_progress WHERE task_key IN ('startup_backfill.proxy_usage','startup_backfill.proxy_cost')",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .expect("count canonical progress snapshots"),
+            2
+        );
+        let migrated_run = sqlx::query_as::<_, (String, Option<String>, Option<i64>)>(
+            "SELECT status,finished_at,duration_ms FROM managed_task_runs ORDER BY id LIMIT 1",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load migrated interrupted run");
+        assert_eq!(migrated_run.0, "failed");
+        assert!(migrated_run.1.is_some());
+        assert_eq!(migrated_run.2, Some(0));
     }
 }

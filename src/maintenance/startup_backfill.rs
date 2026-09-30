@@ -1028,14 +1028,23 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     };
     let task_name = task.name();
     let like_pattern = format!("{task_name}:%");
+    if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
+        return Err(anyhow!("unknown startup backfill task: {task_name}"));
+    }
     let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
-    let result = sqlx::query(
-        "UPDATE startup_backfill_progress
-         SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
-             wake_generation=wake_generation + 1
-         WHERE task_name=? OR task_name LIKE ?",
+    sqlx::query(
+        "INSERT INTO startup_backfill_progress (
+            task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+            last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+         ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)
+         ON CONFLICT(task_name) DO UPDATE SET
+             enabled=excluded.enabled,
+             next_run_after=excluded.next_run_after,
+             suspension_reason=excluded.suspension_reason,
+             next_probe_at=NULL,
+             wake_generation=startup_backfill_progress.wake_generation + 1",
     )
-    .bind(if enabled { 1_i64 } else { 0_i64 })
+    .bind(task_name)
     .bind(if enabled {
         None
     } else {
@@ -1046,19 +1055,18 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     } else {
         Some("operator_disabled")
     })
-    .bind(task_name)
-    .bind(like_pattern)
+    .bind(if enabled { 1_i64 } else { 0_i64 })
     .execute(pool)
     .await
     .with_context(|| format!("failed to update startup backfill task control for {task_name}"))?;
-    if result.rows_affected() == 0 {
+    if task == StartupBackfillTask::ProxyCost {
         sqlx::query(
-            "INSERT INTO startup_backfill_progress (
-                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
-                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
-             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
+            "UPDATE startup_backfill_progress
+             SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
+                 wake_generation=wake_generation + 1
+             WHERE task_name LIKE ?",
         )
-        .bind(task_name)
+        .bind(if enabled { 1_i64 } else { 0_i64 })
         .bind(if enabled {
             None
         } else {
@@ -1069,10 +1077,12 @@ pub(crate) async fn set_startup_backfill_task_enabled(
         } else {
             Some("operator_disabled")
         })
-        .bind(if enabled { 1_i64 } else { 0_i64 })
+        .bind(like_pattern)
         .execute(pool)
         .await
-        .with_context(|| format!("failed to create startup backfill task control for {task_name}"))?;
+        .with_context(|| {
+            format!("failed to update versioned startup backfill control for {task_name}")
+        })?;
     }
 
     if enabled {
@@ -1223,6 +1233,12 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
             }
             _ => task.name().to_string(),
         };
+        let Some(managed_suffix) =
+            crate::maintenance_store::managed_startup_backfill_suffix(task.name())
+        else {
+            continue;
+        };
+        let managed_task_key = format!("startup_backfill.{managed_suffix}");
         let outcome = sqlx::query(
             r#"
             INSERT INTO startup_backfill_progress (
@@ -1237,9 +1253,12 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
                 last_status,
                 suspension_reason,
                 next_probe_at,
-                wake_generation
+                wake_generation,
+                enabled
             )
-            VALUES (?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1)
+            SELECT ?1, 0, NULL, 0, NULL, NULL, 0, 0, ?2, NULL, NULL, 1,
+                   COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?3), 0)
+            WHERE COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?3), 0) != 0
             ON CONFLICT(task_name) DO UPDATE SET
                 next_run_after = NULL,
                 next_probe_at = NULL,
@@ -1251,6 +1270,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
         )
         .bind(&task_name)
         .bind(STARTUP_BACKFILL_STATUS_IDLE)
+        .bind(&managed_task_key)
         .execute(pool)
         .await
         .with_context(|| {
@@ -3189,6 +3209,123 @@ pub(crate) fn spawn_startup_backfill_maintenance(
 #[cfg(test)]
 mod startup_backfill_tests {
     use super::*;
+    use sqlx::SqlitePool;
+
+    async fn control_test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect startup backfill test pool");
+        sqlx::query(
+            "CREATE TABLE managed_tasks (task_key TEXT PRIMARY KEY, enabled INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create managed task controls");
+        sqlx::query(
+            "CREATE TABLE startup_backfill_progress (
+                task_name TEXT PRIMARY KEY,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                next_run_after TEXT,
+                zero_update_streak INTEGER NOT NULL DEFAULT 0,
+                last_started_at TEXT,
+                last_finished_at TEXT,
+                last_scanned INTEGER NOT NULL DEFAULT 0,
+                last_updated INTEGER NOT NULL DEFAULT 0,
+                last_status TEXT NOT NULL DEFAULT 'idle',
+                suspension_reason TEXT,
+                next_probe_at TEXT,
+                wake_generation INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create startup backfill controls");
+        pool
+    }
+
+    #[tokio::test]
+    async fn disabled_proxy_cost_does_not_wake_new_catalog_rows() {
+        let pool = control_test_pool().await;
+        sqlx::query(
+            "INSERT INTO managed_tasks (task_key,enabled) VALUES ('startup_backfill.proxy_cost',0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert disabled proxy cost control");
+        let catalog = PricingCatalog {
+            version: "catalog-v2".to_string(),
+            models: HashMap::new(),
+        };
+
+        assert_eq!(
+            wake_startup_backfill_tasks_with_pricing_catalog(
+                &pool,
+                &[StartupBackfillTask::ProxyCost],
+                Some(&catalog),
+                "test_disabled",
+            )
+            .await
+            .expect("wake disabled proxy cost"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM startup_backfill_progress")
+                .fetch_one(&pool)
+                .await
+                .expect("count disabled progress rows"),
+            0
+        );
+
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1 WHERE task_key='startup_backfill.proxy_cost'",
+        )
+        .execute(&pool)
+        .await
+        .expect("enable proxy cost control");
+        assert_eq!(
+            wake_startup_backfill_tasks_with_pricing_catalog(
+                &pool,
+                &[StartupBackfillTask::ProxyCost],
+                Some(&catalog),
+                "test_enabled",
+            )
+            .await
+            .expect("wake enabled proxy cost"),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT enabled FROM startup_backfill_progress LIMIT 1",)
+                .fetch_one(&pool)
+                .await
+                .expect("read enabled progress row"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_backfill_control_upsert_is_idempotent() {
+        let pool = control_test_pool().await;
+        let first = set_startup_backfill_task_enabled(&pool, StartupBackfillTask::ProxyCost, false)
+            .await
+            .expect("disable proxy cost control");
+        let second =
+            set_startup_backfill_task_enabled(&pool, StartupBackfillTask::ProxyCost, false)
+                .await
+                .expect("repeat disabling proxy cost control");
+
+        assert!(!first.enabled);
+        assert!(!second.enabled);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM startup_backfill_progress WHERE task_name='proxy_cost_v1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count exact proxy cost control rows"),
+            1
+        );
+    }
 
     #[test]
     fn scheduler_health_tracks_wakes_due_work_and_active_outcomes() {
