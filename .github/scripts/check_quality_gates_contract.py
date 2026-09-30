@@ -896,7 +896,21 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             "ci-main.yml.jobs.backend-tests-stateful-sqlite.needs must aggregate both shards",
         )
         require_exact_if(aggregate_job, "always()", "ci-main.yml.jobs.backend-tests-stateful-sqlite")
-        aggregate_run = str(step_config(aggregate_job, "Require both Stateful SQLite shards", "ci-main.yml.jobs.backend-tests-stateful-sqlite").get("run", ""))
+        aggregate_step = step_config(
+            aggregate_job,
+            "Require both Stateful SQLite shards",
+            "ci-main.yml.jobs.backend-tests-stateful-sqlite",
+        )
+        aggregate_env = require_mapping(
+            aggregate_step.get("env"),
+            "ci-main.yml.jobs.backend-tests-stateful-sqlite.steps['Require both Stateful SQLite shards'].env",
+        )
+        require(
+            aggregate_env.get("SHARD_ONE_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-1.result }}"
+            and aggregate_env.get("SHARD_TWO_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-2.result }}",
+            "ci-main.yml Stateful SQLite aggregate must read both matching shard results",
+        )
+        aggregate_run = str(aggregate_step.get("run", ""))
         require_fail_closed_stateful_aggregate(aggregate_run, "ci-main.yml")
 
         candidate_meta = job_config(workflow, "candidate-meta", "ci-main.yml")

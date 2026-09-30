@@ -73,7 +73,49 @@ fi
 grep -q "must run partition hash:1/2" "$tmp_dir/ci-pr-shard.log"
 cp "$fixtures_root/ci-pr.yml" "$ci_pr_workflow"
 
+python3 - <<'PY' "$ci_pr_workflow"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '          test "${SHARD_TWO_RESULT}" = success\n'
+replacement = "          : <<'EOF'\n          test \"${SHARD_TWO_RESULT}\" = success\n          EOF\n"
+if needle not in text:
+    raise SystemExit("failed to locate CI PR Stateful SQLite shard success assertion")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final >/dev/null 2>"$tmp_dir/ci-pr-shard-aggregate.log"; then
+  echo "expected CI PR aggregate with a non-executable shard 2 success assertion to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-pr.yml Stateful SQLite aggregate must preserve the exact fail-closed script" "$tmp_dir/ci-pr-shard-aggregate.log"
+cp "$fixtures_root/ci-pr.yml" "$ci_pr_workflow"
+
 ci_main_workflow="$baseline_repo/.github/workflows/ci-main.yml"
+python3 - <<'PY' "$ci_main_workflow"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '          SHARD_TWO_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-2.result }}\n'
+replacement = '          SHARD_TWO_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-1.result }}\n'
+if needle not in text:
+    raise SystemExit("failed to locate CI Main Stateful SQLite shard result mapping")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final >/dev/null 2>"$tmp_dir/ci-main-shard-mapping.log"; then
+  echo "expected CI Main aggregate with a duplicated shard result mapping to fail" >&2
+  exit 1
+fi
+
+grep -q "ci-main.yml Stateful SQLite aggregate must read both matching shard results" "$tmp_dir/ci-main-shard-mapping.log"
+cp "$fixtures_root/ci-main.yml" "$ci_main_workflow"
+
 python3 - <<'PY' "$ci_main_workflow"
 from pathlib import Path
 import sys
