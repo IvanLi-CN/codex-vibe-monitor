@@ -27,7 +27,7 @@
 
 ### REQ-DIT-002
 
-- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, and adapt each lane height between 1px and 16px within the fixed chart frame (336px compact, 320px desktop). Adjacent lanes MUST have no gap when lane height is 1px or 2px, and exactly 1 CSS pixel of gap when lane height exceeds 2px.
+- The system MUST assign each invocation to the lowest virtual lane that is idle at its start time, display at least 4 visual lanes, and adapt each lane height between 8px and 16px within the fixed chart frame (336px compact, 320px desktop). Adjacent lanes MUST always have exactly 1 CSS pixel of gap. When concurrency exceeds the available frame, lane height MUST stop shrinking and the lane body MUST scroll vertically.
 - The chart frame MUST remain fixed-height at every concurrency level. High concurrency MAY overflow only inside the invocation lane body, which MUST provide vertical scrolling; the calls axis MUST stay pinned to the frame and synchronize its vertical position with the lane body. The first overflowing snapshot MUST start at the bottom; refreshes of the same view MUST preserve the user's scroll position, clamped to the new content bounds. The chart MUST NOT introduce horizontal scrolling.
 - At high concurrency, calls-axis gridlines MUST follow the visible axis tick values rather than drawing one gridline per virtual lane.
 - Pointer hover inside the plot MUST show a floating tooltip anchored within the chart with the snapped time and parallel, running, and queued counts. The tooltip MUST not participate in document flow or change chart height, MUST remain within the chart bounds near its edges, and MUST disappear when the pointer leaves the chart. Hover details MUST NOT be rendered as an additional row below the chart.
@@ -82,7 +82,7 @@
 
 - Method: frontend lane and API normalization unit tests.
 - covers: `REQ-DIT-002`, `REQ-DIT-003`, `REQ-DIT-004`
-- Pass condition: lowest idle lane, zero-duration visibility, in-flight extension, lane height and conditional gap bounds, fixed frame with internal vertical overflow, no horizontal overflow, synchronized axis scrolling, in-chart hover tooltip behavior, account filtering, valid TTFT-only rendering, page merging, and duplicate invocation folding remain stable.
+- Pass condition: lowest idle lane, zero-duration visibility, in-flight extension, lane height stays within 8–16px with a fixed 1px gap at every concurrency level, fixed frame with internal vertical overflow, no horizontal overflow, synchronized axis scrolling, in-chart hover tooltip behavior, account filtering, valid TTFT-only rendering, page merging, and duplicate invocation folding remain stable.
 
 ### VER-DIT-003
 

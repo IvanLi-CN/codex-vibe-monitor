@@ -187,34 +187,35 @@ describe("resolveInvocationTimelineLayout", () => {
     expect(layout.lanePlotHeight).toBe(292);
   });
 
-  it("adapts lane height and uses one-pixel gaps only above two pixels", () => {
+  it("adapts lane height within the readable range and keeps one-pixel gaps", () => {
     expect(resolveInvocationTimelineLayout(20, false).laneHeight).toBe(13);
     expect(resolveInvocationTimelineLayout(20, false).laneGap).toBe(1);
-    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(2);
-    expect(resolveInvocationTimelineLayout(100, true).laneGap).toBe(0);
-    expect(resolveInvocationTimelineLayout(300, false).laneHeight).toBe(1);
-    expect(resolveInvocationTimelineLayout(300, false).laneGap).toBe(0);
+    expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(8);
+    expect(resolveInvocationTimelineLayout(100, true).laneGap).toBe(1);
+    expect(resolveInvocationTimelineLayout(300, false).laneHeight).toBe(8);
+    expect(resolveInvocationTimelineLayout(300, false).laneGap).toBe(1);
     expect(resolveInvocationTimelineLayout(2, true).laneHeight).toBe(16);
     expect(resolveInvocationTimelineLayout(2, true).chartHeightPx).toBe(336);
   });
 
-  it("compresses 190 lanes into the fixed chart viewport before scrolling", () => {
+  it("keeps 190 lanes readable and scrolls inside the fixed chart viewport", () => {
     const layout = resolveInvocationTimelineLayout(190, false);
 
     expect(layout.visibleLaneCount).toBe(190);
     expect(layout.chartHeightPx).toBe(320);
     expect(layout.laneAreaHeightPx).toBe(292);
-    expect(layout.laneHeight).toBe(1);
-    expect(layout.laneGap).toBe(0);
-    expect(layout.lanePlotHeight).toBe(layout.laneAreaHeightPx);
+    expect(layout.laneHeight).toBe(8);
+    expect(layout.laneGap).toBe(1);
+    expect(layout.lanePlotHeight).toBeGreaterThan(layout.laneAreaHeightPx);
+    expect(layout.laneContentHeight).toBe(190 * 8 + 189);
   });
 
-  it("uses internal scrolling only after one-pixel lanes still exceed the plot", () => {
+  it("preserves the minimum lane height and gap while dense rows overflow", () => {
     const layout = resolveInvocationTimelineLayout(360, false);
 
     expect(layout.chartHeightPx).toBe(320);
-    expect(layout.laneHeight).toBe(1);
-    expect(layout.laneGap).toBe(0);
+    expect(layout.laneHeight).toBe(8);
+    expect(layout.laneGap).toBe(1);
     expect(layout.lanePlotHeight).toBeGreaterThan(layout.laneAreaHeightPx);
   });
 });
@@ -275,11 +276,12 @@ describe("resolveVisibleInvocationLaneRange", () => {
       0,
     );
 
+    const visibleRows = Math.ceil(layout.laneAreaHeightPx / layout.laneStep);
     expect(bottom.firstLane).toBe(0);
-    expect(bottom.lastLane).toBeGreaterThan(layout.laneAreaHeightPx);
-    expect(bottom.lastLane).toBeLessThan(layout.laneAreaHeightPx + 4);
+    expect(bottom.lastLane).toBeGreaterThan(visibleRows - 1);
+    expect(bottom.lastLane).toBeLessThan(visibleRows + 2);
     expect(top.firstLane).toBeGreaterThan(250);
     expect(top.lastLane).toBe(549);
-    expect(top.lastLane - top.firstLane + 1).toBeLessThan(layout.laneAreaHeightPx + 4);
+    expect(top.lastLane - top.firstLane + 1).toBeLessThan(visibleRows + 4);
   });
 });

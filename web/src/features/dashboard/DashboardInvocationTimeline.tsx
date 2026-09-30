@@ -209,7 +209,7 @@ const INVOCATION_MIN_VISIBLE_LANES = 4;
 const INVOCATION_CHART_HEIGHT_COMPACT_PX = 336;
 const INVOCATION_CHART_HEIGHT_DESKTOP_PX = 320;
 const INVOCATION_X_AXIS_HEIGHT_PX = 28;
-const INVOCATION_LANE_MIN_HEIGHT_PX = 1;
+const INVOCATION_LANE_MIN_HEIGHT_PX = 8;
 const INVOCATION_LANE_MAX_HEIGHT_PX = 16;
 const INVOCATION_LANE_GAP_PX = 1;
 const INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX = 16;
@@ -243,14 +243,11 @@ export function resolveInvocationTimelineLayout(
   const heightWithGap = Math.floor(
     (laneAreaHeightPx - (visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX) / visibleLaneCount,
   );
-  const laneHeight =
-    heightWithGap > 2
-      ? Math.min(INVOCATION_LANE_MAX_HEIGHT_PX, heightWithGap)
-      : Math.max(
-          INVOCATION_LANE_MIN_HEIGHT_PX,
-          Math.min(2, Math.floor(laneAreaHeightPx / visibleLaneCount)),
-        );
-  const laneGap = laneHeight > 2 ? INVOCATION_LANE_GAP_PX : 0;
+  const laneHeight = Math.min(
+    INVOCATION_LANE_MAX_HEIGHT_PX,
+    Math.max(INVOCATION_LANE_MIN_HEIGHT_PX, heightWithGap),
+  );
+  const laneGap = INVOCATION_LANE_GAP_PX;
   const laneStep = laneHeight + laneGap;
   const laneContentHeight =
     visibleLaneCount * laneHeight + Math.max(0, visibleLaneCount - 1) * laneGap;
@@ -933,7 +930,7 @@ export function DashboardInvocationTimeline({
                               role="img"
                               key={`${item.record.invokeId}:${item.record.occurredAt}`}
                               data-call-value={item.lane + 1}
-                              className={`absolute flex appearance-none items-center overflow-visible ${laneHeight > 2 ? "rounded border shadow-sm" : "rounded-sm"} ${statusClass(status)}`}
+                              className={`absolute flex appearance-none items-center overflow-visible rounded border shadow-sm ${statusClass(status)}`}
                               aria-label={accessibleLabel}
                               style={{
                                 left: `${left}%`,
@@ -941,7 +938,6 @@ export function DashboardInvocationTimeline({
                                 width: `${width}%`,
                                 minWidth: "8px",
                                 height: `${laneHeight}px`,
-                                borderWidth: laneHeight > 2 ? undefined : 0,
                               }}
                               title={accessibleLabel}
                             />

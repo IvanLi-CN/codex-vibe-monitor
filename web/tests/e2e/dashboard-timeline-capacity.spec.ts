@@ -163,14 +163,34 @@ function expectSustainedEvents(eventTimes: number[], baselineCount: number): voi
 
 async function expectVisibleCallsAreVirtualized(page: Page, totalCalls: number): Promise<void> {
   const laneScroll = page.getByTestId("dashboard-invocation-timeline-lane-scroll");
-  const renderedCalls = await laneScroll.locator("[data-call-value]").count();
-  const viewportHeight = await laneScroll.evaluate(
-    (element) => (element as HTMLElement).clientHeight,
-  );
+  const geometry = await laneScroll.evaluate((element) => {
+    const viewport = element as HTMLElement;
+    const bars = Array.from(viewport.querySelectorAll<HTMLElement>("[data-call-value]"))
+      .map((bar) => {
+        const rect = bar.getBoundingClientRect();
+        return { top: rect.top, height: rect.height };
+      })
+      .sort((left, right) => left.top - right.top);
+    return {
+      clientHeight: viewport.clientHeight,
+      scrollHeight: viewport.scrollHeight,
+      bars,
+    };
+  });
 
-  expect(renderedCalls).toBeGreaterThan(0);
-  expect(renderedCalls).toBeLessThanOrEqual(viewportHeight + 4);
-  expect(renderedCalls).toBeLessThan(totalCalls);
+  expect(geometry.bars.length).toBeGreaterThan(0);
+  expect(geometry.bars.length).toBeLessThanOrEqual(Math.ceil(geometry.clientHeight / 9) + 4);
+  expect(geometry.bars.length).toBeLessThan(totalCalls);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+  for (const bar of geometry.bars) {
+    expect(bar.height).toBeGreaterThanOrEqual(8);
+    expect(bar.height).toBeLessThanOrEqual(16);
+  }
+  for (let index = 1; index < geometry.bars.length; index += 1) {
+    const previous = geometry.bars[index - 1]!;
+    const current = geometry.bars[index]!;
+    expect(Math.round((current.top - previous.top - previous.height) * 1000) / 1000).toBe(1);
+  }
 }
 
 async function instrumentTimelineFetch(page: Page) {
