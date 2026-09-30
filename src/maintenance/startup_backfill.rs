@@ -1732,7 +1732,26 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillMaintenancePass {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("startup_backfill")
+    else {
+        return StartupBackfillMaintenancePass::default();
+    };
     run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate).await
+}
+
+pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) -> StartupBackfillMaintenancePass {
+    run_startup_backfill_maintenance_pass_with_gate_inner(
+        state,
+        cancel,
+        selected_tasks,
+        crate::db_pressure::global_db_pressure_gate(),
+    )
+    .await
 }
 
 async fn begin_startup_backfill_audit(
@@ -1758,11 +1777,6 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillMaintenancePass {
-    let Some(_execution_lease) =
-        crate::maintenance_store::try_acquire_task_execution("startup_backfill")
-    else {
-        return StartupBackfillMaintenancePass::default();
-    };
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
@@ -3035,7 +3049,7 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
         task_count = tasks.len(),
         "pressure eligibility changed; dispatching deferred startup backfill tasks"
     );
-    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, Some(&tasks), gate).await;
+    run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate).await;
 }
 
 pub(crate) fn spawn_startup_backfill_maintenance(

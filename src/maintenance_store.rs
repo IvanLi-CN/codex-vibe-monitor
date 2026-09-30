@@ -39,11 +39,15 @@ impl Drop for TaskExecutionLease {
 pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecutionLease> {
     let active = ACTIVE_TASK_EXECUTIONS.get_or_init(|| Mutex::new(HashSet::new()));
     let mut active = active.lock().ok()?;
-    if !active.insert(task_key.to_string()) {
+    let canonical_task_key = task_key
+        .strip_prefix("startup_backfill.")
+        .map(|_| "startup_backfill")
+        .unwrap_or(task_key);
+    if !active.insert(canonical_task_key.to_string()) {
         return None;
     }
     Some(TaskExecutionLease {
-        task_key: task_key.to_string(),
+        task_key: canonical_task_key.to_string(),
     })
 }
 

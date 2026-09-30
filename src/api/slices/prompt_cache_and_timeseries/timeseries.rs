@@ -2047,10 +2047,20 @@ pub(crate) async fn flush_timeseries_minute_projection(
     state: &AppState,
     trigger: &'static str,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
-    flush_timeseries_minute_projection_with_coordinator(
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("timeseries_minute_projection")
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(
+            TimeseriesMinuteProjectionDeferred {
+                retry_after: Some(Duration::from_secs(1)),
+            },
+        ));
+    };
+    flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
         &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+        None,
     )
     .await
 }
@@ -2060,10 +2070,32 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
     trigger: &'static str,
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("timeseries_minute_projection")
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(
+            TimeseriesMinuteProjectionDeferred {
+                retry_after: Some(Duration::from_secs(1)),
+            },
+        ));
+    };
     flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
         coordinator,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn flush_timeseries_minute_projection_managed(
+    state: &AppState,
+    trigger: &'static str,
+) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    flush_timeseries_minute_projection_with_coordinator_and_cancellation(
+        state,
+        trigger,
+        &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
         None,
     )
     .await
@@ -2078,15 +2110,6 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
     if timeseries_minute_projection_is_cancelled(cancellation) {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
-    let Some(_execution_lease) =
-        crate::maintenance_store::try_acquire_task_execution("timeseries_minute_projection")
-    else {
-        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(
-            TimeseriesMinuteProjectionDeferred {
-                retry_after: Some(Duration::from_secs(1)),
-            },
-        ));
-    };
     if timeseries_minute_projection_recovery_pending(&state.pool).await? {
         let startup_cancellation = cancellation
             .cloned()
@@ -2372,6 +2395,11 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                     _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
                 }
             }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "timeseries_minute_projection",
+            ) else {
+                continue;
+            };
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
@@ -2459,6 +2487,11 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                 }
             }
 
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "timeseries_minute_projection",
+            ) else {
+                continue;
+            };
             match flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 state.as_ref(),
                 "terminal_deadline",

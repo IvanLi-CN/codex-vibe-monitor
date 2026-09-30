@@ -3343,6 +3343,13 @@ async fn flush_long_term_projection(
             retry_at: Some(Instant::now() + Duration::from_secs(1)),
         });
     };
+    flush_long_term_projection_unlocked(state, trigger).await
+}
+
+async fn flush_long_term_projection_unlocked(
+    state: &AppState,
+    trigger: &'static str,
+) -> Result<LongTermProjectionFlushOutcome> {
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
     let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
         flush_long_term_projection_inner(state, trigger)
@@ -3392,6 +3399,12 @@ async fn flush_long_term_projection(
 
 pub(crate) async fn run_long_term_projection_once(state: &AppState) -> Result<()> {
     flush_long_term_projection(state, "managed_task")
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn run_long_term_projection_once_managed(state: &AppState) -> Result<()> {
+    flush_long_term_projection_unlocked(state, "managed_task")
         .await
         .map(|_| ())
 }

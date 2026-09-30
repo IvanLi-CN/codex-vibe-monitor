@@ -1102,29 +1102,20 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             let Some((run_id, task_key, _started_at)) = claim else {
                 continue;
             };
-            let _execution_lease = if matches!(
-                task_key.as_str(),
-                "long_term_projection" | "timeseries_minute_projection" | "startup_backfill"
-            ) {
-                None
-            } else if task_key.starts_with("startup_backfill.") {
-                None
-            } else {
-                let Some(lease) = crate::maintenance_store::try_acquire_task_execution(&task_key)
-                else {
-                    let _ = store
-                        .finish_run(
-                            run_id,
-                            "failed",
-                            &format_utc_iso_millis(Utc::now()),
-                            0,
-                            Some("检测到同一任务正在运行，未重复执行"),
-                            None,
-                        )
-                        .await;
-                    continue;
-                };
-                Some(lease)
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution(&task_key)
+            else {
+                let _ = store
+                    .finish_run(
+                        run_id,
+                        "failed",
+                        &format_utc_iso_millis(Utc::now()),
+                        0,
+                        Some("检测到同一任务正在运行，未重复执行"),
+                        None,
+                    )
+                    .await;
+                continue;
             };
             let started_at = Instant::now();
             let result = run_managed_task_once(&state, &task_key).await;
@@ -1256,11 +1247,11 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             Ok("仪表盘运行投影校对完成".to_string())
         }
         "long_term_projection" => {
-            run_long_term_projection_once(state.as_ref()).await?;
+            run_long_term_projection_once_managed(state.as_ref()).await?;
             Ok("长期统计投影刷新完成".to_string())
         }
         "timeseries_minute_projection" => {
-            crate::api::flush_timeseries_minute_projection(state.as_ref(), "managed_task")
+            crate::api::flush_timeseries_minute_projection_managed(state.as_ref(), "managed_task")
                 .await
                 .map_err(|_| anyhow!("分钟时序投影刷新失败"))?;
             Ok("分钟时序投影刷新完成".to_string())
@@ -1276,7 +1267,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
         }
         "prompt_cache_materialization" => {
             let task = crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
-            let pass = crate::run_startup_backfill_maintenance_pass(
+            let pass = crate::run_startup_backfill_maintenance_pass_managed(
                 state.clone(),
                 &state.shutdown,
                 Some(&[task]),
@@ -1331,9 +1322,12 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             Ok(format!("旧归档批次清理完成：{summary:?}"))
         }
         "startup_backfill" => {
-            let pass =
-                crate::run_startup_backfill_maintenance_pass(state.clone(), &state.shutdown, None)
-                    .await;
+            let pass = crate::run_startup_backfill_maintenance_pass_managed(
+                state.clone(),
+                &state.shutdown,
+                None,
+            )
+            .await;
             if pass.had_failure {
                 bail!(
                     pass.detail
@@ -1358,7 +1352,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 "manual_run",
             )
             .await?;
-            let pass = crate::run_startup_backfill_maintenance_pass(
+            let pass = crate::run_startup_backfill_maintenance_pass_managed(
                 state.clone(),
                 &state.shutdown,
                 Some(&[task]),
