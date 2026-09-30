@@ -2355,6 +2355,14 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
     tokio::spawn(async move {
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip("timeseries_minute_projection")
+                .await
+            {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,

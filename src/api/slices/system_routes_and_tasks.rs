@@ -1453,6 +1453,9 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
+            if crate::maintenance_store::legacy_worker_should_skip("system_status_snapshot").await {
+                continue;
+            }
             if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
                 warn!(
                     ?error,

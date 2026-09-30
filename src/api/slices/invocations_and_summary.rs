@@ -16475,6 +16475,9 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             if !has_owner {
                 continue;
             }
+            if crate::maintenance_store::legacy_worker_should_skip("summary_snapshot").await {
+                continue;
+            }
             if !dirty {
                 continue;
             }

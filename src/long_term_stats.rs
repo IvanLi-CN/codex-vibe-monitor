@@ -2565,6 +2565,12 @@ pub(crate) fn spawn_long_term_projection_supervisor(
         daily_verify_ticker.tick().await;
 
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 _ = wait_for_long_term_projection_pressure_retry(

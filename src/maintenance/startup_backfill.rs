@@ -3057,8 +3057,14 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         state
             .terminal_projection_hub
             .activate_timeseries_consumer(0);
-        spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
-        spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone());
+        if !crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await {
+            spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
+        }
+        if !crate::maintenance_store::legacy_worker_should_skip("timeseries_minute_projection")
+            .await
+        {
+            spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone());
+        }
 
         let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
 
