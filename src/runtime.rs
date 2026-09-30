@@ -1168,14 +1168,17 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             Ok("系统状态快照刷新完成".to_string())
         }
         "invocation_timeline_snapshot" => {
-            let result = cleanup_timeline_snapshot_rows_once(&state.pool).await?;
-            Ok(format!("调用时间线快照清理完成：{result:?}"))
+            cleanup_timeline_snapshot_rows_once(&state.pool)
+                .await
+                .map_err(|_| anyhow!("调用时间线快照清理失败"))?;
+            Ok("调用时间线快照清理完成".to_string())
         }
         "dashboard_runtime_projection_reconcile" => {
             let result = reconcile_dashboard_runtime_projection_once(state.as_ref())
                 .await
-                .map_err(|error| anyhow!(error.to_string()))?;
-            Ok(format!("仪表盘运行投影校对完成：{result:?}"))
+                .map_err(|_| anyhow!("仪表盘运行投影校对失败"))?;
+            let _ = result;
+            Ok("仪表盘运行投影校对完成".to_string())
         }
         "long_term_projection" => {
             flush_long_term_projection(state.as_ref(), "managed_task")
@@ -1186,11 +1189,12 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
         "timeseries_minute_projection" => {
             crate::api::flush_timeseries_minute_projection(state.as_ref(), "managed_task")
                 .await
-                .map_err(|error| anyhow!(error.to_string()))?;
+                .map_err(|_| anyhow!("分钟时序投影刷新失败"))?;
             Ok("分钟时序投影刷新完成".to_string())
         }
         "raw_payload_metrics_inventory" => {
-            let reset = resume_retention_raw_payload_metrics_inventory(state.as_ref()).await?;
+            let reset =
+                resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await?;
             Ok(if reset {
                 "原始载荷指标盘点已推进".to_string()
             } else {

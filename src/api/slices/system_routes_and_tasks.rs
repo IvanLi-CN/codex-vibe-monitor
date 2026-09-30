@@ -1942,16 +1942,11 @@ pub(crate) async fn update_managed_task(
     }
     if let (Some(enabled), Some(task_name)) =
         (request.enabled, task_key.strip_prefix("startup_backfill."))
-        && let Some(task) =
-            crate::maintenance::startup_backfill::StartupBackfillTask::from_name(task_name)
+        && let Some(task) = crate::StartupBackfillTask::from_name(task_name)
     {
-        crate::maintenance::startup_backfill::set_startup_backfill_task_enabled(
-            &state.pool,
-            task,
-            enabled,
-        )
-        .await
-        .map_err(ApiError::from)?;
+        crate::set_startup_backfill_task_enabled(&state.pool, task, enabled)
+            .await
+            .map_err(ApiError::from)?;
     }
     get_managed_task(State(state), AxumPath(task_key)).await
 }
