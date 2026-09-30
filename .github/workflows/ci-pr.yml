@@ -312,7 +312,7 @@ jobs:
 
       - name: Install Playwright Chromium for Storybook
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Run Storybook accessibility suite
         working-directory: web
@@ -595,10 +595,10 @@ jobs:
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
-  backend-tests-stateful-sqlite:
+  backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
     if: always()
-    name: Backend Tests (Stateful SQLite)
+    name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -623,7 +623,57 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite-shard-2:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Stateful SQLite shard 2/2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
+
+      - name: Run stateful SQLite backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite:
+    name: Backend Tests (Stateful SQLite)
+    needs:
+      - backend-tests-stateful-sqlite-shard-1
+      - backend-tests-stateful-sqlite-shard-2
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both Stateful SQLite shards
+        env:
+          SHARD_ONE_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-1.result }}
+          SHARD_TWO_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-2.result }}
+        run: |
+          set -euo pipefail
+          echo "Stateful SQLite shard 1/2: ${SHARD_ONE_RESULT}"
+          echo "Stateful SQLite shard 2/2: ${SHARD_TWO_RESULT}"
+          test "${SHARD_ONE_RESULT}" = success
+          test "${SHARD_TWO_RESULT}" = success
 
   backend-tests-representative-scale:
     name: Backend Tests (Representative Scale)

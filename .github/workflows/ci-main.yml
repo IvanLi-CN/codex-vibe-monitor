@@ -400,7 +400,7 @@ jobs:
 
       - name: Install Playwright Chromium for Storybook
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Run Storybook accessibility suite
         working-directory: web

@@ -51,6 +51,49 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
+ci_pr_workflow="$baseline_repo/.github/workflows/ci-pr.yml"
+python3 - <<'PY' "$ci_pr_workflow"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "--partition hash:1/2"
+replacement = "--partition hash:2/2"
+if needle not in text:
+    raise SystemExit("failed to locate PR Stateful SQLite partition")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final >/dev/null 2>"$tmp_dir/ci-pr-shard.log"; then
+  echo "expected incorrect PR Stateful SQLite partition fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must run partition hash:1/2" "$tmp_dir/ci-pr-shard.log"
+cp "$fixtures_root/ci-pr.yml" "$ci_pr_workflow"
+
+python3 - <<'PY' "$ci_pr_workflow"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = "run: bunx playwright install chromium"
+replacement = "run: bunx playwright install --with-deps chromium"
+if needle not in text:
+    raise SystemExit("failed to locate Storybook Playwright install")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final >/dev/null 2>"$tmp_dir/storybook-install.log"; then
+  echo "expected Storybook system dependency install fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must install Chromium without system dependencies" "$tmp_dir/storybook-install.log"
+cp "$fixtures_root/ci-pr.yml" "$ci_pr_workflow"
+
 upgraded_baseline_repo="$tmp_dir/upgraded-baseline-repo"
 copy_repo_snapshot "$baseline_repo" "$upgraded_baseline_repo"
 python3 - <<'PY' "$upgraded_baseline_repo"

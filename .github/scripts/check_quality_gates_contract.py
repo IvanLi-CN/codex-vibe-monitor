@@ -445,6 +445,19 @@ def validate_metadata_policy(module: Any, contract: ContractModel) -> None:
     )
 
 
+def require_storybook_browser_install(workflow, workflow_path: str) -> None:
+    storybook_job = job_config(workflow, "storybook-accessibility-tests", workflow_path)
+    playwright_install = step_config(
+        storybook_job,
+        "Install Playwright Chromium for Storybook",
+        f"{workflow_path}.jobs.storybook-accessibility-tests",
+    )
+    require(
+        playwright_install.get("run") == "bunx playwright install chromium",
+        f"{workflow_path}.jobs.storybook-accessibility-tests must install Chromium without system dependencies",
+    )
+
+
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
     workflow_name = workflow.get("name")
@@ -453,6 +466,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require(expected_jobs, f"ci-pr.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
     auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
+    require_storybook_browser_install(workflow, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -686,7 +700,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
             "ci-pr.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
         )
-        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-archive-file-io"):
             require(
                 job_config(workflow, backend_job_id, "ci-pr.yml").get("needs") == "backend-test-archive",
                 f"ci-pr.yml.jobs.{backend_job_id}.needs must use the archive producer",
@@ -696,6 +710,57 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-pr.yml.jobs.{backend_job_id}",
             )
+        for shard_id, partition, expected_name in (
+            (
+                "backend-tests-stateful-sqlite-shard-1",
+                "hash:1/2",
+                "Backend Tests (Stateful SQLite shard 1/2)",
+            ),
+            (
+                "backend-tests-stateful-sqlite-shard-2",
+                "hash:2/2",
+                "Backend Tests (Stateful SQLite shard 2/2)",
+            ),
+        ):
+            shard_job = job_config(workflow, shard_id, "ci-pr.yml")
+            require(
+                shard_job.get("name") == expected_name and expected_name in auxiliary_jobs,
+                f"ci-pr.yml.jobs.{shard_id} must be a declared Stateful SQLite auxiliary job",
+            )
+            require(shard_job.get("needs") == "backend-test-archive", f"ci-pr.yml.jobs.{shard_id}.needs must use the archive producer")
+            require_exact_if(shard_job, "always()", f"ci-pr.yml.jobs.{shard_id}")
+            shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-pr.yml.jobs.{shard_id}").get("run", ""))
+            require(f"--partition {partition}" in shard_run, f"ci-pr.yml.jobs.{shard_id} must run partition {partition}")
+        aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-pr.yml")
+        require(
+            aggregate_job.get("name") == "Backend Tests (Stateful SQLite)"
+            and aggregate_job.get("needs") == [
+                "backend-tests-stateful-sqlite-shard-1",
+                "backend-tests-stateful-sqlite-shard-2",
+            ],
+            "ci-pr.yml.jobs.backend-tests-stateful-sqlite must aggregate both Stateful SQLite shards under the required check name",
+        )
+        require_exact_if(aggregate_job, "always()", "ci-pr.yml.jobs.backend-tests-stateful-sqlite")
+        aggregate_step = step_config(
+            aggregate_job,
+            "Require both Stateful SQLite shards",
+            "ci-pr.yml.jobs.backend-tests-stateful-sqlite",
+        )
+        aggregate_env = require_mapping(
+            aggregate_step.get("env"),
+            "ci-pr.yml.jobs.backend-tests-stateful-sqlite.steps['Require both Stateful SQLite shards'].env",
+        )
+        require(
+            aggregate_env.get("SHARD_ONE_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-1.result }}"
+            and aggregate_env.get("SHARD_TWO_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-2.result }}",
+            "ci-pr.yml Stateful SQLite aggregate must read both shard results",
+        )
+        aggregate_run = str(aggregate_step.get("run", ""))
+        require(
+            'test "${SHARD_ONE_RESULT}" = success' in aggregate_run
+            and 'test "${SHARD_TWO_RESULT}" = success' in aggregate_run,
+            "ci-pr.yml Stateful SQLite aggregate must fail when either shard fails",
+        )
 
 
 def validate_ci_main(path: Path, contract: ContractModel) -> None:
@@ -706,6 +771,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require(expected_jobs, f"ci-main.yml: workflow {workflow_name!r} must be declared in expected_main_workflows")
     auxiliary_jobs = set(contract.expected_main_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
+    require_storybook_browser_install(workflow, "ci-main.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
