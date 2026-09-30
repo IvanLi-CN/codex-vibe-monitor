@@ -5730,6 +5730,7 @@ pub(crate) async fn resolve_default_source_scope(
 #[derive(Debug)]
 pub(crate) enum ApiError {
     BadRequest(anyhow::Error),
+    Conflict(anyhow::Error),
     Unavailable(anyhow::Error),
     Internal(anyhow::Error),
 }
@@ -5748,12 +5749,20 @@ impl ApiError {
     {
         Self::Unavailable(err.into())
     }
+
+    pub(crate) fn conflict<E>(err: E) -> Self
+    where
+        E: Into<anyhow::Error>,
+    {
+        Self::Conflict(err.into())
+    }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, err) = match self {
             ApiError::BadRequest(err) => (StatusCode::BAD_REQUEST, err),
+            ApiError::Conflict(err) => (StatusCode::CONFLICT, err),
             ApiError::Unavailable(err) => (StatusCode::SERVICE_UNAVAILABLE, err),
             ApiError::Internal(err) => (StatusCode::INTERNAL_SERVER_ERROR, err),
         };

@@ -103,14 +103,13 @@ pub(crate) use invocation_workflow_detail::{
 };
 
 pub(crate) use summary_projection_lifecycle::{
-    hydrate_summary_snapshots_with_deadline, refresh_summary_snapshots,
-    spawn_summary_coverage_recovery_maintenance,
+    SummaryCoverageRecoverySupervisor, hydrate_summary_snapshots_with_deadline,
+    refresh_summary_snapshots, spawn_summary_coverage_recovery_maintenance,
 };
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    SummaryCoverageRecoverySupervisor, hydrate_summary_snapshots,
-    refresh_summary_snapshots_with_mode,
+    hydrate_summary_snapshots, refresh_summary_snapshots_with_mode,
 };
 
 #[cfg(test)]
@@ -16476,9 +16475,17 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             if !has_owner {
                 continue;
             }
+            if crate::maintenance_store::legacy_worker_should_skip("summary_snapshot").await {
+                continue;
+            }
             if !dirty {
                 continue;
             }
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("summary_snapshot")
+            else {
+                continue;
+            };
             let now = Instant::now();
             if !summary_snapshot_refresh_is_due(last_refresh_attempt, retry_not_before, now) {
                 continue;
