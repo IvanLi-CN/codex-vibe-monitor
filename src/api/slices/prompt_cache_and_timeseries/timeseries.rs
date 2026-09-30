@@ -89,9 +89,10 @@ fn timeseries_minute_projection_pressure_deferred(
     error: &ApiError,
 ) -> Option<TimeseriesMinuteProjectionDeferred> {
     let error = match error {
-        ApiError::BadRequest(error) | ApiError::Unavailable(error) | ApiError::Internal(error) => {
-            error
-        }
+        ApiError::BadRequest(error)
+        | ApiError::Conflict(error)
+        | ApiError::Unavailable(error)
+        | ApiError::Internal(error) => error,
     };
     if !pressure_gate.record_error(task, error) {
         return None;
@@ -2046,10 +2047,20 @@ pub(crate) async fn flush_timeseries_minute_projection(
     state: &AppState,
     trigger: &'static str,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
-    flush_timeseries_minute_projection_with_coordinator(
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("timeseries_minute_projection")
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(
+            TimeseriesMinuteProjectionDeferred {
+                retry_after: Some(Duration::from_secs(1)),
+            },
+        ));
+    };
+    flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
         &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+        None,
     )
     .await
 }
@@ -2059,10 +2070,32 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
     trigger: &'static str,
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("timeseries_minute_projection")
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(
+            TimeseriesMinuteProjectionDeferred {
+                retry_after: Some(Duration::from_secs(1)),
+            },
+        ));
+    };
     flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
         coordinator,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn flush_timeseries_minute_projection_managed(
+    state: &AppState,
+    trigger: &'static str,
+) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    flush_timeseries_minute_projection_with_coordinator_and_cancellation(
+        state,
+        trigger,
+        &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
         None,
     )
     .await
@@ -2354,6 +2387,19 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
     tokio::spawn(async move {
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         loop {
+            if crate::maintenance_store::legacy_worker_should_skip("timeseries_minute_projection")
+                .await
+            {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                }
+            }
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "timeseries_minute_projection",
+            ) else {
+                continue;
+            };
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
@@ -2441,6 +2487,11 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                 }
             }
 
+            let Some(_execution_lease) = crate::maintenance_store::try_acquire_task_execution(
+                "timeseries_minute_projection",
+            ) else {
+                continue;
+            };
             match flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 state.as_ref(),
                 "terminal_deadline",

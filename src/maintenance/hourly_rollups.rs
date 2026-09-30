@@ -3594,6 +3594,15 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
     router
         .route("/api/system/status", get(fetch_system_status))
         .route("/api/system/tasks", get(list_system_task_runs))
+        .route("/api/system/managed-tasks", get(list_managed_tasks))
+        .route(
+            "/api/system/managed-tasks/:task_key",
+            get(get_managed_task).patch(update_managed_task),
+        )
+        .route(
+            "/api/system/managed-tasks/:task_key/run",
+            post(run_managed_task_now),
+        )
         .route(
             "/api/system/prompt-cache/materialization",
             get(fetch_prompt_cache_materialization_status)

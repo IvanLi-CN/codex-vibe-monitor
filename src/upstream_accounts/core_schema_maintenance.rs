@@ -2168,6 +2168,20 @@ pub(crate) fn spawn_upstream_account_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if crate::maintenance_store::legacy_worker_should_skip(
+                        "upstream_account_maintenance",
+                    )
+                    .await
+                    {
+                        continue;
+                    }
+                    let Some(_execution_lease) =
+                        crate::maintenance_store::try_acquire_task_execution(
+                            "upstream_account_maintenance",
+                        )
+                    else {
+                        continue;
+                    };
                     if let Err(err) = run_upstream_account_maintenance_once(state.clone()).await {
                         warn!(error = %err, "failed to run upstream account maintenance");
                     }

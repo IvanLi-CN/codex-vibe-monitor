@@ -1364,7 +1364,9 @@ fn parse_system_task_kind(value: &str) -> Option<SystemTaskKind> {
     match value {
         "retention_archive" => Some(SystemTaskKind::RetentionArchive),
         "startup_backfill" => Some(SystemTaskKind::StartupBackfill),
-        "hourly_rollup_bootstrap" => Some(SystemTaskKind::HourlyRollupBootstrap),
+        "hourly_rollup_bootstrap" | "startup_hourly_rollup_bootstrap" => {
+            Some(SystemTaskKind::HourlyRollupBootstrap)
+        }
         "forward_proxy_subscription_refresh" => {
             Some(SystemTaskKind::ForwardProxySubscriptionRefresh)
         }

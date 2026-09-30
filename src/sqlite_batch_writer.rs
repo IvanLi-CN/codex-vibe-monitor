@@ -4113,6 +4113,17 @@ pub(crate) async fn flush_pending_batch_inner(
         return Ok(deferred_batch);
     }
 
+    let maintenance_store = crate::maintenance_store::global().cloned();
+    let write_legacy_task_runs = {
+        #[cfg(test)]
+        {
+            maintenance_store.is_none()
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    };
     let mut tx = pool.begin().await?;
 
     for progress in batch.attempt_progress.values() {
@@ -4219,29 +4230,54 @@ pub(crate) async fn flush_pending_batch_inner(
         .await?;
     }
 
-    for finish in batch.system_task_finishes.values() {
-        sqlx::query(
-            r#"
-            UPDATE system_task_runs
-            SET status = ?1,
-                summary = COALESCE(?2, summary),
-                detail = ?3,
-                finished_at = ?4,
-                duration_ms = ?5
-            WHERE id = ?6
-            "#,
-        )
-        .bind(finish.status.as_str())
-        .bind(finish.summary.as_deref())
-        .bind(finish.detail.as_deref())
-        .bind(&finish.finished_at)
-        .bind(finish.duration_ms)
-        .bind(finish.run_id)
-        .execute(tx.as_mut())
-        .await?;
+    if write_legacy_task_runs {
+        for finish in batch.system_task_finishes.values() {
+            sqlx::query(
+                r#"
+                UPDATE system_task_runs
+                SET status = ?1,
+                    summary = COALESCE(?2, summary),
+                    detail = ?3,
+                    finished_at = ?4,
+                    duration_ms = ?5
+                WHERE id = ?6
+                "#,
+            )
+            .bind(finish.status.as_str())
+            .bind(finish.summary.as_deref())
+            .bind(finish.detail.as_deref())
+            .bind(&finish.finished_at)
+            .bind(finish.duration_ms)
+            .bind(finish.run_id)
+            .execute(tx.as_mut())
+            .await?;
+        }
     }
 
     tx.commit().await?;
+
+    if let Some(store) = maintenance_store {
+        for finish in batch.system_task_finishes.values() {
+            if let Err(error) = store
+                .finish_run(
+                    finish.run_id,
+                    finish.status.as_str(),
+                    &finish.finished_at,
+                    finish.duration_ms,
+                    finish.summary.as_deref(),
+                    finish.detail.as_deref(),
+                )
+                .await
+            {
+                warn!(
+                    run_id = finish.run_id,
+                    error = %error,
+                    "failed to finalize task history in maintenance database"
+                );
+                return Err(error);
+            }
+        }
+    }
 
     if !terminal_overlay_keys.is_empty()
         && let Some(runtime_store) = terminal_runtime_store

@@ -110,6 +110,7 @@ mod forward_proxy;
 mod http_stream_tracking;
 mod long_term_stats;
 mod maintenance;
+mod maintenance_store;
 mod memory_diagnostics;
 #[expect(
     clippy::too_many_arguments,
@@ -247,6 +248,7 @@ const RAW_CODEC_ZSTD: &str = "zstd";
 const POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES: usize = 1024 * 1024;
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
 const ENV_PERFORMANCE_DATABASE_PATH: &str = "PERFORMANCE_DATABASE_PATH";
+const ENV_MAINTENANCE_DATABASE_PATH: &str = "MAINTENANCE_DATABASE_PATH";
 const ENV_PERFORMANCE_TELEMETRY_ENABLED: &str = "PERFORMANCE_TELEMETRY_ENABLED";
 const DEFAULT_PERFORMANCE_TELEMETRY_ENABLED: bool = true;
 const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
