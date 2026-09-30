@@ -273,6 +273,10 @@ prepare_schema_template() {
       export CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH="$template_path"
       echo "backend_test_stateful_schema_template=prepared"
       ;;
+    lightweight)
+      export CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH="$template_path"
+      echo "backend_test_lightweight_schema_template=prepared"
+      ;;
     archive-file-io)
       export CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH="$template_path"
       echo "backend_test_archive_schema_template=prepared"
@@ -283,7 +287,7 @@ prepare_schema_template() {
       ;;
   esac
 
-  local template_filter='test(=tests::prepare_current_schema_template_for_stateful_profile)'
+  local template_filter='test(=tests::prepare_current_schema_template_for_profile)'
   if [[ -n "$archive_file" ]]; then
     cargo nextest run --archive-file "$archive_file" --no-fail-fast -E "$template_filter"
   else
@@ -299,9 +303,8 @@ run_profile() {
   case "$selected_profile" in
     lightweight)
       filter_expr='(test(/^(tests|upstream_accounts::tests)::lightweight::/)) or (not test(/^(tests|upstream_accounts::tests|maintenance::archive::archive_writers::tests|maintenance::retention::retention_recovery_race_tests)::/))'
-      # Keep SQLite-backed lightweight tests serialized to avoid connection-pool
-      # contention on shared CI workers.
-      test_threads="1"
+      # Bound overlap to limit SQLite connection-pool contention while shortening the profile.
+      test_threads="4"
       ;;
     stateful-sqlite)
       filter_expr='test(/^(tests|upstream_accounts::tests)::stateful_sqlite::/)'
@@ -327,6 +330,9 @@ run_profile() {
   if [[ "$selected_profile" != "stateful-sqlite" ]]; then
     unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
   fi
+  if [[ "$selected_profile" != "lightweight" ]]; then
+    unset CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH
+  fi
   if [[ "$selected_profile" != "archive-file-io" ]]; then
     unset CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH
   fi
@@ -334,7 +340,7 @@ run_profile() {
   local profile_start_epoch
   profile_start_epoch="$(date +%s)"
   echo "backend_test_profile=$selected_profile"
-  if [[ "$selected_profile" == "stateful-sqlite" || "$selected_profile" == "archive-file-io" ]]; then
+  if [[ "$selected_profile" == "lightweight" || "$selected_profile" == "stateful-sqlite" || "$selected_profile" == "archive-file-io" ]]; then
     prepare_schema_template "$selected_profile"
   fi
   nextest_args=(nextest run)
@@ -354,6 +360,9 @@ run_profile() {
   cargo "${nextest_args[@]}"
   if [[ "$selected_profile" == "stateful-sqlite" ]]; then
     unset CODEX_VIBE_MONITOR_STATEFUL_SCHEMA_TEMPLATE_PATH
+  fi
+  if [[ "$selected_profile" == "lightweight" ]]; then
+    unset CODEX_VIBE_MONITOR_LIGHTWEIGHT_SCHEMA_TEMPLATE_PATH
   fi
   if [[ "$selected_profile" == "archive-file-io" ]]; then
     unset CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH

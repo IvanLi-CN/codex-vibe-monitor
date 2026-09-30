@@ -12,16 +12,13 @@ pub(crate) use stateful_sqlite::*;
 pub(crate) use support::*;
 
 #[tokio::test]
-async fn prepare_current_schema_template_for_stateful_profile() {
-    let path = std::env::var_os(stateful_sqlite::STATEFUL_SCHEMA_TEMPLATE_PATH_ENV)
-        .or_else(|| std::env::var_os(stateful_sqlite::ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV));
-    let Some(path) = path else {
+async fn prepare_current_schema_template_for_profile() {
+    let Some(path) = stateful_sqlite::current_profile_schema_template_path() else {
         return;
     };
-    let path = std::path::PathBuf::from(path);
-    stateful_sqlite::write_stateful_schema_template(&path)
+    stateful_sqlite::write_current_schema_template(&path)
         .await
-        .expect("prepare stateful profile schema template");
+        .expect("prepare current-schema profile template");
 }
 
 #[cfg(test)]
