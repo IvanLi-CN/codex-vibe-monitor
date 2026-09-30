@@ -1095,6 +1095,14 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
     .await
     .expect("delete managed model");
     assert_eq!(deleted.deleted_model, "gpt-5.4");
+    assert!(
+        !state
+            .pricing_catalog
+            .read()
+            .await
+            .models
+            .contains_key("gpt-5.4")
+    );
 
     ensure_managed_model_catalog(pool)
         .await
@@ -1221,6 +1229,19 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
     assert_eq!(unselected.input_per_1m, 30.0);
     assert_eq!(unselected.output_per_1m, 40.0);
     assert_eq!(unselected.source, "custom");
+    let published = state.pricing_catalog.read().await.clone();
+    assert_eq!(
+        published.models.get("selected-model").unwrap().input_per_1m,
+        1.5
+    );
+    assert_eq!(
+        published
+            .models
+            .get("unselected-model")
+            .unwrap()
+            .input_per_1m,
+        30.0
+    );
     assert!(
         !state
             .proxy_model_settings
@@ -1230,4 +1251,97 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
             .iter()
             .any(|model| model == "selected-model")
     );
+}
+
+#[tokio::test]
+async fn model_price_sync_and_delete_roll_back_if_catalog_snapshot_fails() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO pricing_settings_models (model, input_per_1m, output_per_1m, source)
+        VALUES ('corrupt-catalog-row', 'not-a-number', 2.0, 'custom')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed an unreadable catalog row");
+    sqlx::query(
+        r#"
+        INSERT INTO pricing_settings_models (model, input_per_1m, output_per_1m, source)
+        VALUES ('delete-target', 1.0, 2.0, 'custom')
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed delete target price");
+    sqlx::query("INSERT INTO managed_models (model) VALUES ('delete-target')")
+        .execute(&state.pool)
+        .await
+        .expect("seed delete target model");
+
+    let sync_result = post_models_sync_apply(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ModelsDevSyncApplyRequest {
+            entries: vec![PricingEntry {
+                model: "sync-target".to_string(),
+                input_per_1m: 1.5,
+                output_per_1m: 2.5,
+                cache_input_per_1m: None,
+                cache_read_per_1m: None,
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "models.dev".to_string(),
+            }],
+        }),
+    )
+    .await;
+    assert!(matches!(
+        sync_result,
+        Err((StatusCode::INTERNAL_SERVER_ERROR, _))
+    ));
+    let sync_target_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pricing_settings_models WHERE model = 'sync-target')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check synced price rollback");
+    assert_eq!(sync_target_exists, 0);
+
+    let delete_result = delete_managed_model(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ManagedModelDeleteRequest {
+            model: "delete-target".to_string(),
+        }),
+    )
+    .await;
+    assert!(matches!(
+        delete_result,
+        Err((StatusCode::INTERNAL_SERVER_ERROR, _))
+    ));
+    let delete_target_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pricing_settings_models WHERE model = 'delete-target')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check deleted price rollback");
+    assert_eq!(delete_target_exists, 1);
+    let managed_delete_target_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM managed_models WHERE model = 'delete-target')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check managed model rollback");
+    assert_eq!(managed_delete_target_exists, 1);
+    let delete_target_suppressed = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM managed_model_suppressions WHERE model = 'delete-target')",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check model suppression rollback");
+    assert_eq!(delete_target_suppressed, 0);
 }

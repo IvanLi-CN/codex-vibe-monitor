@@ -188,10 +188,7 @@ pub(crate) async fn post_models_sync_apply(
         .collect::<Vec<_>>();
 
     let _update_guard = state.pricing_settings_update_lock.lock().await;
-    upsert_synced_model_prices(&state.pool, &entries)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    let next = load_pricing_catalog(&state.pool)
+    let next = upsert_synced_model_prices(&state.pool, &entries)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     {
@@ -315,13 +312,13 @@ pub(crate) async fn delete_managed_model(
         .execute(&mut *tx)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let next_pricing = load_pricing_catalog_from_connection(&mut *tx)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     tx.commit()
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    let next_pricing = load_pricing_catalog(&state.pool)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     *state.pricing_catalog.write().await = next_pricing;
     *state.proxy_model_settings.write().await = next_proxy;
     Ok(Json(ManagedModelDeleteResponse {

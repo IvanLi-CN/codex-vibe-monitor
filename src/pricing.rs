@@ -116,7 +116,7 @@ pub(crate) async fn load_managed_model_ids(pool: &Pool<Sqlite>) -> Result<Vec<St
 pub(crate) async fn upsert_synced_model_prices(
     pool: &Pool<Sqlite>,
     entries: &[PricingEntry],
-) -> Result<()> {
+) -> Result<PricingCatalog> {
     let mut tx = pool
         .begin()
         .await
@@ -164,10 +164,11 @@ pub(crate) async fn upsert_synced_model_prices(
         .execute(&mut *tx)
         .await
         .context("failed to update pricing catalog timestamp")?;
+    let next = load_pricing_catalog_from_connection(&mut *tx).await?;
     tx.commit()
         .await
         .context("failed to commit models.dev price apply transaction")?;
-    Ok(())
+    Ok(next)
 }
 
 pub(crate) async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
@@ -1061,7 +1062,16 @@ pub(crate) fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingC
 
 pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
     seed_default_pricing_catalog(pool).await?;
+    let mut connection = pool
+        .acquire()
+        .await
+        .context("failed to acquire a pricing catalog connection")?;
+    load_pricing_catalog_from_connection(&mut connection).await
+}
 
+pub(crate) async fn load_pricing_catalog_from_connection(
+    connection: &mut SqliteConnection,
+) -> Result<PricingCatalog> {
     let meta = sqlx::query_as::<_, PricingSettingsMetaRow>(
         r#"
         SELECT catalog_version
@@ -1071,7 +1081,7 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
         "#,
     )
     .bind(PRICING_SETTINGS_SINGLETON_ID)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await
     .context("failed to load pricing_settings_meta row")?;
     let version = meta
@@ -1092,7 +1102,7 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
         FROM pricing_settings_models
         "#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .context("failed to load pricing_settings_models rows")?;
 
