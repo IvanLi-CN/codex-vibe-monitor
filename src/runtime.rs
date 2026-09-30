@@ -1467,8 +1467,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
         }
         key if key.starts_with("startup_backfill.") => {
             let name = key.trim_start_matches("startup_backfill.");
-            let task = crate::StartupBackfillTask::from_name(name)
-                .ok_or_else(|| anyhow!("未知启动回填子任务: {name}"))?;
+            let task = managed_startup_backfill_task(name)?;
             let catalog = state.pricing_catalog.read().await.clone();
             crate::wake_startup_backfill_tasks_with_pricing_catalog(
                 &state.pool,
@@ -1492,6 +1491,27 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             Ok(format!("启动回填子任务 {name} 处理完成"))
         }
         _ => bail!("任务暂不支持立即运行: {task_key}"),
+    }
+}
+
+fn managed_startup_backfill_task(name: &str) -> Result<crate::StartupBackfillTask> {
+    crate::StartupBackfillTask::from_managed_key(name)
+        .ok_or_else(|| anyhow!("未知启动回填子任务: {name}"))
+}
+
+#[cfg(test)]
+mod managed_task_dispatch_tests {
+    use super::managed_startup_backfill_task;
+
+    #[test]
+    fn all_registered_startup_backfill_children_resolve_for_run_now() {
+        for key in crate::maintenance_store::STARTUP_BACKFILL_TASKS {
+            assert!(
+                managed_startup_backfill_task(key).is_ok(),
+                "registered child task {key} cannot run"
+            );
+        }
+        assert!(managed_startup_backfill_task("unknown_child").is_err());
     }
 }
 
