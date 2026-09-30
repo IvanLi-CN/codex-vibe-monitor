@@ -52,6 +52,10 @@ REVIEW_POLICY_REVIEW_TYPES = {"submitted", "dismissed", "edited"}
 RUNNER_X64 = "ubuntu-24.04"
 RUNNER_ARM64 = "ubuntu-24.04-arm"
 ACTION_CHECKOUT = "actions/checkout@v7"
+TEST_CACHE_INPUT_HASH = "${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}"
+RUST_SOURCE_INPUT_HASH = "${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}"
+CARGO_TEST_CACHE_KEY = "${{ runner.os }}-cargo-test-v4-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
+CARGO_CLIPPY_CACHE_KEY = "${{ runner.os }}-cargo-clippy-v2-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,22 +113,21 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
 def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:
     cache = step_config(lint_job, "Restore Cargo Clippy artifacts", f"{workflow_name}.jobs.lint")
     cache_with = require_mapping(cache.get("with"), f"{workflow_name}.jobs.lint Clippy cache")
-    expected_key = "${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}"
+    expected_key = CARGO_CLIPPY_CACHE_KEY
     require(
         cache.get("uses") == "actions/cache/restore@v5"
         and cache_with.get("path") == "target-clippy"
         and cache_with.get("key") == expected_key
         and str(cache_with.get("restore-keys", "")).strip()
-        == "${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-",
+        == "${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-",
         f"{workflow_name}.jobs.lint Clippy cache must be isolated and source-keyed",
     )
 
-    reuse = step_config(lint_job, "Prepare exact Cargo Clippy cache reuse", f"{workflow_name}.jobs.lint")
-    require(
-        reuse.get("if") == "${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}"
-        and "find src -type f -name '*.rs' -exec touch -d '@1' {} +" in str(reuse.get("run", ""))
-        and "touch -d '@1' Cargo.toml Cargo.lock" in str(reuse.get("run", "")),
-        f"{workflow_name}.jobs.lint: only an exact Clippy cache may normalize checkout mtimes",
+    require_exact_cargo_cache_reuse(
+        lint_job,
+        "Prepare exact Cargo Clippy cache reuse",
+        "cargo-clippy-cache",
+        f"{workflow_name}.jobs.lint",
     )
 
     quality = step_config(lint_job, "Rust source quality", f"{workflow_name}.jobs.lint")
@@ -372,6 +375,42 @@ def require_exact_if(mapping: dict[str, Any], expected: str, where: str) -> None
 
 def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     require(mapping.get("continue-on-error") in (None, False), f"{where}.continue-on-error must not ignore failures")
+
+
+def require_job_and_steps_fail_closed(job: dict[str, Any], where: str) -> None:
+    require_fail_closed(job, where)
+    steps = job.get("steps")
+    require(isinstance(steps, list), f"{where}.steps must be a list")
+    for index, value in enumerate(steps):
+        step = require_mapping(value, f"{where}.steps[{index}]")
+        require_fail_closed(step, f"{where}.steps[{step.get('name', index)}]")
+
+
+def require_exact_cargo_cache_reuse(job: dict[str, Any], step_name: str, cache_id: str, where: str) -> None:
+    reuse = step_config(job, step_name, where)
+    run = str(reuse.get("run", ""))
+    require(
+        reuse.get("if") == f"${{{{ steps.{cache_id}.outputs.cache-hit == 'true' }}}}"
+        and "find src -type f -name '*.rs' -exec touch -d '@1' {} +" in run
+        and "touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml" in run
+        and "for input in build.rs .cargo/config.toml; do" in run
+        and 'if [ -f "$input" ]; then touch -d \'@1\' "$input"; fi' in run,
+        f"{where}: only an exact Rust source/toolchain cache may normalize checkout mtimes",
+    )
+
+
+def require_cargo_test_cache_restore(job: dict[str, Any], where: str) -> None:
+    restore = step_config(job, "Restore Cargo test artifacts", where)
+    cache_with = require_mapping(restore.get("with"), f"{where}. Cargo test cache")
+    require(
+        restore.get("id") == "cargo-test-cache"
+        and restore.get("uses") == "actions/cache/restore@v5"
+        and cache_with.get("path") == "target"
+        and cache_with.get("key") == CARGO_TEST_CACHE_KEY
+        and str(cache_with.get("restore-keys", "")).strip()
+        == "${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-",
+        f"{where}: Cargo test cache must be isolated and keyed by source and toolchain inputs",
+    )
 
 
 def parse_expected_workflows(payload: dict[str, Any], key: str) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
@@ -650,6 +689,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     if "Backend Tests (Representative Scale)" in expected_jobs:
         representative_job = named_job_config(workflow, "backend-tests-representative-scale", expected_jobs, "ci-pr.yml")
         require(representative_job.get("name") == "Backend Tests (Representative Scale)", "ci-pr.yml representative-scale job name drifted")
+        require_job_and_steps_fail_closed(representative_job, "ci-pr.yml.jobs.backend-tests-representative-scale")
         require(
             representative_job.get("needs") == "backend-test-archive",
             "ci-pr.yml representative-scale job must replay the current run's backend archive",
@@ -800,7 +840,14 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "github.event_name == 'pull_request'",
             "ci-pr.yml.jobs.build-pr-smoke-artifacts",
         )
-        require_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_job_and_steps_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_cargo_test_cache_restore(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_exact_cargo_cache_reuse(
+            smoke_artifact_job,
+            "Prepare exact Cargo test cache reuse",
+            "cargo-test-cache",
+            "ci-pr.yml.jobs.build-pr-smoke-artifacts",
+        )
         step_config(smoke_artifact_job, "Upload PR smoke artifacts", "ci-pr.yml.jobs.build-pr-smoke-artifacts")
         archive_job = job_config(workflow, "backend-test-archive", "ci-pr.yml")
         require(
@@ -809,6 +856,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
         require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         require_fail_closed(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        require_cargo_test_cache_restore(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-pr.yml.jobs.backend-test-archive")
         require(
             archive_build_step.get("id") == "build-backend-test-archive",
@@ -820,12 +868,21 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
             "ci-pr.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
         )
-        cache_reuse_step = step_config(archive_job, "Prepare exact Cargo test cache reuse", "ci-pr.yml.jobs.backend-test-archive")
+        target_cache_save_with = require_mapping(
+            target_cache_save_step.get("with"),
+            "ci-pr.yml.jobs.backend-test-archive target cache save",
+        )
         require(
-            cache_reuse_step.get("if") == "${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}"
-            and "find src -type f -name '*.rs' -exec touch -d '@1' {} +" in str(cache_reuse_step.get("run", ""))
-            and "touch -d '@1' Cargo.toml Cargo.lock" in str(cache_reuse_step.get("run", "")),
-            "ci-pr.yml.jobs.backend-test-archive: only an exact source-key cache may normalize checkout mtimes",
+            target_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and target_cache_save_with.get("path") == "target"
+            and target_cache_save_with.get("key") == CARGO_TEST_CACHE_KEY,
+            "ci-pr.yml.jobs.backend-test-archive: save the source/toolchain-keyed Cargo test artifacts",
+        )
+        require_exact_cargo_cache_reuse(
+            archive_job,
+            "Prepare exact Cargo test cache reuse",
+            "cargo-test-cache",
+            "ci-pr.yml.jobs.backend-test-archive",
         )
         for backend_job_id in ("backend-tests-lightweight", "backend-tests-archive-file-io"):
             require(
@@ -854,11 +911,13 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 shard_job.get("name") == expected_name and expected_name in auxiliary_jobs,
                 f"ci-pr.yml.jobs.{shard_id} must be a declared Stateful SQLite auxiliary job",
             )
+            require_job_and_steps_fail_closed(shard_job, f"ci-pr.yml.jobs.{shard_id}")
             require(shard_job.get("needs") == "backend-test-archive", f"ci-pr.yml.jobs.{shard_id}.needs must use the archive producer")
             require_exact_if(shard_job, "always()", f"ci-pr.yml.jobs.{shard_id}")
             shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-pr.yml.jobs.{shard_id}").get("run", ""))
             require_backend_partition_command(shard_run, partition, f"ci-pr.yml.jobs.{shard_id}")
         aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-pr.yml")
+        require_job_and_steps_fail_closed(aggregate_job, "ci-pr.yml.jobs.backend-tests-stateful-sqlite")
         require(
             aggregate_job.get("name") == "Backend Tests (Stateful SQLite)"
             and aggregate_job.get("needs") == [
@@ -973,6 +1032,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         )
         require_no_if(archive_job, "ci-main.yml.jobs.backend-test-archive")
         require_fail_closed(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        require_cargo_test_cache_restore(archive_job, "ci-main.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-main.yml.jobs.backend-test-archive")
         require(
             archive_build_step.get("id") == "build-backend-test-archive",
@@ -984,12 +1044,21 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
             "ci-main.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
         )
-        cache_reuse_step = step_config(archive_job, "Prepare exact Cargo test cache reuse", "ci-main.yml.jobs.backend-test-archive")
+        target_cache_save_with = require_mapping(
+            target_cache_save_step.get("with"),
+            "ci-main.yml.jobs.backend-test-archive target cache save",
+        )
         require(
-            cache_reuse_step.get("if") == "${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}"
-            and "find src -type f -name '*.rs' -exec touch -d '@1' {} +" in str(cache_reuse_step.get("run", ""))
-            and "touch -d '@1' Cargo.toml Cargo.lock" in str(cache_reuse_step.get("run", "")),
-            "ci-main.yml.jobs.backend-test-archive: only an exact source-key cache may normalize checkout mtimes",
+            target_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and target_cache_save_with.get("path") == "target"
+            and target_cache_save_with.get("key") == CARGO_TEST_CACHE_KEY,
+            "ci-main.yml.jobs.backend-test-archive: save the source/toolchain-keyed Cargo test artifacts",
+        )
+        require_exact_cargo_cache_reuse(
+            archive_job,
+            "Prepare exact Cargo test cache reuse",
+            "cargo-test-cache",
+            "ci-main.yml.jobs.backend-test-archive",
         )
         for backend_job_id in ("backend-tests-lightweight", "backend-tests-archive-file-io"):
             require(
@@ -1006,11 +1075,13 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             ("backend-tests-stateful-sqlite-shard-2", "hash:2/2"),
         ):
             shard_job = job_config(workflow, shard_id, "ci-main.yml")
+            require_job_and_steps_fail_closed(shard_job, f"ci-main.yml.jobs.{shard_id}")
             require(shard_job.get("needs") == "backend-test-archive", f"ci-main.yml.jobs.{shard_id}.needs must use the archive producer")
             require_exact_if(shard_job, "always()", f"ci-main.yml.jobs.{shard_id}")
             shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-main.yml.jobs.{shard_id}").get("run", ""))
             require_backend_partition_command(shard_run, partition, f"ci-main.yml.jobs.{shard_id}")
         aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-main.yml")
+        require_job_and_steps_fail_closed(aggregate_job, "ci-main.yml.jobs.backend-tests-stateful-sqlite")
         require(
             aggregate_job.get("needs") == ["backend-tests-stateful-sqlite-shard-1", "backend-tests-stateful-sqlite-shard-2"],
             "ci-main.yml.jobs.backend-tests-stateful-sqlite.needs must aggregate both shards",

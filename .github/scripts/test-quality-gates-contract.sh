@@ -51,6 +51,84 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
+continue_error_repo="$tmp_dir/continue-error-repo"
+copy_repo_snapshot "$repo_root" "$continue_error_repo"
+
+expect_continue_on_error_rejected() {
+  local name="$1"
+  local workflow="$2"
+  local needle="$3"
+  local replacement="$4"
+  local path="$continue_error_repo/$workflow"
+
+  python3 - "$path" "$needle" "$replacement" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle, replacement = sys.argv[2:4]
+if needle not in text:
+    raise SystemExit("failed to locate continue-on-error fixture insertion point")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+  if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+    --repo-root "$continue_error_repo" --profile final >/dev/null 2>"$tmp_dir/$name.log"; then
+    echo "expected $name continue-on-error fixture to fail" >&2
+    exit 1
+  fi
+  grep -q "continue-on-error must not ignore failures" "$tmp_dir/$name.log"
+
+  python3 - "$path" "$replacement" "$needle" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+replacement, needle = sys.argv[2:4]
+if replacement not in text:
+    raise SystemExit("failed to restore continue-on-error fixture")
+path.write_text(text.replace(replacement, needle, 1))
+PY
+}
+
+expect_continue_on_error_rejected \
+  pr-shard-job \
+  .github/workflows/ci-pr.yml \
+  $'  backend-tests-stateful-sqlite-shard-1:\n' \
+  $'  backend-tests-stateful-sqlite-shard-1:\n    continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  pr-shard-step \
+  .github/workflows/ci-pr.yml \
+  $'      - name: Run stateful SQLite backend profile\n' \
+  $'      - name: Run stateful SQLite backend profile\n        continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  pr-stateful-aggregate-step \
+  .github/workflows/ci-pr.yml \
+  $'      - name: Require both Stateful SQLite shards\n' \
+  $'      - name: Require both Stateful SQLite shards\n        continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  pr-representative-job \
+  .github/workflows/ci-pr.yml \
+  $'  backend-tests-representative-scale:\n' \
+  $'  backend-tests-representative-scale:\n    continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  pr-representative-step \
+  .github/workflows/ci-pr.yml \
+  $'      - name: Run deterministic representative-scale acceptance\n' \
+  $'      - name: Run deterministic representative-scale acceptance\n        continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  main-shard-step \
+  .github/workflows/ci-main.yml \
+  $'      - name: Run stateful SQLite backend profile\n' \
+  $'      - name: Run stateful SQLite backend profile\n        continue-on-error: true\n'
+expect_continue_on_error_rejected \
+  main-stateful-aggregate-step \
+  .github/workflows/ci-main.yml \
+  $'      - name: Require both Stateful SQLite shards\n' \
+  $'      - name: Require both Stateful SQLite shards\n        continue-on-error: true\n'
+
 ci_pr_workflow="$baseline_repo/.github/workflows/ci-pr.yml"
 python3 - <<'PY' "$ci_pr_workflow"
 from pathlib import Path
