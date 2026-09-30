@@ -1038,13 +1038,9 @@ impl MaintenanceStore {
         &self,
         task_key: &str,
         enabled: Option<bool>,
-        interval_secs: Option<i64>,
-        cron_expr: Option<&str>,
-        update_schedule: bool,
+        interval_secs: Option<Option<i64>>,
+        cron_expr: Option<Option<&str>>,
     ) -> Result<bool> {
-        if update_schedule {
-            Self::validate_schedule(interval_secs, cron_expr).await?;
-        }
         let mut transaction = self.pool.begin().await?;
         let Some((current_enabled, current_interval, current_cron, is_manual)) = sqlx::query_as::<
             _,
@@ -1059,21 +1055,19 @@ impl MaintenanceStore {
             transaction.commit().await?;
             return Ok(false);
         };
+        let update_schedule = interval_secs.is_some() || cron_expr.is_some();
         if update_schedule && is_manual {
             transaction.commit().await?;
             return Err(anyhow!("manual or unknown task cannot be scheduled"));
         }
         let next_enabled = enabled.unwrap_or(current_enabled);
-        let next_interval = if update_schedule {
-            interval_secs
-        } else {
-            current_interval
-        };
-        let next_cron = if update_schedule {
-            cron_expr.map(str::to_owned)
-        } else {
-            current_cron
-        };
+        let next_interval = interval_secs.unwrap_or(current_interval);
+        let next_cron = cron_expr
+            .map(|value| value.map(str::to_owned))
+            .unwrap_or(current_cron);
+        if update_schedule {
+            Self::validate_schedule(next_interval, next_cron.as_deref()).await?;
+        }
         let next_trigger_at = if next_enabled && !is_manual {
             next_trigger_at(next_interval, next_cron.as_deref())
         } else {

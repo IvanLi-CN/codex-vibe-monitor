@@ -1941,17 +1941,14 @@ pub(crate) async fn update_managed_task(
             "maintenance database unavailable"
         )));
     };
-    let update_schedule = request.interval_secs.is_some() || request.cron_expr.is_some();
-    let interval_secs = request.interval_secs.flatten();
-    let cron_expr = request.cron_expr.flatten();
+    let ManagedTaskControlRequest {
+        enabled,
+        interval_secs,
+        cron_expr,
+    } = request;
+    let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
     if !store
-        .update_control(
-            &task_key,
-            request.enabled,
-            interval_secs,
-            cron_expr.as_deref(),
-            update_schedule,
-        )
+        .update_control(&task_key, enabled, interval_secs, cron_expr)
         .await
         .map_err(ApiError::bad_request)?
     {
