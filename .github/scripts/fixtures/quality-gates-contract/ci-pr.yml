@@ -59,11 +59,34 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Cargo fmt check
-        run: cargo fmt --all -- --check
+      - name: Restore Cargo Clippy artifacts
+        id: cargo-clippy-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-
 
-      - name: Cargo clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Prepare exact Cargo Clippy cache reuse
+        if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock
+
+      - name: Rust source quality
+        id: rust-source-quality
+        env:
+          CARGO_BUILD_JOBS: 8
+          CARGO_TARGET_DIR: target-clippy
+        run: bash .github/scripts/run-rust-source-quality.sh
+
+      - name: Save Cargo Clippy artifacts
+        if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -472,6 +495,21 @@ jobs:
     name: Backend Test Archive Producer
     runs-on: ubuntu-24.04
     steps:
+      - name: Restore Cargo test artifacts
+        id: cargo-test-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
+
+      - name: Prepare exact Cargo test cache reuse
+        if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock
+
       - name: Build backend test archive
         id: build-backend-test-archive
         run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"

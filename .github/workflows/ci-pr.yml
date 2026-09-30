@@ -68,8 +68,35 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
+      - name: Restore Cargo Clippy artifacts
+        id: cargo-clippy-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-
+
+      - name: Prepare exact Cargo Clippy cache reuse
+        if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
+        run: |
+          # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock
+
       - name: Rust source quality
+        id: rust-source-quality
+        env:
+          CARGO_BUILD_JOBS: 8
+          CARGO_TARGET_DIR: target-clippy
         run: bash .github/scripts/run-rust-source-quality.sh
+
+      - name: Save Cargo Clippy artifacts
+        if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v1-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -534,6 +561,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
 
+      - name: Prepare exact Cargo test cache reuse
+        if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
+        run: |
+          # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
@@ -677,38 +711,40 @@ jobs:
 
   backend-tests-representative-scale:
     name: Backend Tests (Representative Scale)
+    needs: backend-test-archive
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
       contents: read
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
-      - name: Build candidate backend-test image (linux/amd64)
-        uses: docker/build-push-action@v7
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
         with:
-          context: .
-          file: ./Dockerfile
-          target: backend-test
-          platforms: linux/amd64
-          load: true
-          push: false
-          tags: codex-vibe-monitor:backend-test-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          toolchain: 1.96.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}
 
       - name: Run deterministic representative-scale acceptance
-        shell: bash
-        env:
-          BACKEND_TEST_IMAGE: codex-vibe-monitor:backend-test-pr-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            "$BACKEND_TEST_IMAGE" \
-            --profile stateful-sqlite \
-            --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
