@@ -1,8 +1,12 @@
 use super::*;
+use std::collections::VecDeque;
 
 const STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const STARTUP_HOT_READ_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(30);
 const STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX: Duration = Duration::from_secs(300);
+const MANAGED_TASK_FINISH_RETRY_ATTEMPTS: usize = 4;
+const MANAGED_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) fn next_startup_hourly_rollup_p2_preemption_retry(current: Duration) -> Duration {
     current
@@ -1094,10 +1098,22 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
         let Some(store) = crate::maintenance_store::global().cloned() else {
             return;
         };
+        let mut pending_finishes = VecDeque::new();
         loop {
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+            }
+            if let Some(finish) = pending_finishes.pop_front()
+                && let Err(error) = finish_managed_task_run_bounded(&store, &finish).await
+            {
+                warn!(
+                    run_id = finish.run_id,
+                    task = %finish.task_key,
+                    error = %error,
+                    "managed task dispatcher deferred task-history finalization"
+                );
+                pending_finishes.push_back(finish);
             }
             if let Err(error) = store.enqueue_due_runs().await {
                 warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
@@ -1118,16 +1134,15 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
             let Some(_execution_lease) =
                 crate::maintenance_store::try_acquire_task_execution(&task_key)
             else {
-                let _ = store
-                    .finish_run(
-                        run_id,
-                        "failed",
-                        &format_utc_iso_millis(Utc::now()),
-                        0,
-                        Some("检测到同一任务正在运行，未重复执行"),
-                        None,
-                    )
-                    .await;
+                pending_finishes.push_back(ManagedTaskFinish {
+                    run_id,
+                    task_key,
+                    status: "failed".to_string(),
+                    finished_at: format_utc_iso_millis(Utc::now()),
+                    duration_ms: 0,
+                    summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
+                    detail: None,
+                });
                 continue;
             };
             let started_at = Instant::now();
@@ -1161,21 +1176,71 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) {
                 task_dimension,
                 1,
             );
-            if let Err(error) = store
-                .finish_run(
-                    run_id,
-                    status,
-                    &format_utc_iso_millis(Utc::now()),
-                    duration_ms,
-                    summary.as_deref(),
-                    detail.as_deref(),
-                )
-                .await
-            {
-                warn!(run_id, task = %task_key, error = %error, "managed task dispatcher failed to finalize a run");
+            let finish = ManagedTaskFinish {
+                run_id,
+                task_key,
+                status: status.to_string(),
+                finished_at: format_utc_iso_millis(Utc::now()),
+                duration_ms,
+                summary,
+                detail,
+            };
+            if let Err(error) = finish_managed_task_run_bounded(&store, &finish).await {
+                warn!(
+                    run_id = finish.run_id,
+                    task = %finish.task_key,
+                    error = %error,
+                    "managed task dispatcher deferred task-history finalization"
+                );
+                pending_finishes.push_back(finish);
             }
         }
     });
+}
+
+struct ManagedTaskFinish {
+    run_id: i64,
+    task_key: String,
+    status: String,
+    finished_at: String,
+    duration_ms: i64,
+    summary: Option<String>,
+    detail: Option<String>,
+}
+
+async fn finish_managed_task_run_bounded(
+    store: &crate::maintenance_store::MaintenanceStore,
+    finish: &ManagedTaskFinish,
+) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 0..=MANAGED_TASK_FINISH_RETRY_ATTEMPTS {
+        match tokio::time::timeout(
+            MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT,
+            store.finish_run(
+                finish.run_id,
+                &finish.status,
+                &finish.finished_at,
+                finish.duration_ms,
+                finish.summary.as_deref(),
+                finish.detail.as_deref(),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => last_error = Some(error),
+            Err(error) => {
+                last_error = Some(anyhow!(
+                    "managed task finish timed out after {} ms: {error}",
+                    MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT.as_millis()
+                ));
+            }
+        }
+        if attempt < MANAGED_TASK_FINISH_RETRY_ATTEMPTS {
+            tokio::time::sleep(MANAGED_TASK_FINISH_RETRY_INTERVAL).await;
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("managed task finish failed without an error")))
 }
 
 fn managed_task_metric_dimension(task_key: &str) -> &'static str {
