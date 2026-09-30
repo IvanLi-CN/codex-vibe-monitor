@@ -526,6 +526,28 @@ describe("demo MSW handlers", () => {
     expect(account.recentActions.length).toBeGreaterThan(0);
   });
 
+  it("serves the complete managed task registry in the demo", async () => {
+    const response = await fetch("http://demo.invalid/api/system/managed-tasks");
+    const tasks = (await response.json()) as Array<{
+      taskKey: string;
+      isManual: boolean;
+    }>;
+
+    expect(tasks).toHaveLength(37);
+    expect(tasks.filter((task) => task.taskKey.startsWith("startup_backfill.")).length).toBe(16);
+    expect(tasks.filter((task) => task.isManual).length).toBe(6);
+    expect(tasks.map((task) => task.taskKey)).toEqual(
+      expect.arrayContaining([
+        "retention_archive",
+        "prompt_cache_materialization",
+        "startup_backfill",
+        "startup_backfill.proxy_usage",
+        "startup_backfill.historical_rollups",
+        "prune_legacy_archive_batches",
+      ]),
+    );
+  });
+
   it("scopes invocation summaries to the same conversation filters as invocation lists", async () => {
     const [summaryResponse, listResponse] = await Promise.all([
       fetch("http://demo.invalid/api/invocations/summary?promptCacheKey=demo-conversation-a"),

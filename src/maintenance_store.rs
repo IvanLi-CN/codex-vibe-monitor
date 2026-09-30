@@ -523,3 +523,21 @@ impl MaintenanceStore {
 pub(crate) fn path(config: &AppConfig) -> PathBuf {
     config.maintenance_database_path()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{MANAGED_TASKS, STARTUP_BACKFILL_TASKS};
+
+    #[test]
+    fn managed_task_registry_matches_the_operations_catalog() {
+        assert_eq!(MANAGED_TASKS.len(), 21);
+        assert_eq!(
+            MANAGED_TASKS
+                .iter()
+                .filter(|(_, _, _, _, is_manual)| *is_manual)
+                .count(),
+            6
+        );
+        assert_eq!(STARTUP_BACKFILL_TASKS.len(), 16);
+    }
+}

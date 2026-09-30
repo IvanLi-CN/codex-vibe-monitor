@@ -2811,24 +2811,82 @@ function systemTasks() {
 }
 
 function managedTasks() {
-  const tasks = [
+  type DemoManagedTask = {
+    taskKey: string;
+    title: string;
+    description: string;
+    triggerMode: string;
+    enabled: boolean;
+    intervalSecs: number | null;
+    cronExpr: string | null;
+    isManual: boolean;
+  };
+  const tasks: Array<[string, string, string, boolean]> = [
     ["retention_archive", "Retention archive", "interval", false],
     ["upstream_account_maintenance", "Upstream account maintenance", "interval", false],
     ["forward_proxy_subscription_refresh", "Forward proxy subscription refresh", "event", false],
+    ["pool_orphan_recovery", "Pool orphan recovery", "interval", false],
+    ["startup_hourly_rollup_bootstrap", "Hourly rollup bootstrap", "startup", false],
+    ["system_status_snapshot", "System status snapshot", "interval", false],
+    ["invocation_timeline_snapshot", "Invocation timeline snapshot", "interval", false],
+    ["summary_snapshot", "Summary snapshot", "event", false],
+    ["summary_coverage_recovery", "Summary coverage recovery", "interval", false],
+    ["dashboard_runtime_projection_reconcile", "Dashboard projection reconcile", "event", false],
+    ["long_term_projection", "Long term projection", "interval", false],
+    ["timeseries_minute_projection", "Timeseries minute projection", "interval", false],
+    ["raw_payload_metrics_inventory", "Raw payload inventory", "interval", false],
     ["prompt_cache_materialization", "Prompt cache materialization", "event", false],
     ["startup_backfill", "Startup backfill", "startup", false],
     ["raw_compression", "Raw compression", "manual", true],
-  ] as const;
-  return tasks.map(([taskKey, title, triggerMode, isManual], index) => ({
-    taskKey,
-    title,
-    description: "Demo task operations state",
-    triggerMode,
-    enabled: index !== 5,
-    intervalSecs: isManual ? null : 300,
-    cronExpr: null,
-    isManual,
-  }));
+    ["archive_upstream_activity_manifest", "Archive activity manifest", "manual", true],
+    ["materialize_historical_rollups", "Historical rollups", "manual", true],
+    ["verify_archive_storage", "Verify archive storage", "manual", true],
+    ["prune_archive_batches", "Prune archive batches", "manual", true],
+    ["prune_legacy_archive_batches", "Prune legacy archive batches", "manual", true],
+  ];
+  const startupChildren = [
+    "proxy_usage",
+    "prompt_cache_key",
+    "prompt_cache_conversations_materialization",
+    "requested_service_tier",
+    "invocation_service_tier",
+    "proxy_cost",
+    "reasoning_effort",
+    "failure_classification",
+    "pool_attempt_public_id_live",
+    "pool_attempt_public_id_archives",
+    "upstream_activity_live",
+    "upstream_activity_archives",
+    "pool_upstream_node_health_archives",
+    "account_activity_v2_coverage",
+    "legacy_detail_mirrors",
+    "historical_rollups",
+  ].map((key) => [`startup_backfill.${key}`, key, "event", false] as const);
+  const baseTasks: DemoManagedTask[] = tasks.map(
+    ([taskKey, title, triggerMode, isManual], index) => ({
+      taskKey,
+      title,
+      description: "Demo task operations state",
+      triggerMode,
+      enabled: index !== 5,
+      intervalSecs: isManual ? null : 300,
+      cronExpr: null,
+      isManual,
+    }),
+  );
+  const childTasks: DemoManagedTask[] = startupChildren.map(
+    ([taskKey, title, triggerMode, isManual]) => ({
+      taskKey,
+      title,
+      description: "Startup backfill child task",
+      triggerMode,
+      enabled: true,
+      intervalSecs: null,
+      cronExpr: null,
+      isManual,
+    }),
+  );
+  return baseTasks.concat(childTasks);
 }
 
 function managedTaskDetail(taskKey: string) {
