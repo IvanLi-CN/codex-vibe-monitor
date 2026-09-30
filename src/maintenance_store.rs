@@ -593,6 +593,29 @@ pub(crate) fn global() -> Option<&'static std::sync::Arc<MaintenanceStore>> {
     GLOBAL.get()
 }
 
+pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
+    let Some(store) = global() else {
+        return false;
+    };
+    let Some((enabled, interval_secs, cron_expr)) =
+        sqlx::query_as::<_, (bool, Option<i64>, Option<String>)>(
+            "SELECT enabled,interval_secs,cron_expr FROM managed_tasks WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_optional(&store.pool)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+    !enabled
+        || interval_secs.is_some()
+        || cron_expr
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(&self) -> Result<Option<(i64, String, String)>> {
         let mut transaction = self.pool.begin().await?;

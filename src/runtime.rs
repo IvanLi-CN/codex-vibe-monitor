@@ -1215,6 +1215,14 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             }
             Ok("Prompt 缓存物化完成".to_string())
         }
+        "startup_hourly_rollup_bootstrap" => {
+            bootstrap_hourly_rollups_for_runtime_startup(
+                &state.pool,
+                Some(state.config.invocation_max_days),
+            )
+            .await?;
+            Ok("启动时小时汇总补齐完成".to_string())
+        }
         "raw_compression" => {
             let summary = compress_cold_proxy_raw_payloads(
                 &state.pool,
@@ -1873,6 +1881,12 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             info!("forward proxy maintenance skipped because shutdown is already in progress");
             return;
         }
+        if crate::maintenance_store::legacy_worker_should_skip("forward_proxy_subscription_refresh")
+            .await
+        {
+            info!("forward proxy legacy worker skipped by managed task control");
+            return;
+        }
         let startup_run = tokio::select! {
             biased;
             _ = cancel.cancelled() => return,
@@ -1924,6 +1938,13 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if crate::maintenance_store::legacy_worker_should_skip(
+                        "forward_proxy_subscription_refresh",
+                    )
+                    .await
+                    {
+                        continue;
+                    }
                     let task_run = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => break,
@@ -1988,6 +2009,9 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if crate::maintenance_store::legacy_worker_should_skip("pool_orphan_recovery").await {
+                        continue;
+                    }
                     match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {
