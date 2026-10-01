@@ -3315,13 +3315,20 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         state
             .terminal_projection_hub
             .activate_timeseries_consumer(0);
+        let mut long_term_projection_handle = None;
+        let mut timeseries_minute_projection_handle = None;
         if !crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await {
-            spawn_long_term_projection_supervisor(state.clone(), cancel.clone());
+            long_term_projection_handle = Some(spawn_long_term_projection_supervisor(
+                state.clone(),
+                cancel.clone(),
+            ));
         }
         if !crate::maintenance_store::legacy_worker_should_skip("timeseries_minute_projection")
             .await
         {
-            spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone());
+            timeseries_minute_projection_handle = Some(
+                spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone()),
+            );
         }
 
         let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
@@ -3385,6 +3392,16 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                     }
                 }
             }
+        }
+        if let Some(handle) = long_term_projection_handle
+            && let Err(error) = handle.await
+        {
+            warn!(error = %error, "long-term projection supervisor terminated unexpectedly");
+        }
+        if let Some(handle) = timeseries_minute_projection_handle
+            && let Err(error) = handle.await
+        {
+            warn!(error = %error, "timeseries minute projection supervisor terminated unexpectedly");
         }
     })
 }

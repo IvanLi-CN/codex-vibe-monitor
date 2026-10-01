@@ -2541,70 +2541,154 @@ pub(crate) fn spawn_long_term_projection_supervisor(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    spawn_long_term_stats_backfill(
+    let backfill_handle = spawn_long_term_stats_backfill(
         state.pool.clone(),
         state.config.long_term_stats_hourly_retention_days,
         cancel.clone(),
     );
     tokio::spawn(async move {
-        let pressure_gate = crate::db_pressure::global_db_pressure_gate();
-        let mut pressure_eligibility_generation = pressure_gate.eligibility_generation();
-        let mut pressure_retry_pending = false;
-        let mut pressure_retry_at = None;
-        let mut flush_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
-        flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        flush_ticker.tick().await;
-        let mut maintenance_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
-        maintenance_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        maintenance_ticker.tick().await;
-        let mut repair_ticker = interval(LONG_TERM_PROJECTION_REPAIR_INTERVAL);
-        repair_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        repair_ticker.tick().await;
-        let mut daily_verify_ticker = interval(LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL);
-        daily_verify_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        daily_verify_ticker.tick().await;
+        let supervisor_handle = tokio::spawn(async move {
+            let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+            let mut pressure_eligibility_generation = pressure_gate.eligibility_generation();
+            let mut pressure_retry_pending = false;
+            let mut pressure_retry_at = None;
+            let mut flush_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
+            flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            flush_ticker.tick().await;
+            let mut maintenance_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
+            maintenance_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            maintenance_ticker.tick().await;
+            let mut repair_ticker = interval(LONG_TERM_PROJECTION_REPAIR_INTERVAL);
+            repair_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            repair_ticker.tick().await;
+            let mut daily_verify_ticker = interval(LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL);
+            daily_verify_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            daily_verify_ticker.tick().await;
 
-        loop {
-            if crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await {
-                tokio::select! {
-                    _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
-                }
-            }
-            tokio::select! {
-                _ = cancel.cancelled() => return,
-                _ = wait_for_long_term_projection_pressure_retry(
-                    pressure_gate,
-                    pressure_eligibility_generation,
-                    pressure_retry_at,
-                ), if pressure_retry_pending => {
-                    pressure_eligibility_generation = pressure_gate.eligibility_generation();
-                    match flush_long_term_projection(&state, "pressure_eligible").await {
-                        Ok(LongTermProjectionFlushOutcome::Completed) => {
-                            pressure_retry_pending = false;
-                            pressure_retry_at = None;
-                        }
-                        Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
-                            pressure_retry_at = retry_at;
-                        }
-                        Err(error) => {
-                            pressure_retry_pending = false;
-                            pressure_retry_at = None;
-                            mark_long_term_projection_failure(&state, &error).await;
-                            warn!(error = %error, projection = "long_term", trigger = "pressure_eligible", "long-term projection pressure retry failed");
-                        }
+            loop {
+                if crate::maintenance_store::legacy_worker_should_skip("long_term_projection").await
+                {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
                     }
                 }
-                _ = state.terminal_projection_hub.wait_for_persisted_work() => {
-                    debug!(projection = "long_term", trigger = "terminal_p1_ack", "long-term projection marked dirty by terminal persistence");
-                }
-                _ = flush_ticker.tick() => {
-                    let trigger = long_term_projection_terminal_flush_needed(&state)
-                        .await
-                        .then_some("terminal_deadline");
-                    if let Some(trigger) = trigger {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = wait_for_long_term_projection_pressure_retry(
+                        pressure_gate,
+                        pressure_eligibility_generation,
+                        pressure_retry_at,
+                    ), if pressure_retry_pending => {
                         pressure_eligibility_generation = pressure_gate.eligibility_generation();
-                        match flush_long_term_projection(&state, trigger).await {
+                        match flush_long_term_projection(&state, "pressure_eligible").await {
+                            Ok(LongTermProjectionFlushOutcome::Completed) => {
+                                pressure_retry_pending = false;
+                                pressure_retry_at = None;
+                            }
+                            Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
+                                pressure_retry_at = retry_at;
+                            }
+                            Err(error) => {
+                                pressure_retry_pending = false;
+                                pressure_retry_at = None;
+                                mark_long_term_projection_failure(&state, &error).await;
+                                warn!(error = %error, projection = "long_term", trigger = "pressure_eligible", "long-term projection pressure retry failed");
+                            }
+                        }
+                    }
+                    _ = state.terminal_projection_hub.wait_for_persisted_work() => {
+                        debug!(projection = "long_term", trigger = "terminal_p1_ack", "long-term projection marked dirty by terminal persistence");
+                    }
+                    _ = flush_ticker.tick() => {
+                        let trigger = long_term_projection_terminal_flush_needed(&state)
+                            .await
+                            .then_some("terminal_deadline");
+                        if let Some(trigger) = trigger {
+                            pressure_eligibility_generation = pressure_gate.eligibility_generation();
+                            match flush_long_term_projection(&state, trigger).await {
+                                Ok(LongTermProjectionFlushOutcome::Completed) => {
+                                    pressure_retry_pending = false;
+                                    pressure_retry_at = None;
+                                }
+                                Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
+                                    pressure_retry_pending = true;
+                                    pressure_retry_at = retry_at;
+                                }
+                                Err(error) => {
+                                    mark_long_term_projection_failure(&state, &error).await;
+                                    warn!(error = %error, projection = "long_term", trigger, "long-term projection flush failed");
+                                }
+                            }
+                        }
+                        else {
+                            debug!(projection = "long_term", trigger = "terminal_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection flush");
+                        }
+                    }
+                    _ = maintenance_ticker.tick() => {
+                        match long_term_projection_maintenance_needed(
+                            &state.pool,
+                            state.config.long_term_stats_hourly_retention_days,
+                        )
+                        .await
+                        {
+                            Ok(true) => {
+                                pressure_eligibility_generation = pressure_gate.eligibility_generation();
+                                match flush_long_term_projection(&state, "maintenance_deadline").await {
+                                    Ok(LongTermProjectionFlushOutcome::Completed) => {
+                                        pressure_retry_pending = false;
+                                        pressure_retry_at = None;
+                                    }
+                                    Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
+                                        pressure_retry_pending = true;
+                                        pressure_retry_at = retry_at;
+                                    }
+                                    Err(error) => {
+                                        mark_long_term_projection_failure(&state, &error).await;
+                                        warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "long-term projection maintenance failed");
+                                    }
+                                }
+                            }
+                            Ok(false) => {
+                                debug!(projection = "long_term", trigger = "maintenance_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection maintenance");
+                            }
+                            Err(error) => {
+                                mark_long_term_projection_failure(&state, &error).await;
+                                warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "failed to inspect long-term projection maintenance work");
+                            }
+                        }
+                    }
+                    _ = repair_ticker.tick() => {
+                        match long_term_projection_repair_needed(&state).await {
+                            Ok(true) => {
+                                pressure_eligibility_generation = pressure_gate.eligibility_generation();
+                                match flush_long_term_projection(&state, "repair_deadline").await {
+                                    Ok(LongTermProjectionFlushOutcome::Completed) => {
+                                        pressure_retry_pending = false;
+                                        pressure_retry_at = None;
+                                    }
+                                    Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
+                                        pressure_retry_pending = true;
+                                        pressure_retry_at = retry_at;
+                                    }
+                                    Err(error) => {
+                                        mark_long_term_projection_failure(&state, &error).await;
+                                        warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "long-term projection repair failed");
+                                    }
+                                }
+                            }
+                            Ok(false) => {
+                                debug!(projection = "long_term", trigger = "repair_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term repair");
+                            }
+                            Err(error) => {
+                                mark_long_term_projection_failure(&state, &error).await;
+                                warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "failed to inspect long-term projection repair work");
+                            }
+                        }
+                    }
+                    _ = daily_verify_ticker.tick() => {
+                        pressure_eligibility_generation = pressure_gate.eligibility_generation();
+                        match flush_long_term_projection(&state, "daily_verify").await {
                             Ok(LongTermProjectionFlushOutcome::Completed) => {
                                 pressure_retry_pending = false;
                                 pressure_retry_at = None;
@@ -2615,92 +2699,18 @@ pub(crate) fn spawn_long_term_projection_supervisor(
                             }
                             Err(error) => {
                                 mark_long_term_projection_failure(&state, &error).await;
-                                warn!(error = %error, projection = "long_term", trigger, "long-term projection flush failed");
+                                warn!(error = %error, projection = "long_term", trigger = "daily_verify", "long-term projection daily verification failed");
                             }
-                        }
-                    } else {
-                        debug!(projection = "long_term", trigger = "terminal_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection flush");
-                    }
-                }
-                _ = maintenance_ticker.tick() => {
-                    match long_term_projection_maintenance_needed(
-                        &state.pool,
-                        state.config.long_term_stats_hourly_retention_days,
-                    )
-                    .await
-                    {
-                        Ok(true) => {
-                            pressure_eligibility_generation = pressure_gate.eligibility_generation();
-                            match flush_long_term_projection(&state, "maintenance_deadline").await {
-                                Ok(LongTermProjectionFlushOutcome::Completed) => {
-                                    pressure_retry_pending = false;
-                                    pressure_retry_at = None;
-                                }
-                                Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
-                                    pressure_retry_pending = true;
-                                    pressure_retry_at = retry_at;
-                                }
-                                Err(error) => {
-                                    mark_long_term_projection_failure(&state, &error).await;
-                                    warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "long-term projection maintenance failed");
-                                }
-                            }
-                        }
-                        Ok(false) => {
-                            debug!(projection = "long_term", trigger = "maintenance_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection maintenance");
-                        }
-                        Err(error) => {
-                            mark_long_term_projection_failure(&state, &error).await;
-                            warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "failed to inspect long-term projection maintenance work");
-                        }
-                    }
-                }
-                _ = repair_ticker.tick() => {
-                    match long_term_projection_repair_needed(&state).await {
-                        Ok(true) => {
-                            pressure_eligibility_generation = pressure_gate.eligibility_generation();
-                            match flush_long_term_projection(&state, "repair_deadline").await {
-                                Ok(LongTermProjectionFlushOutcome::Completed) => {
-                                    pressure_retry_pending = false;
-                                    pressure_retry_at = None;
-                                }
-                                Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
-                                    pressure_retry_pending = true;
-                                    pressure_retry_at = retry_at;
-                                }
-                                Err(error) => {
-                                    mark_long_term_projection_failure(&state, &error).await;
-                                    warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "long-term projection repair failed");
-                                }
-                            }
-                        }
-                        Ok(false) => {
-                            debug!(projection = "long_term", trigger = "repair_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term repair");
-                        }
-                        Err(error) => {
-                            mark_long_term_projection_failure(&state, &error).await;
-                            warn!(error = %error, projection = "long_term", trigger = "repair_deadline", "failed to inspect long-term projection repair work");
-                        }
-                    }
-                }
-                _ = daily_verify_ticker.tick() => {
-                    pressure_eligibility_generation = pressure_gate.eligibility_generation();
-                    match flush_long_term_projection(&state, "daily_verify").await {
-                        Ok(LongTermProjectionFlushOutcome::Completed) => {
-                            pressure_retry_pending = false;
-                            pressure_retry_at = None;
-                        }
-                        Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
-                            pressure_retry_pending = true;
-                            pressure_retry_at = retry_at;
-                        }
-                        Err(error) => {
-                            mark_long_term_projection_failure(&state, &error).await;
-                            warn!(error = %error, projection = "long_term", trigger = "daily_verify", "long-term projection daily verification failed");
                         }
                     }
                 }
             }
+        });
+        if let Err(error) = supervisor_handle.await {
+            warn!(error = %error, projection = "long_term", "long-term projection supervisor terminated unexpectedly");
+        }
+        if let Err(error) = backfill_handle.await {
+            warn!(error = %error, projection = "long_term", "long-term initial materialization worker terminated unexpectedly");
         }
     })
 }
@@ -6680,7 +6690,7 @@ pub(crate) fn spawn_long_term_stats_backfill(
     pool: Pool<Sqlite>,
     retention_days: u64,
     shutdown: CancellationToken,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -6717,6 +6727,22 @@ pub(crate) fn spawn_long_term_stats_backfill(
             ) {
                 break;
             }
+            let Some(_execution_lease) =
+                crate::maintenance_store::try_acquire_task_execution("long_term_projection")
+            else {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = ticker.tick() => {}
+                }
+                continue;
+            };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "long_term_projection",
+                &crate::maintenance_store::task_title_for_observation("long_term_projection"),
+                "startup",
+                crate::maintenance_store::task_execution_class("long_term_projection"),
+                "processing",
+            );
             let control = LongTermProjectionWriteControl::background(
                 &shutdown,
                 crate::db_pressure::global_db_pressure_gate(),
@@ -6744,7 +6770,7 @@ pub(crate) fn spawn_long_term_stats_backfill(
                 _ = ticker.tick() => {}
             }
         }
-    });
+    })
 }
 
 pub(crate) async fn refresh_long_term_stats(

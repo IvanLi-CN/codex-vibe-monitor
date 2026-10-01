@@ -617,6 +617,11 @@ function buildSystemWorkspaceRequestHandler(
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
   const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
+  const currentManagedTasks = () =>
+    STORYBOOK_MANAGED_TASKS.map((task) => ({
+      ...task,
+      ...managedTaskOverrides.get(task.taskKey),
+    }));
   let storybookRuntime = clone(STORYBOOK_MANAGED_TASK_RUNTIME);
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
@@ -643,7 +648,7 @@ function buildSystemWorkspaceRequestHandler(
     }
 
     if (url.pathname === "/api/system/managed-tasks" && method === "GET") {
-      return jsonResponse(clone(STORYBOOK_MANAGED_TASKS));
+      return jsonResponse(clone(currentManagedTasks()));
     }
 
     if (url.pathname === "/api/system/managed-tasks/runtime" && method === "GET") {

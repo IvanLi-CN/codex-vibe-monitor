@@ -1237,6 +1237,23 @@ impl MaintenanceStore {
                 continue;
             };
             let managed_key = format!("startup_backfill.{managed_suffix}");
+            // The legacy progress row is the only durable enablement source before this
+            // catalog exists. Seed the managed row from it once, then let the managed row
+            // remain authoritative for later operator changes.
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET enabled = COALESCE(
+                     (SELECT MAX(enabled) FROM startup_backfill_progress
+                      WHERE task_name=? OR task_name LIKE ?),
+                     enabled
+                 )
+                 WHERE task_key=?",
+            )
+            .bind(task_name)
+            .bind(&like_pattern)
+            .bind(&managed_key)
+            .execute(&mut *transaction)
+            .await?;
             sqlx::query(
                 "UPDATE startup_backfill_progress
                  SET enabled=COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0),
@@ -1933,6 +1950,14 @@ mod tests {
             .await
             .unwrap()
         );
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill.proxy_usage'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT enabled FROM startup_backfill_progress WHERE task_name='proxy_usage_tokens_v1'",
@@ -1940,7 +1965,7 @@ mod tests {
             .fetch_one(&store.pool)
             .await
             .unwrap(),
-            0
+            1
         );
 
         sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key='raw_compression'")
