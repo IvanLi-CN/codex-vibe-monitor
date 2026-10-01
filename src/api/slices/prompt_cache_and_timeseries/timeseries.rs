@@ -1973,12 +1973,25 @@ async fn try_acquire_timeseries_minute_projection_write(
     }
 }
 
+fn begin_timeseries_minute_projection_observation(
+    trigger: &'static str,
+) -> crate::TaskExecutionObservation {
+    crate::TaskExecutionObservation::begin(
+        "timeseries_minute_projection",
+        &crate::maintenance_store::task_title_for_observation("timeseries_minute_projection"),
+        trigger,
+        crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+        "processing",
+    )
+}
+
 async fn invalidate_timeseries_minute_projection_coverage(
     state: &AppState,
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
     trigger: &'static str,
     pending_event_count: usize,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    observation: &mut Option<crate::TaskExecutionObservation>,
 ) -> Result<TimeseriesMinuteProjectionCoverageInvalidationOutcome, ApiError> {
     let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
     loop {
@@ -2011,6 +2024,7 @@ async fn invalidate_timeseries_minute_projection_coverage(
                 );
             }
         };
+        observation.get_or_insert_with(|| begin_timeseries_minute_projection_observation(trigger));
 
         let started = Instant::now();
         let mut tx = state.pool.begin().await?;
@@ -2132,6 +2146,7 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
     }
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
     let mut loaded_row_count = 0u64;
+    let mut observation = None;
     let result: Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> = async {
         let started = Instant::now();
         let mut grouped = HashMap::new();
@@ -2148,6 +2163,7 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 trigger,
                 flushed_event_ids.len(),
                 cancellation,
+                &mut observation,
             )
             .await?
             {
@@ -2272,6 +2288,7 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                     return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
                 }
             };
+            observation.get_or_insert_with(|| begin_timeseries_minute_projection_observation(trigger));
 
             let transaction_started = Instant::now();
             let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -2400,6 +2417,15 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             ) else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "timeseries_minute_projection",
+                &crate::maintenance_store::task_title_for_observation(
+                    "timeseries_minute_projection",
+                ),
+                "startup",
+                crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+                "processing",
+            );
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
@@ -2538,6 +2564,7 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let mut observation = None;
     loop {
         let Some(recovery_generation) =
             timeseries_minute_projection_recovery_generation(&state.pool).await?
@@ -2562,6 +2589,9 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             drop(admission);
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
         }
+        observation.get_or_insert_with(|| {
+            begin_timeseries_minute_projection_observation("startup_recovery")
+        });
         let mut tx = state.pool.begin().await?;
         sqlx::query(
             "INSERT INTO timeseries_minute_projection_v2_state (consumer, cursor_row_id, last_flush_at, last_error, updated_at) VALUES (?1, 0, NULL, 'warming', datetime('now')) ON CONFLICT(consumer) DO UPDATE SET last_error = 'warming', updated_at = excluded.updated_at",
@@ -2578,6 +2608,7 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             "startup_recovery",
             0,
             Some(cancellation),
+            &mut observation,
         )
         .await?
         {
@@ -2608,6 +2639,9 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             drop(admission);
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
         }
+        observation.get_or_insert_with(|| {
+            begin_timeseries_minute_projection_observation("startup_recovery")
+        });
         let mut tx = state.pool.begin().await?;
         let recovery_cleared = sqlx::query(
             "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0, updated_at = datetime('now') WHERE consumer = ?1 AND generation = ?2 AND invalidation_pending = 1",
