@@ -4,7 +4,7 @@
 
 - Date: 2026-10-01 (Asia/Shanghai)
 - Branch: `th/retention-bounded-recovery-design`
-- Candidate source commit: `90bc08158f5ef0a02b40a5b6703b79d9ebd2bf03`
+- Candidate source commit: `8eade026dfe8a785e95beca0e75d8da3bca43cec`
 - Tests: `retention_prompt_cache_million_row_candidate_benchmark` and `retention_prompt_cache_million_row_baseline_benchmark`
 - Commands: `cargo test --locked retention_prompt_cache_million_row_candidate_benchmark -- --ignored --nocapture --test-threads=1`; `cargo test --locked retention_prompt_cache_million_row_baseline_benchmark -- --ignored --nocapture --test-threads=1`
 - Database: temporary SQLite file with WAL mode and an 8-connection writer pool plus a 2-connection online-read pool
