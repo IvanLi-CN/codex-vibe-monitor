@@ -677,7 +677,7 @@ fn retention_run_budget_expired() -> bool {
         .unwrap_or(false)
 }
 
-fn retention_run_remaining_budget() -> Option<Duration> {
+pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
     RETENTION_RUN_DEADLINE
         .try_with(|deadline| {
             deadline
@@ -8743,21 +8743,32 @@ async fn run_data_retention_maintenance_inner(
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
     retention_recovery_clear_current_prepared_key();
-    summary.prompt_cache_conversations_released = match prompt_cache_conversation_cache {
-        Some(cache) => cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache)
-            .await
-            .inspect_err(|error| {
-                retention_record_error("prompt_cache_conversation_cleanup", error);
-            })
-            .context("failed to release orphan prompt-cache conversation identities")?,
-        None => cleanup_orphan_prompt_cache_conversations(pool, dry_run)
-            .await
-            .inspect_err(|error| {
-                retention_record_error("prompt_cache_conversation_cleanup", error);
-            })
-            .context("failed to release orphan prompt-cache conversation identities")?,
+    let orphan_cleanup = match prompt_cache_conversation_cache {
+        Some(cache) => {
+            cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache).await
+        }
+        None => cleanup_orphan_prompt_cache_conversations(pool, dry_run).await,
     };
-    summary.orphan_cleanup_completed = true;
+    summary.prompt_cache_conversations_released = match orphan_cleanup {
+        Ok(released) => {
+            summary.orphan_cleanup_completed = true;
+            released
+        }
+        Err(error)
+            if error
+                .to_string()
+                .contains("orphan cleanup exceeded the retention work budget") =>
+        {
+            summary.deferred = true;
+            summary.wait_reason = Some("retention_work_budget".to_string());
+            0
+        }
+        Err(error) => {
+            retention_record_error("prompt_cache_conversation_cleanup", &error);
+            return Err(error)
+                .context("failed to release orphan prompt-cache conversation identities");
+        }
+    };
     if summary.prompt_cache_conversations_released > 0 {
         info!(
             dry_run,

@@ -2,6 +2,8 @@ use super::*;
 
 const PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const PROMPT_CACHE_CONVERSATION_STATS_PROGRESS_OPS: i32 = 1_000;
+const PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED: &str =
+    "prompt-cache orphan cleanup exceeded the retention work budget";
 
 pub(crate) const PROMPT_CACHE_CONVERSATION_ID_LENGTH: usize = 6;
 pub(crate) const PROMPT_CACHE_CONVERSATION_SEQUENCE_LENGTH: usize = 4;
@@ -3549,24 +3551,40 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
     active_prompt_cache_keys: &HashSet<String>,
     cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<PromptCacheConversationOrphanCleanupResult> {
+    async fn bounded_query<T, E, F>(future: F) -> Result<T>
+    where
+        E: Into<anyhow::Error>,
+        F: std::future::Future<Output = std::result::Result<T, E>>,
+    {
+        let value = if let Some(remaining) = crate::maintenance::retention_run_remaining_budget() {
+            tokio::time::timeout(remaining, future)
+                .await
+                .map_err(|_| anyhow!(PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED))?
+                .map_err(Into::into)?
+        } else {
+            future.await.map_err(Into::into)?
+        };
+        Ok(value)
+    }
+
     let prompt_key_expr = invocation_prompt_cache_key_expr_sql("i");
     let mut result = PromptCacheConversationOrphanCleanupResult::default();
-    let cursor_key = sqlx::query_scalar::<_, Option<String>>(&format!(
+    let cursor_key = bounded_query(sqlx::query_scalar::<_, Option<String>>(&format!(
         "SELECT cursor_key FROM {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} WHERE scope='prompt_cache_conversations'"
     ))
-    .fetch_one(pool)
+    .fetch_one(pool))
     .await?;
-    let candidates = sqlx::query_as::<_, (String, String)>(&format!(
+    let candidates = bounded_query(sqlx::query_as::<_, (String, String)>(&format!(
         "SELECT prompt_cache_key,conversation_id FROM prompt_cache_conversations WHERE (last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes') AND (?1 IS NULL OR prompt_cache_key > ?1) ORDER BY prompt_cache_key LIMIT {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE}"
     ))
     .bind(cursor_key.as_deref())
-    .fetch_all(pool)
+    .fetch_all(pool))
     .await?;
     if candidates.is_empty() {
-        sqlx::query(&format!(
+        bounded_query(sqlx::query(&format!(
             "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=NULL,epoch=epoch+1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
         ))
-        .execute(pool)
+        .execute(pool))
         .await?;
         return Ok(result);
     }
@@ -3575,19 +3593,21 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
         if active_prompt_cache_keys.contains(prompt_cache_key) {
             continue;
         }
-        let key_referenced = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT EXISTS(SELECT 1 FROM codex_invocations AS i WHERE {prompt_key_expr} = ?1)"
-        ))
-        .bind(prompt_cache_key)
-        .fetch_one(pool)
+        let key_referenced = bounded_query(
+            sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT EXISTS(SELECT 1 FROM codex_invocations AS i WHERE {prompt_key_expr} = ?1)"
+            ))
+            .bind(prompt_cache_key)
+            .fetch_one(pool),
+        )
         .await?
             != 0;
-        let invoke_id_referenced = sqlx::query_scalar::<_, i64>(
+        let invoke_id_referenced = bounded_query(sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM codex_invocations WHERE length(invoke_id)=?1 AND invoke_id>=?2 AND invoke_id < (?2 || '['))",
         )
         .bind(PROXY_INVOKE_ID_LENGTH as i64)
         .bind(conversation_id)
-        .fetch_one(pool)
+        .fetch_one(pool))
         .await?
             != 0;
         if !key_referenced && !invoke_id_referenced {
@@ -3604,22 +3624,30 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
                 .0
                 .clone()
         });
-        sqlx::query(&format!(
+        bounded_query(sqlx::query(&format!(
             "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=?1,epoch=epoch+CASE WHEN ?2 THEN 0 ELSE 1 END,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
         ))
         .bind(next_cursor)
         .bind(full_page)
-        .execute(pool)
+        .execute(pool))
         .await?;
     } else {
         // Exact reference probes run without the cache mutex. Reacquire it only for the
         // short delete transaction so a lease that arrived during those probes wins over
         // deletion without blocking request admission on the slow probes.
         let cache_guard = match cache {
-            Some(cache) => Some(cache.lock().await),
+            Some(cache) => Some(
+                if let Some(remaining) = crate::maintenance::retention_run_remaining_budget() {
+                    tokio::time::timeout(remaining, cache.lock())
+                        .await
+                        .map_err(|_| anyhow!(PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED))?
+                } else {
+                    cache.lock().await
+                },
+            ),
             None => None,
         };
-        let mut tx = pool.begin().await?;
+        let mut tx = bounded_query(pool.begin()).await?;
         for (prompt_cache_key, conversation_id) in &eligible {
             if cache_guard.as_ref().is_some_and(|state| {
                 state
@@ -3629,27 +3657,27 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
             }) {
                 continue;
             }
-            let deleted = sqlx::query(
+            let deleted = bounded_query(sqlx::query(
                 "DELETE FROM prompt_cache_conversations WHERE prompt_cache_key=?1 AND conversation_id=?2 AND (last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes') AND NOT EXISTS (SELECT 1 FROM codex_invocations AS i WHERE CASE WHEN json_valid(i.payload) THEN TRIM(CAST(json_extract(i.payload,'$.promptCacheKey') AS TEXT)) END = ?1) AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE length(invoke_id)=?3 AND invoke_id>=?2 AND invoke_id < (?2 || '['))",
             )
             .bind(prompt_cache_key)
             .bind(conversation_id)
             .bind(PROXY_INVOKE_ID_LENGTH as i64)
-            .execute(&mut *tx)
+            .execute(&mut *tx))
             .await?
             .rows_affected();
             if deleted > 0 {
-                sqlx::query(&format!(
+                bounded_query(sqlx::query(&format!(
                     "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key=?1"
                 ))
                 .bind(prompt_cache_key)
-                .execute(&mut *tx)
+                .execute(&mut *tx))
                 .await?;
-                sqlx::query(&format!(
+                bounded_query(sqlx::query(&format!(
                     "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key=?1"
                 ))
                 .bind(prompt_cache_key)
-                .execute(&mut *tx)
+                .execute(&mut *tx))
                 .await?;
                 result.released = result.released.saturating_add(1);
                 result
@@ -3665,14 +3693,14 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
                 .0
                 .clone()
         });
-        sqlx::query(&format!(
+        bounded_query(sqlx::query(&format!(
             "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=?1,epoch=epoch+CASE WHEN ?2 THEN 0 ELSE 1 END,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
         ))
         .bind(next_cursor)
         .bind(full_page)
-        .execute(&mut *tx)
+        .execute(&mut *tx))
         .await?;
-        tx.commit().await?;
+        bounded_query(tx.commit()).await?;
     }
     Ok(result)
 }
