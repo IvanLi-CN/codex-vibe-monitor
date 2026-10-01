@@ -621,17 +621,29 @@ def wait_for_cancel_terminal(invoke_id, timeout_seconds):
             )
         ):
             invocation = cancel_invocation_by_id(invoke_id)
-            return {
-                'attempt_status': attempt[0],
-                'attempt_phase': attempt[1],
-                'attempt_failure_kind': attempt[2],
-                'attempt_error_message': attempt[3],
-                'attempt_downstream_error_message': attempt[4],
-                'invocation_status': invocation[0] if invocation else None,
-                'invocation_failure_kind': invocation[1] if invocation else None,
-                'invocation_failure_class': invocation[2] if invocation else None,
-                'invocation_error_message': invocation[3] if invocation else None,
-            }
+            invocation_status = str(invocation[0] or '').lower() if invocation else ''
+            invocation_error = str(invocation[3] or '') if invocation else ''
+            invocation_has_terminal_marker = invocation and (
+                invocation[1] == 'downstream_closed'
+                or invocation[2] == 'client_abort'
+                or 'downstream_closed' in invocation_error
+            )
+            if (
+                invocation
+                and invocation_status not in ('', 'running', 'pending', 'in_flight')
+                and invocation_has_terminal_marker
+            ):
+                return {
+                    'attempt_status': attempt[0],
+                    'attempt_phase': attempt[1],
+                    'attempt_failure_kind': attempt[2],
+                    'attempt_error_message': attempt[3],
+                    'attempt_downstream_error_message': attempt[4],
+                    'invocation_status': invocation[0],
+                    'invocation_failure_kind': invocation[1],
+                    'invocation_failure_class': invocation[2],
+                    'invocation_error_message': invocation[3],
+                }
         time.sleep(0.01)
     return None
 
@@ -844,6 +856,13 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
             'streaming_response',
             'response_headers',
             'body_streaming',
+        )
+        and str(cancel_terminal.get('invocation_status') or '').lower()
+        not in ('', 'running', 'pending', 'in_flight')
+        and (
+            cancel_terminal.get('invocation_failure_kind') == 'downstream_closed'
+            or cancel_terminal.get('invocation_failure_class') == 'client_abort'
+            or 'downstream_closed' in str(cancel_terminal.get('invocation_error_message') or '')
         )
         and (
             cancel_terminal.get('attempt_failure_kind') == 'downstream_closed'
