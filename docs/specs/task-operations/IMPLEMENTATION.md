@@ -42,7 +42,7 @@
 ## Validation Notes
 
 - The shared testbox backend lightweight, stateful-SQLite, and archive-file-io profiles passed for the candidate. Its web lane could not run because Bun is not installed there.
-- Candidate `6ebe253003586ac5798c00dcd9dbda8c9edbf932` was checked with an isolated local production router on a leased port and fresh SQLite files: health returned `ok`, the catalog returned 37 rows, the runtime endpoint returned a real `raw_payload_metrics_inventory` active instance with execution id, phase, start time, and elapsed milliseconds, the approved dashboard interval override and dual-null reset returned HTTP 200, and an unsupported new override returned HTTP 400. The reset response preserved `enabled` and reported the system-default policy.
+- Candidate `1955d173e3ea8f86b640ea71a6fd464e99c11d19` was checked with an isolated local production router on a leased port and fresh SQLite files: health returned `ok`, the catalog returned 37 rows, the runtime endpoint returned a real `raw_payload_metrics_inventory` active instance with execution id, phase, start time, and elapsed milliseconds, a managed dashboard run completed successfully, the approved dashboard interval override and dual-null reset returned HTTP 200, and an unsupported new override returned HTTP 400. The reset response preserved `enabled` and reported the system-default policy.
 - The mock-only Web Demo supplied the desktop and mobile evidence recorded in `SPEC.md`; both screenshots were confirmed by the owner and are committed under `./assets/`.
 - The runtime route and PATCH tri-state have focused unit and local HTTP coverage; no persistent schema migration or default-value backfill is required.
 
