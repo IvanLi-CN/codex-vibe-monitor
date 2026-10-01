@@ -1,5 +1,176 @@
 use super::*;
 
+pub(crate) async fn ensure_managed_model_catalog(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS managed_models (
+            model TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure managed_models table existence")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS managed_model_suppressions (
+            model TEXT PRIMARY KEY,
+            deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure managed model suppression table existence")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS managed_model_catalog_migrations (
+            version INTEGER PRIMARY KEY,
+            completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure managed model catalog migration table existence")?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to begin managed model catalog migration")?;
+    let migrated = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM managed_model_catalog_migrations WHERE version = 1)",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("failed to inspect managed model catalog migration state")?
+        != 0;
+    if !migrated {
+        for model in PROXY_PRESET_MODEL_IDS {
+            sqlx::query("INSERT OR IGNORE INTO managed_models (model) VALUES (?1)")
+                .bind(model)
+                .execute(&mut *tx)
+                .await
+                .context("failed to import a legacy preset model")?;
+        }
+        let enabled_preset_models_json = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT enabled_preset_models_json FROM proxy_model_settings WHERE id = ?1",
+        )
+        .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("failed to read legacy enabled preset models")?
+        .flatten();
+        for model in decode_enabled_preset_models(enabled_preset_models_json.as_deref()) {
+            sqlx::query("INSERT OR IGNORE INTO managed_models (model) VALUES (?1)")
+                .bind(model)
+                .execute(&mut *tx)
+                .await
+                .context("failed to import an enabled legacy preset model")?;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO managed_models (model) SELECT model FROM pricing_settings_models",
+        )
+        .execute(&mut *tx)
+        .await
+        .context("failed to import existing priced models")?;
+        sqlx::query("INSERT OR IGNORE INTO managed_model_catalog_migrations (version) VALUES (1)")
+            .execute(&mut *tx)
+            .await
+            .context("failed to record managed model catalog migration")?;
+    }
+    tx.commit()
+        .await
+        .context("failed to commit managed model catalog migration")?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_pricing_settings_catalog_migrations(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_models
+        SET cache_read_per_1m = cache_input_per_1m
+        WHERE cache_read_per_1m IS NULL
+          AND cache_input_per_1m IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pricing_settings_models.cache_read_per_1m")?;
+    ensure_managed_model_catalog(pool)
+        .await
+        .context("failed to migrate managed model catalog")?;
+    Ok(())
+}
+
+pub(crate) async fn load_managed_model_ids(pool: &Pool<Sqlite>) -> Result<Vec<String>> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT model FROM managed_models UNION SELECT model FROM pricing_settings_models ORDER BY model",
+    )
+        .fetch_all(pool)
+        .await
+        .context("failed to load managed model IDs")
+}
+
+pub(crate) async fn upsert_synced_model_prices(
+    pool: &Pool<Sqlite>,
+    entries: &[PricingEntry],
+) -> Result<PricingCatalog> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to begin models.dev price apply transaction")?;
+    for entry in entries {
+        sqlx::query("DELETE FROM managed_model_suppressions WHERE model = ?1")
+            .bind(&entry.model)
+            .execute(&mut *tx)
+            .await
+            .with_context(|| format!("failed to restore managed model {}", entry.model))?;
+        sqlx::query(
+            r#"
+            INSERT INTO pricing_settings_models (
+                model, input_per_1m, output_per_1m, cache_input_per_1m,
+                cache_read_per_1m, cache_write_per_1m, reasoning_per_1m, source, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, 'models.dev', datetime('now'))
+            ON CONFLICT(model) DO UPDATE SET
+                input_per_1m = excluded.input_per_1m,
+                output_per_1m = excluded.output_per_1m,
+                cache_input_per_1m = excluded.cache_input_per_1m,
+                cache_read_per_1m = excluded.cache_read_per_1m,
+                cache_write_per_1m = excluded.cache_write_per_1m,
+                reasoning_per_1m = excluded.reasoning_per_1m,
+                source = 'models.dev',
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(&entry.model)
+        .bind(entry.input_per_1m)
+        .bind(entry.output_per_1m)
+        .bind(entry.cache_read_per_1m.or(entry.cache_input_per_1m))
+        .bind(entry.cache_write_per_1m)
+        .bind(entry.reasoning_per_1m)
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("failed to apply models.dev price for {}", entry.model))?;
+        sqlx::query("INSERT OR IGNORE INTO managed_models (model) VALUES (?1)")
+            .bind(&entry.model)
+            .execute(&mut *tx)
+            .await
+            .with_context(|| format!("failed to add managed model {}", entry.model))?;
+    }
+    sqlx::query("UPDATE pricing_settings_meta SET updated_at = datetime('now') WHERE id = 1")
+        .execute(&mut *tx)
+        .await
+        .context("failed to update pricing catalog timestamp")?;
+    let next = load_pricing_catalog_from_connection(&mut tx).await?;
+    tx.commit()
+        .await
+        .context("failed to commit models.dev price apply transaction")?;
+    Ok(next)
+}
+
 pub(crate) async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
     let row = sqlx::query_as::<_, ProxyModelSettingsRow>(
         r#"
@@ -299,7 +470,10 @@ pub(crate) async fn ensure_pricing_model_present(
             reasoning_per_1m,
             source
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+        WHERE NOT EXISTS (
+            SELECT 1 FROM managed_model_suppressions WHERE model = ?1
+        )
         "#,
     )
     .bind(model)
@@ -888,7 +1062,16 @@ pub(crate) fn load_legacy_pricing_catalog(path: &Path) -> Result<Option<PricingC
 
 pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingCatalog> {
     seed_default_pricing_catalog(pool).await?;
+    let mut connection = pool
+        .acquire()
+        .await
+        .context("failed to acquire a pricing catalog connection")?;
+    load_pricing_catalog_from_connection(&mut connection).await
+}
 
+pub(crate) async fn load_pricing_catalog_from_connection(
+    connection: &mut SqliteConnection,
+) -> Result<PricingCatalog> {
     let meta = sqlx::query_as::<_, PricingSettingsMetaRow>(
         r#"
         SELECT catalog_version
@@ -898,7 +1081,7 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
         "#,
     )
     .bind(PRICING_SETTINGS_SINGLETON_ID)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await
     .context("failed to load pricing_settings_meta row")?;
     let version = meta
@@ -919,7 +1102,7 @@ pub(crate) async fn load_pricing_catalog(pool: &Pool<Sqlite>) -> Result<PricingC
         FROM pricing_settings_models
         "#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *connection)
     .await
     .context("failed to load pricing_settings_models rows")?;
 
@@ -965,6 +1148,11 @@ pub(crate) async fn save_pricing_catalog(
             .models
             .get(&model)
             .with_context(|| format!("missing pricing entry while saving: {model}"))?;
+        sqlx::query("DELETE FROM managed_model_suppressions WHERE model = ?1")
+            .bind(&model)
+            .execute(&mut *tx)
+            .await
+            .with_context(|| format!("failed to restore managed model {model}"))?;
         sqlx::query(
             r#"
             INSERT INTO pricing_settings_models (
@@ -993,6 +1181,13 @@ pub(crate) async fn save_pricing_catalog(
         .await
         .context("failed to insert pricing_settings_models row")?;
     }
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO managed_models (model) SELECT model FROM pricing_settings_models",
+    )
+    .execute(&mut *tx)
+    .await
+    .context("failed to add priced models to managed model catalog")?;
 
     sqlx::query(
         r#"

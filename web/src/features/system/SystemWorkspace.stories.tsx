@@ -5,12 +5,15 @@ import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
+  ModelsDevSyncPreview,
+  PricingEntry,
   SettingsPayload,
   SystemStatusResponse,
   SystemTaskRunsResponse,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
 import SystemLayout from "../../pages/system/SystemLayout";
+import SystemModelsPage from "../../pages/system/SystemModelsPage";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
 import SystemSettingsPage from "../../pages/system/SystemSettingsPage";
 import SystemStatusPage from "../../pages/system/SystemStatusPage";
@@ -431,6 +434,119 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
   },
 };
 
+const STORYBOOK_MODELS_SETTINGS: SettingsPayload = {
+  ...STORYBOOK_SETTINGS,
+  proxy: {
+    ...STORYBOOK_SETTINGS.proxy,
+    models: ["gpt-6-sol", "claude-sonnet-4", "gemini-2.5-pro", "local-unpriced"],
+    enabledModels: ["gpt-6-sol", "gemini-2.5-pro"],
+  },
+  pricing: {
+    catalogVersion: "storybook-models-2026-09",
+    entries: [
+      {
+        model: "gpt-6-sol",
+        inputPer1m: 2,
+        outputPer1m: 10,
+        cacheInputPer1m: 0.2,
+        cacheReadPer1m: 0.2,
+        cacheWritePer1m: 2.5,
+        reasoningPer1m: null,
+        source: "official",
+      },
+      {
+        model: "claude-sonnet-4",
+        inputPer1m: 3,
+        outputPer1m: 15,
+        cacheInputPer1m: null,
+        cacheReadPer1m: 0.3,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "custom",
+      },
+      {
+        model: "gemini-2.5-pro",
+        inputPer1m: 1.25,
+        outputPer1m: 10,
+        cacheInputPer1m: null,
+        cacheReadPer1m: null,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "official",
+      },
+    ],
+  },
+};
+
+const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
+  fetchedAt: "2026-09-30T00:00:00Z",
+  providerCount: 3,
+  candidateCount: 4,
+  providers: [
+    { id: "openai", name: "OpenAI", docUrl: "https://platform.openai.com/docs" },
+    { id: "openrouter", name: "OpenRouter", docUrl: "https://openrouter.ai/docs" },
+    { id: "deepseek", name: "DeepSeek", docUrl: "https://api-docs.deepseek.com/" },
+  ],
+  candidates: [
+    {
+      model: "gpt-6-sol",
+      name: "GPT-6 Sol",
+      providerId: "openai",
+      providerName: "OpenAI",
+      docUrl: "https://platform.openai.com/docs",
+      inputPer1m: 2.25,
+      outputPer1m: 11,
+      cacheReadPer1m: 0.22,
+      cacheWritePer1m: 2.8,
+      reasoningPer1m: null,
+      unsupportedDimensions: [],
+      importable: true,
+    },
+    {
+      model: "gpt-6-sol",
+      name: "GPT-6 Sol",
+      providerId: "openrouter",
+      providerName: "OpenRouter",
+      docUrl: "https://openrouter.ai/docs",
+      inputPer1m: 2.5,
+      outputPer1m: 12,
+      cacheReadPer1m: null,
+      cacheWritePer1m: null,
+      reasoningPer1m: null,
+      unsupportedDimensions: ["image"],
+      importable: true,
+    },
+    {
+      model: "claude-sonnet-4",
+      name: "Claude Sonnet 4",
+      providerId: "openrouter",
+      providerName: "OpenRouter",
+      docUrl: "https://openrouter.ai/docs",
+      inputPer1m: 3.5,
+      outputPer1m: 17,
+      cacheReadPer1m: 0.35,
+      cacheWritePer1m: null,
+      reasoningPer1m: null,
+      unsupportedDimensions: [],
+      importable: true,
+    },
+    {
+      model: "deepseek-v3.2",
+      name: "DeepSeek V3.2",
+      providerId: "deepseek",
+      providerName: "DeepSeek",
+      docUrl: "https://api-docs.deepseek.com/",
+      inputPer1m: 0.28,
+      outputPer1m: 0.42,
+      cacheReadPer1m: 0.028,
+      cacheWritePer1m: null,
+      reasoningPer1m: 0.42,
+      unsupportedDimensions: ["batch", "image"],
+      importable: true,
+    },
+  ],
+};
+
 const STORYBOOK_EXTERNAL_API_KEYS: ExternalApiKeySummary[] = [
   {
     id: 11,
@@ -449,7 +565,11 @@ function clone<T>(value: T): T {
 
 function buildSystemWorkspaceRequestHandler(
   statusOverride?: SystemStatusResponse,
+  settingsOverride?: SettingsPayload,
+  failFirstModelsPreview = false,
 ): StorybookRequestHandler {
+  const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
+  let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const jsonResponse = (payload: unknown, status = 200) =>
@@ -457,6 +577,14 @@ function buildSystemWorkspaceRequestHandler(
         status,
         headers: { "Content-Type": "application/json" },
       });
+    const parseBody = <T,>(fallback: T): T => {
+      if (typeof init?.body !== "string" || !init.body) return fallback;
+      try {
+        return JSON.parse(init.body) as T;
+      } catch {
+        return fallback;
+      }
+    };
 
     if (url.pathname === "/api/system/status" && method === "GET") {
       return jsonResponse(clone(statusOverride ?? STORYBOOK_SYSTEM_STATUS));
@@ -466,12 +594,87 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse(clone(filterStorybookSystemTasks(url)));
     }
 
+    if (url.pathname === "/api/stats/invocation-timeline" && method === "GET") {
+      return jsonResponse({
+        rangeStart: "2026-01-01T00:00:00.000Z",
+        rangeEnd: "2026-01-02T00:00:00.000Z",
+        asOf: "2026-01-02T00:00:00.000Z",
+        total: 0,
+        hasMore: false,
+        nextCursor: null,
+        records: [],
+      });
+    }
+
     if (url.pathname === "/api/settings" && method === "GET") {
-      return jsonResponse(clone(STORYBOOK_SETTINGS));
+      return jsonResponse(clone(settings));
     }
 
     if (url.pathname === "/api/settings/external-api-keys" && method === "GET") {
       return jsonResponse({ items: clone(STORYBOOK_EXTERNAL_API_KEYS) });
+    }
+
+    if (url.pathname === "/api/settings/models/sync/preview" && method === "POST") {
+      if (previewFailuresRemaining > 0) {
+        previewFailuresRemaining -= 1;
+        return jsonResponse({ message: "models.dev is temporarily unavailable" }, 502);
+      }
+      return jsonResponse(clone(STORYBOOK_MODELS_DEV_PREVIEW));
+    }
+
+    if (url.pathname === "/api/settings/models/sync/apply" && method === "POST") {
+      const body = parseBody<{ entries?: PricingEntry[] }>({});
+      const selectedEntries = (body.entries ?? []).map((entry) => ({
+        ...entry,
+        source: "models.dev",
+      }));
+      const pricesByModel = new Map(settings.pricing.entries.map((entry) => [entry.model, entry]));
+      selectedEntries.forEach((entry) => pricesByModel.set(entry.model, entry));
+      settings.pricing.entries = Array.from(pricesByModel.values()).sort((a, b) =>
+        a.model.localeCompare(b.model),
+      );
+      settings.proxy.models = Array.from(
+        new Set([...settings.proxy.models, ...selectedEntries.map((entry) => entry.model)]),
+      ).sort((a, b) => a.localeCompare(b));
+      return jsonResponse(clone(settings.pricing));
+    }
+
+    if (url.pathname === "/api/settings/models/preset" && method === "PUT") {
+      const body = parseBody<{ model?: string; enabled?: boolean }>({});
+      const model = String(body.model ?? "");
+      const enabled = new Set(settings.proxy.enabledModels);
+      if (body.enabled) enabled.add(model);
+      else enabled.delete(model);
+      settings.proxy.enabledModels = settings.proxy.models.filter((candidate) =>
+        enabled.has(candidate),
+      );
+      return jsonResponse(clone(settings.proxy));
+    }
+
+    if (url.pathname === "/api/settings/models" && method === "DELETE") {
+      const body = parseBody<{ model?: string }>({});
+      const model = String(body.model ?? "");
+      settings.proxy.models = settings.proxy.models.filter((candidate) => candidate !== model);
+      settings.proxy.enabledModels = settings.proxy.enabledModels.filter(
+        (candidate) => candidate !== model,
+      );
+      settings.pricing.entries = settings.pricing.entries.filter((entry) => entry.model !== model);
+      return jsonResponse({ deletedModel: model });
+    }
+
+    if (url.pathname === "/api/settings/pricing" && method === "PUT") {
+      const body = parseBody<{ catalogVersion?: string; entries?: PricingEntry[] }>({});
+      settings.pricing = {
+        catalogVersion: body.catalogVersion ?? settings.pricing.catalogVersion,
+        entries: body.entries ?? settings.pricing.entries,
+      };
+      settings.proxy.models = Array.from(
+        new Set([
+          ...settings.proxy.models,
+          ...settings.pricing.entries.map((entry) => entry.model),
+        ]),
+      ).sort((a, b) => a.localeCompare(b));
+      return jsonResponse(clone(settings.pricing));
     }
 
     return undefined;
@@ -485,6 +688,7 @@ function StorybookSystemWorkspaceRoutes() {
         <Route path="status" element={<SystemStatusPage />} />
         <Route path="tasks" element={<SystemTasksPage />} />
         <Route path="settings" element={<SystemSettingsPage />} />
+        <Route path="models" element={<SystemModelsPage />} />
         <Route path="proxy" element={<SystemProxyPage />} />
       </Route>
     </Routes>
@@ -520,6 +724,8 @@ const meta = {
           <StorybookPageEnvironment
             onRequest={buildSystemWorkspaceRequestHandler(
               context.parameters.systemStatusOverride as SystemStatusResponse | undefined,
+              context.parameters.settingsOverride as SettingsPayload | undefined,
+              context.parameters.failFirstModelsPreview === true,
             )}
           >
             <FullPageStorySurface>
@@ -1239,5 +1445,95 @@ export const ProxyPage: Story = {
     await expect(canvas.getByRole("heading", { name: "代理" })).toBeVisible();
     await expect(canvas.getByText("正向代理路由")).toBeVisible();
     await expect(canvas.getByTestId("settings-forward-proxy-desktop-table")).toBeVisible();
+  },
+};
+
+export const Models: Story = {
+  render: () => renderWorkspace("/system/models"),
+  tags: ["test"],
+  parameters: {
+    settingsOverride: STORYBOOK_MODELS_SETTINGS,
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: { story: "Merged model directory with local prices and preset switches." },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("heading", { name: "模型" })).resolves.toBeVisible();
+    await expect(canvas.findAllByText("gpt-6-sol")).resolves.toHaveLength(2);
+    await expect(canvas.findAllByText("local-unpriced")).resolves.toHaveLength(2);
+    await expect(canvas.getByRole("button", { name: "全部同步" })).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "模型" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  },
+};
+
+export const ModelsDark: Story = {
+  ...Models,
+  globals: { themeMode: "dark" },
+};
+
+export const ModelsMobile: Story = {
+  ...Models,
+  parameters: {
+    ...Models.parameters,
+    viewport: { defaultViewport: "mobile393" },
+  },
+};
+
+export const ModelsMobileDark: Story = {
+  ...ModelsMobile,
+  globals: { themeMode: "dark" },
+};
+
+export const ModelsSyncReview: Story = {
+  ...Models,
+  parameters: {
+    ...Models.parameters,
+    docs: { description: { story: "Preview with a resolved cross-provider price conflict." } },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    const providerChoice = await page.findByRole("combobox", {
+      name: "为 gpt-6-sol 选择一个供应商报价",
+    });
+    await userEvent.click(providerChoice);
+    await userEvent.click(await page.findByRole("option", { name: "OpenRouter (openrouter)" }));
+    await expect(page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" })).toBeChecked();
+    await expect(page.getByText("新模型")).toBeVisible();
+    await expect(page.getByText(/不导入：/)).toBeVisible();
+  },
+};
+
+export const ModelsSyncReviewMobile: Story = {
+  ...ModelsSyncReview,
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    viewport: { defaultViewport: "mobile393" },
+  },
+};
+
+export const ModelsSyncRetry: Story = {
+  ...Models,
+  parameters: {
+    ...Models.parameters,
+    failFirstModelsPreview: true,
+    docs: { description: { story: "Retrieval failure and the successful retry path." } },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("alert")).resolves.toHaveTextContent(
+      "models.dev is temporarily unavailable",
+    );
+    await userEvent.click(await page.findByRole("button", { name: "重试" }));
+    await expect(page.findByText("deepseek-v3.2")).resolves.toBeVisible();
   },
 };

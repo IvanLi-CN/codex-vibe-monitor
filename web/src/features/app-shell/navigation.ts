@@ -91,6 +91,11 @@ export const topLevelNavItems: AppNavigationGroup[] = [
         matchPrefixes: ["/system/settings", "/settings", "/settings/legacy"],
       },
       {
+        to: "/system/models",
+        labelKey: "system.nav.models",
+        matchPrefixes: ["/system/models"],
+      },
+      {
         to: "/system/proxy",
         labelKey: "system.nav.proxy",
         matchPrefixes: ["/system/proxy"],

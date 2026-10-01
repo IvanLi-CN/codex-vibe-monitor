@@ -2041,9 +2041,12 @@ pub(crate) async fn get_settings(
 ) -> Result<Json<SettingsResponse>, ApiError> {
     let pricing = state.pricing_catalog.read().await.clone();
     let proxy = state.proxy_model_settings.read().await.clone();
+    let models = load_managed_model_ids(&state.pool)
+        .await
+        .map_err(ApiError::from)?;
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
     Ok(Json(SettingsResponse {
-        proxy: ProxyModelSettingsResponse::from_settings(proxy),
+        proxy: ProxyModelSettingsResponse::from_settings_with_models(proxy, models),
         forward_proxy,
         pricing: PricingSettingsResponse::from_catalog(&pricing),
     }))
@@ -2083,6 +2086,13 @@ pub(crate) async fn put_proxy_settings(
 
     let _update_guard = state.proxy_model_settings_update_lock.lock().await;
     let current = state.proxy_model_settings.read().await.clone();
+    let managed_models = load_managed_model_ids(&state.pool)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let managed_set = managed_models
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     let next = ProxyModelSettings {
         hijack_enabled,
         merge_upstream_enabled,
@@ -2097,7 +2107,10 @@ pub(crate) async fn put_proxy_settings(
             .unwrap_or(current.response_body_logging_enabled),
         encrypted_session_owner_routing_enabled: encrypted_session_owner_routing_enabled
             .unwrap_or(current.encrypted_session_owner_routing_enabled),
-        enabled_preset_models: enabled_models,
+        enabled_preset_models: enabled_models
+            .into_iter()
+            .filter(|model| managed_set.contains(model.as_str()))
+            .collect(),
     }
     .normalized();
     save_proxy_model_settings(&state.pool, next.clone())
@@ -2105,7 +2118,10 @@ pub(crate) async fn put_proxy_settings(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let mut guard = state.proxy_model_settings.write().await;
     *guard = next.clone();
-    Ok(Json(ProxyModelSettingsResponse::from_settings(next)))
+    Ok(Json(ProxyModelSettingsResponse::from_settings_with_models(
+        next,
+        managed_models,
+    )))
 }
 
 pub(crate) async fn put_pricing_settings(
