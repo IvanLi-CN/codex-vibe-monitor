@@ -403,6 +403,7 @@ pub(crate) struct SystemTaskRunHandle {
     pub(crate) task_kind: SystemTaskKind,
     pub(crate) trigger_kind: String,
     pub(crate) started_at: Instant,
+    pub(crate) observation: Option<crate::TaskExecutionObservation>,
 }
 
 #[derive(Debug, FromRow)]
@@ -1461,6 +1462,13 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
             else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "system_status_snapshot",
+                &crate::maintenance_store::task_title_for_observation("system_status_snapshot"),
+                "interval",
+                crate::maintenance_store::task_execution_class("system_status_snapshot"),
+                "processing",
+            );
             if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
                 warn!(
                     ?error,
@@ -1526,8 +1534,9 @@ pub(crate) async fn begin_system_task_run(
     Ok(SystemTaskRunHandle {
         id,
         task_kind,
-        trigger_kind,
+        trigger_kind: trigger_kind.clone(),
         started_at: Instant::now(),
+        observation: None,
     })
 }
 
@@ -1554,8 +1563,9 @@ pub(crate) async fn begin_system_task_run_nonblocking(
     Ok(SystemTaskRunHandle {
         id,
         task_kind,
-        trigger_kind,
+        trigger_kind: trigger_kind.clone(),
         started_at: Instant::now(),
+        observation: None,
     })
 }
 
@@ -1594,6 +1604,9 @@ pub(crate) async fn finish_system_task_run(
     summary: Option<String>,
     detail: Option<String>,
 ) -> bool {
+    if let Some(observation) = handle.observation.as_ref() {
+        observation.finish();
+    }
     let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
@@ -1686,6 +1699,9 @@ pub(crate) async fn finish_system_task_run_reliably(
     summary: Option<String>,
     detail: Option<String>,
 ) -> bool {
+    if let Some(observation) = handle.observation.as_ref() {
+        observation.finish();
+    }
     #[cfg(test)]
     {
         let _ = cancel;
@@ -2038,8 +2054,10 @@ pub(crate) struct ManagedTaskControlRequest {
     pub(crate) enabled: Option<bool>,
     // Nested options preserve the difference between an omitted schedule field
     // and an explicit null used to clear the current schedule.
-    pub(crate) interval_secs: Option<Option<i64>>,
-    pub(crate) cron_expr: Option<Option<String>>,
+    #[serde(default, deserialize_with = "crate::deserialize_optional_field")]
+    pub(crate) interval_secs: crate::OptionalField<i64>,
+    #[serde(default, deserialize_with = "crate::deserialize_optional_field")]
+    pub(crate) cron_expr: crate::OptionalField<String>,
 }
 
 pub(crate) async fn list_managed_tasks(
@@ -2051,6 +2069,14 @@ pub(crate) async fn list_managed_tasks(
         )));
     };
     store.list_tasks().await.map(Json).map_err(ApiError::from)
+}
+
+pub(crate) async fn get_managed_task_runtime(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<crate::TaskRuntimeSnapshot>, ApiError> {
+    crate::task_runtime_snapshot()
+        .map(Json)
+        .map_err(ApiError::unavailable)
 }
 
 pub(crate) async fn get_managed_task(
@@ -2090,7 +2116,27 @@ pub(crate) async fn update_managed_task(
         interval_secs,
         cron_expr,
     } = request;
+    let interval_secs = match interval_secs {
+        crate::OptionalField::Missing => None,
+        crate::OptionalField::Null => Some(None),
+        crate::OptionalField::Value(value) => Some(Some(value)),
+    };
+    let cron_expr = match cron_expr {
+        crate::OptionalField::Missing => None,
+        crate::OptionalField::Null => Some(None),
+        crate::OptionalField::Value(value) => Some(Some(value)),
+    };
     let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
+    let previous_startup_control = if enabled.is_some() && task_key.starts_with("startup_backfill.")
+    {
+        store
+            .detail(&task_key)
+            .await
+            .map_err(ApiError::from)?
+            .map(|detail| detail.task)
+    } else {
+        None
+    };
     if !store
         .update_control(&task_key, enabled, interval_secs, cron_expr)
         .await
@@ -2100,10 +2146,19 @@ pub(crate) async fn update_managed_task(
     }
     if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
         && let Some(task) = crate::StartupBackfillTask::from_managed_key(task_name)
+        && let Err(progress_error) =
+            crate::set_startup_backfill_progress_enabled(&state.pool, task, enabled).await
     {
-        crate::set_startup_backfill_task_enabled(&state.pool, task, enabled)
-            .await
-            .map_err(ApiError::from)?;
+        if let Some(previous) = previous_startup_control.as_ref()
+            && let Err(rollback_error) = store.restore_control_state(previous).await
+        {
+            return Err(ApiError::from(anyhow!(
+                "startup backfill control update failed: {progress_error}; rollback failed: {rollback_error}"
+            )));
+        }
+        return Err(ApiError::from(anyhow!(
+            "startup backfill control update failed: {progress_error}"
+        )));
     }
     get_managed_task(State(state), AxumPath(task_key)).await
 }
@@ -2158,6 +2213,34 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.orphan_raw_files_removed
     );
     (brief, detail)
+}
+
+#[cfg(test)]
+mod managed_task_control_contract_tests {
+    use super::ManagedTaskControlRequest;
+    use crate::OptionalField;
+
+    #[test]
+    fn schedule_patch_distinguishes_missing_null_and_value() {
+        let missing: ManagedTaskControlRequest =
+            serde_json::from_str(r#"{"enabled":true}"#).expect("decode missing schedule");
+        assert!(matches!(missing.interval_secs, OptionalField::Missing));
+        assert!(matches!(missing.cron_expr, OptionalField::Missing));
+
+        let nulls: ManagedTaskControlRequest =
+            serde_json::from_str(r#"{"enabled":true,"intervalSecs":null,"cronExpr":null}"#)
+                .expect("decode null schedule");
+        assert!(matches!(nulls.interval_secs, OptionalField::Null));
+        assert!(matches!(nulls.cron_expr, OptionalField::Null));
+
+        let values: ManagedTaskControlRequest =
+            serde_json::from_str(r#"{"enabled":true,"intervalSecs":120,"cronExpr":"*/5 * * * *"}"#)
+                .expect("decode schedule values");
+        assert!(matches!(values.interval_secs, OptionalField::Value(120)));
+        assert!(
+            matches!(values.cron_expr, OptionalField::Value(ref value) if value == "*/5 * * * *")
+        );
+    }
 }
 
 #[cfg(test)]

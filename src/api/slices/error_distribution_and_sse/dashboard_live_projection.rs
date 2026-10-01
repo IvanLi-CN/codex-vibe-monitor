@@ -8,6 +8,26 @@ pub(crate) struct BroadcastStateCache {
 static DASHBOARD_ACTIVITY_LIVE_REVISION: AtomicU64 = AtomicU64::new(0);
 pub(crate) const DASHBOARD_RUNTIME_PROJECTION_RECONCILE_INTERVAL: Duration =
     Duration::from_secs(60);
+static DASHBOARD_RUNTIME_PROJECTION_HANDLE: std::sync::OnceLock<
+    std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+> = std::sync::OnceLock::new();
+
+pub(crate) fn register_dashboard_runtime_projection_handle(
+    handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Ok(mut slot) = DASHBOARD_RUNTIME_PROJECTION_HANDLE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        *slot = handle;
+    }
+}
+
+pub(crate) fn take_dashboard_runtime_projection_handle() -> Option<tokio::task::JoinHandle<()>> {
+    DASHBOARD_RUNTIME_PROJECTION_HANDLE
+        .get()
+        .and_then(|slot| slot.lock().ok()?.take())
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -393,11 +413,13 @@ pub(crate) async fn reconcile_dashboard_runtime_projection_once(
     .await
 }
 
-pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>) {
+pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
+    state: Arc<AppState>,
+) -> Option<JoinHandle<()>> {
     if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Legacy {
-        return;
+        return None;
     }
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut cadence = tokio::time::interval(DASHBOARD_RUNTIME_PROJECTION_RECONCILE_INTERVAL);
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         cadence.tick().await;
@@ -418,7 +440,6 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
             ) else {
                 continue;
             };
-            let reconcile_started = Instant::now();
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let _pressure_permit = match pressure_gate
                 .try_begin_background("dashboard_runtime_projection_reconcile")
@@ -449,8 +470,27 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                     continue;
                 }
             };
-            match reconcile_dashboard_runtime_projection_once(state.as_ref()).await {
+            let _observation = crate::TaskExecutionObservation::begin(
+                "dashboard_runtime_projection_reconcile",
+                &crate::maintenance_store::task_title_for_observation(
+                    "dashboard_runtime_projection_reconcile",
+                ),
+                "interval",
+                crate::maintenance_store::task_execution_class(
+                    "dashboard_runtime_projection_reconcile",
+                ),
+                "processing",
+            );
+            let reconcile_started = Instant::now();
+            let reconcile_result = tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                result = reconcile_dashboard_runtime_projection_once(state.as_ref()) => result,
+            };
+            match reconcile_result {
                 Ok(capture) => {
+                    if state.shutdown.is_cancelled() {
+                        return;
+                    }
                     state.performance_telemetry.record_counter(
                         "projection.reconcile_count",
                         "dashboard",
@@ -461,10 +501,12 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                         "dashboard",
                         reconcile_started.elapsed().as_secs_f64() * 1000.0,
                     );
-                    state
-                        .subscription_hub
-                        .reconcile_dashboard_terminal_window_bases(state.clone())
-                        .await;
+                    tokio::select! {
+                        _ = state.shutdown.cancelled() => return,
+                        _ = state
+                            .subscription_hub
+                            .reconcile_dashboard_terminal_window_bases(state.clone()) => {}
+                    }
                     tracing::debug!(
                         projection = "dashboard_current",
                         revision = capture.snapshot.revision,
@@ -472,12 +514,17 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                         snapshot_origin = capture.snapshot_origin,
                         "reconciled dashboard runtime projection baseline"
                     );
-                    if capture.changed
-                        && state
-                            .subscription_hub
-                            .has_active_dashboard_activity_live_topic()
-                            .await
-                    {
+                    let active_topic = if capture.changed {
+                        tokio::select! {
+                            _ = state.shutdown.cancelled() => return,
+                            active = state
+                                .subscription_hub
+                                .has_active_dashboard_activity_live_topic() => active,
+                        }
+                    } else {
+                        false
+                    };
+                    if active_topic {
                         let _ = state
                             .broadcaster
                             .send(BroadcastPayload::DashboardCurrentSlice {
@@ -526,7 +573,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                 }
             }
         }
-    });
+    }))
 }
 
 #[derive(Debug, Clone)]

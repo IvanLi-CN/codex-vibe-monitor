@@ -435,7 +435,9 @@ pub(crate) async fn run() -> Result<()> {
         warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
     }
     recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
-    spawn_dashboard_runtime_projection_reconcile(state.clone());
+    crate::api::register_dashboard_runtime_projection_handle(
+        spawn_dashboard_runtime_projection_reconcile(state.clone()),
+    );
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
@@ -1142,7 +1144,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     continue;
                 }
             };
-            let Some((run_id, task_key, _started_at)) = claim else {
+            let Some((run_id, task_key, _started_at, trigger_kind)) = claim else {
                 continue;
             };
             let Some(_execution_lease) =
@@ -1159,8 +1161,35 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 });
                 continue;
             };
-            let started_at = Instant::now();
-            let result = run_managed_task_once(&state, &task_key).await;
+            let (result, duration_ms) = {
+                let observation = (!task_key.eq("prompt_cache_materialization")
+                    && !task_key.eq("timeseries_minute_projection")
+                    && !task_key.eq("startup_backfill")
+                    && !task_key.starts_with("startup_backfill."))
+                .then(|| {
+                    crate::TaskExecutionObservation::begin(
+                        &task_key,
+                        &crate::maintenance_store::task_title_for_observation(&task_key),
+                        &trigger_kind,
+                        crate::maintenance_store::task_execution_class(&task_key),
+                        "resource_wait",
+                    )
+                });
+                let started_at = Instant::now();
+                if let Some(observation) = observation.as_ref() {
+                    observation.set_phase("processing");
+                }
+                let result = tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => {
+                        Err(anyhow!("managed task cancelled during shutdown"))
+                    }
+                    result = run_managed_task_once(&state, &task_key) => result,
+                };
+                let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                drop(observation);
+                (result, duration_ms)
+            };
             let (status, summary, detail) = match result {
                 Ok(summary) => (SystemTaskStatus::Success, Some(summary), None),
                 Err(error) => (
@@ -1169,7 +1198,6 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     Some(error.to_string()),
                 ),
             };
-            let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
             let task_dimension = managed_task_metric_dimension(&task_key);
             state.performance_telemetry.record_duration_ms(
                 "maintenance.task_run_duration_ms",
@@ -1396,6 +1424,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 state.clone(),
                 &state.shutdown,
                 Some(&[task]),
+                Some("prompt_cache_materialization"),
             )
             .await;
             if pass.had_failure {
@@ -1451,6 +1480,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 state.clone(),
                 &state.shutdown,
                 None,
+                None,
             )
             .await;
             if pass.had_failure {
@@ -1480,6 +1510,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 state.clone(),
                 &state.shutdown,
                 Some(&[task]),
+                None,
             )
             .await;
             if pass.had_failure {
@@ -1578,6 +1609,17 @@ pub(crate) async fn drain_runtime_after_shutdown(
         );
     }
 
+    let dashboard_runtime_projection_handle =
+        crate::api::take_dashboard_runtime_projection_handle();
+    if let Some(handle) = dashboard_runtime_projection_handle
+        && let Err(err) = handle.await
+    {
+        error!(
+            ?err,
+            "dashboard runtime projection worker terminated unexpectedly"
+        );
+    }
+
     let runtime_shutdown_summary = state.proxy_runtime_invocations.shutdown_summary();
     if runtime_shutdown_summary.running_count > 0 {
         warn!(
@@ -1669,7 +1711,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             // Task history is admitted and recorded before waiting for the synchronization lock,
             // but both permits are released immediately so a lock wait cannot occupy the only
             // background pressure slot.
-            let task_run = loop {
+            let mut task_run = loop {
                 let pressure_permit = match pressure_gate
                     .try_begin_background("startup_hourly_rollup_bootstrap_task_history")
                 {
@@ -1823,6 +1865,18 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 };
                 break (pressure_permit, write_permit);
             };
+
+            task_run.observation = Some(crate::TaskExecutionObservation::begin(
+                SystemTaskKind::HourlyRollupBootstrap.as_str(),
+                &crate::maintenance_store::task_title_for_observation(
+                    SystemTaskKind::HourlyRollupBootstrap.as_str(),
+                ),
+                "startup",
+                crate::maintenance_store::task_execution_class(
+                    SystemTaskKind::HourlyRollupBootstrap.as_str(),
+                ),
+                "processing",
+            ));
 
             let hourly_rollups_started_at = Instant::now();
             let hourly_rollups = tokio::select! {
@@ -2050,6 +2104,7 @@ pub(crate) async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
                     task_kind: SystemTaskKind::HourlyRollupBootstrap,
                     trigger_kind,
                     started_at: Instant::now(),
+                    observation: None,
                 };
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state,
@@ -2138,8 +2193,25 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     SystemTaskKind::ForwardProxySubscriptionRefresh,
                     "startup",
                     Some("forward proxy subscription refresh started".to_string()),
-                ) => result.ok(),
+                    ) => match result {
+                    Ok(run) => Some(run),
+                    Err(error) => {
+                        warn!(%error, "failed to record forward proxy startup refresh");
+                        None
+                    }
+                },
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "forward_proxy_subscription_refresh",
+                &crate::maintenance_store::task_title_for_observation(
+                    "forward_proxy_subscription_refresh",
+                ),
+                "startup",
+                crate::maintenance_store::task_execution_class(
+                    "forward_proxy_subscription_refresh",
+                ),
+                "processing",
+            );
             if let Err(err) = refresh_forward_proxy_subscriptions(
                 state.clone(),
                 true,
@@ -2204,8 +2276,25 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             SystemTaskKind::ForwardProxySubscriptionRefresh,
                             "interval",
                             Some("forward proxy interval refresh started".to_string()),
-                        ) => result.ok(),
+                        ) => match result {
+                            Ok(run) => Some(run),
+                            Err(error) => {
+                                warn!(%error, "failed to record forward proxy interval refresh");
+                                None
+                            }
+                        },
                     };
+                    let _observation = crate::TaskExecutionObservation::begin(
+                        "forward_proxy_subscription_refresh",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "forward_proxy_subscription_refresh",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class(
+                            "forward_proxy_subscription_refresh",
+                        ),
+                        "processing",
+                    );
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(
@@ -2267,7 +2356,25 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     else {
                         continue;
                     };
-                    match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
+                    let _observation = crate::TaskExecutionObservation::begin(
+                        "pool_orphan_recovery",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "pool_orphan_recovery",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class("pool_orphan_recovery"),
+                        "processing",
+                    );
+                    let result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        result = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()) => Some(result),
+                    };
+                    let Some(result) = result else {
+                        info!("pool orphan recovery cancelled during execution");
+                        break;
+                    };
+                    match result {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {
                                 warn!(

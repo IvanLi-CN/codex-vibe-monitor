@@ -619,6 +619,15 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
             ) else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "raw_payload_metrics_inventory",
+                &crate::maintenance_store::task_title_for_observation(
+                    "raw_payload_metrics_inventory",
+                ),
+                "interval",
+                crate::maintenance_store::task_execution_class("raw_payload_metrics_inventory"),
+                "processing",
+            );
             if let Err(error) =
                 crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
             {

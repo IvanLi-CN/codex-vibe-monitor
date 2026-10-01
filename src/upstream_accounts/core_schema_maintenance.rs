@@ -2182,7 +2182,27 @@ pub(crate) fn spawn_upstream_account_maintenance(
                     else {
                         continue;
                     };
-                    if let Err(err) = run_upstream_account_maintenance_once(state.clone()).await {
+                    let _observation = crate::TaskExecutionObservation::begin(
+                        "upstream_account_maintenance",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "upstream_account_maintenance",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class(
+                            "upstream_account_maintenance",
+                        ),
+                        "processing",
+                    );
+                    let result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        result = run_upstream_account_maintenance_once(state.clone()) => Some(result),
+                    };
+                    let Some(result) = result else {
+                        info!("upstream account maintenance cancelled during execution");
+                        break;
+                    };
+                    if let Err(err) = result {
                         warn!(error = %err, "failed to run upstream account maintenance");
                     }
                 }
