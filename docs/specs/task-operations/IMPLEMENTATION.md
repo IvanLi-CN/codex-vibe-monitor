@@ -14,6 +14,7 @@
 - `REQ-TASK-OPS-002`: `src/maintenance_store.rs` decorates the 21 root tasks and 16 startup-backfill children without persisting computed defaults; `web/src/lib/api/core-foundation.ts` carries the additive response fields.
 - `REQ-TASK-OPS-003`: `OptionalField` deserialization in `src/api/slices/system_routes_and_tasks.rs` preserves PATCH omission/null/value; `MaintenanceStore::update_control` applies the six-task allowlist and reset behavior.
 - `REQ-TASK-OPS-004`: `web/src/pages/system/SystemTasksPage.tsx`, `SystemTaskDetailPage.tsx`, demo handlers, unit coverage, and the system workspace Storybook state provide the running section, filters, schedule policy display, and responsive catalog.
+- Startup-backfill control updates compensate a two-store failure by restoring the maintenance control row when the progress store rejects an enablement change. Opening an older row that contains both interval and cron values keeps cron authoritative and recomputes its persisted next trigger.
 
 ## Verification Commands
 
@@ -29,6 +30,8 @@
 - `cd web && bunx tsc -b`
 - `cd web && bun run build`
 - `bunx biome check web`
+- `cargo test maintenance_store::tests::repairs_legacy_dual_schedule_trigger_on_schema_open -- --nocapture`
+- `cargo test startup_backfill_tests -- --nocapture`
 
 ## Rollout Facts
 
@@ -39,7 +42,7 @@
 ## Validation Notes
 
 - The shared testbox backend lightweight, stateful-SQLite, and archive-file-io profiles passed for the candidate. Its web lane could not run because Bun is not installed there.
-- An isolated local production router verified health, a 37-row catalog, the runtime endpoint, supported schedule PATCH/reset behavior, and rejection of a new unsupported override. The controlled task completed before the two-second polling interval, so its active snapshot was intentionally observed through history rather than fabricated in the UI.
+- Candidate `6ebe253003586ac5798c00dcd9dbda8c9edbf932` was checked with an isolated local production router on a leased port and fresh SQLite files: health returned `ok`, the catalog returned 37 rows, the runtime endpoint returned a real `raw_payload_metrics_inventory` active instance with execution id, phase, start time, and elapsed milliseconds, the approved dashboard interval override and dual-null reset returned HTTP 200, and an unsupported new override returned HTTP 400. The reset response preserved `enabled` and reported the system-default policy.
 - The mock-only Web Demo supplied the desktop and mobile evidence recorded in `SPEC.md`; both screenshots were confirmed by the owner and are committed under `./assets/`.
 - The runtime route and PATCH tri-state have focused unit and local HTTP coverage; no persistent schema migration or default-value backfill is required.
 
