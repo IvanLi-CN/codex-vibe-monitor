@@ -1,5 +1,13 @@
 use super::*;
 
+fn natural_day_test_now() -> chrono::DateTime<chrono::Utc> {
+    Utc::now()
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .expect("valid midday natural-day fixture")
+        .and_utc()
+}
+
 #[tokio::test]
 async fn invocation_timeline_release_is_idempotent_and_deletes_rows_in_background() {
     let _cleanup_test_guard = lock_timeline_snapshot_cleanup_tests().await;
@@ -8,7 +16,7 @@ async fn invocation_timeline_release_is_idempotent_and_deletes_rows_in_backgroun
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
-    let now = Utc::now();
+    let now = natural_day_test_now();
     let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
     let natural_day_end = natural_day_start + chrono::Duration::days(1);
     let range_start = now - chrono::Duration::minutes(30);
@@ -362,7 +370,7 @@ async fn invocation_timeline_snapshot_cleanup_runs_off_the_first_page_path_in_bo
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
-    let now = Utc::now();
+    let now = natural_day_test_now();
     let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
     let natural_day_end = natural_day_start + chrono::Duration::days(1);
     let range_start = now - chrono::Duration::minutes(30);
@@ -494,7 +502,7 @@ async fn invocation_timeline_snapshot_cleanup_wraps_after_a_partial_tail_batch()
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
-    let now = Utc::now();
+    let now = natural_day_test_now();
     let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
     let natural_day_end = natural_day_start + chrono::Duration::days(1);
     let range_start = now - chrono::Duration::minutes(30);
@@ -587,7 +595,7 @@ async fn invocation_timeline_cleanup_preserves_snapshot_materialized_after_token
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
-    let now = Utc::now();
+    let now = natural_day_test_now();
     let natural_day_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
     let natural_day_end = natural_day_start + chrono::Duration::days(1);
     let range_start = now - chrono::Duration::minutes(2);

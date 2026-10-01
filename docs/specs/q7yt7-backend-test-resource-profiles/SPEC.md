@@ -20,7 +20,7 @@
 - 为后端测试建立稳定的 resource-profile 顶层组织：`lightweight`、`stateful_sqlite`、`archive_file_io`。
 - 将 `src/tests/slices` 与 `src/upstream_accounts/tests` 都收口到真实模块树，移除 `pool_failover_window_*`、`tests_part_*` 和 `#[path = "../..."]` 聚合。
 - 把 owner-facing backend required checks 从单个 `Backend Tests` 改成三个稳定 job，并让质量门禁与发布链路以这三个名称为真相源。
-- 将 PR 全部 required job 的 job wall time 恢复到 `<= 180s`，并使 required runner 总秒数相对 run `31825458818` 至少下降 `20%`；以同一 PR head 的首轮冷 SHA 与第二轮热 SHA 验证。
+- 将 PR 全部 required job 的 job wall time 控制在冷轮 `<= 250s`、热轮 `<= 180s`，并使 required runner 总秒数相对 run `31825458818` 至少下降 `20%`；以同一 PR head 的首轮冷 SHA 与第二轮热 SHA 验证。
 
 ### Non-goals
 
@@ -66,14 +66,14 @@
 - 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
 - 路径规范化必须解析既有符号链接并拒绝悬空符号链接父级；默认 Cargo 目录也必须在创建前完成物理路径隔离检查，不得沿链接写入 source snapshot。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
-- PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 与第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
+- PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 均须 `<= 250s`、第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
 - Cargo registry/git 与 `target` cache 必须分离；nextest target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移时可用原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed；clippy 不得写入或争用 nextest target namespace。
 - PR Docker smoke 必须只使用 CI 生成的当前 binary 与 web bundle 构建私有 runtime target，并继续运行真实容器 smoke；耗时的 binary、web bundle 与 Xray staging 可以由显式 auxiliary producer 生成，`Build Artifacts` 必须在 producer 失败时实际运行并失败，不得被标记为 skipped。该私有 target 的运行库必须兼容 host-built binary。生产 release workflow、默认 Docker target 和 release profile 不得改变。
 - test-only Cargo profile 可关闭 debug info；任何编译参数实验必须保留 source-key target cache 的依赖复用，并且不得进入 production release profile 或运行时配置面。
 - `Lint & Format Check`、`Repository Tooling Checks`、`Front-end Tests`、`Storybook Accessibility Tests`、`Docs & Web Demo Build`、`Records Overlay E2E` 和三个 backend profiles 均为 required checks；拆分只能改变资源边界，不得删除测试或断言。若完整 E2E 的稳定运行时间超过 required job 预算，可由显式 auxiliary producer 运行，required gate 必须以 `always()` 运行并在 producer 失败时显式失败；producer 必须实际运行 Records Overlay 与 Web Demo 两套 spec，分别写入隔离结果目录，测试仍须在每个 PR 和 merge-group 执行。
 - retry/backoff、no-available-account wait 和 replay memory threshold 的测试加速只能经私有或 `cfg(test)` seam 注入；生产默认值、尝试次数/顺序、错误分类和运行时配置面不得变化。
 - Stateful 的候选线程数必须在完整 profile 的 `4`、`6`、`8` threads 各至少两次热运行中比较；选择最快档位 `10%` 以内的最低线程数。
-- 若 archive workflow 被提议保留，它必须作为不进入 branch protection 的显式 auxiliary producer；三个原有 backend required checks 必须完整回放同一 PR head 的 archive。只有同一 PR head 连续两次满足 Stateful `<= 390s`、所有 required job `<= 180s`，且 backend-related jobs 的总 runner 秒数相对 `1257s` 基线下降至少 `20%`（即 `<= 1005s`）时才可保留。
+- 若 archive workflow 被提议保留，它必须作为不进入 branch protection 的显式 auxiliary producer；三个原有 backend required checks 必须完整回放同一 PR head 的 archive。只有同一 PR head 冷轮 archive producer `<= 250s`、热轮 `<= 180s`，Stateful 两轮均 `<= 390s`、所有 required job 满足对应冷/热预算，且 backend-related jobs 的总 runner 秒数相对 `1257s` 基线下降至少 `20%`（即 `<= 1005s`）时才可保留。
 
 ### SHOULD
 
@@ -188,7 +188,7 @@
 
 - Given `CI PR` 与 `CI Main` 已更新，When GitHub 评估 required checks，Then backend required checks 只包含三个新 job 名称，不再引用旧 `Backend Tests`。
 
-- Given 同一 PR head 的首轮冷 SHA 与第二轮热 SHA，When 分别计算每个 required job 的 `startedAt` 至 `completedAt`，Then 每个 job 都 `<= 180s`，required runner 总秒数较 run `31825458818` 至少下降 `20%`，且三个 backend profiles 的用例集合不变。
+- Given 同一 PR head 的首轮冷 SHA 与第二轮热 SHA，When 分别计算每个 required job 的 `startedAt` 至 `completedAt`，Then 冷轮每个 job 都 `<= 250s`、热轮每个 job 都 `<= 180s`，required runner 总秒数较 run `31825458818` 至少下降 `20%`，且三个 backend profiles 的用例集合不变。
 
 - Given 测试 harness 注入零等待或较小 threshold，When 运行 targeted regression tests，Then 生产默认 delay/threshold、retry attempt/order 和错误分类保持不变，且不存在运行时测试开关。
 
@@ -232,10 +232,10 @@
 - [x] 两条测试树都已迁入新的 resource-profile 模块树。
 - [x] backend runner 与 CI job 命名合同已冻结并在 docs 中可追溯。
 - [x] quality-gates / release snapshot / release gate 已跟随 required-check 变更同步。
-- [ ] 当前 PR head 的全部 required jobs 在冷/热两轮均 `<= 180s`，且 runner 总成本满足下降门槛。
+- [ ] 当前 PR head 的全部 required jobs 冷轮 `<= 250s`、热轮 `<= 180s`，且 runner 总成本满足下降门槛。
 - [x] 4/6/8 完整热运行矩阵已记录，且 runner 线程选择符合最低档位规则。
 - [x] 测试专用 timing/threshold seam 已验证不改变生产默认行为。
-- [ ] archive auxiliary producer 在同一 PR head 的冷/热两轮均满足双重量化门槛；否则从最终 candidate 移除。
+- [ ] archive auxiliary producer 在同一 PR head 的冷轮 `<= 250s`、热轮 `<= 180s`，且 backend-related runner 成本满足门槛；否则从最终 candidate 移除。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 

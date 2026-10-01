@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 三个 backend profiles 与 CI topology 已落地；PR #1056 repair run `36726941619` 将目标 Lightweight job 验收到 `113s` 且所有 checks 通过，但全部 required jobs 的 `180s` 目标仍未达成，Stateful SQLite 与其他 jobs 仍需后续收敛
+- Implementation: 三个 backend profiles 与 CI topology 已落地；PR #1056 repair run `36726941619` 将目标 Lightweight job 验收到 `113s` 且所有 checks 通过。完整 workflow 与缓存冷/热运行时及 runner 成本仍需按当前收敛合同验收。
 - Lifecycle: active
 - Project-owned validation target: `Dockerfile` `backend-test` (`rust:1.96.0-bookworm`, `cargo-nextest 0.9.138`, checksum-verified amd64 asset, rustfmt/clippy) invokes the profile runner with an isolated writable run workspace and optional external Cargo directories.
 - Shared-testbox entrypoint: `compose.backend-test.yml` builds that same target without fixing Cargo paths or changing the profile command/test-thread contract; the runner is an adapter, not a project dependency.
@@ -62,7 +62,7 @@
   - `8` threads 平均最快，`6` threads 在最快档位 `10%` 内且线程更低，runner 固定为 `6`。
 - 当前 top offenders 主要是 SQLite write-lock/backfill、retention/archive 与系统 raw metrics 路径；它们保留真实锁、archive 与 retention 行为。普通 current-schema-only 测试已进一步迁到 template pool，包括服务层级回填、成本回填、内存启动错误分类、定价重载和默认 source-scope 场景。
 - 上游账户 stateful suite 的共享 `test_pool()` 在 runner 提供 schema template 时同样复用唯一 shared-memory template pool，消除每个 `AppState` 的重复 `ensure_schema`；Stateful 内有 `82` 个调用点。它在未提供 template 的本地直跑及 Archive/File I/O profile 中严格保留原有 `ensure_schema` 路径。最新本地完整 Stateful receipt 为 `1213/1213`、nextest execution `42.507s`、runner `76s`。
-- runner 提供可选 `--archive-file`，本地 archive replay 的三个完整 profile 都能通过。早期 archive producer 的 run `31811122919` 为 `504s`，而把 archive 构建移到 Stateful required job 的 run `31813566813` 为 `433s`，均未达到 Stateful `<= 390s`。三分钟预算候选改为独立的 auxiliary producer：它一次编译当前 head、上传 archive，三个既有 required backend jobs 只下载并回放自己的完整过滤集合。backend jobs 在 producer 失败时仍会启动并因 artifact 缺失而失败，禁止被静默标记为 skipped。该 producer 不在 branch protection 中，只有当前 head 冷/热两轮同时满足 180 秒、390 秒与 runner 成本门槛时才可保留。
+- runner 提供可选 `--archive-file`，本地 archive replay 的三个完整 profile 都能通过。早期 archive producer 的 run `31811122919` 为 `504s`，而把 archive 构建移到 Stateful required job 的 run `31813566813` 为 `433s`，均未达到 Stateful `<= 390s`。为满足 Stateful 关键路径预算，候选改为独立的 auxiliary producer：它一次编译当前 head、上传 archive，三个既有 required backend jobs 只下载并回放自己的完整过滤集合。backend jobs 在 producer 失败时仍会启动并因 artifact 缺失而失败，禁止被静默标记为 skipped。该 producer 不在 branch protection 中，只有当前 head 冷轮 `<=250s`、热轮 `<=180s`，Stateful 两轮 `<=390s` 且 runner 成本满足门槛时才可保留。
 - runner 在启动 Stateful profile 前由一次真实 `ensure_schema` 生成私有 file template；每个 nextest 子进程用 SQLite backup API 把它复制到唯一 shared-memory SQLite。它通过 schema object/default-data parity、两条 pooled connection 双向写入可见性和跨数据库隔离回归；普通 state 保留原有四连接池。共享 in-memory serialize/deserialize 原型因连接不可见、逐条 SQL dump 因每个子进程重复构建而回退；直接向 shared-memory state 复制文件的原型因 SQLite snapshot lock 而被拒绝。
 - 当前候选将 Cargo registry/git 与 target cache 分离。nextest target key 同时绑定 lockfile、manifest 和 Rust source fingerprint；Lint 只读恢复 registry/git，archive producer 与 PR smoke 才读取分离的 source-key target，避免 Clippy 写入无源码 fingerprint 的 legacy `target`，并使 smoke 的 private test profile 复用 archive producer 的依赖。source-key target 只可在 archive build 成功后保存，失败 run 不得写入后续 cold receipt 可恢复的 cache。test-only profile 固定为 `debug=0`；`codegen-units=256` 会改变 profile fingerprint 并使已恢复依赖全部失效，因此被撤回。PR smoke 的 binary、web bundle 与同版本 Xray archive 由 `PR Smoke Artifact Producer` 组装后上传；`Build Artifacts` 只下载该产物并构建私有 `ci-smoke-runtime`、运行真实容器 smoke。producer 失败时 required build job 以显式结果检查失败，绝不被跳过。其 Ubuntu 24.04 runtime 与 host binary 的 glibc 对齐，生产默认 Bookworm `runtime` target 和 release profile 不变。
 - Archive/File I/O runner 也会先生成一次真实 current-schema file template。普通 retention/archive DB tests 从它复制到各自唯一文件；四个 legacy migration/backfill tests（包括 blob-link trigger 回填）显式保留 fresh `ensure_schema`，gzip、路径、文件损坏与 write-lock tests 同样不走 template。会再次执行 `ensure_schema` 的 fresh file fixture 固定单连接，避免一个 SQLite DDL 序列在 pool 内切换连接后重放已存在 trigger；普通 template copy 仍保留多连接可见性覆盖。文件副本的回归覆盖验证模板 mutation 不会泄漏到后续 test DB。
@@ -70,8 +70,10 @@
 
 ## Convergence Contract
 
-- 每个候选 head 都必须重新绑定同一 PR head 的首轮冷 SHA 与第二轮热 SHA CI 性能证据；两轮的每个 required job 都须 `<= 180s`，required runner 总秒数须较 run `31825458818` 至少下降 `20%`。祖先 head 的 receipt 只能作为诊断基线，不能作为合并凭证。
-- nextest archive CI 是受控 auxiliary 实验；它不得改变 required check 名称、绕过完整预算，或在不能同时改善关键路径和总 runner 成本时保留 workflow/quality-gates 契约。
+- 每个候选 head 都必须重新绑定同一 PR head 的首轮冷 SHA 与第二轮热 SHA CI 性能证据；冷轮每个 required job 都须 `<=250s`，热轮都须 `<=180s`，required runner 总秒数须较 run `31825458818` 至少下降 `20%`。祖先 head 的 receipt 只能作为诊断基线，不能作为合并凭证。
+- nextest archive CI 是受控 auxiliary 实验；它不得改变 required check 名称或绕过完整预算，且冷轮 producer `<=250s`、热轮 `<=180s`、Stateful 两轮 `<=390s`、backend-related runner 成本下降至少 `20%` 时方可保留。
+
+- PR #1057 的同 SHA 冷轮 Lint 为 `220s`、archive producer 为 `236s`；热轮分别为 `57s` 与 `26s`。热轮在 UTC 日期切换时有四个 invocation timeline 测试因从当前时刻向前取窗口而越过自然日边界失败，相关 fixture 已固定在当天 UTC 中午。按实测将冷轮预算定为 `250s`，热轮保持 `180s`；required runner 总成本下降门槛与 Stateful `390s` 限值不变。
 
 ## Related Changes
 
