@@ -1174,7 +1174,13 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     )
                 });
                 let started_at = Instant::now();
-                let result = run_managed_task_once(&state, &task_key).await;
+                let result = tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => {
+                        Err(anyhow!("managed task cancelled during shutdown"))
+                    }
+                    result = run_managed_task_once(&state, &task_key) => result,
+                };
                 let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
                 drop(observation);
                 (result, duration_ms)
@@ -2162,7 +2168,24 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             ) else {
                 return;
             };
-            let observation = crate::TaskExecutionObservation::begin(
+            let startup_run = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return,
+                result = begin_system_task_run_admitted(
+                    state.as_ref(),
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                    SystemTaskKind::ForwardProxySubscriptionRefresh,
+                    "startup",
+                    Some("forward proxy subscription refresh started".to_string()),
+                    ) => match result {
+                    Ok(run) => Some(run),
+                    Err(error) => {
+                        warn!(%error, "failed to record forward proxy startup refresh");
+                        None
+                    }
+                },
+            };
+            let _observation = crate::TaskExecutionObservation::begin(
                 "forward_proxy_subscription_refresh",
                 &crate::maintenance_store::task_title_for_observation(
                     "forward_proxy_subscription_refresh",
@@ -2173,26 +2196,6 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 ),
                 "processing",
             );
-            let startup_run = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return,
-                result = begin_system_task_run_admitted(
-                    state.as_ref(),
-                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-                    SystemTaskKind::ForwardProxySubscriptionRefresh,
-                    "startup",
-                    Some("forward proxy subscription refresh started".to_string()),
-                ) => match result {
-                    Ok(run) => {
-                        observation.finish();
-                        Some(run)
-                    }
-                    Err(error) => {
-                        warn!(%error, "failed to record forward proxy startup refresh");
-                        None
-                    }
-                },
-            };
             if let Err(err) = refresh_forward_proxy_subscriptions(
                 state.clone(),
                 true,
@@ -2248,17 +2251,6 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     else {
                         continue;
                     };
-                    let observation = crate::TaskExecutionObservation::begin(
-                        "forward_proxy_subscription_refresh",
-                        &crate::maintenance_store::task_title_for_observation(
-                            "forward_proxy_subscription_refresh",
-                        ),
-                        "interval",
-                        crate::maintenance_store::task_execution_class(
-                            "forward_proxy_subscription_refresh",
-                        ),
-                        "processing",
-                    );
                     let task_run = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => break,
@@ -2269,16 +2261,24 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             "interval",
                             Some("forward proxy interval refresh started".to_string()),
                         ) => match result {
-                            Ok(run) => {
-                                observation.finish();
-                                Some(run)
-                            }
+                            Ok(run) => Some(run),
                             Err(error) => {
                                 warn!(%error, "failed to record forward proxy interval refresh");
                                 None
                             }
                         },
                     };
+                    let _observation = crate::TaskExecutionObservation::begin(
+                        "forward_proxy_subscription_refresh",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "forward_proxy_subscription_refresh",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class(
+                            "forward_proxy_subscription_refresh",
+                        ),
+                        "processing",
+                    );
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(

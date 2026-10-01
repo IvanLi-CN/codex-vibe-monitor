@@ -1,4 +1,7 @@
 /** @vitest-environment jsdom */
+
+import { waitFor, within } from "@testing-library/dom";
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -42,6 +45,10 @@ async function flushEffects() {
 
 describe("SystemTasksPage", () => {
   beforeEach(() => {
+    HTMLElement.prototype.scrollIntoView = () => undefined;
+    HTMLElement.prototype.hasPointerCapture = () => false;
+    HTMLElement.prototype.setPointerCapture = () => undefined;
+    HTMLElement.prototype.releasePointerCapture = () => undefined;
     apiMocks.fetchManagedTaskRuntime.mockResolvedValue({
       observedAt: "2026-10-01T00:00:00.000Z",
       activeRuns: [
@@ -107,5 +114,40 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("固定间隔");
     expect(host?.textContent).toContain("手动");
     expect(host?.textContent).toContain("已停用");
+  });
+
+  it("combines enabled and trigger filters without hiding the running area", async () => {
+    renderPage();
+    await flushEffects();
+    const user = userEvent.setup();
+    const page = within(host as HTMLElement);
+    await user.click(page.getByRole("combobox", { name: "启用状态" }));
+    await user.click(within(document.body).getByRole("option", { name: "已停用" }));
+    expect(host?.textContent).toContain("显示 1 / 2");
+    expect(page.getByRole("link", { name: /原始载荷压缩/ })).toBeTruthy();
+    expect(page.queryByRole("link", { name: /数据保留与归档/ })).toBeNull();
+    expect(host?.textContent).toContain("当前正在工作");
+
+    const checkboxes = Array.from(
+      host?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [],
+    );
+    for (const checkbox of checkboxes) {
+      if (checkbox.checked) await user.click(checkbox);
+    }
+    const manual = checkboxes.find((checkbox) =>
+      checkbox.parentElement?.textContent?.includes("手动"),
+    );
+    expect(manual).toBeDefined();
+    await user.click(manual as HTMLInputElement);
+    expect(host?.textContent).toContain("显示 1 / 2");
+    expect(host?.textContent).toContain("原始载荷压缩");
+  });
+
+  it("renders an explicit unknown state when runtime observation fails", async () => {
+    apiMocks.fetchManagedTaskRuntime.mockRejectedValueOnce(new Error("runtime unavailable"));
+    renderPage();
+    await waitFor(() => expect(host?.textContent).toContain("实时运行观测未知"));
+    expect(host?.textContent).toContain("暂时无法确认当前是否有任务正在工作");
+    expect(host?.textContent).toContain("观测未知");
   });
 });

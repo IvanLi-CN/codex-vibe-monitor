@@ -1106,18 +1106,7 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     task: StartupBackfillTask,
     enabled: bool,
 ) -> Result<StartupBackfillProgress> {
-    let Some(pool) = startup_backfill_progress_pool(pool) else {
-        #[cfg(test)]
-        {
-            return Ok(StartupBackfillProgress::pending(task.name().to_string()));
-        }
-        #[cfg(not(test))]
-        {
-            return Err(anyhow!("maintenance database unavailable"));
-        }
-    };
     let task_name = task.name();
-    let like_pattern = format!("{task_name}:%");
     if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
         return Err(anyhow!("unknown startup backfill task: {task_name}"));
     }
@@ -1134,6 +1123,29 @@ pub(crate) async fn set_startup_backfill_task_enabled(
                 "managed startup backfill task not found: {managed_key}"
             ));
         }
+    }
+    set_startup_backfill_progress_enabled(pool, task, enabled).await
+}
+
+pub(crate) async fn set_startup_backfill_progress_enabled(
+    pool: &Pool<Sqlite>,
+    task: StartupBackfillTask,
+    enabled: bool,
+) -> Result<StartupBackfillProgress> {
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        #[cfg(test)]
+        {
+            return Ok(StartupBackfillProgress::pending(task.name().to_string()));
+        }
+        #[cfg(not(test))]
+        {
+            return Err(anyhow!("maintenance database unavailable"));
+        }
+    };
+    let task_name = task.name();
+    let like_pattern = format!("{task_name}:%");
+    if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
+        return Err(anyhow!("unknown startup backfill task: {task_name}"));
     }
     let disabled_until = format_utc_iso(Utc::now() + ChronoDuration::days(3650));
     sqlx::query(

@@ -6,6 +6,7 @@ import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
   ManagedTask,
+  ManagedTaskDetail,
   ModelsDevSyncPreview,
   PricingEntry,
   SettingsPayload,
@@ -19,6 +20,7 @@ import SystemModelsPage from "../../pages/system/SystemModelsPage";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
 import SystemSettingsPage from "../../pages/system/SystemSettingsPage";
 import SystemStatusPage from "../../pages/system/SystemStatusPage";
+import SystemTaskDetailPage from "../../pages/system/SystemTaskDetailPage";
 import SystemTasksPage from "../../pages/system/SystemTasksPage";
 import {
   FullPageStorySurface,
@@ -385,12 +387,12 @@ const STORYBOOK_MANAGED_TASKS: ManagedTask[] = [
     cronExpr: null,
     nextTriggerAt: null,
     isManual: false,
-    triggerKinds: ["event"],
-    effectivePolicy: "事件触发；停用",
+    triggerKinds: ["startup", "interval"],
+    effectivePolicy: "启动刷新与固定检查间隔：60 秒",
     policySource: "系统规则",
     scheduleEditable: false,
-    scheduleCapabilityReason: "事件任务只由事件触发",
-    executionClass: "p1_interactive",
+    scheduleCapabilityReason: "当前 worker 为事件、启动或自适应路径，保留已有覆盖但不支持新增覆盖",
+    executionClass: "p2_derived",
   },
 ];
 
@@ -411,6 +413,24 @@ const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
     },
   ],
 };
+
+function storybookManagedTaskDetail(taskKey: string): ManagedTaskDetail {
+  const task =
+    STORYBOOK_MANAGED_TASKS.find((item) => item.taskKey === taskKey) ?? STORYBOOK_MANAGED_TASKS[0];
+  return {
+    task,
+    progress: null,
+    recentRuns: [],
+    performance: {
+      runCount: 4,
+      successCount: 4,
+      failureCount: 0,
+      averageDurationMs: 1_840,
+      latestDurationMs: 1_760,
+      observedAt: STORYBOOK_MANAGED_TASK_RUNTIME.observedAt,
+    },
+  };
+}
 
 const STORYBOOK_SETTINGS: SettingsPayload = {
   proxy: {
@@ -659,6 +679,11 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse(clone(STORYBOOK_MANAGED_TASK_RUNTIME));
     }
 
+    const managedTaskDetailMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
+    if (managedTaskDetailMatch && (method === "GET" || method === "PATCH")) {
+      return jsonResponse(clone(storybookManagedTaskDetail(managedTaskDetailMatch[1])));
+    }
+
     if (url.pathname === "/api/stats/invocation-timeline" && method === "GET") {
       return jsonResponse({
         rangeStart: "2026-01-01T00:00:00.000Z",
@@ -754,6 +779,7 @@ function StorybookSystemWorkspaceRoutes() {
       <Route path="/system" element={<SystemLayout />}>
         <Route path="status" element={<SystemStatusPage />} />
         <Route path="tasks" element={<SystemTasksPage />} />
+        <Route path="tasks/:taskKey" element={<SystemTaskDetailPage />} />
         <Route path="settings" element={<SystemSettingsPage />} />
         <Route path="models" element={<SystemModelsPage />} />
         <Route path="proxy" element={<SystemProxyPage />} />
@@ -1493,6 +1519,17 @@ export const Tasks: Story = {
     await expect(canvas.getByTestId("system-tasks-list")).toBeVisible();
     await expect(canvas.getByText("当前正在工作")).toBeVisible();
     await expect(canvas.getByText(/仪表盘运行投影校对/)).toBeVisible();
+  },
+};
+
+export const TaskDetail: Story = {
+  render: () => renderWorkspace("/system/tasks/dashboard_runtime_projection_reconcile"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "仪表盘运行投影校对" })).toBeVisible();
+    await expect(canvas.getByText("调度与观测")).toBeVisible();
+    await expect(canvas.getByText("固定检查间隔：60 秒；受压力准入约束")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "保存调度" })).toBeVisible();
   },
 };
 

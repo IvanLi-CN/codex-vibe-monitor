@@ -858,11 +858,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     }
     // Keep databases written by the old dual-field form deterministic: an explicit cron wins.
+    // Recompute the persisted trigger at the same time; an interval-derived timestamp is not
+    // valid once the cron field becomes authoritative.
+    let legacy_dual_schedule_rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT task_key,cron_expr FROM managed_tasks WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
     sqlx::query(
         "UPDATE managed_tasks SET interval_secs=NULL WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
     )
     .execute(pool)
     .await?;
+    for (task_key, cron_expr) in legacy_dual_schedule_rows {
+        sqlx::query("UPDATE managed_tasks SET next_trigger_at=? WHERE task_key=?")
+            .bind(next_trigger_at(None, cron_expr.as_deref()))
+            .bind(task_key)
+            .execute(pool)
+            .await?;
+    }
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
@@ -1518,6 +1532,21 @@ impl MaintenanceStore {
         transaction.commit().await?;
         Ok(true)
     }
+
+    pub(crate) async fn restore_control_state(&self, task: &ManagedTask) -> Result<()> {
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
+        )
+        .bind(task.enabled as i64)
+        .bind(task.interval_secs)
+        .bind(task.cron_expr.as_deref())
+        .bind(task.next_trigger_at.as_deref())
+        .bind(format_utc_iso_millis(Utc::now()))
+        .bind(&task.task_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 pub(crate) fn path(config: &AppConfig) -> PathBuf {
@@ -1671,6 +1700,35 @@ mod tests {
         assert_eq!(child.trigger_kinds, vec!["event", "interval"]);
         assert!(!child.schedule_editable);
         assert!(child.schedule_capability_reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn repairs_legacy_dual_schedule_trigger_on_schema_open() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance migration test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks SET interval_secs=120, cron_expr='*/5 * * * *', next_trigger_at='2000-01-01T00:02:00.000Z' WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy dual schedule");
+
+        ensure_schema(&pool).await.expect("repair legacy schedule");
+        let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
+            "SELECT interval_secs,cron_expr,next_trigger_at FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load repaired schedule");
+        assert_eq!(row.0, None);
+        assert_eq!(row.1.as_deref(), Some("*/5 * * * *"));
+        assert_ne!(row.2.as_deref(), Some("2000-01-01T00:02:00.000Z"));
+        assert!(row.2.is_some());
     }
 
     #[tokio::test]

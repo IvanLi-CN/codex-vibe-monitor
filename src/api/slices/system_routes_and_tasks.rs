@@ -1536,13 +1536,7 @@ pub(crate) async fn begin_system_task_run(
         task_kind,
         trigger_kind: trigger_kind.clone(),
         started_at: Instant::now(),
-        observation: Some(crate::TaskExecutionObservation::begin(
-            task_kind.as_str(),
-            &crate::maintenance_store::task_title_for_observation(task_kind.as_str()),
-            &trigger_kind,
-            crate::maintenance_store::task_execution_class(task_kind.as_str()),
-            "processing",
-        )),
+        observation: None,
     })
 }
 
@@ -1571,13 +1565,7 @@ pub(crate) async fn begin_system_task_run_nonblocking(
         task_kind,
         trigger_kind: trigger_kind.clone(),
         started_at: Instant::now(),
-        observation: Some(crate::TaskExecutionObservation::begin(
-            task_kind.as_str(),
-            &crate::maintenance_store::task_title_for_observation(task_kind.as_str()),
-            &trigger_kind,
-            crate::maintenance_store::task_execution_class(task_kind.as_str()),
-            "processing",
-        )),
+        observation: None,
     })
 }
 
@@ -2139,6 +2127,16 @@ pub(crate) async fn update_managed_task(
         crate::OptionalField::Value(value) => Some(Some(value)),
     };
     let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
+    let previous_startup_control = if enabled.is_some() && task_key.starts_with("startup_backfill.")
+    {
+        store
+            .detail(&task_key)
+            .await
+            .map_err(ApiError::from)?
+            .map(|detail| detail.task)
+    } else {
+        None
+    };
     if !store
         .update_control(&task_key, enabled, interval_secs, cron_expr)
         .await
@@ -2148,10 +2146,19 @@ pub(crate) async fn update_managed_task(
     }
     if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
         && let Some(task) = crate::StartupBackfillTask::from_managed_key(task_name)
+        && let Err(progress_error) =
+            crate::set_startup_backfill_progress_enabled(&state.pool, task, enabled).await
     {
-        crate::set_startup_backfill_task_enabled(&state.pool, task, enabled)
-            .await
-            .map_err(ApiError::from)?;
+        if let Some(previous) = previous_startup_control.as_ref()
+            && let Err(rollback_error) = store.restore_control_state(previous).await
+        {
+            return Err(ApiError::from(anyhow!(
+                "startup backfill control update failed: {progress_error}; rollback failed: {rollback_error}"
+            )));
+        }
+        return Err(ApiError::from(anyhow!(
+            "startup backfill control update failed: {progress_error}"
+        )));
     }
     get_managed_task(State(state), AxumPath(task_key)).await
 }
