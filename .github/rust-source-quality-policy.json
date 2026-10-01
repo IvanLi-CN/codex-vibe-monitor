@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 40,
-    "suppression_entries": 117
+    "suppression_entries": 119
   },
   "loc_targets": {
     "production": 2500,
@@ -63,7 +63,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11518,
+      "line_budget": 11789,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -147,7 +147,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 9566,
+      "line_budget": 9872,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -195,7 +195,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6396,
+      "line_budget": 6399,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {
@@ -355,6 +355,18 @@
       "kind": "expect",
       "declaration": "#[expect( clippy::type_complexity, reason = \"Archive rollup accumulator tuples mirror persisted row shapes.\" )]",
       "reason": "Retain this targeted expect declaration for the current module boundary in src/maintenance/archive.rs; update it when the listed module workstream changes the declaration."
+    },
+    {
+      "path": "src/maintenance_store.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current maintenance task progress payload; remove it when the task observation boundary is split."
+    },
+    {
+      "path": "src/maintenance_store.rs",
+      "kind": "allow",
+      "declaration": "#[allow(clippy::too_many_arguments)]",
+      "reason": "Retain this targeted allow for the current maintenance task completion payload; remove it when the task observation boundary is split."
     },
     {
       "path": "src/maintenance/retention.rs",

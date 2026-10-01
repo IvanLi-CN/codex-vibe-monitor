@@ -19,7 +19,11 @@ const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
 const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
+const TASK_RUNNING_RECOVERY_STALE_AFTER_SECS: i64 = 5 * 60;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
+const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
+const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
@@ -96,6 +100,11 @@ pub(crate) struct ManagedTask {
     pub(crate) cron_expr: Option<String>,
     pub(crate) next_trigger_at: Option<String>,
     pub(crate) is_manual: bool,
+    #[serde(skip)]
+    pub(crate) schedule_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub(crate) effective_schedule: Option<ManagedTaskSchedule>,
     #[sqlx(skip)]
     pub(crate) trigger_kinds: Vec<String>,
     #[sqlx(skip)]
@@ -110,7 +119,16 @@ pub(crate) struct ManagedTask {
     pub(crate) execution_class: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedTaskSchedule {
+    pub(crate) source: String,
+    pub(crate) interval_secs: Option<i64>,
+    pub(crate) cron_expr: Option<String>,
+    pub(crate) next_trigger_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskProgress {
     pub(crate) total: Option<i64>,
@@ -120,9 +138,21 @@ pub(crate) struct TaskProgress {
     pub(crate) eta_seconds: Option<i64>,
     pub(crate) updated_at: Option<String>,
     pub(crate) freshness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_progress_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wait_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_retry_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stages: Option<Vec<TaskStage>>,
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskRun {
     pub(crate) id: i64,
@@ -135,6 +165,29 @@ pub(crate) struct TaskRun {
     pub(crate) processed_count: Option<i64>,
     pub(crate) updated_count: Option<i64>,
     pub(crate) error_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) completion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) core_completion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) details: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskStage {
+    pub(crate) name: String,
+    pub(crate) status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) completed: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) elapsed_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wait_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) checkpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +209,42 @@ pub(crate) struct ManagedTaskPerformance {
     pub(crate) average_duration_ms: Option<f64>,
     pub(crate) latest_duration_ms: Option<f64>,
     pub(crate) observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) coverage: Option<f64>,
+}
+
+#[derive(Debug, FromRow)]
+struct TaskProgressRow {
+    total: Option<i64>,
+    completed: Option<i64>,
+    phase: Option<String>,
+    checkpoint: Option<String>,
+    eta_seconds: Option<i64>,
+    updated_at: Option<String>,
+    freshness: String,
+    unit: Option<String>,
+    source_scope: Option<String>,
+    last_progress_at: Option<String>,
+    wait_reason: Option<String>,
+    next_retry_at: Option<String>,
+    stages: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct TaskRunRow {
+    id: i64,
+    trigger_kind: String,
+    started_at: String,
+    finished_at: Option<String>,
+    duration_ms: Option<i64>,
+    status: String,
+    summary: Option<String>,
+    processed_count: Option<i64>,
+    updated_count: Option<i64>,
+    error_detail: Option<String>,
+    completion: Option<String>,
+    core_completion: Option<String>,
+    details: Option<String>,
 }
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
@@ -474,9 +563,12 @@ fn task_policy_text(
 
 fn decorate_task(mut task: ManagedTask) -> ManagedTask {
     let editable = EDITABLE_SCHEDULE_TASKS.contains(&task.task_key.as_str());
+    let policy_interval_secs = (task.schedule_source.as_deref() != Some("default"))
+        .then_some(task.interval_secs)
+        .flatten();
     let (policy_source, effective_policy) = task_policy_text(
         &task.task_key,
-        task.interval_secs,
+        policy_interval_secs,
         task.cron_expr.as_deref(),
     );
     task.trigger_kinds = task_trigger_kinds(&task.task_key, &task.trigger_mode, task.is_manual);
@@ -700,6 +792,91 @@ fn next_trigger_at(interval_secs: Option<i64>, cron_expr: Option<&str>) -> Optio
         .map(|seconds| format_utc_iso_millis(now + ChronoDuration::seconds(seconds)))
 }
 
+fn decorate_effective_schedule(mut task: ManagedTask) -> ManagedTask {
+    if task.is_manual {
+        return task;
+    }
+    let (source, interval_secs, cron_expr) = if task.schedule_source.as_deref() == Some("default") {
+        ("default", task.interval_secs, task.cron_expr.clone())
+    } else if task
+        .cron_expr
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || task.interval_secs.is_some()
+    {
+        ("override", task.interval_secs, task.cron_expr.clone())
+    } else {
+        return task;
+    };
+    task.effective_schedule = Some(ManagedTaskSchedule {
+        source: source.to_string(),
+        interval_secs,
+        cron_expr: cron_expr.clone(),
+        next_trigger_at: task
+            .next_trigger_at
+            .clone()
+            .or_else(|| next_trigger_at(interval_secs, cron_expr.as_deref())),
+    });
+    task
+}
+
+fn decode_task_stages(raw: Option<&str>) -> Option<Vec<TaskStage>> {
+    raw.and_then(|value| serde_json::from_str(value).ok())
+}
+
+fn task_progress_from_row(row: TaskProgressRow) -> TaskProgress {
+    let freshness = if row.freshness == "fresh"
+        && row.updated_at.as_deref().is_some_and(|updated_at| {
+            chrono::DateTime::parse_from_rfc3339(updated_at)
+                .ok()
+                .is_some_and(|updated_at| {
+                    Utc::now()
+                        .signed_duration_since(updated_at.with_timezone(&Utc))
+                        .num_seconds()
+                        > TASK_PROGRESS_STALE_AFTER_SECS
+                })
+        }) {
+        "stale".to_string()
+    } else {
+        row.freshness.clone()
+    };
+    TaskProgress {
+        total: row.total,
+        completed: row.completed,
+        phase: row.phase,
+        checkpoint: row.checkpoint,
+        eta_seconds: row.eta_seconds,
+        updated_at: row.updated_at,
+        freshness,
+        unit: row.unit,
+        source_scope: row.source_scope,
+        last_progress_at: row.last_progress_at,
+        wait_reason: row.wait_reason,
+        next_retry_at: row.next_retry_at,
+        stages: decode_task_stages(row.stages.as_deref()),
+    }
+}
+
+fn task_run_from_row(row: TaskRunRow) -> TaskRun {
+    TaskRun {
+        id: row.id,
+        trigger_kind: row.trigger_kind,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        duration_ms: row.duration_ms,
+        status: row.status,
+        summary: row.summary,
+        processed_count: row.processed_count,
+        updated_count: row.updated_count,
+        error_detail: row.error_detail,
+        completion: row.completion,
+        core_completion: row.core_completion,
+        details: row
+            .details
+            .and_then(|value| serde_json::from_str(&value).ok()),
+    }
+}
+
 pub(crate) fn managed_startup_backfill_suffix(task_name: &str) -> Option<&'static str> {
     if task_name == crate::STARTUP_BACKFILL_TASK_PROXY_COST
         || task_name
@@ -778,13 +955,14 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           task_key TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
           trigger_mode TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
           interval_secs INTEGER, cron_expr TEXT, next_trigger_at TEXT,
-          is_manual INTEGER NOT NULL DEFAULT 0,
+          is_manual INTEGER NOT NULL DEFAULT 0, schedule_source TEXT,
           updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS managed_task_progress (
           task_key TEXT PRIMARY KEY REFERENCES managed_tasks(task_key) ON DELETE CASCADE,
           total INTEGER, completed INTEGER, phase TEXT, checkpoint TEXT, eta_seconds INTEGER,
-          updated_at TEXT, freshness TEXT NOT NULL DEFAULT 'fresh'
+          updated_at TEXT, freshness TEXT NOT NULL DEFAULT 'fresh', unit TEXT, source_scope TEXT,
+          last_progress_at TEXT, wait_reason TEXT, next_retry_at TEXT, stages TEXT
         );
         CREATE TABLE IF NOT EXISTS startup_backfill_progress (
           task_name TEXT PRIMARY KEY,
@@ -805,7 +983,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_id INTEGER UNIQUE, task_key TEXT NOT NULL,
           trigger_kind TEXT NOT NULL DEFAULT 'unknown', started_at TEXT NOT NULL, finished_at TEXT,
           duration_ms INTEGER, status TEXT NOT NULL, summary TEXT,
-          processed_count INTEGER, updated_count INTEGER, error_detail TEXT
+          processed_count INTEGER, updated_count INTEGER, error_detail TEXT,
+          completion TEXT, core_completion TEXT, details TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_started
           ON managed_task_runs(task_key, started_at DESC);
@@ -835,6 +1014,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, definition) in [
         ("trigger_kind", "TEXT NOT NULL DEFAULT 'unknown'"),
         ("summary", "TEXT"),
+        ("completion", "TEXT"),
+        ("core_completion", "TEXT"),
+        ("details", "TEXT"),
     ] {
         let present: Option<i64> = sqlx::query_scalar(&format!(
             "SELECT 1 FROM pragma_table_info('managed_task_runs') WHERE name = '{column}'"
@@ -849,6 +1031,27 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
         }
     }
+    for (column, definition) in [
+        ("unit", "TEXT"),
+        ("source_scope", "TEXT"),
+        ("last_progress_at", "TEXT"),
+        ("wait_reason", "TEXT"),
+        ("next_retry_at", "TEXT"),
+        ("stages", "TEXT"),
+    ] {
+        let present: Option<i64> = sqlx::query_scalar(&format!(
+            "SELECT 1 FROM pragma_table_info('managed_task_progress') WHERE name = '{column}'"
+        ))
+        .fetch_optional(pool)
+        .await?;
+        if present.is_none() {
+            sqlx::query(&format!(
+                "ALTER TABLE managed_task_progress ADD COLUMN {column} {definition}"
+            ))
+            .execute(pool)
+            .await?;
+        }
+    }
     let has_next_trigger_at: Option<i64> = sqlx::query_scalar(
         "SELECT 1 FROM pragma_table_info('managed_tasks') WHERE name = 'next_trigger_at'",
     )
@@ -856,6 +1059,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
     if has_next_trigger_at.is_none() {
         sqlx::query("ALTER TABLE managed_tasks ADD COLUMN next_trigger_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    let has_schedule_source: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM pragma_table_info('managed_tasks') WHERE name = 'schedule_source'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if has_schedule_source.is_none() {
+        sqlx::query("ALTER TABLE managed_tasks ADD COLUMN schedule_source TEXT")
             .execute(pool)
             .await?;
     }
@@ -882,9 +1095,23 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
+    let superseded_at = format_utc_iso_millis(Utc::now());
     sqlx::query(
-        "DELETE FROM managed_task_runs WHERE id IN (SELECT duplicate.id FROM managed_task_runs duplicate JOIN managed_task_runs kept ON kept.task_key = duplicate.task_key AND kept.status IN ('running','requested') AND duplicate.status IN ('running','requested') AND kept.id < duplicate.id)",
+        "UPDATE managed_task_runs
+         SET status='failed', finished_at=COALESCE(finished_at, ?1), duration_ms=COALESCE(duration_ms, 0),
+             summary=COALESCE(summary, '重复的活动运行已停止'),
+             error_detail=COALESCE(error_detail, '迁移时保留较早活动运行，重复记录已终止')
+         WHERE id IN (
+             SELECT duplicate.id
+             FROM managed_task_runs duplicate
+             JOIN managed_task_runs kept
+               ON kept.task_key = duplicate.task_key
+              AND kept.status IN ('running','requested')
+              AND duplicate.status IN ('running','requested')
+              AND kept.id < duplicate.id
+         )",
     )
+    .bind(&superseded_at)
     .execute(pool)
     .await?;
     sqlx::query(
@@ -998,17 +1225,21 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
+        let recovery_cutoff = format_utc_iso_millis(
+            Utc::now() - ChronoDuration::seconds(TASK_RUNNING_RECOVERY_STALE_AFTER_SECS),
+        );
         let finished_at = format_utc_iso_millis(Utc::now());
         let result = sqlx::query(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary=COALESCE(summary, ?),
                  error_detail=COALESCE(error_detail, ?)
-             WHERE status='running'",
+             WHERE status='running' AND started_at < ?",
         )
         .bind(&finished_at)
         .bind("服务重启前运行未完成，已标记为失败")
         .bind("服务重启时回收未完成运行")
+        .bind(&recovery_cutoff)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -1200,6 +1431,38 @@ impl MaintenanceStore {
 
     pub(crate) async fn apply_initial_task_defaults(&self) -> Result<bool> {
         let mut transaction = self.pool.begin().await?;
+        let now = format_utc_iso_millis(Utc::now());
+        let mut changed = false;
+        let retention_schedule_applied: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(RETENTION_DEFAULT_SCHEDULE_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if retention_schedule_applied.is_none() {
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET interval_secs=?,
+                     next_trigger_at=CASE WHEN enabled!=0 THEN COALESCE(next_trigger_at, ?) ELSE NULL END,
+                     schedule_source='default',
+                     updated_at=?
+                 WHERE task_key='retention_archive'
+                   AND is_manual=0
+                   AND interval_secs IS NULL
+                   AND (cron_expr IS NULL OR trim(cron_expr)='')",
+            )
+            .bind(DEFAULT_RETENTION_INTERVAL_SECS)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)")
+                .bind(RETENTION_DEFAULT_SCHEDULE_MARKER)
+                .bind("applied")
+                .bind(&now)
+                .execute(&mut *transaction)
+                .await?;
+            changed = true;
+        }
         let defaults_applied: Option<String> =
             sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
                 .bind(INITIAL_TASK_DEFAULTS_MARKER)
@@ -1212,13 +1475,11 @@ impl MaintenanceStore {
                 .await?;
         if defaults_applied.is_some() && legacy_enablement_reconciled.is_some() {
             transaction.commit().await?;
-            return Ok(false);
+            return Ok(changed);
         }
 
         // `seed_tasks` applies defaults only when a task row is first created. Do not
         // rewrite existing controls here: an upgrade must preserve operator choices.
-        let now = format_utc_iso_millis(Utc::now());
-
         let disabled_until =
             format_utc_iso_millis(Utc::now() + ChronoDuration::days(TASK_DISABLED_UNTIL_DAYS));
         for task_name in [
@@ -1398,6 +1659,44 @@ impl MaintenanceStore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_progress(
+        &self,
+        task_key: &str,
+        total: Option<i64>,
+        completed: Option<i64>,
+        phase: Option<&str>,
+        checkpoint: Option<&str>,
+        unit: Option<&str>,
+        source_scope: Option<&str>,
+        wait_reason: Option<&str>,
+        next_retry_at: Option<&str>,
+        stages: Option<&[TaskStage]>,
+    ) -> Result<()> {
+        let now = format_utc_iso_millis(Utc::now());
+        let stages = stages.map(serde_json::to_string).transpose()?;
+        sqlx::query(
+            "INSERT INTO managed_task_progress(task_key,total,completed,phase,checkpoint,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,stages)
+             VALUES(?,?,?,?,?,?,'fresh',?,?,?,?,?,?)
+             ON CONFLICT(task_key) DO UPDATE SET total=excluded.total,completed=excluded.completed,phase=excluded.phase,checkpoint=excluded.checkpoint,updated_at=excluded.updated_at,freshness='fresh',unit=excluded.unit,source_scope=excluded.source_scope,last_progress_at=excluded.last_progress_at,wait_reason=excluded.wait_reason,next_retry_at=excluded.next_retry_at,stages=excluded.stages",
+        )
+        .bind(task_key)
+        .bind(total)
+        .bind(completed)
+        .bind(phase)
+        .bind(checkpoint)
+        .bind(&now)
+        .bind(unit)
+        .bind(source_scope)
+        .bind(&now)
+        .bind(wait_reason)
+        .bind(next_retry_at)
+        .bind(stages)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn finish_run(
         &self,
         id: i64,
@@ -1407,9 +1706,47 @@ impl MaintenanceStore {
         summary: Option<&str>,
         detail: Option<&str>,
     ) -> Result<()> {
+        self.finish_run_with_observation(
+            id,
+            status,
+            finished_at,
+            duration_ms,
+            summary,
+            detail,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn finish_run_with_observation(
+        &self,
+        id: i64,
+        status: &str,
+        finished_at: &str,
+        duration_ms: i64,
+        summary: Option<&str>,
+        detail: Option<&str>,
+        completion: Option<&str>,
+        core_completion: Option<&str>,
+        details: Option<&serde_json::Value>,
+    ) -> Result<()> {
         let sanitized = detail.map(sanitize_task_detail);
-        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=? WHERE id=?")
-            .bind(status).bind(finished_at).bind(duration_ms).bind(summary).bind(sanitized).bind(id).execute(&self.pool).await?;
+        let details = details.map(serde_json::to_string).transpose()?;
+        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=?,completion=?,core_completion=?,details=? WHERE id=?")
+            .bind(status)
+            .bind(finished_at)
+            .bind(duration_ms)
+            .bind(summary)
+            .bind(sanitized)
+            .bind(completion)
+            .bind(core_completion)
+            .bind(details)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow!("managed task run {id} was not found"));
         }
@@ -1417,20 +1754,25 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
-        Ok(sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual FROM managed_tasks ORDER BY task_key")
-        .fetch_all(&self.pool).await?.into_iter().map(decorate_task).collect())
+        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual,schedule_source FROM managed_tasks ORDER BY task_key")
+            .fetch_all(&self.pool).await?;
+        Ok(tasks
+            .into_iter()
+            .map(decorate_effective_schedule)
+            .map(decorate_task)
+            .collect())
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
-        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual FROM managed_tasks WHERE task_key=?")
+        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual,schedule_source FROM managed_tasks WHERE task_key=?")
         .bind(task_key).fetch_optional(&self.pool).await?;
-        let Some(task) = task.map(decorate_task) else {
+        let Some(task) = task.map(decorate_effective_schedule).map(decorate_task) else {
             return Ok(None);
         };
-        let progress = sqlx::query_as::<_, TaskProgress>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness FROM managed_task_progress WHERE task_key=?")
-        .bind(task_key).fetch_optional(&self.pool).await?;
-        let recent_runs = sqlx::query_as::<_, TaskRun>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 10")
-        .bind(task_key).fetch_all(&self.pool).await?;
+        let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,stages FROM managed_task_progress WHERE task_key=?")
+            .bind(task_key).fetch_optional(&self.pool).await?.map(task_progress_from_row);
+        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 10")
+            .bind(task_key).fetch_all(&self.pool).await?.into_iter().map(task_run_from_row).collect();
         Ok(Some(ManagedTaskDetail {
             task,
             progress,
@@ -1499,7 +1841,7 @@ impl MaintenanceStore {
         } else {
             None
         };
-        sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, next_trigger_at=?, updated_at=? WHERE task_key=? AND is_manual=0")
+        sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, next_trigger_at=?, schedule_source='override', updated_at=? WHERE task_key=? AND is_manual=0")
         .bind(interval_secs).bind(cron_expr).bind(next_trigger_at).bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&self.pool).await?;
         Ok(true)
     }
@@ -1571,12 +1913,13 @@ impl MaintenanceStore {
             None
         };
         sqlx::query(
-            "UPDATE managed_tasks SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
+            "UPDATE managed_tasks SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,schedule_source=CASE WHEN ? THEN 'override' ELSE schedule_source END,updated_at=? WHERE task_key=?",
         )
         .bind(next_enabled as i64)
         .bind(next_interval)
         .bind(next_cron)
         .bind(next_trigger_at)
+        .bind(update_schedule)
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
         .execute(&mut *transaction)
@@ -1616,6 +1959,70 @@ mod tests {
         next_trigger_at, sanitize_task_detail, seed_tasks, task_enabled_by_default,
         validate_cron_expr,
     };
+
+    #[tokio::test]
+    async fn schema_repair_preserves_duplicate_active_run_history() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect maintenance migration fixture");
+        sqlx::query(
+            "CREATE TABLE managed_tasks (
+                task_key TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+                trigger_mode TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                interval_secs INTEGER, cron_expr TEXT, next_trigger_at TEXT,
+                is_manual INTEGER NOT NULL DEFAULT 0, schedule_source TEXT, updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy task table");
+        sqlx::query(
+            "CREATE TABLE managed_task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_id INTEGER UNIQUE, task_key TEXT NOT NULL,
+                trigger_kind TEXT NOT NULL DEFAULT 'unknown', started_at TEXT NOT NULL, finished_at TEXT,
+                duration_ms INTEGER, status TEXT NOT NULL, summary TEXT, processed_count INTEGER,
+                updated_count INTEGER, error_detail TEXT, completion TEXT, core_completion TEXT, details TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy task-run table");
+        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,updated_at) VALUES ('retention_archive','Retention','Retention','interval','2026-10-01T00:00:00.000Z')")
+            .execute(&pool)
+            .await
+            .expect("seed task");
+        for status in ["running", "requested"] {
+            sqlx::query("INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('retention_archive','manual','2026-10-01T00:00:00.000Z',?,?)")
+                .bind(status)
+                .bind(format!("{status} run"))
+                .execute(&pool)
+                .await
+                .expect("seed duplicate active run");
+        }
+
+        ensure_schema(&pool)
+            .await
+            .expect("repair maintenance schema");
+
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id,status,finished_at,error_detail FROM managed_task_runs ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load repaired run history");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "running");
+        assert_eq!(rows[1].1, "failed");
+        assert!(rows[1].2.is_some());
+        assert!(rows[1].3.is_some());
+        let active_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_task_runs WHERE task_key='retention_archive' AND status IN ('running','requested')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count active runs");
+        assert_eq!(active_count, 1);
+    }
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
@@ -1890,6 +2297,14 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert incomplete managed task run");
+        let fresh_started_at = crate::format_utc_iso_millis(Utc::now());
+        sqlx::query(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('forward_proxy_subscription_refresh','startup',?1,'running','started')",
+        )
+        .bind(&fresh_started_at)
+        .execute(&pool)
+        .await
+        .expect("insert fresh managed task run");
 
         let store = MaintenanceStore { pool };
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 1);
@@ -1902,6 +2317,13 @@ mod tests {
         assert_eq!(row.0, "failed");
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
+        let fresh_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load fresh managed task run");
+        assert_eq!(fresh_status, "running");
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
     }
 
@@ -2070,6 +2492,51 @@ mod tests {
             .fetch_one(&store.pool)
             .await
             .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_default_schedule_is_observable_and_overrideable() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        assert!(store.apply_initial_task_defaults().await.unwrap());
+        let task = store
+            .detail("retention_archive")
+            .await
+            .unwrap()
+            .expect("retention task detail");
+        let schedule = task
+            .task
+            .effective_schedule
+            .expect("default schedule should be published");
+        assert_eq!(schedule.source, "default");
+        assert_eq!(schedule.interval_secs, Some(3_600));
+        assert!(schedule.next_trigger_at.is_some());
+
+        assert!(
+            store
+                .set_schedule("retention_archive", Some(1_800), None)
+                .await
+                .unwrap()
+        );
+        let task = store
+            .detail("retention_archive")
+            .await
+            .unwrap()
+            .expect("overridden retention task detail");
+        assert_eq!(
+            task.task
+                .effective_schedule
+                .expect("override schedule should be published")
+                .source,
+            "override"
         );
     }
 

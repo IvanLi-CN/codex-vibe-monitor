@@ -4245,16 +4245,19 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     .fetch_one(&pool)
     .await
     .expect("load detail-prune prompt-cache statistics");
-    assert_eq!(prompt_cache_stats.0, 0);
-    assert_eq!(prompt_cache_stats.1, 0);
-    assert_f64_close(prompt_cache_stats.2, 0.0);
+    // Retention invalidates the materialized snapshot and queues the owner for an
+    // asynchronous bounded refresh. The old snapshot remains intact until that
+    // refresh publishes an exact replacement.
+    assert_eq!(prompt_cache_stats.0, 1);
+    assert_eq!(prompt_cache_stats.1, 321);
+    assert_f64_close(prompt_cache_stats.2, 1.23);
     let refresh_queue_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key = 'detail-prune-key'",
     )
     .fetch_one(&pool)
     .await
     .expect("count detail-prune prompt-cache refresh queue");
-    assert_eq!(refresh_queue_count, 0);
+    assert_eq!(refresh_queue_count, 1);
 
     let detail_pruned_at = row
         .get::<Option<String>, _>("detail_pruned_at")

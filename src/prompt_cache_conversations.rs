@@ -1,5 +1,10 @@
 use super::*;
 
+const PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET: Duration = Duration::from_secs(2);
+const PROMPT_CACHE_CONVERSATION_STATS_PROGRESS_OPS: i32 = 1_000;
+const PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED: &str =
+    "prompt-cache orphan cleanup exceeded the retention work budget";
+
 pub(crate) const PROMPT_CACHE_CONVERSATION_ID_LENGTH: usize = 6;
 pub(crate) const PROMPT_CACHE_CONVERSATION_SEQUENCE_LENGTH: usize = 4;
 pub(crate) const PROMPT_CACHE_CONVERSATION_SEQUENCE_RADIX: u32 = 31;
@@ -12,6 +17,10 @@ pub(crate) const PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION_NAME: &str =
     "prompt_cache_conversations_materialization_v1";
 const PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE: &str =
     "prompt_cache_conversation_stats_refresh_queue";
+const PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE: &str =
+    "prompt_cache_conversation_stats_generation_clock";
+const PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE: &str =
+    "prompt_cache_conversation_stats_refresh_staging";
 const PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE: &str =
     "prompt_cache_conversation_migration_progress";
 const PROMPT_CACHE_CONVERSATIONS_RUNS_TABLE: &str =
@@ -32,6 +41,29 @@ const PROMPT_CACHE_CONVERSATION_BATCH_LOW_LATENCY_MS: u128 = 50;
 const PROMPT_CACHE_CONVERSATION_BATCH_HIGH_LATENCY_MS: u128 = 200;
 const PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE: Duration = Duration::from_millis(10);
 const PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN: usize = 400;
+const PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE: usize = 32;
+const PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE: &str =
+    "prompt_cache_conversation_orphan_cleanup_state";
+const PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE: i64 = 256;
+
+struct PromptCacheConversationStatsProgressConnection {
+    connection: sqlx::pool::PoolConnection<Sqlite>,
+    progress_handler_installed: bool,
+}
+
+impl PromptCacheConversationStatsProgressConnection {
+    fn close_on_drop(&mut self) {
+        self.connection.close_on_drop();
+    }
+}
+
+impl Drop for PromptCacheConversationStatsProgressConnection {
+    fn drop(&mut self) {
+        if self.progress_handler_installed {
+            self.connection.close_on_drop();
+        }
+    }
+}
 
 static PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER: Lazy<
     std::sync::Mutex<PromptCacheConversationBatchController>,
@@ -57,7 +89,7 @@ pub(crate) struct UnboundInvokePrefix {
     pub(crate) next_sequence: u32,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 struct PromptCacheConversationStatsRow {
     prompt_cache_key: String,
     conversation_id: String,
@@ -79,6 +111,27 @@ struct PromptCacheConversationStatsRow {
     cost_reasoning: f64,
     first_invocation_at: Option<String>,
     last_invocation_at: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct PromptCacheConversationInvocationRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    status: Option<String>,
+    error_message: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reported_cache_write_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+    cost_input: Option<f64>,
+    cost_cache_write: Option<f64>,
+    cost_cache_read: Option<f64>,
+    cost_output: Option<f64>,
+    cost_reasoning: Option<f64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -395,26 +448,95 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} (\
             prompt_cache_key TEXT PRIMARY KEY,\
+            generation INTEGER NOT NULL DEFAULT 1,\
             enqueued_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))\
         )"
     ))
     .execute(pool)
     .await
     .context("failed to ensure prompt-cache conversation statistics refresh queue")?;
+    ensure_prompt_cache_refresh_queue_column(pool, "generation", "INTEGER NOT NULL DEFAULT 1")
+        .await?;
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} (\
+            prompt_cache_key TEXT PRIMARY KEY,\
+            generation INTEGER NOT NULL DEFAULT 0\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt-cache conversation statistics generation clock")?;
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE}"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to seed prompt-cache statistics generation clock")?;
+    sqlx::query(&format!(
+        "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} AS clock SET generation=MAX(clock.generation,COALESCE((SELECT queue.generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} AS queue WHERE queue.prompt_cache_key=clock.prompt_cache_key),clock.generation))"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to repair prompt-cache statistics generation clock")?;
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (\
+            prompt_cache_key TEXT PRIMARY KEY,\
+            generation INTEGER NOT NULL,\
+            source_max_invocation_id INTEGER NOT NULL,\
+            cursor_occurred_at TEXT,\
+            cursor_id INTEGER NOT NULL DEFAULT 0,\
+            accumulator_json TEXT NOT NULL,\
+            page_size INTEGER NOT NULL DEFAULT {PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE},\
+            updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt-cache conversation statistics staging")?;
+    for (column, definition) in [
+        ("cursor_occurred_at", "TEXT"),
+        ("cursor_id", "INTEGER NOT NULL DEFAULT 0"),
+        ("page_size", "INTEGER NOT NULL DEFAULT 256"),
+    ] {
+        ensure_prompt_cache_refresh_staging_column(pool, column, definition).await?;
+    }
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} (\
+            scope TEXT PRIMARY KEY,\
+            epoch INTEGER NOT NULL DEFAULT 0,\
+            cursor_key TEXT,\
+            updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt-cache orphan cleanup state")?;
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} (scope) VALUES ('prompt_cache_conversations')"
+    ))
+    .execute(pool)
+    .await?;
 
     let old_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("OLD");
     let new_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("NEW");
     let refresh_queue_table = PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE;
     let stats_marker = PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_NAME;
+    let mut trigger_tx = pool
+        .begin()
+        .await
+        .context("failed to begin prompt-cache trigger replacement")?;
     for (trigger_name, trigger_sql) in [
         (
             "prompt_cache_conversations_stats_enqueue_insert",
             format!(
-                "CREATE TRIGGER IF NOT EXISTS prompt_cache_conversations_stats_enqueue_insert \
+                "CREATE TRIGGER prompt_cache_conversations_stats_enqueue_insert \
                  AFTER INSERT ON codex_invocations \
                  WHEN {new_prompt_cache_key_expr} IS NOT NULL AND {new_prompt_cache_key_expr} <> '' \
                  BEGIN \
-                   INSERT OR IGNORE INTO {refresh_queue_table} (prompt_cache_key) VALUES ({new_prompt_cache_key_expr}); \
+                   INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} (prompt_cache_key,generation) VALUES ({new_prompt_cache_key_expr},1) \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
+                   INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {new_prompt_cache_key_expr} \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
                    DELETE FROM schema_refresh_migrations WHERE migration_name = '{stats_marker}'; \
                  END"
             ),
@@ -422,13 +544,19 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
         (
             "prompt_cache_conversations_stats_enqueue_update",
             format!(
-                "CREATE TRIGGER IF NOT EXISTS prompt_cache_conversations_stats_enqueue_update \
+                "CREATE TRIGGER prompt_cache_conversations_stats_enqueue_update \
                  AFTER UPDATE OF payload, status, error_message, input_tokens, output_tokens, cache_input_tokens, reported_cache_write_tokens, reasoning_tokens, total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, occurred_at, invoke_id ON codex_invocations \
                  WHEN ({old_prompt_cache_key_expr} IS NOT NULL AND {old_prompt_cache_key_expr} <> '') \
                    OR ({new_prompt_cache_key_expr} IS NOT NULL AND {new_prompt_cache_key_expr} <> '') \
                  BEGIN \
-                   INSERT OR IGNORE INTO {refresh_queue_table} (prompt_cache_key) SELECT {old_prompt_cache_key_expr} WHERE {old_prompt_cache_key_expr} IS NOT NULL AND {old_prompt_cache_key_expr} <> ''; \
-                   INSERT OR IGNORE INTO {refresh_queue_table} (prompt_cache_key) SELECT {new_prompt_cache_key_expr} WHERE {new_prompt_cache_key_expr} IS NOT NULL AND {new_prompt_cache_key_expr} <> ''; \
+                   INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} (prompt_cache_key,generation) SELECT {old_prompt_cache_key_expr},1 WHERE {old_prompt_cache_key_expr} IS NOT NULL AND {old_prompt_cache_key_expr} <> '' \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
+                   INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {old_prompt_cache_key_expr} AND {old_prompt_cache_key_expr} IS NOT NULL AND {old_prompt_cache_key_expr} <> '' \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
+                   INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} (prompt_cache_key,generation) SELECT {new_prompt_cache_key_expr},1 WHERE {new_prompt_cache_key_expr} IS NOT NULL AND {new_prompt_cache_key_expr} <> '' AND ({old_prompt_cache_key_expr} IS NULL OR {new_prompt_cache_key_expr} <> {old_prompt_cache_key_expr}) \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
+                   INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {new_prompt_cache_key_expr} AND {new_prompt_cache_key_expr} IS NOT NULL AND {new_prompt_cache_key_expr} <> '' AND ({old_prompt_cache_key_expr} IS NULL OR {new_prompt_cache_key_expr} <> {old_prompt_cache_key_expr}) \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
                    DELETE FROM schema_refresh_migrations WHERE migration_name = '{stats_marker}'; \
                  END"
             ),
@@ -436,21 +564,32 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
         (
             "prompt_cache_conversations_stats_enqueue_delete",
             format!(
-                "CREATE TRIGGER IF NOT EXISTS prompt_cache_conversations_stats_enqueue_delete \
+                "CREATE TRIGGER prompt_cache_conversations_stats_enqueue_delete \
                  AFTER DELETE ON codex_invocations \
                  WHEN {old_prompt_cache_key_expr} IS NOT NULL AND {old_prompt_cache_key_expr} <> '' \
                  BEGIN \
-                   INSERT OR IGNORE INTO {refresh_queue_table} (prompt_cache_key) VALUES ({old_prompt_cache_key_expr}); \
+                   INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} (prompt_cache_key,generation) VALUES ({old_prompt_cache_key_expr},1) \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = generation + 1; \
+                   INSERT INTO {refresh_queue_table} (prompt_cache_key,generation) SELECT prompt_cache_key,generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = {old_prompt_cache_key_expr} \
+                     ON CONFLICT(prompt_cache_key) DO UPDATE SET generation = excluded.generation, enqueued_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'); \
                    DELETE FROM schema_refresh_migrations WHERE migration_name = '{stats_marker}'; \
                  END"
             ),
         ),
     ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(trigger_tx.as_mut())
+            .await
+            .with_context(|| format!("failed to replace trigger {trigger_name}"))?;
         sqlx::query(&trigger_sql)
-            .execute(pool)
+            .execute(trigger_tx.as_mut())
             .await
             .with_context(|| format!("failed to ensure trigger {trigger_name}"))?;
     }
+    trigger_tx
+        .commit()
+        .await
+        .context("failed to commit prompt-cache trigger replacement")?;
 
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {PROMPT_CACHE_CONVERSATIONS_MIGRATION_PROGRESS_TABLE} (\
@@ -527,6 +666,50 @@ async fn ensure_prompt_cache_column(
          ADD COLUMN {column_name} {definition}"
     );
     sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
+async fn ensure_prompt_cache_refresh_queue_column(
+    pool: &Pool<Sqlite>,
+    column_name: &str,
+    definition: &str,
+) -> Result<()> {
+    let columns = sqlx::query("PRAGMA table_info(prompt_cache_conversation_stats_refresh_queue)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+    sqlx::query(&format!(
+        "ALTER TABLE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} ADD COLUMN {column_name} {definition}"
+    ))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn ensure_prompt_cache_refresh_staging_column(
+    pool: &Pool<Sqlite>,
+    column_name: &str,
+    definition: &str,
+) -> Result<()> {
+    let columns = sqlx::query("PRAGMA table_info(prompt_cache_conversation_stats_refresh_staging)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+    sqlx::query(&format!(
+        "ALTER TABLE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} ADD COLUMN {column_name} {definition}"
+    ))
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -891,7 +1074,9 @@ async fn mark_prompt_cache_conversation_completed_keys_on_connection(
     Ok(())
 }
 
-async fn prompt_cache_conversation_materialization_enabled(pool: &Pool<Sqlite>) -> Result<bool> {
+pub(crate) async fn prompt_cache_conversation_materialization_enabled(
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT enabled FROM startup_backfill_progress WHERE task_name = ?1",
     )
@@ -1031,37 +1216,48 @@ async fn prompt_cache_conversation_materialize_key_batch(
     prompt_cache_keys: &[String],
 ) -> Result<Option<(usize, usize, Duration)>> {
     let started_at = Instant::now();
+    let mut identities_created = 0;
+    {
+        let mut tx = pool.begin().await?;
+        if check_operator_enabled
+            && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
+        {
+            return Ok(None);
+        }
+        let existing_keys =
+            load_prompt_cache_conversation_keys_on_connection(tx.as_mut(), prompt_cache_keys)
+                .await?;
+        for prompt_cache_key in prompt_cache_keys {
+            if !existing_keys.contains(prompt_cache_key) {
+                let (_, created) = create_prompt_cache_conversation_row_on_connection(
+                    tx.as_mut(),
+                    prompt_cache_key,
+                )
+                .await?;
+                if created {
+                    identities_created += 1;
+                }
+            }
+        }
+        tx.commit().await?;
+    }
+
+    let mut refreshed = 0;
+    for prompt_cache_key in prompt_cache_keys {
+        match refresh_prompt_cache_conversation_stats_bounded_page(pool, prompt_cache_key).await {
+            Ok(true) => refreshed += 1,
+            Ok(false) => return Ok(None),
+            Err(error) if prompt_cache_statistics_budget_error(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
+
     let mut tx = pool.begin().await?;
     if check_operator_enabled
         && !prompt_cache_conversation_materialization_enabled_on_connection(tx.as_mut()).await?
     {
         return Ok(None);
     }
-    let existing_keys =
-        load_prompt_cache_conversation_keys_on_connection(tx.as_mut(), prompt_cache_keys).await?;
-    let mut identities_created = 0;
-    for prompt_cache_key in prompt_cache_keys {
-        if !existing_keys.contains(prompt_cache_key) {
-            let (_, created) =
-                create_prompt_cache_conversation_row_on_connection(tx.as_mut(), prompt_cache_key)
-                    .await?;
-            if created {
-                identities_created += 1;
-            }
-        }
-    }
-    let prompt_cache_key_refs = prompt_cache_keys
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let refreshed =
-        refresh_prompt_cache_conversation_stats_on_connection(tx.as_mut(), &prompt_cache_key_refs)
-            .await?;
-    clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-        tx.as_mut(),
-        &prompt_cache_key_refs,
-    )
-    .await?;
     if advance_cursor {
         update_prompt_cache_conversation_migration_progress_on_connection(
             tx.as_mut(),
@@ -2454,6 +2650,464 @@ async fn allocate_proxy_invoke_id_locked(
 const PROMPT_CACHE_CONVERSATION_STATS_REFRESH_ATTEMPTS: usize = 3;
 const PROMPT_CACHE_CONVERSATION_STATS_MAX_KEYS_PER_QUERY: usize = 400;
 
+#[derive(Debug, FromRow)]
+struct PromptCacheConversationStatsStagingRow {
+    prompt_cache_key: String,
+    generation: i64,
+    source_max_invocation_id: i64,
+    cursor_occurred_at: Option<String>,
+    cursor_id: i64,
+    accumulator_json: String,
+    page_size: i64,
+}
+
+fn empty_prompt_cache_conversation_stats(
+    prompt_cache_key: &str,
+    conversation_id: &str,
+) -> PromptCacheConversationStatsRow {
+    PromptCacheConversationStatsRow {
+        prompt_cache_key: prompt_cache_key.to_string(),
+        conversation_id: conversation_id.to_string(),
+        max_invoke_id: None,
+        request_count: 0,
+        success_count: 0,
+        failure_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_input_tokens: 0,
+        reported_cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 0,
+        cost: 0.0,
+        cost_input: 0.0,
+        cost_cache_write: 0.0,
+        cost_cache_read: 0.0,
+        cost_output: 0.0,
+        cost_reasoning: 0.0,
+        first_invocation_at: None,
+        last_invocation_at: None,
+    }
+}
+
+fn merge_prompt_cache_conversation_invocation(
+    stats: &mut PromptCacheConversationStatsRow,
+    row: &PromptCacheConversationInvocationRow,
+) {
+    stats.request_count = stats.request_count.saturating_add(1);
+    if invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref()) {
+        stats.success_count = stats.success_count.saturating_add(1);
+    } else {
+        stats.failure_count = stats.failure_count.saturating_add(1);
+    }
+    stats.input_tokens = stats
+        .input_tokens
+        .saturating_add(row.input_tokens.unwrap_or_default());
+    stats.output_tokens = stats
+        .output_tokens
+        .saturating_add(row.output_tokens.unwrap_or_default());
+    stats.cache_input_tokens = stats
+        .cache_input_tokens
+        .saturating_add(row.cache_input_tokens.unwrap_or_default());
+    stats.reported_cache_write_tokens = stats
+        .reported_cache_write_tokens
+        .saturating_add(row.reported_cache_write_tokens.unwrap_or_default());
+    stats.reasoning_tokens = stats
+        .reasoning_tokens
+        .saturating_add(row.reasoning_tokens.unwrap_or_default());
+    stats.total_tokens = stats
+        .total_tokens
+        .saturating_add(row.total_tokens.unwrap_or_default());
+    stats.cost += row.cost.unwrap_or_default();
+    stats.cost_input += row.cost_input.unwrap_or_default();
+    stats.cost_cache_write += row.cost_cache_write.unwrap_or_default();
+    stats.cost_cache_read += row.cost_cache_read.unwrap_or_default();
+    stats.cost_output += row.cost_output.unwrap_or_default();
+    stats.cost_reasoning += row.cost_reasoning.unwrap_or_default();
+    if stats
+        .max_invoke_id
+        .as_deref()
+        .is_none_or(|value| row.invoke_id.as_str() > value)
+    {
+        stats.max_invoke_id = Some(row.invoke_id.clone());
+    }
+    if stats
+        .first_invocation_at
+        .as_deref()
+        .is_none_or(|value| row.occurred_at.as_str() < value)
+    {
+        stats.first_invocation_at = Some(row.occurred_at.clone());
+    }
+    if stats
+        .last_invocation_at
+        .as_deref()
+        .is_none_or(|value| row.occurred_at.as_str() > value)
+    {
+        stats.last_invocation_at = Some(row.occurred_at.clone());
+    }
+}
+
+async fn refresh_prompt_cache_conversation_stats_bounded_page(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<bool> {
+    let deadline = Instant::now() + PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET;
+    let connection =
+        match tokio::time::timeout(PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET, pool.acquire())
+            .await
+        {
+            Ok(connection) => connection?,
+            Err(_) => {
+                return Err(anyhow!(
+                    "prompt-cache statistics page exceeded {}ms connection acquisition budget",
+                    PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                ));
+            }
+        };
+    let mut connection = PromptCacheConversationStatsProgressConnection {
+        connection,
+        progress_handler_installed: false,
+    };
+    let interrupted_by_budget = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted_by_budget = interrupted_by_budget.clone();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(anyhow!(
+                "prompt-cache statistics page exceeded {}ms budget before SQLite handle acquisition",
+                PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+            ));
+        }
+        let mut handle =
+            match tokio::time::timeout(remaining, connection.connection.lock_handle()).await {
+                Ok(handle) => handle
+                    .context("failed to acquire SQLite handle for prompt-cache page budget")?,
+                Err(_) => {
+                    return Err(anyhow!(
+                        "prompt-cache statistics page exceeded {}ms lock acquisition budget",
+                        PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                    ));
+                }
+            };
+        handle.set_progress_handler(PROMPT_CACHE_CONVERSATION_STATS_PROGRESS_OPS, move || {
+            let within_budget = Instant::now() < deadline;
+            if !within_budget {
+                interrupted_by_budget.store(true, Ordering::Release);
+            }
+            within_budget
+        });
+        connection.progress_handler_installed = true;
+    }
+
+    macro_rules! budgeted_query {
+        ($future:expr) => {{
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                connection.close_on_drop();
+                return Err(anyhow!(
+                    "prompt-cache statistics page exceeded {}ms budget before the next SQLite operation",
+                    PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                ));
+            }
+            match tokio::time::timeout(remaining, $future).await {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) if interrupted_by_budget.load(Ordering::Acquire) => {
+                    connection.close_on_drop();
+                    return Err(anyhow!(
+                        "prompt-cache statistics page exceeded {}ms execution budget: {error}",
+                        PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                    ));
+                }
+                Ok(Err(error)) => {
+                    connection.close_on_drop();
+                    return Err(error.into());
+                }
+                Err(_) => {
+                    connection.close_on_drop();
+                    return Err(anyhow!(
+                        "prompt-cache statistics page exceeded {}ms wall-clock budget",
+                        PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                    ));
+                }
+            }
+        }};
+    }
+
+    let queue_generation = budgeted_query!(
+        sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key = ?1"
+        ))
+        .bind(prompt_cache_key)
+        .fetch_optional(&mut *connection.connection)
+    );
+    let clock_generation = budgeted_query!(
+        sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_GENERATION_CLOCK_TABLE} WHERE prompt_cache_key = ?1"
+        ))
+        .bind(prompt_cache_key)
+        .fetch_optional(&mut *connection.connection)
+    );
+    let conversation_id = budgeted_query!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
+        )
+        .bind(prompt_cache_key)
+        .fetch_optional(&mut *connection.connection)
+    );
+    let Some(conversation_id) = conversation_id else {
+        match tokio::time::timeout(
+            PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET,
+            connection.connection.lock_handle(),
+        )
+        .await
+        {
+            Ok(Ok(mut handle)) => {
+                handle.remove_progress_handler();
+                connection.progress_handler_installed = false;
+                return Ok(true);
+            }
+            Ok(Err(error)) => {
+                return Err(error.into());
+            }
+            Err(_) => {
+                return Err(anyhow!(
+                    "prompt-cache statistics page exceeded {}ms progress-handler cleanup budget",
+                    PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                ));
+            }
+        }
+    };
+    let expected_generation = queue_generation.or(clock_generation).unwrap_or(0);
+    let staging = budgeted_query!(
+        sqlx::query_as::<_, PromptCacheConversationStatsStagingRow>(&format!(
+            "SELECT prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key = ?1"
+        ))
+        .bind(prompt_cache_key)
+        .fetch_optional(&mut *connection.connection)
+    );
+    let staging = match staging {
+        Some(staging) if staging.generation == expected_generation => staging,
+        _ => {
+            let source_max_invocation_id = budgeted_query!(
+                sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+                    .fetch_one(&mut *connection.connection)
+            )
+            .unwrap_or_default();
+            let accumulator =
+                empty_prompt_cache_conversation_stats(prompt_cache_key, &conversation_id);
+            let accumulator_json = serde_json::to_string(&accumulator)?;
+            budgeted_query!(
+                sqlx::query(&format!(
+                    "INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,updated_at) VALUES (?1,?2,?3,NULL,0,?4,?5,STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(prompt_cache_key) DO UPDATE SET generation=excluded.generation,source_max_invocation_id=excluded.source_max_invocation_id,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=excluded.accumulator_json,page_size=excluded.page_size,updated_at=excluded.updated_at"
+                ))
+                .bind(prompt_cache_key)
+                .bind(expected_generation)
+                .bind(source_max_invocation_id)
+                .bind(accumulator_json)
+                .bind(PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE)
+                .execute(&mut *connection.connection)
+            );
+            PromptCacheConversationStatsStagingRow {
+                prompt_cache_key: prompt_cache_key.to_string(),
+                generation: expected_generation,
+                source_max_invocation_id,
+                cursor_occurred_at: None,
+                cursor_id: 0,
+                accumulator_json: serde_json::to_string(&empty_prompt_cache_conversation_stats(
+                    prompt_cache_key,
+                    &conversation_id,
+                ))?,
+                page_size: PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE,
+            }
+        }
+    };
+    let mut accumulator: PromptCacheConversationStatsRow =
+        serde_json::from_str(&staging.accumulator_json).with_context(|| {
+            format!(
+                "invalid prompt-cache statistics staging accumulator for {}",
+                staging.prompt_cache_key
+            )
+        })?;
+    let page_size = staging
+        .page_size
+        .clamp(1, PROMPT_CACHE_CONVERSATION_BACKFILL_PAGE_SIZE as i64);
+    let invocation_key_expr = invocation_prompt_cache_key_expr_sql("i");
+    let page_sql = format!(
+        "SELECT i.id,i.invoke_id,i.occurred_at,i.status,i.error_message,i.input_tokens,i.output_tokens,i.cache_input_tokens,i.reported_cache_write_tokens,i.reasoning_tokens,i.total_tokens,i.cost,i.cost_input,i.cost_cache_write,i.cost_cache_read,i.cost_output,i.cost_reasoning FROM codex_invocations AS i WHERE {invocation_key_expr} = ?1 AND i.id <= ?2 AND (?3 IS NULL OR i.occurred_at > ?3 OR (i.occurred_at = ?3 AND i.id > ?4)) ORDER BY i.occurred_at ASC,i.id ASC LIMIT ?5"
+    );
+    let page_query = sqlx::query_as::<_, PromptCacheConversationInvocationRow>(&page_sql)
+        .bind(prompt_cache_key)
+        .bind(staging.source_max_invocation_id)
+        .bind(staging.cursor_occurred_at.as_deref())
+        .bind(staging.cursor_id)
+        .bind(page_size);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        connection.close_on_drop();
+        return Err(anyhow!(
+            "prompt-cache statistics page exceeded {}ms budget before invocation scan",
+            PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+        ));
+    }
+    let page_result =
+        match tokio::time::timeout(remaining, page_query.fetch_all(&mut *connection.connection))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                connection.close_on_drop();
+                return Err(anyhow!(
+                    "prompt-cache statistics page exceeded {}ms wall-clock budget",
+                    PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+                ));
+            }
+        };
+    match tokio::time::timeout(
+        PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET,
+        connection.connection.lock_handle(),
+    )
+    .await
+    {
+        Ok(Ok(mut handle)) => {
+            handle.remove_progress_handler();
+            connection.progress_handler_installed = false;
+        }
+        Ok(Err(error)) => {
+            return Err(error.into());
+        }
+        Err(_) => {
+            return Err(anyhow!(
+                "prompt-cache statistics page exceeded {}ms progress-handler cleanup budget",
+                PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+            ));
+        }
+    }
+    let page = match page_result {
+        Ok(page) => page,
+        Err(error) if interrupted_by_budget.load(Ordering::Acquire) => {
+            let reduced_page_size = (page_size / 2).max(1);
+            sqlx::query(&format!(
+                "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET page_size = ?1, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key = ?2 AND generation = ?3"
+            ))
+            .bind(reduced_page_size)
+            .bind(prompt_cache_key)
+            .bind(expected_generation)
+            .execute(&mut *connection.connection)
+            .await?;
+            return Err(anyhow!(
+                "prompt-cache statistics page exceeded {}ms execution budget: {error}",
+                PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    for row in &page {
+        merge_prompt_cache_conversation_invocation(&mut accumulator, row);
+    }
+    let mut tx = connection.connection.begin().await?;
+    let current_generation = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key = ?1"
+    ))
+    .bind(prompt_cache_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if current_generation != queue_generation {
+        let next_generation = current_generation.unwrap_or(0);
+        let source_max_invocation_id =
+            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+                .fetch_one(&mut *tx)
+                .await?
+                .unwrap_or_default();
+        let reset = serde_json::to_string(&empty_prompt_cache_conversation_stats(
+            prompt_cache_key,
+            &conversation_id,
+        ))?;
+        sqlx::query(&format!(
+            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET generation=?1,source_max_invocation_id=?2,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=?3,page_size=?4,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?5"
+        ))
+        .bind(next_generation)
+        .bind(source_max_invocation_id)
+        .bind(reset)
+        .bind(PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE)
+        .bind(prompt_cache_key)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    }
+    if page.len() as i64 >= page_size {
+        let last = page.last().expect("non-empty full prompt-cache page");
+        let accumulator_json = serde_json::to_string(&accumulator)?;
+        sqlx::query(&format!(
+            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET cursor_occurred_at=?1,cursor_id=?2,accumulator_json=?3,page_size=?4,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?5 AND generation=?6"
+        ))
+        .bind(&last.occurred_at)
+        .bind(last.id)
+        .bind(accumulator_json)
+        .bind(page_size)
+        .bind(prompt_cache_key)
+        .bind(expected_generation)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    }
+    let max_sequence = accumulator.max_invoke_id.as_deref().and_then(|invoke_id| {
+        let suffix = invoke_id_suffix(invoke_id, &accumulator.conversation_id)?;
+        decode_prompt_cache_conversation_sequence(suffix)
+    });
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET last_invoke_sequence=MAX(last_invoke_sequence,COALESCE(?1,-1)),request_count=?2,success_count=?3,failure_count=?4,input_tokens=?5,output_tokens=?6,cache_input_tokens=?7,reported_cache_write_tokens=?8,reasoning_tokens=?9,total_tokens=?10,cost=?11,cost_input=?12,cost_cache_write=?13,cost_cache_read=?14,cost_output=?15,cost_reasoning=?16,first_invocation_at=?17,last_invocation_at=?18,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?19",
+    )
+    .bind(max_sequence.map(i64::from))
+    .bind(accumulator.request_count)
+    .bind(accumulator.success_count)
+    .bind(accumulator.failure_count)
+    .bind(accumulator.input_tokens)
+    .bind(accumulator.output_tokens)
+    .bind(accumulator.cache_input_tokens)
+    .bind(accumulator.reported_cache_write_tokens)
+    .bind(accumulator.reasoning_tokens)
+    .bind(accumulator.total_tokens)
+    .bind(accumulator.cost)
+    .bind(accumulator.cost_input)
+    .bind(accumulator.cost_cache_write)
+    .bind(accumulator.cost_cache_read)
+    .bind(accumulator.cost_output)
+    .bind(accumulator.cost_reasoning)
+    .bind(accumulator.first_invocation_at.as_deref())
+    .bind(accumulator.last_invocation_at.as_deref())
+    .bind(prompt_cache_key)
+    .execute(&mut *tx)
+    .await?;
+    if let Some(generation) = queue_generation {
+        sqlx::query(&format!(
+            "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key=?1 AND generation=?2"
+        ))
+        .bind(prompt_cache_key)
+        .bind(generation)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(&format!(
+        "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key=?1 AND generation=?2"
+    ))
+    .bind(prompt_cache_key)
+    .bind(expected_generation)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+fn prompt_cache_statistics_budget_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .contains("prompt-cache statistics query exceeded")
+        || error
+            .to_string()
+            .contains("prompt-cache statistics page exceeded")
+}
+
 pub(crate) async fn refresh_prompt_cache_conversation_stats(
     pool: &Pool<Sqlite>,
     prompt_cache_keys: &HashSet<String>,
@@ -2463,7 +3117,16 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats(
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_STATS_REFRESH_ATTEMPTS {
         match refresh_prompt_cache_conversation_stats_once(pool, prompt_cache_keys).await {
             Ok(refreshed) => {
-                mark_prompt_cache_conversation_stats_fresh(pool).await?;
+                let mut connection = pool.acquire().await?;
+                let pending =
+                    prompt_cache_conversation_refresh_queue_has_rows_on_connection(&mut connection)
+                        .await
+                        .unwrap_or(true);
+                if pending {
+                    mark_prompt_cache_conversation_stats_stale(pool).await?;
+                } else {
+                    mark_prompt_cache_conversation_stats_fresh(pool).await?;
+                }
                 return Ok(refreshed);
             }
             Err(error) => {
@@ -2493,19 +3156,13 @@ async fn refresh_prompt_cache_conversation_stats_once(
         .map(String::as_str)
         .collect::<Vec<_>>();
     let mut refreshed = 0;
-    for prompt_cache_keys in
-        prompt_cache_keys.chunks(PROMPT_CACHE_CONVERSATION_STATS_MAX_KEYS_PER_QUERY)
+    for prompt_cache_keys in prompt_cache_keys
+        .iter()
+        .take(PROMPT_CACHE_CONVERSATION_STATS_MAX_KEYS_PER_QUERY)
     {
-        let mut tx = pool.begin().await?;
-        refreshed +=
-            refresh_prompt_cache_conversation_stats_on_connection(tx.as_mut(), prompt_cache_keys)
-                .await?;
-        clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-            tx.as_mut(),
-            prompt_cache_keys,
-        )
-        .await?;
-        tx.commit().await?;
+        if refresh_prompt_cache_conversation_stats_bounded_page(pool, prompt_cache_keys).await? {
+            refreshed += 1;
+        }
     }
     debug!(
         keys = prompt_cache_keys.len(),
@@ -2564,7 +3221,38 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats_on_connection(
     for prompt_cache_key in prompt_cache_keys {
         stats_query = stats_query.bind(*prompt_cache_key);
     }
-    let stats_rows = stats_query.fetch_all(&mut *connection).await?;
+    let deadline = Instant::now() + PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET;
+    let interrupted_by_budget = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted_by_budget = interrupted_by_budget.clone();
+        let mut handle = connection
+            .lock_handle()
+            .await
+            .context("failed to acquire SQLite handle for prompt-cache query budget")?;
+        handle.set_progress_handler(PROMPT_CACHE_CONVERSATION_STATS_PROGRESS_OPS, move || {
+            let within_budget = Instant::now() < deadline;
+            if !within_budget {
+                interrupted_by_budget.store(true, Ordering::Release);
+            }
+            within_budget
+        });
+    }
+    let stats_rows_result = stats_query.fetch_all(&mut *connection).await;
+    connection
+        .lock_handle()
+        .await
+        .context("failed to reacquire SQLite handle after prompt-cache query")?
+        .remove_progress_handler();
+    let stats_rows = match stats_rows_result {
+        Ok(stats_rows) => stats_rows,
+        Err(error) if interrupted_by_budget.load(Ordering::Acquire) => {
+            return Err(anyhow!(
+                "prompt-cache statistics query exceeded {}ms execution budget: {error}",
+                PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
     if stats_rows.is_empty() {
         return Ok(0);
     }
@@ -2683,14 +3371,20 @@ pub(crate) async fn refresh_all_prompt_cache_conversation_stats(
             .map(String::as_str)
             .collect::<Vec<_>>();
         let mut tx = pool.begin().await?;
+        let queue_generations =
+            load_prompt_cache_conversation_stats_queue_generations_on_connection(
+                tx.as_mut(),
+                &prompt_cache_key_refs,
+            )
+            .await?;
         refreshed += refresh_prompt_cache_conversation_stats_on_connection(
             tx.as_mut(),
             &prompt_cache_key_refs,
         )
         .await?;
-        clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
+        clear_prompt_cache_conversation_stats_refresh_queue_at_generation_on_connection(
             tx.as_mut(),
-            &prompt_cache_key_refs,
+            &queue_generations,
         )
         .await?;
         tx.commit().await?;
@@ -2724,6 +3418,42 @@ pub(crate) async fn clear_prompt_cache_conversation_stats_refresh_queue_on_conne
         .execute(&mut *connection)
         .await
         .context("failed to clear prompt-cache conversation statistics refresh queue")?;
+    Ok(())
+}
+
+async fn load_prompt_cache_conversation_stats_queue_generations_on_connection(
+    connection: &mut SqliteConnection,
+    prompt_cache_keys: &[&str],
+) -> Result<Vec<(String, i64)>> {
+    if prompt_cache_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", prompt_cache_keys.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT prompt_cache_key, generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key IN ({placeholders})"
+    );
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql);
+    for prompt_cache_key in prompt_cache_keys {
+        query = query.bind(*prompt_cache_key);
+    }
+    Ok(query.fetch_all(&mut *connection).await?)
+}
+
+async fn clear_prompt_cache_conversation_stats_refresh_queue_at_generation_on_connection(
+    connection: &mut SqliteConnection,
+    queue_generations: &[(String, i64)],
+) -> Result<()> {
+    for (prompt_cache_key, generation) in queue_generations {
+        sqlx::query(&format!(
+            "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key = ?1 AND generation = ?2"
+        ))
+        .bind(prompt_cache_key)
+        .bind(generation)
+        .execute(&mut *connection)
+        .await?;
+    }
     Ok(())
 }
 
@@ -2799,120 +3529,178 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations(
     pool: &Pool<Sqlite>,
     dry_run: bool,
 ) -> Result<usize> {
-    Ok(
-        cleanup_orphan_prompt_cache_conversations_with_active_keys(pool, dry_run, &HashSet::new())
-            .await?
-            .released,
+    Ok(cleanup_orphan_prompt_cache_conversations_with_active_keys(
+        pool,
+        dry_run,
+        &HashSet::new(),
+        None,
     )
+    .await?
+    .released)
 }
 
 #[derive(Debug, Default)]
 struct PromptCacheConversationOrphanCleanupResult {
     released: usize,
-    deleted_prompt_cache_keys: Vec<String>,
+    deleted_prompt_cache_identities: Vec<(String, String)>,
 }
 
 async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
     pool: &Pool<Sqlite>,
     dry_run: bool,
     active_prompt_cache_keys: &HashSet<String>,
+    cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<PromptCacheConversationOrphanCleanupResult> {
-    let predicate = format!(
-        "({INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = prompt_cache_conversations.prompt_cache_key OR (length(codex_invocations.invoke_id) = {PROXY_INVOKE_ID_LENGTH} AND codex_invocations.invoke_id >= prompt_cache_conversations.conversation_id AND codex_invocations.invoke_id < (prompt_cache_conversations.conversation_id || '[')))"
-    );
-    let orphan_predicate = format!(
-        "(last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now', '-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes') AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE {predicate})"
-    );
-    let mut result = PromptCacheConversationOrphanCleanupResult::default();
-    let mut last_prompt_cache_key = None;
-    let mut scanned_candidates = 0usize;
-    loop {
-        // Keep each read and delete bounded. The cache mutex is held by the mutating caller, so
-        // the in-memory active-key exclusion remains stable while the predicate is rechecked.
-        let last_key_clause = if last_prompt_cache_key.is_some() {
-            "AND prompt_cache_key > ?1"
+    async fn bounded_query<T, E, F>(future: F) -> Result<T>
+    where
+        E: Into<anyhow::Error>,
+        F: std::future::Future<Output = std::result::Result<T, E>>,
+    {
+        let value = if let Some(remaining) = crate::maintenance::retention_run_remaining_budget() {
+            tokio::time::timeout(remaining, future)
+                .await
+                .map_err(|_| anyhow!(PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED))?
+                .map_err(Into::into)?
         } else {
-            ""
+            future.await.map_err(Into::into)?
         };
-        let candidate_sql = format!(
-            "SELECT prompt_cache_key FROM prompt_cache_conversations \
-             WHERE {orphan_predicate} {last_key_clause} \
-             ORDER BY prompt_cache_key \
-             LIMIT {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN}"
-        );
-        let mut candidate_query = sqlx::query_scalar::<_, String>(&candidate_sql);
-        if let Some(last_prompt_cache_key) = last_prompt_cache_key.as_deref() {
-            candidate_query = candidate_query.bind(last_prompt_cache_key);
+        Ok(value)
+    }
+
+    let prompt_key_expr = invocation_prompt_cache_key_expr_sql("i");
+    let mut result = PromptCacheConversationOrphanCleanupResult::default();
+    let cursor_key = bounded_query(sqlx::query_scalar::<_, Option<String>>(&format!(
+        "SELECT cursor_key FROM {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} WHERE scope='prompt_cache_conversations'"
+    ))
+    .fetch_one(pool))
+    .await?;
+    let candidates = bounded_query(sqlx::query_as::<_, (String, String)>(&format!(
+        "SELECT prompt_cache_key,conversation_id FROM prompt_cache_conversations WHERE (last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes') AND (?1 IS NULL OR prompt_cache_key > ?1) ORDER BY prompt_cache_key LIMIT {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE}"
+    ))
+    .bind(cursor_key.as_deref())
+    .fetch_all(pool))
+    .await?;
+    if candidates.is_empty() {
+        bounded_query(sqlx::query(&format!(
+            "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=NULL,epoch=epoch+1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
+        ))
+        .execute(pool))
+        .await?;
+        return Ok(result);
+    }
+    let mut eligible = Vec::new();
+    for (prompt_cache_key, conversation_id) in &candidates {
+        if active_prompt_cache_keys.contains(prompt_cache_key) {
+            continue;
         }
-        let candidate_keys = candidate_query.fetch_all(pool).await?;
-        if candidate_keys.is_empty() {
-            break;
+        let key_referenced = bounded_query(
+            sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT EXISTS(SELECT 1 FROM codex_invocations AS i WHERE {prompt_key_expr} = ?1)"
+            ))
+            .bind(prompt_cache_key)
+            .fetch_one(pool),
+        )
+        .await?
+            != 0;
+        let invoke_id_referenced = bounded_query(sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM codex_invocations WHERE length(invoke_id)=?1 AND invoke_id>=?2 AND invoke_id < (?2 || '['))",
+        )
+        .bind(PROXY_INVOKE_ID_LENGTH as i64)
+        .bind(conversation_id)
+        .fetch_one(pool))
+        .await?
+            != 0;
+        if !key_referenced && !invoke_id_referenced {
+            eligible.push((prompt_cache_key.clone(), conversation_id.clone()));
         }
-        let candidate_key_count = candidate_keys.len();
-        scanned_candidates = scanned_candidates.saturating_add(candidate_keys.len());
-        last_prompt_cache_key = candidate_keys.last().cloned();
-        let eligible_keys = candidate_keys
-            .iter()
-            .filter(|prompt_cache_key| !active_prompt_cache_keys.contains(*prompt_cache_key))
-            .collect::<Vec<_>>();
-        if dry_run {
-            result.released = result.released.saturating_add(eligible_keys.len());
-        } else if !eligible_keys.is_empty() {
-            let mut tx = pool.begin().await?;
-            let placeholders = std::iter::repeat_n("?", eligible_keys.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let delete_sql = format!(
-                "DELETE FROM prompt_cache_conversations WHERE {orphan_predicate} AND prompt_cache_key IN ({placeholders})"
-            );
-            let mut delete_query = sqlx::query(&delete_sql);
-            for prompt_cache_key in &eligible_keys {
-                delete_query = delete_query.bind(*prompt_cache_key);
+    }
+    if dry_run {
+        result.released = eligible.len();
+        let full_page = candidates.len() == PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE;
+        let next_cursor = full_page.then(|| {
+            candidates
+                .last()
+                .expect("non-empty candidate page")
+                .0
+                .clone()
+        });
+        bounded_query(sqlx::query(&format!(
+            "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=?1,epoch=epoch+CASE WHEN ?2 THEN 0 ELSE 1 END,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
+        ))
+        .bind(next_cursor)
+        .bind(full_page)
+        .execute(pool))
+        .await?;
+    } else {
+        // Exact reference probes run without the cache mutex. Reacquire it only for the
+        // short delete transaction so a lease that arrived during those probes wins over
+        // deletion without blocking request admission on the slow probes.
+        let cache_guard = match cache {
+            Some(cache) => Some(
+                if let Some(remaining) = crate::maintenance::retention_run_remaining_budget() {
+                    tokio::time::timeout(remaining, cache.lock())
+                        .await
+                        .map_err(|_| anyhow!(PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED))?
+                } else {
+                    cache.lock().await
+                },
+            ),
+            None => None,
+        };
+        let mut tx = bounded_query(pool.begin()).await?;
+        for (prompt_cache_key, conversation_id) in &eligible {
+            if cache_guard.as_ref().is_some_and(|state| {
+                state
+                    .identity_cache
+                    .active_prompt_cache_keys
+                    .contains_key(prompt_cache_key)
+            }) {
+                continue;
             }
-            let released = delete_query.execute(&mut *tx).await?.rows_affected() as usize;
-            let remaining_placeholders = std::iter::repeat_n("?", candidate_keys.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let remaining_sql = format!(
-                "SELECT prompt_cache_key FROM prompt_cache_conversations WHERE prompt_cache_key IN ({remaining_placeholders})"
-            );
-            let mut remaining_query = sqlx::query_scalar::<_, String>(&remaining_sql);
-            for prompt_cache_key in &candidate_keys {
-                remaining_query = remaining_query.bind(prompt_cache_key);
+            let deleted = bounded_query(sqlx::query(
+                "DELETE FROM prompt_cache_conversations WHERE prompt_cache_key=?1 AND conversation_id=?2 AND (last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes') AND NOT EXISTS (SELECT 1 FROM codex_invocations AS i WHERE CASE WHEN json_valid(i.payload) THEN TRIM(CAST(json_extract(i.payload,'$.promptCacheKey') AS TEXT)) END = ?1) AND NOT EXISTS (SELECT 1 FROM codex_invocations WHERE length(invoke_id)=?3 AND invoke_id>=?2 AND invoke_id < (?2 || '['))",
+            )
+            .bind(prompt_cache_key)
+            .bind(conversation_id)
+            .bind(PROXY_INVOKE_ID_LENGTH as i64)
+            .execute(&mut *tx))
+            .await?
+            .rows_affected();
+            if deleted > 0 {
+                bounded_query(sqlx::query(&format!(
+                    "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key=?1"
+                ))
+                .bind(prompt_cache_key)
+                .execute(&mut *tx))
+                .await?;
+                bounded_query(sqlx::query(&format!(
+                    "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key=?1"
+                ))
+                .bind(prompt_cache_key)
+                .execute(&mut *tx))
+                .await?;
+                result.released = result.released.saturating_add(1);
+                result
+                    .deleted_prompt_cache_identities
+                    .push((prompt_cache_key.clone(), conversation_id.clone()));
             }
-            let remaining_keys = remaining_query
-                .fetch_all(&mut *tx)
-                .await?
-                .into_iter()
-                .collect::<HashSet<_>>();
-            let deleted_prompt_cache_keys = candidate_keys
-                .into_iter()
-                .filter(|prompt_cache_key| !remaining_keys.contains(prompt_cache_key))
-                .collect::<Vec<_>>();
-            if !deleted_prompt_cache_keys.is_empty() {
-                let queue_placeholders = std::iter::repeat_n("?", deleted_prompt_cache_keys.len())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let queue_delete_sql = format!(
-                    "DELETE FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key IN ({queue_placeholders})"
-                );
-                let mut queue_delete_query = sqlx::query(&queue_delete_sql);
-                for prompt_cache_key in &deleted_prompt_cache_keys {
-                    queue_delete_query = queue_delete_query.bind(prompt_cache_key);
-                }
-                queue_delete_query.execute(&mut *tx).await?;
-            }
-            tx.commit().await?;
-            result.released = result.released.saturating_add(released);
-            result
-                .deleted_prompt_cache_keys
-                .extend(deleted_prompt_cache_keys);
         }
-        if candidate_key_count < PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN
-            || scanned_candidates >= PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_MAX_KEYS_PER_RUN
-        {
-            break;
-        }
+        let full_page = candidates.len() == PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE;
+        let next_cursor = full_page.then(|| {
+            candidates
+                .last()
+                .expect("non-empty candidate page")
+                .0
+                .clone()
+        });
+        bounded_query(sqlx::query(&format!(
+            "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=?1,epoch=epoch+CASE WHEN ?2 THEN 0 ELSE 1 END,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
+        ))
+        .bind(next_cursor)
+        .bind(full_page)
+        .execute(&mut *tx))
+        .await?;
+        bounded_query(tx.commit()).await?;
     }
     Ok(result)
 }
@@ -2922,48 +3710,35 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations_with_cache(
     dry_run: bool,
     cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
 ) -> Result<usize> {
-    let (active_prompt_cache_keys, cleanup) = if dry_run {
-        let active_prompt_cache_keys = cache
-            .lock()
-            .await
-            .identity_cache
-            .active_prompt_cache_keys
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
-        let cleanup = cleanup_orphan_prompt_cache_conversations_with_active_keys(
-            pool,
-            true,
-            &active_prompt_cache_keys,
-        )
-        .await?;
-        (active_prompt_cache_keys, cleanup)
-    } else {
-        // Lease admission uses this mutex. Keep it through the single DELETE so a new
-        // in-memory lease cannot arrive after the active-key exclusion is evaluated.
-        let cache_state = cache.lock().await;
-        let active_prompt_cache_keys = cache_state
-            .identity_cache
-            .active_prompt_cache_keys
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
-        let cleanup = cleanup_orphan_prompt_cache_conversations_with_active_keys(
-            pool,
-            false,
-            &active_prompt_cache_keys,
-        )
-        .await?;
-        drop(cache_state);
-        (active_prompt_cache_keys, cleanup)
-    };
+    let active_prompt_cache_keys = cache
+        .lock()
+        .await
+        .identity_cache
+        .active_prompt_cache_keys
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let cleanup = cleanup_orphan_prompt_cache_conversations_with_active_keys(
+        pool,
+        dry_run,
+        &active_prompt_cache_keys,
+        Some(cache),
+    )
+    .await?;
     if !dry_run && cleanup.released > 0 {
         let mut cache_state = cache.lock().await;
-        for prompt_cache_key in cleanup.deleted_prompt_cache_keys {
-            cache_state
+        for (prompt_cache_key, conversation_id) in cleanup.deleted_prompt_cache_identities {
+            if cache_state
                 .identity_cache
                 .conversations
-                .remove(&prompt_cache_key);
+                .get(&prompt_cache_key)
+                .is_some_and(|identity| identity.conversation_id == conversation_id)
+            {
+                cache_state
+                    .identity_cache
+                    .conversations
+                    .remove(&prompt_cache_key);
+            }
         }
         trim_prompt_cache_conversation_identity_cache(&mut cache_state.identity_cache);
         info!(

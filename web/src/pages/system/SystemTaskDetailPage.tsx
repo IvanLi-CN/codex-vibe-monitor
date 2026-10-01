@@ -13,11 +13,13 @@ import {
   updateManagedTask,
 } from "../../lib/api";
 import {
+  managedTaskCompletionLabel,
   managedTaskExecutionClassLabel,
   managedTaskFreshnessLabel,
   managedTaskNextTriggerLabel,
   managedTaskPhaseLabel,
   managedTaskRunStatusLabel,
+  managedTaskScheduleSourceLabel,
   managedTaskTriggerLabel,
 } from "./taskLabels";
 
@@ -198,12 +200,13 @@ export default function SystemTaskDetailPage() {
         </div>
         {error ? <Alert variant="error">{error}</Alert> : null}
         {!error && runtimeError ? <Alert variant="error">{runtimeError}</Alert> : null}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           {[
             ["总量", progress?.total == null ? "—" : progress.total.toLocaleString()],
             ["已完成", progress?.completed == null ? "—" : progress.completed.toLocaleString()],
             ["当前进度", progressPercent == null ? "—" : `${progressPercent.toFixed(1)}%`],
             ["预计剩余", progress?.etaSeconds == null ? "—" : `${progress.etaSeconds}s`],
+            ["计量单位", progress?.unit ?? "未知"],
           ].map(([label, value]) => (
             <Card key={label}>
               <CardHeader className="pb-2">
@@ -267,10 +270,47 @@ export default function SystemTaskDetailPage() {
               <div className="text-xs text-base-content/60">下次运行</div>
               <div className="mt-1 font-medium">{managedTaskNextTriggerLabel(task)}</div>
             </div>
+            <div>
+              <div className="text-xs text-base-content/60">有效计划</div>
+              <div className="mt-1 font-medium">
+                {managedTaskScheduleSourceLabel(task.effectiveSchedule?.source)}
+                {task.effectiveSchedule?.intervalSecs != null
+                  ? ` · ${task.effectiveSchedule.intervalSecs}s`
+                  : ""}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-base-content/60">等待原因</div>
+              <div className="mt-1 font-medium">{progress?.waitReason ?? "未知"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-base-content/60">数据范围</div>
+              <div className="mt-1 break-all font-medium">{progress?.sourceScope ?? "未知"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-base-content/60">最近进度</div>
+              <div className="mt-1 font-medium">{progress?.lastProgressAt ?? "未知"}</div>
+            </div>
             <div className="md:col-span-2 xl:col-span-4">
               <div className="text-xs text-base-content/60">检查点</div>
               <div className="mt-1 break-all font-medium">{progress?.checkpoint ?? "未知"}</div>
             </div>
+            {progress?.stages?.length ? (
+              <div className="grid gap-2 border-t border-base-300/60 pt-3 md:col-span-2 xl:col-span-4 sm:grid-cols-3">
+                {progress.stages.map((stage) => (
+                  <div
+                    key={stage.name}
+                    className="rounded-md border border-base-300/60 p-2 text-sm"
+                  >
+                    <div className="font-medium">{stage.name}</div>
+                    <div className="text-xs text-base-content/65">{stage.status}</div>
+                    {stage.waitReason ? (
+                      <div className="text-xs text-base-content/65">等待：{stage.waitReason}</div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {!task.isManual && task.scheduleEditable ? (
               <>
                 <fieldset className="space-y-2 md:col-span-2 xl:col-span-4">
@@ -397,6 +437,29 @@ export default function SystemTaskDetailPage() {
                     {run.updatedCount != null ? <span>更新：{run.updatedCount}</span> : null}
                   </div>
                   {run.summary ? <div>{run.summary}</div> : null}
+                  {run.completion ? (
+                    <div className="text-xs text-base-content/65">
+                      完成度：{managedTaskCompletionLabel(run.completion)}
+                      {run.coreCompletion
+                        ? ` · 归档核心：${managedTaskCompletionLabel(run.coreCompletion)}`
+                        : ""}
+                    </div>
+                  ) : null}
+                  {run.details?.waitReason ? (
+                    <div className="text-xs text-base-content/65">
+                      等待：{String(run.details.waitReason)}
+                    </div>
+                  ) : null}
+                  {run.details?.promptCacheStats ? (
+                    <div className="text-xs text-base-content/65">
+                      Prompt 缓存统计：
+                      {run.details.promptCacheStats.state === "available"
+                        ? "可用"
+                        : run.details.promptCacheStats.state === "unavailable"
+                          ? `暂不可用（积压 ${String(run.details.promptCacheStats.pending ?? "未知")}）`
+                          : "未知"}
+                    </div>
+                  ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
                 </div>
               ))
@@ -407,13 +470,19 @@ export default function SystemTaskDetailPage() {
           <CardHeader>
             <CardTitle className="text-base">性能指标（性能库）</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
             {[
               ["运行次数", performance?.runCount ?? "未知"],
               ["成功次数", performance?.successCount ?? "未知"],
               ["失败次数", performance?.failureCount ?? "未知"],
               ["平均用时", formatDuration(performance?.averageDurationMs)],
               ["最近用时", formatDuration(performance?.latestDurationMs)],
+              [
+                "覆盖率",
+                performance?.coverage == null
+                  ? "未知"
+                  : `${(performance.coverage * 100).toFixed(1)}%`,
+              ],
             ].map(([label, value]) => (
               <div key={label} className="rounded-md border border-base-300/60 p-3">
                 <div className="text-xs text-base-content/60">{label}</div>

@@ -596,6 +596,22 @@ describe("demo MSW handlers", () => {
         }),
       ]),
     );
+
+    const detailResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/retention_archive",
+    );
+    const detail = (await detailResponse.json()) as {
+      recentRuns: Array<{
+        completion?: string | null;
+        coreCompletion?: string | null;
+        details?: { promptCacheStats?: { state?: string; pending?: number } } | null;
+      }>;
+    };
+    expect(detail.recentRuns[0]).toMatchObject({
+      completion: "partial",
+      coreCompletion: "completed",
+      details: { promptCacheStats: { state: "unavailable", pending: 3 } },
+    });
   });
 
   it("persists task controls, exposes effective policy, and rejects duplicate active runs", async () => {

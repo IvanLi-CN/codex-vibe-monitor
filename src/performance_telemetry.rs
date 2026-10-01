@@ -957,7 +957,10 @@ impl PerformanceTelemetryRuntime {
             for point in &series.points {
                 duration_sum += point.sum;
                 duration_samples = duration_samples.saturating_add(point.sample_count);
-                if latest_bucket.is_none_or(|bucket| point.bucket_start > bucket) {
+                if point.sample_count > 0
+                    && point.last.is_some()
+                    && latest_bucket.is_none_or(|bucket| point.bucket_start > bucket)
+                {
                     latest_bucket = Some(point.bucket_start);
                     latest_duration = point.last;
                 }
@@ -991,6 +994,7 @@ impl PerformanceTelemetryRuntime {
                 .then(|| duration_sum / duration_samples as f64),
             latest_duration_ms: latest_duration,
             observed_at,
+            coverage: (response.coverage > 0.0).then_some(response.coverage),
         })
     }
 }
@@ -3061,12 +3065,20 @@ async fn query_performance(
     let mut epochs = BTreeSet::new();
     let mut covered_series_buckets = BTreeSet::new();
     let mut observed_series = BTreeSet::new();
-    let total_buckets = ((to - from + step_seconds - 1) / step_seconds).max(1) as usize;
+    let first_output_bucket = from.div_euclid(step_seconds) * step_seconds;
+    let last_output_bucket = to.saturating_sub(1).div_euclid(step_seconds) * step_seconds;
+    let total_buckets =
+        ((last_output_bucket - first_output_bucket) / step_seconds + 1).max(1) as usize;
     for (resolution, segment_from, segment_to) in query_resolution_segments(from, to) {
+        let source_from = segment_from.div_euclid(resolution) * resolution;
+        let source_to = segment_to
+            .saturating_add(resolution - 1)
+            .div_euclid(resolution)
+            * resolution;
         let rows = sqlx::query("SELECT bucket_start, metric_id, dimension_code, sample_count, expected_count, sum_value, min_value, max_value, last_value, weighted_sum, weighted_seconds, histogram_json, epoch FROM performance_buckets WHERE resolution_seconds = ? AND bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start, metric_id, dimension_code")
             .bind(resolution)
-            .bind(segment_from)
-            .bind(segment_to)
+            .bind(source_from)
+            .bind(source_to)
             .fetch_all(pool)
             .await?;
         for row in rows {
@@ -3081,7 +3093,10 @@ async fn query_performance(
                 continue;
             }
             let bucket_start: i64 = row.try_get("bucket_start")?;
-            let output_bucket = bucket_start / step_seconds * step_seconds;
+            if bucket_start >= to || bucket_start.saturating_add(resolution) <= from {
+                continue;
+            }
+            let output_bucket = bucket_start.div_euclid(step_seconds) * step_seconds;
             let dimension: String = row.try_get("dimension_code")?;
             if !metric_dimension_allowed(&metric_id, &dimension) {
                 continue;
@@ -3167,7 +3182,6 @@ async fn query_performance(
             series.points.push(point);
         }
     }
-    let first_output_bucket = from / step_seconds * step_seconds;
     let output_bucket_count = total_buckets.min(TELEMETRY_MAX_QUERY_POINTS);
     for series in series_map.values_mut() {
         if series.points.is_empty() {
@@ -3488,6 +3502,48 @@ mod tests {
             .await
             .expect("query mixed-coverage telemetry buckets");
         assert_eq!(response.coverage, 0.0);
+    }
+
+    #[tokio::test]
+    async fn query_includes_buckets_intersecting_non_aligned_window_edges() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory telemetry database");
+        ensure_telemetry_schema(&pool)
+            .await
+            .expect("initialize telemetry schema");
+        let from = 12_030_i64;
+        let to = 12_630_i64;
+        for bucket in [12_000_i64, 12_600_i64] {
+            sqlx::query(
+                "INSERT INTO performance_buckets(
+                    bucket_start, resolution_seconds, metric_id, dimension_code,
+                    sample_count, expected_count, sum_value, min_value, max_value,
+                    last_value, weighted_sum, weighted_seconds, histogram_json, epoch
+                ) VALUES (?, 60, 'http.in_flight', 'other', 1, 1, 1, 1, 1, 1, 0, 0, ?, 'non-aligned')",
+            )
+            .bind(bucket)
+            .bind("[0,0,0,0,0,0,0,0]")
+            .execute(&pool)
+            .await
+            .expect("insert edge-intersecting source bucket");
+        }
+
+        let response = query_performance(&pool, from, to, 300, None)
+            .await
+            .expect("query non-aligned telemetry window");
+        let series = response
+            .series
+            .iter()
+            .find(|series| series.metric_id == "http.in_flight" && series.dimension == "other")
+            .expect("seeded in-flight series");
+        assert_eq!(series.points.len(), 3);
+        assert_eq!(series.points[0].bucket_start, 12_000);
+        assert_eq!(series.points[0].sample_count, 1);
+        assert_eq!(series.points[2].bucket_start, 12_600);
+        assert_eq!(series.points[2].sample_count, 1);
     }
 
     #[test]
