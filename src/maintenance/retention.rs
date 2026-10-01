@@ -8639,6 +8639,10 @@ async fn run_data_retention_maintenance_inner(
         )
         .await
         .context("failed to verify parallel-work minute coverage before invocation retention")?;
+    if !invocation_payload_retention_ready {
+        summary.deferred = true;
+        summary.wait_reason = Some("parallel_work_minute_coverage".to_string());
+    }
     // The >90-day archive is the only stage that reduces the primary expired backlog. Run it
     // before the independent 30-90-day detail mirror pass so a large detail backlog cannot
     // starve the recovery-critical archive stage indefinitely.
