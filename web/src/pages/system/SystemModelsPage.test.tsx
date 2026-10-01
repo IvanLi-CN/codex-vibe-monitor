@@ -251,6 +251,33 @@ describe("SystemModelsPage", () => {
     expect(host?.textContent).toContain("preset-without-price");
   });
 
+  it("leaves local prices untouched when preview fails and allows retry", async () => {
+    apiMocks.previewModelsDevPriceSync
+      .mockRejectedValueOnce(new Error("models.dev retrieval failed"))
+      .mockResolvedValueOnce(makePreview());
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
+      "models.dev retrieval failed",
+    );
+    expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
+    expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
+    expect(host?.textContent).toContain("priced-only-model");
+
+    clickButton("重试");
+    await flushEffects();
+
+    expect(apiMocks.previewModelsDevPriceSync).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Provider A");
+    expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
+    expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
+    expect(host?.textContent).toContain("priced-only-model");
+  });
+
   it("adds a manual price as a custom catalog entry", async () => {
     renderPage();
     await flushEffects();
