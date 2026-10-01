@@ -2,13 +2,15 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Introduce a durable prompt-cache conversation master and compact proxy invocation identity allocation.",
+    "description": "Introduce a durable prompt-cache conversation master and compact proxy invocation identity allocation, then add the additive latest-success route lookup index used by online routing checks.",
     "release_unit_description": "Prompt-cache conversation background materialization follow-up for the conversation and invoke ID redesign.",
-    "version_impact": "minor"
+    "version_impact": "minor",
+    "version_impact_scope": "topic_history",
+    "current_candidate_version_impact": "patch"
   },
   "durable_state": {
-    "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization.",
-    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, startup_backfill_progress with its durable enabled flag, and schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness.",
+    "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization; pool_upstream_request_attempts also has an additive partial success lookup index.",
+    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, startup_backfill_progress with its durable enabled flag, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, and idx_pool_attempts_account_model_success.",
     "source_compatibility_range": {
       "from_program_versions": "0.2.x without prompt_cache_conversations",
       "to_program_version": "next minor release",
@@ -55,13 +57,23 @@
         ],
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "ddl-pool-attempt-success-route-index",
+        "description": "Create idx_pool_attempts_account_model_success on (upstream_account_id, request_model COLLATE NOCASE, id DESC, started_at) for status='success' using idempotent startup DDL; index construction is timed and can be re-entered after interruption without converting business rows.",
+        "order": 5,
+        "depends_on": [
+          "ddl-prompt-cache-conversation-master"
+        ],
+        "observable": true,
+        "pauseable": true
       }
     ],
     "dml_changes": [
       {
         "id": "dml-prompt-cache-conversation-identity-backfill",
         "description": "In the background identity_backfill phase, snapshot the maximum invocation ID and materialize distinct historical prompt-cache keys by keyset pages; after the snapshot scan, run uncursored missing-identity reconciliation and record the identity marker only after coverage is complete.",
-        "order": 5,
+        "order": 6,
         "depends_on": [
           "ddl-prompt-cache-conversation-master",
           "ddl-prompt-cache-conversation-migration-progress",
@@ -73,7 +85,7 @@
       {
         "id": "dml-prompt-cache-conversation-statistics",
         "description": "In the background stats_rebuild phase, refresh aggregate fields for conversation keys by 400-key logical pages split into adaptive 32..400-key micro-batches; each micro-batch uses one set-based aggregate writeback and commits identity ensure, aggregate refresh, queue clearing, and its durable cursor checkpoint in one transaction after identity coverage is complete.",
-        "order": 6,
+        "order": 7,
         "depends_on": [
           "dml-prompt-cache-conversation-identity-backfill"
         ],
@@ -83,7 +95,7 @@
       {
         "id": "dml-prompt-cache-conversation-queue-drain",
         "description": "In the background queue_drain phase, refresh and clear durable mutation-queue keys only after successful aggregate refresh, then record the statistics freshness marker and complete phase when the queue is empty.",
-        "order": 7,
+        "order": 8,
         "depends_on": [
           "dml-prompt-cache-conversation-statistics",
           "ddl-prompt-cache-conversation-stats-refresh-queue"
@@ -100,6 +112,7 @@
       "ddl-prompt-cache-conversation-stats-refresh-queue",
       "ddl-prompt-cache-conversation-migration-progress",
       "ddl-prompt-cache-conversation-materialization-runs",
+      "ddl-pool-attempt-success-route-index",
       "dml-prompt-cache-conversation-identity-backfill",
       "dml-prompt-cache-conversation-statistics",
       "dml-prompt-cache-conversation-queue-drain"
@@ -109,7 +122,8 @@
       "The system prompt-cache materialization status surface exposes total keys, completed keys, progress, queue backlog, estimated remaining time, the latest 10 bounded run records, and a durable pause/resume control.",
       "Structured startup-backfill logs expose phase, scanned, updated, completion, retry, failure, and defer status, together with micro-batch count, last/max batch size, accumulated batch time, and defer reason; failed prompt-cache records retain the durable phase checkpoint.",
       "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
-      "The prompt_cache_conversations_stats_v2 marker identifies a completed aggregate refresh only when the prompt_cache_conversation_stats_refresh_queue is empty; its absence or a pending queue triggers a paged startup rebuild."
+      "The prompt_cache_conversations_stats_v2 marker identifies a completed aggregate refresh only when the prompt_cache_conversation_stats_refresh_queue is empty; its absence or a pending queue triggers a paged startup rebuild.",
+      "The latest-success route lookup index is additive, partial on status='success', timed during startup creation, and recreated idempotently after interruption; older readers continue to use the unchanged attempt rows."
     ],
     "pause_points": [
       "Schema installation stops after additive DDL and does not scan historical invocations, allowing HTTP readiness to continue.",

@@ -117,6 +117,7 @@ mod prompt_cache_conversation_queries;
 )]
 mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
+mod proxy_long_wait_allocation_and_index;
 mod proxy_pool_roundtrip_and_retry_servers;
 mod record_budget;
 mod representative_scale_acceptance;
