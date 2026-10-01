@@ -1160,13 +1160,18 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 continue;
             };
             let (result, duration_ms) = {
-                let observation = crate::TaskExecutionObservation::begin(
-                    &task_key,
-                    &crate::maintenance_store::task_title_for_observation(&task_key),
-                    &trigger_kind,
-                    crate::maintenance_store::task_execution_class(&task_key),
-                    "processing",
-                );
+                let observation = (!task_key.eq("prompt_cache_materialization")
+                    && !task_key.eq("startup_backfill")
+                    && !task_key.starts_with("startup_backfill."))
+                .then(|| {
+                    crate::TaskExecutionObservation::begin(
+                        &task_key,
+                        &crate::maintenance_store::task_title_for_observation(&task_key),
+                        &trigger_kind,
+                        crate::maintenance_store::task_execution_class(&task_key),
+                        "processing",
+                    )
+                });
                 let started_at = Instant::now();
                 let result = run_managed_task_once(&state, &task_key).await;
                 let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -1680,7 +1685,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             // Task history is admitted and recorded before waiting for the synchronization lock,
             // but both permits are released immediately so a lock wait cannot occupy the only
             // background pressure slot.
-            let task_run = loop {
+            let mut task_run = loop {
                 let pressure_permit = match pressure_gate
                     .try_begin_background("startup_hourly_rollup_bootstrap_task_history")
                 {
@@ -1834,6 +1839,18 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 };
                 break (pressure_permit, write_permit);
             };
+
+            task_run.observation = Some(crate::TaskExecutionObservation::begin(
+                SystemTaskKind::HourlyRollupBootstrap.as_str(),
+                &crate::maintenance_store::task_title_for_observation(
+                    SystemTaskKind::HourlyRollupBootstrap.as_str(),
+                ),
+                "startup",
+                crate::maintenance_store::task_execution_class(
+                    SystemTaskKind::HourlyRollupBootstrap.as_str(),
+                ),
+                "processing",
+            ));
 
             let hourly_rollups_started_at = Instant::now();
             let hourly_rollups = tokio::select! {
@@ -2141,6 +2158,17 @@ pub(crate) fn spawn_forward_proxy_maintenance(
             ) else {
                 return;
             };
+            let observation = crate::TaskExecutionObservation::begin(
+                "forward_proxy_subscription_refresh",
+                &crate::maintenance_store::task_title_for_observation(
+                    "forward_proxy_subscription_refresh",
+                ),
+                "startup",
+                crate::maintenance_store::task_execution_class(
+                    "forward_proxy_subscription_refresh",
+                ),
+                "processing",
+            );
             let startup_run = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return,
@@ -2150,7 +2178,16 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     SystemTaskKind::ForwardProxySubscriptionRefresh,
                     "startup",
                     Some("forward proxy subscription refresh started".to_string()),
-                ) => result.ok(),
+                ) => match result {
+                    Ok(run) => {
+                        observation.finish();
+                        Some(run)
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to record forward proxy startup refresh");
+                        None
+                    }
+                },
             };
             if let Err(err) = refresh_forward_proxy_subscriptions(
                 state.clone(),
@@ -2207,6 +2244,17 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     else {
                         continue;
                     };
+                    let observation = crate::TaskExecutionObservation::begin(
+                        "forward_proxy_subscription_refresh",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "forward_proxy_subscription_refresh",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class(
+                            "forward_proxy_subscription_refresh",
+                        ),
+                        "processing",
+                    );
                     let task_run = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => break,
@@ -2216,7 +2264,16 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             SystemTaskKind::ForwardProxySubscriptionRefresh,
                             "interval",
                             Some("forward proxy interval refresh started".to_string()),
-                        ) => result.ok(),
+                        ) => match result {
+                            Ok(run) => {
+                                observation.finish();
+                                Some(run)
+                            }
+                            Err(error) => {
+                                warn!(%error, "failed to record forward proxy interval refresh");
+                                None
+                            }
+                        },
                     };
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         if let Some(run) = task_run.as_ref() {

@@ -625,7 +625,7 @@ fn cron_field_matches(field: &str, value: u32, minimum: u32, maximum: u32) -> bo
 }
 
 fn cron_field_is_unrestricted(field: &str) -> bool {
-    field == "*" || field.starts_with("*/")
+    field == "*"
 }
 
 fn cron_day_matches(dom_field: &str, dow_field: &str, candidate: chrono::DateTime<Utc>) -> bool {
@@ -1597,8 +1597,10 @@ mod tests {
     #[test]
     fn cron_day_fields_follow_unrestricted_and_restricted_semantics() {
         let monday = chrono::Utc.with_ymd_and_hms(2026, 10, 12, 0, 0, 0).unwrap();
-        assert!(cron_day_matches("*/2", "1", monday));
-        assert!(cron_day_matches("12", "*/2", monday));
+        let tuesday = chrono::Utc.with_ymd_and_hms(2026, 10, 13, 0, 0, 0).unwrap();
+        assert!(cron_day_matches("*", "1", monday));
+        assert!(cron_day_matches("12", "*", monday));
+        assert!(cron_day_matches("*/2", "1", tuesday));
     }
 
     #[test]
