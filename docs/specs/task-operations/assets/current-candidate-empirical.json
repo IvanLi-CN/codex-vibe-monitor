@@ -1,6 +1,6 @@
 {
-  "candidate_head": "a7af440662ecc79ee062e3463ad433c8347cedb0",
-  "implementation_commit": "a7af440662ecc79ee062e3463ad433c8347cedb0",
+  "candidate_head": "ace97c2c42e52075b3858cdc521fca385a7e0f2b",
+  "implementation_commit": "ace97c2c42e52075b3858cdc521fca385a7e0f2b",
   "service": {
     "bind": "127.0.0.1:17940",
     "database": "isolated temporary SQLite files",
