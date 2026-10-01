@@ -616,7 +616,7 @@ export const TransportBadgeMixed: Story = {
     docs: {
       description: {
         story:
-          "Mixed transport records for verifying that the WebSocket badge appears immediately after the model name in the records table while non-WS rows stay unchanged.",
+          "Mixed transport records for verifying that historical WebSocket rows remain visibly labeled while non-WS rows stay unchanged.",
       },
     },
   },

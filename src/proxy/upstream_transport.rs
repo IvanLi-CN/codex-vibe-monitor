@@ -13,6 +13,12 @@ use hyper::body::Incoming;
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 
+trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+type BoxedUpstreamIo = Box<dyn AsyncReadWrite>;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct UpstreamSocketByteTotals {
     pub(crate) upload_bytes: usize,
@@ -76,11 +82,11 @@ impl UpstreamSocketByteMeter {
 
 struct PrefixedIo {
     prefix: std::io::Cursor<Vec<u8>>,
-    inner: BoxedWsIo,
+    inner: BoxedUpstreamIo,
 }
 
 impl PrefixedIo {
-    fn new(prefix: Vec<u8>, inner: BoxedWsIo) -> Self {
+    fn new(prefix: Vec<u8>, inner: BoxedUpstreamIo) -> Self {
         Self {
             prefix: std::io::Cursor::new(prefix),
             inner,
@@ -479,7 +485,7 @@ fn build_http1_request(
 async fn maybe_tls_wrap_target_stream<T>(
     stream: T,
     target_url: &Url,
-) -> Result<BoxedWsIo, io::Error>
+) -> Result<BoxedUpstreamIo, io::Error>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -511,7 +517,7 @@ async fn connect_via_counted_transport(
     target_url: &Url,
     forward_proxy_url: Option<&Url>,
     meter: UpstreamSocketByteMeter,
-) -> Result<BoxedWsIo, io::Error> {
+) -> Result<BoxedUpstreamIo, io::Error> {
     let Some(forward_proxy_url) = forward_proxy_url else {
         let host = target_url.host_str().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "upstream URL missing host")
@@ -553,15 +559,12 @@ async fn connect_via_counted_transport(
         let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
         let mut stream = CountedIo::new(stream, meter);
         let socks_target_host = if proxy_scheme == "socks5" {
-            super::websocket::resolve_socks5_local_target_host(upstream_host, upstream_port)
-                .await
-                .map_err(|err| io::Error::other(err.to_string()))?
+            resolve_socks5_local_target_host(upstream_host, upstream_port).await?
         } else {
             upstream_host.to_string()
         };
-        let username = super::websocket::forward_proxy_username(forward_proxy_url);
-        let password =
-            super::websocket::forward_proxy_password(forward_proxy_url).unwrap_or_default();
+        let username = forward_proxy_username(forward_proxy_url);
+        let password = forward_proxy_password(forward_proxy_url).unwrap_or_default();
         let use_password_auth = !username.is_empty();
         if use_password_auth {
             stream.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
@@ -660,7 +663,7 @@ async fn connect_via_counted_transport(
     }
 
     let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
-    let mut stream: BoxedWsIo = if forward_proxy_url.scheme() == "https" {
+    let mut stream: BoxedUpstreamIo = if forward_proxy_url.scheme() == "https" {
         maybe_tls_wrap_target_stream(CountedIo::new(stream, meter.clone()), forward_proxy_url)
             .await?
     } else {
@@ -668,9 +671,7 @@ async fn connect_via_counted_transport(
     };
     let mut connect_request =
         format!("CONNECT {target_authority} HTTP/1.1\r\nHost: {target_authority}\r\n");
-    if let Some(credential) =
-        super::websocket::forward_proxy_basic_auth_credential(forward_proxy_url)
-    {
+    if let Some(credential) = forward_proxy_basic_auth_credential(forward_proxy_url) {
         let encoded = base64::engine::general_purpose::STANDARD.encode(credential);
         connect_request.push_str("Proxy-Authorization: Basic ");
         connect_request.push_str(&encoded);
@@ -732,7 +733,7 @@ async fn connect_via_counted_transport(
     }
 
     let extra_read = response[(header_end + 4)..].to_vec();
-    let stream: BoxedWsIo = if extra_read.is_empty() {
+    let stream: BoxedUpstreamIo = if extra_read.is_empty() {
         stream
     } else {
         Box::new(PrefixedIo::new(extra_read, stream))
@@ -808,6 +809,42 @@ pub(crate) async fn send_counted_upstream_http_request(
         response: Response::from_parts(parts, tracked_body),
         socket_meter: meter,
     })
+}
+
+async fn resolve_socks5_local_target_host(
+    upstream_host: &str,
+    upstream_port: u16,
+) -> Result<String, io::Error> {
+    if upstream_host.parse::<IpAddr>().is_ok() {
+        return Ok(upstream_host.to_string());
+    }
+    let mut addresses = tokio::net::lookup_host((upstream_host, upstream_port)).await?;
+    let Some(address) = addresses.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no local DNS address resolved for SOCKS5 target {upstream_host}"),
+        ));
+    };
+    Ok(address.ip().to_string())
+}
+
+fn forward_proxy_basic_auth_credential(forward_proxy_url: &Url) -> Option<String> {
+    let username = forward_proxy_username(forward_proxy_url);
+    if username.is_empty() {
+        return None;
+    }
+    Some(match forward_proxy_password(forward_proxy_url) {
+        Some(password) => format!("{username}:{password}"),
+        None => username,
+    })
+}
+
+fn forward_proxy_username(forward_proxy_url: &Url) -> String {
+    percent_decode_once_lossy(forward_proxy_url.username())
+}
+
+fn forward_proxy_password(forward_proxy_url: &Url) -> Option<String> {
+    forward_proxy_url.password().map(percent_decode_once_lossy)
 }
 
 #[cfg(test)]

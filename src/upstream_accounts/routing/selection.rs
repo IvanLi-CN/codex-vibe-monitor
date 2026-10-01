@@ -1687,8 +1687,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             .await?,
         ));
     }
-    // WebSocket resolution shares this selector but keeps its pre-existing retry
-    // and concurrency semantics; priority handoff admission is HTTP-only.
+    // Realtime requests keep their pre-existing retry and concurrency semantics.
     let priority_handoff_enabled =
         priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime");
     let mut priority_handoff_deferred_for_sticky = false;

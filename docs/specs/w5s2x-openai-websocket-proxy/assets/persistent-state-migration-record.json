@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Retire live downstream and upstream WebSocket proxy capability while retaining legacy settings columns and historical WebSocket invocation records.",
+    "release_unit_description": "Removal of the unused OpenAI-compatible WebSocket proxy transport and its live configuration surfaces.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Legacy WebSocket settings and initialization marker in proxy_model_settings, the WebSocket unsupported system tag and its account associations, and historical invocation/archive rows with transport=websocket.",
+    "storage_implementation": "SQLite proxy_model_settings, pool_oauth_login_sessions tag JSON, pool_upstream_account_tags and tag associations, codex_invocations, invocation archives, and existing transport read models.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported pre-retirement 0.2.x database schemas containing the WebSocket settings, initialization marker, optional unsupported_transport:websocket system tag, and historical invocation transport values.",
+      "to_program_version": "Candidate release implementing ADR 0020.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "In one idempotent transaction, force the two legacy WebSocket settings to false, mark websocket_settings_migrated complete, remove only exact integer IDs for unsupported_transport:websocket from valid OAuth session tag JSON while preserving other values, delete associations for the exact system tag, delete that tag row, and record schema_refresh_migrations identity retire_openai_websocket_proxy_v1.",
+        "order": 1,
+        "depends_on": [],
+        "observable": true,
+        "pauseable": false
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No historical invocation, archive, usage, network-stat, or unrelated-tag backfill or transformation. Existing transport=websocket rows remain readable and are presented as historical.",
+        "order": 2,
+        "depends_on": [
+          "dml-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "dml-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "The named schema_refresh_migrations identity is present after the transaction commits.",
+      "Sanitized migration telemetry reports settings, tag-association, tag-row, and marker outcomes as counts or boolean state.",
+      "Historical transport=websocket rows remain visible through existing read and filter contracts without new writes."
+    ],
+    "pause_points": [
+      "Before the single DML transaction begins.",
+      "After the transaction commits; no historical backfill is scheduled."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "An earlier binary may open the retained schema, but rollback does not automatically restore WebSocket settings, tag state, or the retired runtime contract.",
+    "faulty_release_recovery": "A newer binary re-enters the named migration idempotently and repairs incomplete retirement forward; a stopped transaction leaves no partial DML. Database backup restore is required only for disaster recovery or intentional restoration of the old capability.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": []
+    },
+    "minor": {
+      "required_test_evidence": [
+        "The candidate reads the retained legacy columns and historical transport values without fabricating new WebSocket capability.",
+        "The named migration is recognized idempotently and historical invocation/archive rows remain unchanged.",
+        "A stopped or failed migration can be safely re-entered by a forward version."
+      ]
+    },
+    "major": {
+      "required_test_evidence": [
+        "The candidate upgrades supported pre-retirement state and retains historical WebSocket reads.",
+        "A forward-repair version handles state left by a stopped retirement migration.",
+        "Direct multi-Major skips remain unsupported without an explicit intermediate upgrade."
+      ]
+    }
+  }
+}

@@ -1868,7 +1868,7 @@ export const TransportBadgeMixed: Story = {
     docs: {
       description: {
         story:
-          "Mixed transport state: only the WebSocket invocation shows the compact `WS` badge beside the model name, while HTTP/legacy records remain unbadged.",
+          "Mixed transport state: only the historical WebSocket invocation shows the compact `WS` badge beside the model name, while HTTP/legacy records remain unbadged.",
       },
     },
   },

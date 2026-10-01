@@ -2076,8 +2076,6 @@ pub(crate) async fn put_proxy_settings(
         merge_upstream_enabled,
         fast_mode_rewrite_mode: _legacy_fast_mode_rewrite_mode,
         upstream_429_max_retries,
-        websocket_enabled,
-        upstream_websocket_default_enabled,
         request_body_logging_enabled,
         response_body_logging_enabled,
         encrypted_session_owner_routing_enabled,
@@ -2098,9 +2096,6 @@ pub(crate) async fn put_proxy_settings(
         merge_upstream_enabled,
         upstream_429_max_retries: upstream_429_max_retries
             .unwrap_or(current.upstream_429_max_retries),
-        websocket_enabled: websocket_enabled.unwrap_or(current.websocket_enabled),
-        upstream_websocket_default_enabled: upstream_websocket_default_enabled
-            .unwrap_or(current.upstream_websocket_default_enabled),
         request_body_logging_enabled: request_body_logging_enabled
             .unwrap_or(current.request_body_logging_enabled),
         response_body_logging_enabled: response_body_logging_enabled

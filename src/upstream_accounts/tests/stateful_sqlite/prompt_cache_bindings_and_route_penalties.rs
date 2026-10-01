@@ -3698,7 +3698,10 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
         .await
         .expect("load cleaned login session")
         .expect("cleaned login session should exist");
-    assert_eq!(stored.tag_ids_json, None);
+    assert_eq!(
+        stored.tag_ids_json,
+        Some(serde_json::to_string(&vec![system_tag_id]).expect("encode preserved system tag"))
+    );
 }
 
 #[tokio::test]

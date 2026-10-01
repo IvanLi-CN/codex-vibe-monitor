@@ -1,4 +1,5 @@
 import { Chip } from "../../components/ui/chip";
+import { useTranslation } from "../../i18n";
 import type { ApiInvocation } from "../../lib/api";
 
 function isWebSocketInvocation(record: Pick<ApiInvocation, "transport">) {
@@ -11,16 +12,23 @@ export function renderInvocationTransportChip(
 ) {
   if (!isWebSocketInvocation(record)) return null;
 
+  return <InvocationTransportChip className={className} />;
+}
+
+function InvocationTransportChip({ className }: { className?: string }) {
+  const { t } = useTranslation();
+  const historicalLabel = t("records.filters.transport.websocket");
+
   return (
     <Chip
       tone="primary"
       size="micro"
-      title="WebSocket"
+      title={historicalLabel}
       data-testid="invocation-transport-badge"
       className={className}
     >
       <span aria-hidden="true">WS</span>
-      <span className="sr-only">WebSocket transport</span>
+      <span className="sr-only">{historicalLabel}</span>
     </Chip>
   );
 }

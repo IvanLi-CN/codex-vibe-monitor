@@ -1,6 +1,12 @@
 # OpenAI 兼容 WebSocket 代理实现状态（#w5s2x）
 
-## Coverage
+## 生命周期
+
+- Status: retired
+- 当前退役实现边界以 [ADR 0020](../../adr/0020-retire-downstream-websocket-proxy.md) 为准。
+- 下列 coverage/test 条目记录退役前的历史实现，不代表当前继续提供 WebSocket 能力。
+
+## Pre-retirement coverage
 
 - 已实现：`/v1/*` WebSocket upgrade 检测、pool 鉴权、downstream/upstream 双开关和 proxy request concurrency gate。
 - 已实现：`/v1/responses` downstream WS session 在 upgrade 后读取首个 text JSON `response.create`，再执行 prompt-cache routing、encrypted owner guard、账号池选择和上游 WS 握手。
@@ -17,21 +23,39 @@
 - 已实现：`/v1/responses` 第三方兼容 API-key upstream 若已握手成功但在 terminal 前 clean close/EOF，系统在保留 retryable downstream close 和 route failure 记录的同时，自动给该账号打 `unsupported_transport:websocket` / `不支持 WS` tag，后续 WS 路由跳过该候选。
 - 已实现：`unsupported_transport:websocket` / `不支持 WS` 系统 tag、WS unsupported auto-tagging、API key/OAuth header 覆盖、安全 header 转发、`http/https` 到 `ws/wss` URL 映射和 forward proxy 隧道。
 
+## Retirement implementation contract
+
+- `/v1/*` WebSocket upgrade 在进入鉴权、账号路由和上游连接前返回 HTTP `501`，错误码为 `websocket_proxy_removed`。
+- 拒绝不创建 invocation、upstream attempt 或上游连接；结构化遥测只保留脱敏请求边界信息。
+- 删除 WebSocket runtime、settings、tag ensure、usage refresh、依赖和测试路径；保留历史 `transport="websocket"` 读路径，并以 `WebSocket（历史）` 展示。
+- 迁移 `retire_openai_websocket_proxy_v1` 必须按专题 Spec 与持久化迁移记录执行。
+
+## Current implementation
+
+- `src/proxy/request_entry.rs` performs header-only upgrade detection and returns the fixed `501` JSON envelope before invoking the shared HTTP proxy entrypoint.
+- The Axum WebSocket feature, relay/dialer module, direct tungstenite dependencies, WebSocket settings initialization, capability tag ensure/learning, and WebSocket-only usage refresh/persistence paths are removed.
+- The SQLite migration retains the three legacy settings columns, clears the exact retired system tag and associations in one `BEGIN IMMEDIATE` transaction, records the named migration marker, and logs only affected-row counts.
+- Legacy tag cleanup now removes only non-system integer session references, so existing system-tag JSON survives long enough for the retirement migration to remove only the exact retired WebSocket tag.
+- Settings request deserialization tolerates old WebSocket fields as unknown input while response serialization omits them. Historical `transport="websocket"` rows remain readable and are labeled `WebSocket（历史）` in the UI.
+- The demo and account-pool fixtures no longer create live WebSocket records or capability tags; historical records remain in Records, invocation, and dashboard read fixtures.
+
 ## Validation
 
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test websocket_ -- --nocapture`
+- Targeted Rust regression: the early `501` rejection, Settings compatibility, migration idempotency/rollback, and legacy system-tag cleanup tests pass.
+- `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass.
+- Web typecheck and production build pass. The changed-surface unit suite passes with `9` files and `295` tests, including demo Settings compatibility and expanded historical transport details. The Storybook suite passes (`131/131`, with `51` intentional skips). A full Web unit run had `4` unrelated existing failures in Prompt Cache, Today Stats, Model Performance, and Upstream Accounts tests under the repository's current parallel test environment; it otherwise reported `1648` passed and `6` skipped.
+- Backend resource profiles: lightweight `1110/1110` and archive-file-io `298/298` pass. The stateful-sqlite profile was exercised with its configured six test threads, reached `962/1338`, and was stopped after resource-contention failures and a projection test exceeded seven minutes; the four surfaced unrelated failures all pass when rerun in isolation, and the retirement/migration/network regressions pass in their targeted stateful runs.
+- `bun run lint:docs`, JSON validation for the migration/version evidence assets, and `git diff --check` pass. UI evidence covers the Settings page without WebSocket controls, the Records historical transport filter, and the historical transport chip.
 
-## Tests Added Or Updated
+## Retirement regression coverage
 
-- 首帧 `response.create` 校验与 `model` / `prompt_cache_key` / `previous_response_id` 解析。
-- payload-only prompt cache key owner routing 使用 `response.create` 首帧验证。
-- 多 `response.create` turn 分别 relay 并分别持久化 terminal usage。
-- downstream active turn 断开后 drain upstream terminal usage 并落库。
-- upstream terminal 前 close 转换为 downstream `1013` retryable close，并记录 attempt failure。
-- upstream terminal 前 clean close/EOF 会把兼容 API-key 账号标记为 `unsupported_transport:websocket`，但不误标 OAuth、非 Responses WS 或 downstream 断开后的 drain 失败。
-- 上游 handshake failure 在同一 downstream session 内 failover 到下一候选，并发送保留首帧。
-- downstream subprotocol 与 upstream subprotocol 不匹配时不发送保留首帧，记录 attempt failure 并返回 retryable close。
-- `/v1/realtime` passthrough 建连后不等待 downstream 首帧即可 relay 上游 `session.created`。
-- `/v1/responses` 首帧协议拒绝会关闭 downstream，并留下 compact ten-character pre-upstream attempt failure ID。
+- `websocket_upgrade_is_rejected_before_auth_routing_and_persistence` verifies ordinary, comma-separated, and repeated Upgrade headers return the exact raw `501` JSON body without invoke, attempt, upstream connection, retry, or CVM headers.
+- `proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing` verifies legacy WebSocket request fields are ignored and omitted from responses.
+- `retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_state` verifies legacy columns, exact integer tag cleanup, unrelated-tag preservation, OAuth session JSON cleanup, malformed/non-integer value preservation, and the completion marker.
+- `retire_websocket_proxy_migration_rolls_back_on_failure` verifies a mid-transaction failure leaves settings, tag associations, tag rows, and the marker unchanged.
+- `cleanup_non_system_tags_removes_custom_tags_links_and_session_references` verifies custom tag references are removed while system-tag session references survive for exact retirement cleanup.
+- The demo model regression verifies retired WebSocket Settings request fields are ignored and omitted from the response/state.
+- `normal_http_terminal_persistence_does_not_emit_retired_websocket_state` verifies a normal HTTP terminal record does not recreate WebSocket transport, stream-terminal state, or the exact retired tag and association.
+- `counted_http_transport_reports_network_bytes_through_dashboard_projection` verifies streamed HTTP upload/download bytes reach global and account network buckets and schedule the network projection.
+- Request-entry and hourly trace tests verify query parameters are excluded from request logs, while historical workflow detail tests verify structured transport fields use `WebSocket（历史）`.
+- Existing historical invocation query/filter and serialization fixtures continue to use `transport="websocket"` as read-only compatibility coverage.

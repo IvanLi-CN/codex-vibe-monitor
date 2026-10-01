@@ -3833,6 +3833,10 @@ fn apply_static_cache_control<B>(path: &str, response: &mut axum::http::Response
     );
 }
 
+fn http_request_trace_path(request: &Request<Body>) -> &str {
+    request.uri().path()
+}
+
 pub(crate) async fn render_spa_index_response(
     state: Arc<AppState>,
     headers: &HeaderMap,
@@ -3868,7 +3872,16 @@ pub(crate) async fn spawn_http_server(
             state.clone(),
             performance_http_middleware,
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri_path = %http_request_trace_path(request),
+                    version = ?request.version()
+                )
+            }),
+        )
         .layer(cors_layer);
 
     // Optionally attach headers in the future; standard EventSource cannot read headers
@@ -3940,6 +3953,16 @@ pub(crate) async fn spawn_http_server(
 mod social_preview_tests {
     use super::*;
     use axum::http::{HeaderValue, header};
+
+    #[test]
+    fn http_request_trace_path_excludes_query_parameters() {
+        let request = Request::builder()
+            .uri("/v1/responses?api_key=secret-value")
+            .body(Body::empty())
+            .expect("build request with sensitive query");
+
+        assert_eq!(http_request_trace_path(&request), "/v1/responses");
+    }
 
     #[test]
     fn inject_absolute_social_preview_urls_rewrites_both_meta_tags() {

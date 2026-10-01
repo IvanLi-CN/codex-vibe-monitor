@@ -134,10 +134,10 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription, and no standalone model-routing route or main-navigation item exists.
 - Given the live routing tab renders at desktop or mobile widths, Then one standards-compliant 24-hour Gantt table has a fixed model/API Key lane column and one shared Beijing-time axis across every model group; each lane displays the current API Key `display_name` with a stable ID fallback only when missing. Task color changes over time with recorded `normal/demoted/excluded` model-route priority, the right edge exposes the current candidate level, `available` color intensity remains proportional to real call allocation, unknown intervals are transparent and dashed, and controlled-recovery markers remain separate. Static priority text, account groups, account-list layouts, per-model charts and stacked/category-bar charts are absent.
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
-- Given cache protection is enabled but an expired model cooldown originated from an ordinary upstream failure, When the first successful HTTP or WebSocket terminal arrives, Then the route atomically returns to `available/normal`, clears the cooldown and concurrency clamp, and wakes waiting routing requests.
+- Given cache protection is enabled but an expired model cooldown originated from an ordinary upstream failure, When the first successful HTTP terminal arrives, Then the route atomically returns to `available/normal`, clears the cooldown and concurrency clamp, and wakes waiting routing requests.
 - Given a cache-owned route lacks usable cache usage at a successful terminal, When the observation is first missing or below the minimum sample threshold, Then it remains constrained, persists `cacheUsageMissingSince` and `cacheUsageMissingReason`, and emits one `model_route_cache_observation_missing` event; a valid sample, manual reset, or protection disable clears both fields.
 - Given an account failure is committed after a request starts, including within the same wall-clock second, When that request later succeeds, Then the success leaves the newer failure intact and does not publish pool availability; an ambiguous legacy second-precision timestamp in that same second also fails closed.
-- Given an HTTP or WebSocket success terminal contains valid cache usage that increases model capacity, When the associated account still has a route failure fence, Then the model observation may persist but no global pool availability signal is published.
+- Given an HTTP success terminal contains valid cache usage that increases model capacity, When the associated account still has a route failure fence, Then the model observation may persist but no global pool availability signal is published.
 
 ## 验收清单（Acceptance checklist）
 
@@ -179,11 +179,9 @@ capture_scope=complete live routing page
 viewport_strategy=ui-demo-source with controlled desktop 1440×900 and embedded mobile 393×852 CSS viewports
 sensitive_exclusion=N/A
 
-PR: include
 桌面端仿真证据（完整模型泳道与自然图表高度）
 ![模型路由稳定渲染桌面仿真证据](./assets/model-routing-gantt-stability-desktop.png)
 
-PR: include
 移动端仿真证据（完整页面高度、全部模型泳道与无图内纵向滚动）
 ![模型路由稳定渲染移动端仿真证据](./assets/model-routing-gantt-stability-mobile.png)
 
@@ -192,6 +190,10 @@ PR: include
 ## Related PRs
 
 - None
+
+## Related ADRs
+
+None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

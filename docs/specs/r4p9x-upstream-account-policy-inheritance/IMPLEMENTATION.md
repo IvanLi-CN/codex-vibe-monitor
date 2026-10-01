@@ -132,7 +132,7 @@ Request-path timeout resolution is evaluated after the final target account is k
 
 - root, group, account, and conversation storage persist nullable timeout overrides for five request-path timeout fields, including `imageFirstByteTimeoutSecs`
 - runtime starts from the global/root pool timeout baseline, then applies `group -> account -> conversation` timeout overrides
-- failover, replay, live HTTP dispatch, capture-target resolution, and WebSocket selection recompute effective timeouts for each newly selected target account
+- failover, replay, live HTTP dispatch, and capture-target resolution recompute effective timeouts for each newly selected target account
 
 Local stale state is sanitized instead of preserved as a hidden write path.
 
@@ -159,7 +159,7 @@ API-key upstream request dispatch now applies compression after body rewrite.
 - file-backed or replay bodies use streaming/chunked encoders for `gzip`, `deflate`, and `zstd`
 - rewritten in-memory JSON bodies avoid generating an additional fully compressed buffer
 - `follow` re-encodes using supported downstream request encodings only; unsupported encodings return an explicit request error and do not auto-fallback
-- OAuth upstream dispatch and WebSocket routes keep their current request-body behavior
+- OAuth upstream dispatch keeps its current request-body behavior
 
 Outbound observability now records both raw downstream and actual upstream request encodings.
 

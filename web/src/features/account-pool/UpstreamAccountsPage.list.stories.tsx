@@ -709,7 +709,6 @@ export const TagFilterAllMatch: Story = {
     });
     await userEvent.click(filterTrigger);
     await userEvent.click(await documentScope.findByText(/不支持 gpt-5\.5/i));
-    await userEvent.click(await documentScope.findByText(/不支持 WS/i));
     await expect(canvas.getByText(/Codex Pro - Tokyo/i)).toBeInTheDocument();
     await expect(canvas.queryByText(/Team key - staging/i)).not.toBeInTheDocument();
   },

@@ -48,6 +48,10 @@ function normalizeDemoTransitProxyKeys(value: unknown): string[] {
 
 const SENSITIVE_FIELD =
   /api[-_]?key|authorization|cookie|credential|oauth|password|secret|session|token/i;
+const RETIRED_PROXY_SETTING_FIELDS = new Set([
+  "websocketEnabled",
+  "upstreamWebsocketDefaultEnabled",
+]);
 
 function safePayload(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(safePayload);
@@ -66,8 +70,6 @@ function createSettings() {
       mergeUpstreamEnabled: true,
       fastModeRewriteMode: "disabled",
       upstream429MaxRetries: 3,
-      websocketEnabled: true,
-      upstreamWebsocketDefaultEnabled: true,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
       encryptedSessionOwnerRoutingEnabled: false,
@@ -736,7 +738,12 @@ class DemoModel {
     const settings = clone(this.#state.settings);
 
     if (pathname === "/api/settings/proxy") {
-      settings.proxy = { ...(settings.proxy as Record<string, unknown>), ...update };
+      settings.proxy = {
+        ...(settings.proxy as Record<string, unknown>),
+        ...Object.fromEntries(
+          Object.entries(update).filter(([key]) => !RETIRED_PROXY_SETTING_FIELDS.has(key)),
+        ),
+      };
     } else if (pathname === "/api/settings/forward-proxy") {
       settings.forwardProxy = { ...(settings.forwardProxy as Record<string, unknown>), ...update };
     } else if (pathname === "/api/settings/pricing") {

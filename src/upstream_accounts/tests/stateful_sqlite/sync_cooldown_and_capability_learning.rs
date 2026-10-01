@@ -1671,7 +1671,7 @@ async fn model_route_reservation_preserves_an_explicit_empty_model() {
 }
 
 #[test]
-fn websocket_terminal_reservation_key_reuses_the_active_pool_route_key() {
+fn terminal_reservation_key_reuses_the_active_pool_route_key() {
     assert_eq!(
         pool_routing_reservation_key_for_invoke_id("pool-ws-42-turn-3").as_deref(),
         Some("pool-route-42")

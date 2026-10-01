@@ -32,6 +32,7 @@ vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
     t: (key: string, params?: Record<string, string | number>) => {
+      if (key === "records.filters.transport.websocket") return "WebSocket（历史）";
       if (params?.error) return `${key}: ${params.error}`;
       if (params?.value) return `${key}: ${params.value}`;
       return key;
@@ -357,8 +358,8 @@ describe("InvocationRecordsTable", () => {
       Array.from(badges ?? []).every(
         (badge) =>
           badge.querySelector('[aria-hidden="true"]')?.textContent === "WS" &&
-          badge.textContent?.includes("WebSocket transport") &&
-          badge.getAttribute("title") === "WebSocket",
+          badge.textContent?.includes("WebSocket（历史）") &&
+          badge.getAttribute("title") === "WebSocket（历史）",
       ),
     ).toBe(true);
   });

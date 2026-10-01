@@ -73,6 +73,20 @@ describe("demoModel", () => {
     expect(serialized).not.toContain("user-token-must-not-persist");
   });
 
+  it("ignores retired WebSocket settings fields", () => {
+    const response = demoModel.updateSettings("/api/settings/proxy", {
+      websocketEnabled: true,
+      upstreamWebsocketDefaultEnabled: true,
+      enabledModels: ["gpt-5.6-sol"],
+    });
+
+    expect(response).not.toHaveProperty("websocketEnabled");
+    expect(response).not.toHaveProperty("upstreamWebsocketDefaultEnabled");
+    expect(demoModel.snapshot.settings.proxy).not.toHaveProperty("websocketEnabled");
+    expect(demoModel.snapshot.settings.proxy).not.toHaveProperty("upstreamWebsocketDefaultEnabled");
+    expect(demoModel.snapshot.settings.proxy).toHaveProperty("enabledModels", ["gpt-5.6-sol"]);
+  });
+
   it("publishes a deterministic records event for the Inspector action", () => {
     let received: DemoRealtimePayload | undefined;
     const unsubscribe = subscribeToDemoRealtime((payload) => {

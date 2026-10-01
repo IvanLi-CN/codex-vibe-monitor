@@ -866,8 +866,8 @@ describe("InvocationTable", () => {
 
     expect(websocketHtml).toContain('data-testid="invocation-transport-badge"');
     expect(websocketHtml).toContain('aria-hidden="true">WS</span>');
-    expect(websocketHtml).toContain("WebSocket transport");
-    expect(websocketHtml).toContain('title="WebSocket"');
+    expect(websocketHtml).toContain("WebSocket（历史）");
+    expect(websocketHtml).toContain('title="WebSocket（历史）"');
   });
 
   it("does not render the WS transport badge for http or legacy records", () => {

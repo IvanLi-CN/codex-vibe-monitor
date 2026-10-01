@@ -1,5 +1,10 @@
 use super::*;
 
+const WEBSOCKET_PROXY_REMOVED_MESSAGE: &str = "WebSocket proxy support has been removed";
+const WEBSOCKET_PROXY_REMOVED_CODE: &str = "websocket_proxy_removed";
+const WEBSOCKET_PROXY_REMOVED_BODY: &str =
+    r#"{"error":"WebSocket proxy support has been removed","code":"websocket_proxy_removed"}"#;
+
 pub(crate) async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.startup_ready.load(Ordering::Acquire) {
         (StatusCode::OK, "ok")
@@ -32,37 +37,29 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     State(state): State<Arc<AppState>>,
     connect_info: Result<ConnectInfo<SocketAddr>, axum::extract::rejection::ExtensionRejection>,
     downstream_transport: Option<Extension<DownstreamTransportObserver>>,
-    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if let Ok(ws) = ws
-        && is_websocket_upgrade_request(&headers)
-    {
-        let websocket_enabled = state.proxy_model_settings.read().await.websocket_enabled;
-        if !websocket_enabled {
-            return build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: format!(
-                    "OpenAI proxy WebSocket support is disabled; enable it in Settings or set {ENV_OPENAI_PROXY_WEBSOCKET_ENABLED}=true before first startup"
-                ),
+    if is_websocket_upgrade_request(&headers) {
+        info!(
+            method = %method,
+            uri_path = %original_uri.path(),
+            websocket_proxy_rejected = true,
+            "downstream WebSocket proxy request rejected"
+        );
+        return build_proxy_error_response(
+            ProxyErrorResponse {
+                status: StatusCode::NOT_IMPLEMENTED,
+                message: WEBSOCKET_PROXY_REMOVED_MESSAGE.to_string(),
                 cvm_id: None,
                 retry_after_secs: None,
-                code: None,
+                code: Some(WEBSOCKET_PROXY_REMOVED_CODE.to_string()),
                 blocked_binding: None,
-            });
-        }
-        return proxy_openai_v1_ws_common(
-            state,
-            connect_info.as_ref().ok().map(|info| info.0.ip()),
-            ws,
-            original_uri,
-            method,
-            headers,
-        )
-        .await;
+            },
+            "websocket-proxy-removed",
+        );
     }
     Box::pin(proxy_openai_v1_common(
         state,
@@ -74,6 +71,22 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
         downstream_transport.map(|Extension(observer)| observer),
     ))
     .await
+}
+
+fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::UPGRADE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+        })
+}
+
+fn proxy_uri_path_for_log(uri: &Uri) -> &str {
+    uri.path()
 }
 
 pub(crate) async fn proxy_openai_v1_common(
@@ -99,7 +112,7 @@ pub(crate) async fn proxy_openai_v1_common(
     info!(
         proxy_request_id,
         method = %method_for_log,
-        uri = %uri_for_log,
+        uri_path = %proxy_uri_path_for_log(&uri_for_log),
         proxy_request_started = true,
         has_body = request_may_have_body,
         content_length = ?request_content_length,
@@ -235,7 +248,7 @@ pub(crate) async fn proxy_openai_v1_common(
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
-                uri = %uri_for_log,
+                uri_path = %proxy_uri_path_for_log(&uri_for_log),
                 status = %err.status,
                 error = %err.message,
                 route_context_elapsed = route_context_started.elapsed().as_millis() as u64,
@@ -312,7 +325,7 @@ pub(crate) async fn proxy_openai_v1_common(
             info!(
                 proxy_request_id,
                 method = %method_for_log,
-                uri = %uri_for_log,
+                uri_path = %proxy_uri_path_for_log(&uri_for_log),
                 status = %status,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy response headers ready"
@@ -323,7 +336,7 @@ pub(crate) async fn proxy_openai_v1_common(
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
-                uri = %uri_for_log,
+                uri_path = %proxy_uri_path_for_log(&uri_for_log),
                 status = %err.status,
                 error = %err.message,
                 elapsed_ms = started_at.elapsed().as_millis(),
@@ -417,10 +430,20 @@ pub(crate) fn build_proxy_error_response_envelope(
     if let Some(blocked_binding) = err.blocked_binding.as_ref() {
         payload["blockedBinding"] = json!(blocked_binding);
     }
+    let body_text = if err.status == StatusCode::NOT_IMPLEMENTED
+        && err.message == WEBSOCKET_PROXY_REMOVED_MESSAGE
+        && code.as_deref() == Some(WEBSOCKET_PROXY_REMOVED_CODE)
+        && err.cvm_id.is_none()
+        && err.retry_after_secs.is_none()
+        && err.blocked_binding.is_none()
+    {
+        WEBSOCKET_PROXY_REMOVED_BODY.to_string()
+    } else {
+        serde_json::to_string(&payload).expect("proxy error response payload should serialize")
+    };
     ProxyErrorResponseEnvelope {
         status: err.status,
-        body_text: serde_json::to_string(&payload)
-            .expect("proxy error response payload should serialize"),
+        body_text,
         retry_after: err.retry_after_secs.map(|value| value.to_string()),
         cvm_invoke_id: err.cvm_id.as_ref().map(|_| invoke_id.to_string()),
     }
@@ -602,7 +625,7 @@ pub(crate) async fn acquire_proxy_request_concurrency_permit(
     info!(
         proxy_request_id,
         method = %method,
-        uri = %original_uri,
+        uri_path = %proxy_uri_path_for_log(original_uri),
         in_flight,
         proxy_request_admitted_observed = true,
         max_proxy_in_flight_observed = in_flight,
@@ -643,7 +666,7 @@ pub(crate) async fn resolve_proxy_route_context_for_request(
             warn!(
                 proxy_request_id,
                 method = %method,
-                uri = %original_uri,
+                uri_path = %proxy_uri_path_for_log(original_uri),
                 error = %err,
                 "failed to resolve pool route"
             );
@@ -675,7 +698,7 @@ pub(crate) async fn resolve_proxy_route_context_for_request(
             warn!(
                 proxy_request_id,
                 method = %method,
-                uri = %original_uri,
+                uri_path = %proxy_uri_path_for_log(original_uri),
                 error = %err,
                 "failed to resolve pool routing timeouts"
             );
@@ -5191,6 +5214,15 @@ pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_uri_path_for_log_excludes_query_parameters() {
+        let uri: Uri = "/v1/responses?api_key=secret-value"
+            .parse()
+            .expect("valid request URI");
+
+        assert_eq!(proxy_uri_path_for_log(&uri), "/v1/responses");
+    }
 
     #[test]
     fn extract_unsupported_model_from_route_error_supports_short_and_hyphenated_ids() {

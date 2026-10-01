@@ -13,7 +13,7 @@
 ### Goals
 
 - 每个 OAuth 或 API Key 上游账号拥有一个独立、有序、可原子保存的映射列表。
-- 将原始请求模型映射为该候选账号实际接收的目标模型，并在 HTTP、流式请求体与 WebSocket 中一致改写。
+- 将原始请求模型映射为该候选账号实际接收的目标模型，并在 HTTP 与流式请求体中一致改写。
 - 路由、逐模型健康、审计主键保持原始请求模型，同时记录实际目标模型和命中规则。
 - 为当前可路由账号的有效 `availableModels` 维护资格快照和最多十项具体模型反向索引；映射缓存与该资格缓存独立。
 
@@ -30,7 +30,7 @@
 
 - 账号详情路由页签中的映射编辑器、独立保存、脏草稿保护和尝试详情展示。
 - SQLite 持久化、详情 API 字段和专用整表替换 API。
-- 所有账号池 HTTP、实时请求体和 WebSocket 上游传输路径。
+- 所有账号池 HTTP 与实时请求体传输路径。
 - 候选资格、故障转移、逐模型状态重置、尝试记录和归档记录。
 
 ### Out of scope
@@ -73,7 +73,6 @@
 
 - 保存无效列表时不修改现有映射或缓存，前端保留草稿并显示字段级错误。
 - 保存后的路由只会看到旧或新完整 generation，不会看到半更新的列表或索引。
-- WebSocket 需要改写时，查询模型和受控 JSON 请求帧均须处理；无法解析的必需改写帧终止该尝试，不建立原模型上游会话。
 - 离开含脏草稿的路由页签、账号、详情抽屉、应用内页面或浏览器历史导航时，用户可继续编辑或明确丢弃；刷新/关闭使用浏览器离开提示。
 
 ## 接口契约（Interfaces & Contracts）
@@ -127,7 +126,6 @@ submission_gate: approved
 story_id_or_title: Account Pool/Upstream Accounts Overlays/Detail Drawer Routing Mappings
 state: desktop routing tab with two mapping rows
 evidence_note: Owner-approved desktop detail drawer showing the mapping editor, enabled state, delete actions, and independent save control.
-PR: include
 ![Model mapping desktop](./assets/model-mapping-desktop-1440x1024.png)
 
 source_type: storybook_canvas
@@ -142,21 +140,23 @@ submission_gate: approved
 story_id_or_title: Account Pool/Upstream Accounts Overlays/Detail Drawer Routing Mappings Mobile
 state: mobile routing tab with stacked mapping fields and operation bar
 evidence_note: Owner-approved mobile detail drawer showing stacked fields, stable operation controls, and the save action without overflow.
-PR: include
 ![Model mapping mobile](./assets/model-mapping-mobile-393x852.png)
 
 ## Related PRs
 
 - None
 
+## Related ADRs
+
+None
+
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：路由热路径不能把十项预热索引当成完整资格来源。
-- 风险：实时与 WebSocket 改写必须在已有请求转换路径中复用解析，避免无映射时改变流式性能。
+- 风险：实时请求体改写必须在已有请求转换路径中复用解析，避免无映射时改变流式性能。
 - 假设：预热顺序使用有效模型配置的稳定解析顺序，不增加基于历史流量的数据库查询。
 
 ## 参考（References）
 
 - `../r4p9x-upstream-account-policy-inheritance/SPEC.md`
 - `../zr9jd-api-key-model-routing-health/SPEC.md`
-- `../w5s2x-openai-websocket-proxy/SPEC.md`

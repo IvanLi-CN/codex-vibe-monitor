@@ -3,8 +3,6 @@ use sqlx::Transaction;
 
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
-pub(crate) const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_transport:websocket";
-pub(crate) const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 WS";
 pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
     verified_email,
@@ -159,22 +157,35 @@ pub(crate) async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> 
     .await
 }
 
-pub(crate) async fn ensure_websocket_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
-    ensure_protected_system_tag(
-        pool,
-        WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME,
-        WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY,
-    )
-    .await
-}
-
 pub(crate) async fn cleanup_non_system_tags(pool: &Pool<Sqlite>) -> Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
-        SET tag_ids_json = NULL
-        WHERE tag_ids_json IS NOT NULL
+        SET tag_ids_json = (
+            SELECT CASE
+                WHEN COUNT(*) = 0 THEN NULL
+                ELSE json_group_array(json_each.value)
+            END
+            FROM json_each(pool_oauth_login_sessions.tag_ids_json)
+            WHERE json_each.type != 'integer'
+               OR json_each.value NOT IN (
+                SELECT id
+                FROM pool_tags
+                WHERE system_key IS NULL
+            )
+        )
+        WHERE json_valid(tag_ids_json)
+          AND EXISTS (
+              SELECT 1
+              FROM json_each(pool_oauth_login_sessions.tag_ids_json)
+              WHERE json_each.type = 'integer'
+                AND json_each.value IN (
+                    SELECT id
+                    FROM pool_tags
+                    WHERE system_key IS NULL
+                )
+          )
         "#,
     )
     .execute(tx.as_mut())
@@ -251,40 +262,11 @@ pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
     ensure_account_has_unsupported_model_tag(pool, account_id, "gpt-5.5").await
 }
 
-pub(crate) async fn ensure_account_has_websocket_unsupported_tag(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-) -> Result<()> {
-    ensure_websocket_unsupported_system_tag(pool).await?;
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
-        SELECT ?1, tag.id, ?3, ?3
-        FROM pool_tags tag
-        WHERE tag.system_key = ?2
-        "#,
-    )
-    .bind(account_id)
-    .bind(WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY)
-    .bind(&now_iso)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 pub(crate) async fn account_has_gpt55_unsupported_tag(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<bool> {
     account_has_system_tag(pool, account_id, GPT55_UNSUPPORTED_SYSTEM_TAG_KEY).await
-}
-
-pub(crate) async fn account_has_websocket_unsupported_tag(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-) -> Result<bool> {
-    account_has_system_tag(pool, account_id, WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY).await
 }
 
 pub(crate) async fn account_has_system_tag(

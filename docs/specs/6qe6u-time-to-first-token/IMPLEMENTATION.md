@@ -10,7 +10,7 @@
 
 ## Coverage / rollout summary
 
-- HTTP SSE、Responses Compact、Chat Completions 与 WebSocket turn 已复用同一首个非空模型输出 delta 识别规则。
+- HTTP SSE、Responses Compact 与 Chat Completions 已复用同一首个非空模型输出 delta 识别规则；历史 WebSocket TTFT 只保留读路径。
 - invocation、archive、分钟/小时 read model、live snapshot、账号/模型统计与 timeseries 已接入 nullable `first_token_ms` 及其样本聚合。
 - owner-facing Dashboard、账号卡、统计、记录和调用详情已切换到 `firstToken*`；调用记录主信息并列展示 `TTFT` 与 `tUpstreamStreamMs` 对应的响应耗时，网络诊断保留独立的 `TTFB / 上游首字节`。
 - 旧数据保持 `null`，旧 `firstResponseByteTotal*` 仅兼容读取且不参与 TTFT 聚合或 UI fallback。
