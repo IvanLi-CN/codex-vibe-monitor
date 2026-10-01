@@ -8,8 +8,10 @@ Proxy invocation identity is a backend-owned contract. A prompt-cache key maps t
 conversation master row and receives a six-character conversation prefix. Each invocation appends a
 four-character ordered base-31 sequence. Invocations without a prompt-cache key use an in-memory
 six-character prefix scoped to the current UTC hour and the same ordered suffix. Allocation is
-serialized by the single process cache; a cache miss recovers the next sequence from SQLite rather
-than confirming every generated invocation against the database.
+serialized per normalized prompt-cache key; a cache miss recovers the next sequence from SQLite
+rather than confirming every generated invocation against the database. Unbound prefix
+initialization uses a separate process-local namespace, while hot suffix allocation uses its
+short-lived cache entry lock.
 
 The conversation master stores the normalized prompt-cache key, identity, aggregate invocation
 statistics, and first/last invocation times. Statistics are refreshed after batched terminal and

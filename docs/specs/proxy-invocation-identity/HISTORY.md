@@ -12,6 +12,11 @@
 - The prompt-cache conversation master replaces request-time derivation as the durable owner of conversation identity and delayed aggregate statistics. Historical materialization is completed by an ordered background task; its 400-key logical pages use adaptive committed micro-batches and yield only at transaction boundaries.
 - WebSocket pre-upstream and per-turn diagnostics now use the same compact identifier contract as HTTP proxy capture.
 
+## Compatibility Follow-up
+
+- Proxy allocation now uses per-normalized-key async locks with weak idle-entry cleanup, registers active references before waits, and releases them on failure or cancellation. The global cache mutex is held only for short in-memory operations; identity and sequence SQL use one `InteractiveProxy` admission and cache state is updated after admission is released.
+- Unbound hourly prefixes are protected by an independent process-local namespace during initialization and exclude issued prefixes, conversation masters, and invocation prefixes. The route-health latest-success lookup gains one idempotent partial covering index; no public response, account state, timeout, retry budget, or existing business row is changed.
+
 ## Related Changes
 
 - None recorded until delivery creates the signed-off commit and pull request.

@@ -27,11 +27,14 @@
 
 - The system MUST persist one prompt-cache conversation master per normalized prompt-cache key, including its conversation ID, aggregate invocation counts, token totals, cost totals, and first/last invocation timestamps.
 - The master conversation ID MUST be checked against existing master IDs before insertion, with bounded candidate retries and an explicit failure after exhaustion.
+- A newly generated conversation prefix MUST exclude process-issued unbound prefixes as well as existing conversation masters and invocation prefixes.
 
 ### REQ-PII-003
 
 - The allocator MUST keep normal next-sequence state in memory, recover it from the master row and retained invocation IDs after a cache miss, and avoid a database uniqueness confirmation for every invocation.
 - A concurrent prompt-key creation race MUST recover the already persisted master row instead of creating a duplicate identity.
+- Allocation MUST serialize only the normalized prompt-cache key that is being reserved; unrelated keys MUST NOT wait on the identity cache while identity or sequence SQL is in flight. Active prompt-cache references MUST be registered before an allocation wait and released on failure or cancellation.
+- Unbound prefix initialization MUST use a separate process-local namespace lock; hot suffix allocation MUST use only its short-lived per-cache lock.
 
 ### REQ-PII-004
 
