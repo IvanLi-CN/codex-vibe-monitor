@@ -725,10 +725,11 @@ def long_wait_cancel(round_index):
         close_started = time.perf_counter()
         time.sleep(1.0)
         sock.close()
+        close_duration_ms = (time.perf_counter() - close_started) * 1000
         terminal = wait_for_cancel_terminal(accepted[0], 15)
         return {
             'status': 'client_closed',
-            'duration_ms': (time.perf_counter() - close_started) * 1000,
+            'duration_ms': close_duration_ms,
             'server_accepted': True,
             'invoke_id': accepted[0],
             'terminal': terminal,
