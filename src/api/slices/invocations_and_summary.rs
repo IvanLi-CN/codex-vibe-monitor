@@ -16498,7 +16498,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             }
             while receiver.try_recv().is_ok() {}
             while mutation_receiver.try_recv().is_ok() {}
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "summary_snapshot",
                 &crate::maintenance_store::task_title_for_observation("summary_snapshot"),
                 match trigger {
@@ -16514,10 +16514,11 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 result = refresh_summary_snapshots(state.as_ref()) => result,
             };
-            match refresh_result {
+            let status = match refresh_result {
                 Ok(()) => {
                     dirty = false;
                     retry_not_before = None;
+                    "success"
                 }
                 Err(error) => {
                     retry_not_before = Some(summary_snapshot_retry_not_before(Instant::now()));
@@ -16526,8 +16527,10 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                         retry_after_secs = SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF.as_secs(),
                         "summary snapshot maintenance failed; retaining last-good responses before a bounded retry"
                     );
+                    "failed"
                 }
-            }
+            };
+            observation.finish_with_status(status);
         }
     });
 }

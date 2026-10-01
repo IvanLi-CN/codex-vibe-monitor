@@ -1942,8 +1942,15 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     else {
         return StartupBackfillMaintenancePass::default();
     };
-    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate, None)
-        .await
+    run_startup_backfill_maintenance_pass_with_gate_inner(
+        state,
+        cancel,
+        selected_tasks,
+        gate,
+        None,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
@@ -1951,6 +1958,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
     cancel: &CancellationToken,
     selected_tasks: Option<&[StartupBackfillTask]>,
     observation_parent_task_key: Option<&'static str>,
+    managed_run_id: Option<i64>,
 ) -> StartupBackfillMaintenancePass {
     run_startup_backfill_maintenance_pass_with_gate_inner(
         state,
@@ -1958,6 +1966,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
         selected_tasks,
         crate::db_pressure::global_db_pressure_gate(),
         observation_parent_task_key,
+        managed_run_id,
     )
     .await
 }
@@ -1991,6 +2000,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
     observation_parent_task_key: Option<&'static str>,
+    managed_run_id: Option<i64>,
 ) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
@@ -2025,6 +2035,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 *task,
                 gate,
                 observation_parent_task_key,
+                managed_run_id,
             ) => result,
         };
         match task_result {
@@ -2222,6 +2233,7 @@ pub(crate) async fn run_startup_backfill_task_if_due(
         task,
         crate::db_pressure::global_db_pressure_gate(),
         None,
+        None,
     )
     .await
     .map(|(outcome, _)| outcome.actionable)
@@ -2232,7 +2244,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> Result<bool> {
-    run_startup_backfill_task_if_due_outcome(state, task, gate, None)
+    run_startup_backfill_task_if_due_outcome(state, task, gate, None, None)
         .await
         .map(|(outcome, _)| outcome.actionable)
 }
@@ -2242,6 +2254,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
     observation_parent_task_key: Option<&'static str>,
+    managed_run_id: Option<i64>,
 ) -> Result<(StartupBackfillTaskRunOutcome, Option<String>)> {
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
@@ -2371,18 +2384,23 @@ async fn run_startup_backfill_task_if_due_outcome(
         })?;
 
     let observation_task_key = startup_backfill_observation_task_key(observation_parent_task_key);
-    let observation = crate::TaskExecutionObservation::begin(
-        observation_task_key,
-        &crate::maintenance_store::task_title_for_observation(observation_task_key),
-        "event_or_due",
-        crate::maintenance_store::task_execution_class("startup_backfill"),
-        "resource_wait",
-    );
+    let observation = managed_run_id
+        .and_then(crate::TaskExecutionObservation::for_managed_run)
+        .unwrap_or_else(|| {
+            crate::TaskExecutionObservation::begin(
+                observation_task_key,
+                &crate::maintenance_store::task_title_for_observation(observation_task_key),
+                "event_or_due",
+                crate::maintenance_store::task_execution_class("startup_backfill"),
+                "resource_wait",
+            )
+        });
     let child_key = crate::maintenance_store::managed_startup_backfill_suffix(&task_name)
         .map(|suffix| format!("startup_backfill.{suffix}"))
         .unwrap_or_else(|| format!("startup_backfill.{}", task.log_label()));
     let child_title = crate::maintenance_store::task_title_for_observation(&child_key);
     observation.set_child(&child_key, &child_title);
+    let _child_observation_guard = TaskObservationChildGuard(observation.clone());
 
     let started_at = Instant::now();
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
@@ -2449,6 +2467,9 @@ async fn run_startup_backfill_task_if_due_outcome(
                         resumed,
                         "startup backfill task stopped at a committed micro-batch boundary after operator disable"
                     );
+                    if managed_run_id.is_none() {
+                        observation.finish_with_status("skipped");
+                    }
                     return Ok((
                         StartupBackfillTaskRunOutcome {
                             actionable: false,
@@ -2471,6 +2492,9 @@ async fn run_startup_backfill_task_if_due_outcome(
                     detail = %detail,
                     "startup backfill task yielded at a prompt-cache micro-batch boundary"
                 );
+                if managed_run_id.is_none() {
+                    observation.finish_with_status("skipped");
+                }
                 return persist_startup_backfill_pressure_defer(
                     state,
                     task,
@@ -2592,7 +2616,25 @@ async fn run_startup_backfill_task_if_due_outcome(
         }
     };
 
+    if managed_run_id.is_none() {
+        let status = if outcome.0.failed {
+            "failed"
+        } else if outcome.0.deferred {
+            "skipped"
+        } else {
+            "success"
+        };
+        observation.finish_with_status(status);
+    }
     Ok(outcome)
+}
+
+struct TaskObservationChildGuard(crate::TaskExecutionObservation);
+
+impl Drop for TaskObservationChildGuard {
+    fn drop(&mut self) {
+        self.0.clear_child();
+    }
 }
 
 pub(crate) async fn persist_startup_backfill_task_failure(

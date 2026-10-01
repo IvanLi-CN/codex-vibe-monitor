@@ -14,6 +14,7 @@ import {
 import { demoSearchParamsFromLocation } from "./runtime";
 
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
 const DEMO_INVOCATION_RESPONSE_BODY_SIZE = 138_649;
 const demoResetModelRoutes = new Set<string>();
@@ -2968,6 +2969,8 @@ export function managedTasks() {
     cronExpr: string | null;
     nextTriggerAt: string | null;
     isManual: boolean;
+    displayColorLight?: string;
+    displayColorDark?: string;
     effectiveSchedule?: {
       source: string;
       intervalSecs: number | null;
@@ -3217,7 +3220,226 @@ export function managedTasks() {
       executionClass: null,
     }),
   );
-  return baseTasks.concat(childTasks);
+  const combinedTasks = baseTasks.concat(childTasks);
+  const stableHueByTask = new Map(
+    combinedTasks
+      .map((task) => task.taskKey)
+      .sort()
+      .map((taskKey, index) => [taskKey, Math.round((index * 137.507_764) % 360)]),
+  );
+  return combinedTasks.map((task) => {
+    const hue = stableHueByTask.get(task.taskKey) ?? 0;
+    return {
+      ...task,
+      displayColorLight: `hsl(${hue} 72% 43%)`,
+      displayColorDark: `hsl(${hue} 76% 66%)`,
+    };
+  });
+}
+
+function demoTaskOperationsRuntime() {
+  const now = Date.now();
+  const activeRuns = [
+    {
+      executionId: 900,
+      executionUid: "demo-active-dashboard-runtime",
+      taskKey: "dashboard_runtime_projection_reconcile",
+      title: "仪表盘运行投影校对",
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      triggerKind: "event",
+      phase: "processing",
+      executionClass: "p2_derived",
+      startedAt: new Date(now - 42_000).toISOString(),
+      elapsedMs: 42_000,
+    },
+  ];
+  return {
+    observedAt: new Date(now).toISOString(),
+    activeRuns,
+    queuedRuns: [
+      {
+        runId: 901,
+        taskKey: "retention_archive",
+        title: "数据保留与归档",
+        triggerKind: "manual",
+        requestedAt: new Date(now - 55_000).toISOString(),
+        waitingMs: 55_000,
+        position: 1,
+      },
+    ],
+    queuedRunsAvailable: true,
+    admissionWaits: [
+      {
+        id: "demo-wait-pressure",
+        taskKey: "long_term_projection",
+        title: "长期统计投影",
+        reason: "pressure_cooldown",
+        startedAt: new Date(now - 120_000).toISOString(),
+        waitingMs: 120_000,
+        retryAt: null,
+      },
+      {
+        id: "demo-wait-resource",
+        taskKey: "timeseries_minute_projection",
+        title: "分钟时序投影",
+        reason: "resource_busy",
+        startedAt: new Date(now - 70_000).toISOString(),
+        waitingMs: 70_000,
+        retryAt: null,
+      },
+    ],
+    admissionWaitsAvailable: true,
+  };
+}
+
+function demoTaskOperationsTimeline() {
+  const now = Date.now();
+  const iso = (ageMs: number) => new Date(now - ageMs).toISOString();
+  const active = demoTaskOperationsRuntime().activeRuns[0];
+  const segments = [
+    {
+      segmentId: active.executionUid,
+      kind: "execution",
+      taskKey: active.taskKey,
+      title: active.title,
+      startedAt: active.startedAt,
+      lastObservedAt: new Date(now).toISOString(),
+      finishedAt: null,
+      durationMs: null,
+      status: "running",
+      triggerKind: active.triggerKind,
+      executionClass: active.executionClass,
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 901,
+      sessionId: "demo-session",
+      revision: 91,
+    },
+    {
+      segmentId: "demo-failed-retention",
+      kind: "execution",
+      taskKey: "retention_archive",
+      title: "数据保留与归档",
+      startedAt: iso(7_400_000),
+      lastObservedAt: iso(7_345_000),
+      finishedAt: iso(7_345_000),
+      durationMs: 55_000,
+      status: "failed",
+      triggerKind: "interval",
+      executionClass: "maintenance_retention",
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 812,
+      sessionId: "demo-session",
+      revision: 90,
+    },
+    {
+      segmentId: "demo-interrupted-backfill",
+      kind: "execution",
+      taskKey: "startup_backfill.proxy_usage",
+      title: "代理用量回填",
+      startedAt: iso(10 * 60 * 60_000),
+      lastObservedAt: iso(9.8 * 60 * 60_000),
+      finishedAt: null,
+      durationMs: null,
+      status: "interrupted",
+      triggerKind: "event",
+      executionClass: null,
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: null,
+      sessionId: "demo-session",
+      revision: 89,
+    },
+    {
+      segmentId: "demo-deferral-pressure",
+      kind: "deferral",
+      taskKey: "long_term_projection",
+      title: "长期统计投影",
+      startedAt: iso(5 * 60_000),
+      lastObservedAt: new Date(now).toISOString(),
+      finishedAt: null,
+      durationMs: null,
+      status: "waiting",
+      triggerKind: null,
+      executionClass: null,
+      reason: "pressure_cooldown",
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: null,
+      sessionId: "demo-session",
+      revision: 88,
+    },
+    {
+      segmentId: "demo-deferral-resource",
+      kind: "deferral",
+      taskKey: "timeseries_minute_projection",
+      title: "分钟时序投影",
+      startedAt: iso(3 * 60_000),
+      lastObservedAt: iso(60_000),
+      finishedAt: iso(60_000),
+      durationMs: 120_000,
+      status: "released",
+      triggerKind: null,
+      executionClass: null,
+      reason: "resource_busy",
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: null,
+      sessionId: "demo-session",
+      revision: 87,
+    },
+    ...Array.from({ length: 14 }, (_, index) => {
+      const startedAt = now - (210_000 - index * 12_000);
+      return {
+        segmentId: `demo-dense-${index}`,
+        kind: "execution",
+        taskKey: index % 2 ? "summary_snapshot" : "timeseries_minute_projection",
+        title: index % 2 ? "汇总快照" : "分钟时序投影",
+        startedAt: new Date(startedAt).toISOString(),
+        lastObservedAt: new Date(startedAt + 4_000).toISOString(),
+        finishedAt: new Date(startedAt + 4_000).toISOString(),
+        durationMs: 4_000,
+        status: index % 6 === 0 ? "failed" : "success",
+        triggerKind: "event",
+        executionClass: "p2_derived",
+        reason: null,
+        retryAt: null,
+        activeChildTaskKey: null,
+        activeChildTitle: null,
+        managedRunId: 850 + index,
+        sessionId: "demo-session",
+        revision: 70 + index,
+      };
+    }),
+  ];
+  return {
+    observedAt: new Date(now).toISOString(),
+    windowStart: iso(DAY_MS),
+    windowEnd: new Date(now).toISOString(),
+    watermark: 91,
+    segments,
+    coverage: [
+      {
+        sessionId: "demo-session",
+        startedAt: iso(22 * 60 * 60_000),
+        lastSeenAt: new Date(now).toISOString(),
+        endedAt: null,
+        droppedEvents: 0,
+      },
+    ],
+    nextCursor: null,
+    resetRequired: false,
+  };
 }
 
 function managedTaskDetail(taskKey: string) {
@@ -4628,40 +4850,10 @@ export async function handleDemoRequest(request: Request) {
   }
   if (pathname === "/api/system/managed-tasks" && request.method === "GET")
     return json(managedTasks());
-  if (pathname === "/api/system/managed-tasks/runtime" && request.method === "GET") {
-    const demoActiveRun: DemoManagedTaskRun = {
-      id: 1,
-      startedAt: new Date(Date.parse(demoNow()) - 18_000).toISOString(),
-      finishedAt: null,
-      durationMs: null,
-      triggerKind: "interval",
-      status: "running",
-      processedCount: null,
-      updatedCount: null,
-      errorDetail: null,
-    };
-    const activeRuns = [
-      ["dashboard_runtime_projection_reconcile", [demoActiveRun] as DemoManagedTaskRun[]] as const,
-      ...managedTaskRuns.entries(),
-    ].flatMap(([taskKey, runs]) =>
-      runs
-        .filter((run) => run.status === "running")
-        .map((run) => ({
-          executionId: run.id,
-          taskKey,
-          title: managedTasks().find((task) => task.taskKey === taskKey)?.title ?? taskKey,
-          activeChildTaskKey: null,
-          activeChildTitle: null,
-          triggerKind: run.triggerKind ?? "manual",
-          phase: "processing",
-          executionClass:
-            managedTasks().find((task) => task.taskKey === taskKey)?.executionClass ?? null,
-          startedAt: run.startedAt,
-          elapsedMs: Math.max(0, Date.parse(demoNow()) - Date.parse(run.startedAt)),
-        })),
-    );
-    return json({ observedAt: demoNow(), activeRuns });
-  }
+  if (pathname === "/api/system/managed-tasks/runtime" && request.method === "GET")
+    return json(demoTaskOperationsRuntime());
+  if (pathname === "/api/system/managed-tasks/timeline" && request.method === "GET")
+    return json(demoTaskOperationsTimeline());
   const managedTaskMatch = pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
   if (managedTaskMatch && request.method === "GET") {
     const detail = managedTaskDetail(decodeURIComponent(managedTaskMatch[1]));

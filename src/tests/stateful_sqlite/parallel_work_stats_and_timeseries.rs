@@ -21675,6 +21675,7 @@ async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
     let recovery = crate::api::prepare_timeseries_minute_projection_after_restart(
         state.as_ref(),
         &CancellationToken::new(),
+        None,
     )
     .await
     .expect("invalidate terminal coverage through bounded P2 recovery");
@@ -21842,6 +21843,7 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
     let recovery = crate::api::prepare_timeseries_minute_projection_after_restart(
         state.as_ref(),
         &CancellationToken::new(),
+        None,
     )
     .await
     .expect("recover durable replacement coverage in bounded P2 transactions");
@@ -22320,6 +22322,7 @@ async fn startup_minute_projection_recovery_stops_before_writes_when_cancelled()
     let outcome = crate::api::prepare_timeseries_minute_projection_after_restart(
         state.as_ref(),
         &cancellation,
+        None,
     )
     .await
     .expect("cancelled startup recovery should not report a database error");
@@ -22363,6 +22366,7 @@ async fn startup_minute_projection_recovery_keeps_the_durable_fence_when_cancell
         crate::api::prepare_timeseries_minute_projection_after_restart(
             recovery_state.as_ref(),
             &recovery_cancellation,
+            None,
         )
         .await
     });

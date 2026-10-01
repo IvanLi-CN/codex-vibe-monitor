@@ -619,7 +619,7 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
             ) else {
                 continue;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "raw_payload_metrics_inventory",
                 &crate::maintenance_store::task_title_for_observation(
                     "raw_payload_metrics_inventory",
@@ -628,13 +628,16 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                 crate::maintenance_store::task_execution_class("raw_payload_metrics_inventory"),
                 "processing",
             );
+            let mut terminal_status = "success";
             if let Err(error) =
                 crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
             {
+                terminal_status = "failed";
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory reset resume failed");
             }
             if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
+                terminal_status = "failed";
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory batch failed");
             } else {
@@ -645,6 +648,7 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                     crate::proxy::recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
                 }
             }
+            observation.finish_with_status(terminal_status);
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}

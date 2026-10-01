@@ -408,7 +408,11 @@ impl SummaryCoverageRecoverySupervisor {
         let admission = match reservation {
             Some(reservation) => {
                 pressure_gate
-                    .begin_reserved_priority_background(reservation, queue_wait)
+                    .begin_reserved_priority_background(
+                        reservation,
+                        queue_wait,
+                        Some("summary_historical_coverage_recovery"),
+                    )
                     .await
             }
             None => {
@@ -743,7 +747,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             else {
                 return;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "summary_coverage_recovery",
                 &crate::maintenance_store::task_title_for_observation("summary_coverage_recovery"),
                 "startup",
@@ -758,6 +762,11 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                     startup_priority,
                 ) => result,
             };
+            observation.finish_with_status(if initial_result.is_ok() {
+                "success"
+            } else {
+                "skipped"
+            });
             match initial_result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {
@@ -782,7 +791,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             else {
                 continue;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "summary_coverage_recovery",
                 &crate::maintenance_store::task_title_for_observation("summary_coverage_recovery"),
                 "adaptive",
@@ -797,6 +806,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                     None,
                 ) => result,
             };
+            observation.finish_with_status(if result.is_ok() { "success" } else { "skipped" });
             next_turn = match result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {

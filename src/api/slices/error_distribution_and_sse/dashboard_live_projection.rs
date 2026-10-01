@@ -470,7 +470,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                     continue;
                 }
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "dashboard_runtime_projection_reconcile",
                 &crate::maintenance_store::task_title_for_observation(
                     "dashboard_runtime_projection_reconcile",
@@ -533,6 +533,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                                 )),
                             });
                     }
+                    observation.finish_with_status("success");
                 }
                 Err(err) => {
                     state.performance_telemetry.record_counter(
@@ -552,6 +553,11 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                         | ApiError::Internal(err) => pressure_gate
                             .record_error("dashboard_runtime_projection_reconcile", err),
                     };
+                    observation.finish_with_status(if pressure_error {
+                        "skipped"
+                    } else {
+                        "failed"
+                    });
                     if pressure_error {
                         state
                             .proxy_runtime_invocations

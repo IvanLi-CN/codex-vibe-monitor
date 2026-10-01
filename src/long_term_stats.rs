@@ -3353,14 +3353,21 @@ async fn flush_long_term_projection(
             retry_at: Some(Instant::now() + Duration::from_secs(1)),
         });
     };
-    let _observation = crate::TaskExecutionObservation::begin(
+    let observation = crate::TaskExecutionObservation::begin(
         "long_term_projection",
         &crate::maintenance_store::task_title_for_observation("long_term_projection"),
         trigger,
         crate::maintenance_store::task_execution_class("long_term_projection"),
         "processing",
     );
-    flush_long_term_projection_unlocked(state, trigger).await
+    let result = flush_long_term_projection_unlocked(state, trigger).await;
+    let status = match &result {
+        Ok(LongTermProjectionFlushOutcome::Completed) => "success",
+        Ok(LongTermProjectionFlushOutcome::DeferredByPressure { .. }) => "skipped",
+        Err(_) => "failed",
+    };
+    observation.finish_with_status(status);
+    result
 }
 
 async fn flush_long_term_projection_unlocked(
@@ -6736,7 +6743,7 @@ pub(crate) fn spawn_long_term_stats_backfill(
                 }
                 continue;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "long_term_projection",
                 &crate::maintenance_store::task_title_for_observation("long_term_projection"),
                 "startup",
@@ -6747,24 +6754,34 @@ pub(crate) fn spawn_long_term_stats_backfill(
                 &shutdown,
                 crate::db_pressure::global_db_pressure_gate(),
             );
-            if let Err(error) =
-                mark_long_term_stats_backfill_preparing_with_control(&pool, &control).await
+            let status = match mark_long_term_stats_backfill_preparing_with_control(&pool, &control)
+                .await
             {
-                warn!(error = %error, "failed to mark long-term initial materialization preparing");
-            } else {
-                if shutdown.is_cancelled() {
-                    break;
+                Err(error) => {
+                    warn!(error = %error, "failed to mark long-term initial materialization preparing");
+                    "failed"
                 }
-                if let Err(error) =
-                    refresh_long_term_stats_with_control(&pool, retention_days, &control).await
-                {
-                    if long_term_projection_write_is_deferred(&error) {
-                        debug!(error = %error, "long-term initial materialization deferred by database pressure");
-                    } else {
-                        warn!(error = %error, "long-term initial materialization failed");
+                Ok(()) if shutdown.is_cancelled() => break,
+                Ok(()) => {
+                    match refresh_long_term_stats_with_control(&pool, retention_days, &control)
+                        .await
+                    {
+                        Ok(()) => "success",
+                        Err(error) if long_term_projection_write_is_deferred(&error) => {
+                            debug!(error = %error, "long-term initial materialization deferred by database pressure");
+                            "skipped"
+                        }
+                        Err(error) => {
+                            warn!(error = %error, "long-term initial materialization failed");
+                            "failed"
+                        }
                     }
                 }
+            };
+            if shutdown.is_cancelled() {
+                break;
             }
+            observation.finish_with_status(status);
             tokio::select! {
                 _ = shutdown.cancelled() => break,
                 _ = ticker.tick() => {}

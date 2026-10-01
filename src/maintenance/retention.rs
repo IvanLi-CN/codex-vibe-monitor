@@ -8222,6 +8222,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                     "retention maintenance deferred; preserving the prompt retry schedule"
                 );
                 invalidate_system_status_cache(state.as_ref()).await;
+                observation.finish_with_status("skipped");
                 return false;
             }
             // Commit the bounded inventory reset before task bookkeeping or cancellation can
@@ -8266,7 +8267,6 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             let touched_anything = summary.touched_anything();
             if touched_anything && !summary.dry_run {
-                observation.finish();
                 let task_run = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return false,
@@ -8292,6 +8292,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 }
             }
             invalidate_system_status_cache(state.as_ref()).await;
+            observation.finish_with_status("success");
             touched_anything
         }
         Err(err) => {
@@ -8304,7 +8305,6 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 .record_error("data_retention_maintenance", &err);
             retention_record_error("data_retention_maintenance", &err);
             if !state.config.retention_dry_run {
-                observation.finish();
                 let task_run = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return false,
@@ -8337,6 +8337,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 retry_soon = pressure_error,
                 "failed to run retention maintenance"
             );
+            observation.finish_with_status(if pressure_error { "skipped" } else { "failed" });
             !pressure_error
         }
     }

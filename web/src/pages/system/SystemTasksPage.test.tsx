@@ -12,11 +12,13 @@ import SystemTasksPage from "./SystemTasksPage";
 const apiMocks = vi.hoisted(() => ({
   fetchManagedTasks: vi.fn(),
   fetchManagedTaskRuntime: vi.fn(),
+  fetchManagedTaskTimeline: vi.fn(),
 }));
 vi.mock("../../lib/api", async () => ({
   ...(await vi.importActual<typeof import("../../lib/api")>("../../lib/api")),
   fetchManagedTasks: apiMocks.fetchManagedTasks,
   fetchManagedTaskRuntime: apiMocks.fetchManagedTaskRuntime,
+  fetchManagedTaskTimeline: apiMocks.fetchManagedTaskTimeline,
 }));
 
 let host: HTMLDivElement | null = null;
@@ -54,6 +56,7 @@ describe("SystemTasksPage", () => {
       activeRuns: [
         {
           executionId: 42,
+          executionUid: "run-42",
           taskKey: "retention_archive",
           title: "数据保留与归档",
           activeChildTaskKey: null,
@@ -65,6 +68,40 @@ describe("SystemTasksPage", () => {
           elapsedMs: 12_000,
         },
       ],
+      queuedRuns: [
+        {
+          runId: 43,
+          taskKey: "retention_archive",
+          title: "数据保留与归档",
+          triggerKind: "manual",
+          requestedAt: "2026-10-01T00:00:01.000Z",
+          waitingMs: 5_000,
+          position: 1,
+        },
+      ],
+      queuedRunsAvailable: true,
+      admissionWaits: [
+        {
+          id: "wait-44",
+          taskKey: "retention_archive",
+          title: "数据保留与归档",
+          reason: "pressure_cooldown",
+          startedAt: "2026-10-01T00:00:00.000Z",
+          waitingMs: 8_000,
+          retryAt: null,
+        },
+      ],
+      admissionWaitsAvailable: true,
+    });
+    apiMocks.fetchManagedTaskTimeline.mockResolvedValue({
+      observedAt: "2026-10-01T00:00:02.000Z",
+      windowStart: "2026-09-30T00:00:02.000Z",
+      windowEnd: "2026-10-01T00:00:02.000Z",
+      watermark: 1,
+      segments: [],
+      coverage: [],
+      nextCursor: null,
+      resetRequired: false,
     });
     apiMocks.fetchManagedTasks.mockResolvedValue([
       {
@@ -76,6 +113,8 @@ describe("SystemTasksPage", () => {
         intervalSecs: 300,
         cronExpr: null,
         isManual: false,
+        displayColorLight: "#c2410c",
+        displayColorDark: "#f59e0b",
       },
       {
         taskKey: "raw_compression",
@@ -86,6 +125,8 @@ describe("SystemTasksPage", () => {
         intervalSecs: null,
         cronExpr: null,
         isManual: true,
+        displayColorLight: "#0f766e",
+        displayColorDark: "#2dd4bf",
       },
     ]);
   });
@@ -96,6 +137,7 @@ describe("SystemTasksPage", () => {
     root = null;
     apiMocks.fetchManagedTasks.mockReset();
     apiMocks.fetchManagedTaskRuntime.mockReset();
+    apiMocks.fetchManagedTaskTimeline.mockReset();
   });
 
   it("loads the managed task directory", async () => {
@@ -104,7 +146,11 @@ describe("SystemTasksPage", () => {
     expect(apiMocks.fetchManagedTasks).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchManagedTaskRuntime).toHaveBeenCalledTimes(1);
     expect(host?.textContent).toContain("数据保留与归档");
-    expect(host?.textContent).toContain("当前正在工作");
+    expect(host?.textContent).toContain("正在执行");
+    expect(host?.textContent).toContain("已入队");
+    expect(host?.textContent).toContain("等待准入 / 压力延后");
+    expect(host?.textContent).toContain("压力冷却让行");
+    expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1);
     expect(host?.textContent).toContain("raw_compression");
   });
 
@@ -126,7 +172,8 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("显示 1 / 2");
     expect(page.getByRole("link", { name: /原始载荷压缩/ })).toBeTruthy();
     expect(page.queryByRole("link", { name: /数据保留与归档/ })).toBeNull();
-    expect(host?.textContent).toContain("当前正在工作");
+    expect(host?.textContent).toContain("正在执行");
+    expect(host?.textContent).toContain("第 1 位");
 
     const checkboxes = Array.from(
       host?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [],
@@ -147,7 +194,7 @@ describe("SystemTasksPage", () => {
     apiMocks.fetchManagedTaskRuntime.mockRejectedValueOnce(new Error("runtime unavailable"));
     renderPage();
     await waitFor(() => expect(host?.textContent).toContain("实时运行观测未知"));
-    expect(host?.textContent).toContain("暂时无法确认当前是否有任务正在工作");
+    expect(host?.textContent).toContain("当前是否有任务正在工作未知");
     expect(host?.textContent).toContain("观测未知");
   });
 });

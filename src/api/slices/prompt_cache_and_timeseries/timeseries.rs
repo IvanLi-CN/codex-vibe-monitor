@@ -1975,14 +1975,21 @@ async fn try_acquire_timeseries_minute_projection_write(
 
 fn begin_timeseries_minute_projection_observation(
     trigger: &'static str,
+    managed_run_id: Option<i64>,
 ) -> crate::TaskExecutionObservation {
-    crate::TaskExecutionObservation::begin(
-        "timeseries_minute_projection",
-        &crate::maintenance_store::task_title_for_observation("timeseries_minute_projection"),
-        trigger,
-        crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
-        "processing",
-    )
+    managed_run_id
+        .and_then(crate::TaskExecutionObservation::for_managed_run)
+        .unwrap_or_else(|| {
+            crate::TaskExecutionObservation::begin(
+                "timeseries_minute_projection",
+                &crate::maintenance_store::task_title_for_observation(
+                    "timeseries_minute_projection",
+                ),
+                trigger,
+                crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+                "processing",
+            )
+        })
 }
 
 async fn invalidate_timeseries_minute_projection_coverage(
@@ -1991,6 +1998,7 @@ async fn invalidate_timeseries_minute_projection_coverage(
     trigger: &'static str,
     pending_event_count: usize,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    managed_run_id: Option<i64>,
     observation: &mut Option<crate::TaskExecutionObservation>,
 ) -> Result<TimeseriesMinuteProjectionCoverageInvalidationOutcome, ApiError> {
     let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
@@ -2024,7 +2032,9 @@ async fn invalidate_timeseries_minute_projection_coverage(
                 );
             }
         };
-        observation.get_or_insert_with(|| begin_timeseries_minute_projection_observation(trigger));
+        observation.get_or_insert_with(|| {
+            begin_timeseries_minute_projection_observation(trigger, managed_run_id)
+        });
 
         let started = Instant::now();
         let mut tx = state.pool.begin().await?;
@@ -2075,6 +2085,7 @@ pub(crate) async fn flush_timeseries_minute_projection(
         trigger,
         &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
         None,
+        None,
     )
     .await
 }
@@ -2098,6 +2109,7 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
         trigger,
         coordinator,
         None,
+        None,
     )
     .await
 }
@@ -2105,12 +2117,14 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
 pub(crate) async fn flush_timeseries_minute_projection_managed(
     state: &AppState,
     trigger: &'static str,
+    managed_run_id: i64,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
     flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
         &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
         None,
+        Some(managed_run_id),
     )
     .await
 }
@@ -2120,6 +2134,7 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
     trigger: &'static str,
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    managed_run_id: Option<i64>,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
     if timeseries_minute_projection_is_cancelled(cancellation) {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
@@ -2128,9 +2143,12 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         let startup_cancellation = cancellation
             .cloned()
             .unwrap_or_else(tokio_util::sync::CancellationToken::new);
-        let recovery =
-            prepare_timeseries_minute_projection_after_restart(state, &startup_cancellation)
-                .await?;
+        let recovery = prepare_timeseries_minute_projection_after_restart(
+            state,
+            &startup_cancellation,
+            managed_run_id,
+        )
+        .await?;
         if recovery != TimeseriesMinuteProjectionFlushOutcome::Flushed {
             return Ok(recovery);
         }
@@ -2163,6 +2181,7 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 trigger,
                 flushed_event_ids.len(),
                 cancellation,
+                managed_run_id,
                 &mut observation,
             )
             .await?
@@ -2288,7 +2307,9 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                     return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
                 }
             };
-            observation.get_or_insert_with(|| begin_timeseries_minute_projection_observation(trigger));
+            observation.get_or_insert_with(|| {
+                begin_timeseries_minute_projection_observation(trigger, managed_run_id)
+            });
 
             let transaction_started = Instant::now();
             let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -2372,7 +2393,7 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
             true,
         )
         .await;
-    match result {
+    let final_result = match result {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
             let gate = crate::db_pressure::global_db_pressure_gate();
@@ -2394,7 +2415,19 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 Err(error)
             }
         }
+    };
+    if managed_run_id.is_none()
+        && let Some(observation) = observation
+    {
+        let status = match &final_result {
+            Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => "success",
+            Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(_)) => "skipped",
+            Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled) => "interrupted",
+            Err(_) => "failed",
+        };
+        observation.finish_with_status(status);
     }
+    final_result
 }
 
 pub(crate) fn spawn_timeseries_minute_projection_supervisor(
@@ -2417,16 +2450,8 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             ) else {
                 continue;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
-                "timeseries_minute_projection",
-                &crate::maintenance_store::task_title_for_observation(
-                    "timeseries_minute_projection",
-                ),
-                "startup",
-                crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
-                "processing",
-            );
-            match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
+            match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel, None)
+                .await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred)) => {
@@ -2523,6 +2548,7 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                 "terminal_deadline",
                 &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
                 Some(&cancel),
+                None,
             )
             .await
             {
@@ -2559,13 +2585,15 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
 pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
     state: &AppState,
     cancellation: &CancellationToken,
+    managed_run_id: Option<i64>,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
     if cancellation.is_cancelled() {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let mut observation = None;
-    loop {
+    let result = async {
+        loop {
         let Some(recovery_generation) =
             timeseries_minute_projection_recovery_generation(&state.pool).await?
         else {
@@ -2590,7 +2618,7 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
         }
         observation.get_or_insert_with(|| {
-            begin_timeseries_minute_projection_observation("startup_recovery")
+            begin_timeseries_minute_projection_observation("startup_recovery", managed_run_id)
         });
         let mut tx = state.pool.begin().await?;
         sqlx::query(
@@ -2608,6 +2636,7 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             "startup_recovery",
             0,
             Some(cancellation),
+            managed_run_id,
             &mut observation,
         )
         .await?
@@ -2640,7 +2669,7 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
         }
         observation.get_or_insert_with(|| {
-            begin_timeseries_minute_projection_observation("startup_recovery")
+            begin_timeseries_minute_projection_observation("startup_recovery", managed_run_id)
         });
         let mut tx = state.pool.begin().await?;
         let recovery_cleared = sqlx::query(
@@ -2675,7 +2704,21 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed);
         }
         tokio::task::yield_now().await;
+        }
     }
+    .await;
+    if managed_run_id.is_none()
+        && let Some(observation) = observation
+    {
+        let status = match &result {
+            Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => "success",
+            Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(_)) => "skipped",
+            Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled) => "interrupted",
+            Err(_) => "failed",
+        };
+        observation.finish_with_status(status);
+    }
+    result
 }
 
 #[cfg(test)]

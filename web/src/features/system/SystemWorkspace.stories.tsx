@@ -14,6 +14,8 @@ import type {
   SystemStatusResponse,
   SystemTaskRunsResponse,
   TaskRuntimeSnapshot,
+  TaskTimelineCoverage,
+  TaskTimelineSegment,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
 import SystemLayout from "../../pages/system/SystemLayout";
@@ -361,6 +363,7 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
 }
 
 const STORYBOOK_MANAGED_TASKS: ManagedTask[] = demoManagedTasks();
+const STORYBOOK_TASK_NOW = Date.now();
 
 const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
   task: STORYBOOK_MANAGED_TASKS[0],
@@ -607,10 +610,11 @@ function retentionTaskDetailForState(
 }
 
 const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
-  observedAt: "2026-06-22T09:28:00.000Z",
+  observedAt: new Date(STORYBOOK_TASK_NOW).toISOString(),
   activeRuns: [
     {
       executionId: 7,
+      executionUid: "storybook-active-raw-payload-metrics-inventory",
       taskKey: "raw_payload_metrics_inventory",
       title: "原始载荷指标盘点",
       activeChildTaskKey: null,
@@ -618,10 +622,181 @@ const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
       triggerKind: "interval",
       phase: "processing",
       executionClass: "maintenance_retention",
-      startedAt: "2026-06-22T09:27:42.000Z",
+      startedAt: new Date(STORYBOOK_TASK_NOW - 18_000).toISOString(),
       elapsedMs: 18_000,
     },
   ],
+  queuedRuns: [
+    {
+      runId: 41,
+      taskKey: "retention_archive",
+      title: "数据保留与归档",
+      triggerKind: "manual",
+      requestedAt: new Date(STORYBOOK_TASK_NOW - 46_000).toISOString(),
+      waitingMs: 46_000,
+      position: 1,
+    },
+  ],
+  queuedRunsAvailable: true,
+  admissionWaits: [
+    {
+      id: "storybook-pressure-wait",
+      taskKey: "dashboard_runtime_projection_reconcile",
+      title: "仪表盘运行投影校对",
+      reason: "pressure_cooldown",
+      startedAt: new Date(STORYBOOK_TASK_NOW - 95_000).toISOString(),
+      waitingMs: 95_000,
+      retryAt: new Date(STORYBOOK_TASK_NOW + 5_000).toISOString(),
+    },
+  ],
+  admissionWaitsAvailable: true,
+};
+
+const STORYBOOK_TASK_TIMELINE_SEGMENTS: TaskTimelineSegment[] = [
+  {
+    segmentId: "storybook-active-raw-payload-metrics-inventory",
+    kind: "execution",
+    taskKey: "raw_payload_metrics_inventory",
+    title: "原始载荷指标盘点",
+    startedAt: new Date(STORYBOOK_TASK_NOW - 18_000).toISOString(),
+    lastObservedAt: new Date(STORYBOOK_TASK_NOW).toISOString(),
+    finishedAt: null,
+    durationMs: null,
+    status: "running",
+    triggerKind: "interval",
+    executionClass: "maintenance_retention",
+    reason: null,
+    retryAt: null,
+    activeChildTaskKey: null,
+    activeChildTitle: null,
+    managedRunId: 40,
+    sessionId: "storybook-session",
+    revision: 120,
+  },
+  {
+    segmentId: "storybook-failed-retention",
+    kind: "execution",
+    taskKey: "retention_archive",
+    title: "数据保留与归档",
+    startedAt: new Date(STORYBOOK_TASK_NOW - 9_100_000).toISOString(),
+    lastObservedAt: new Date(STORYBOOK_TASK_NOW - 9_030_000).toISOString(),
+    finishedAt: new Date(STORYBOOK_TASK_NOW - 9_030_000).toISOString(),
+    durationMs: 70_000,
+    status: "failed",
+    triggerKind: "interval",
+    executionClass: "maintenance_retention",
+    reason: null,
+    retryAt: null,
+    activeChildTaskKey: null,
+    activeChildTitle: null,
+    managedRunId: 32,
+    sessionId: "storybook-session",
+    revision: 119,
+  },
+  {
+    segmentId: "storybook-interrupted-backfill",
+    kind: "execution",
+    taskKey: "startup_backfill.proxy_usage",
+    title: "代理用量回填",
+    startedAt: new Date(STORYBOOK_TASK_NOW - 8 * 60 * 60_000).toISOString(),
+    lastObservedAt: new Date(STORYBOOK_TASK_NOW - 7.7 * 60 * 60_000).toISOString(),
+    finishedAt: null,
+    durationMs: null,
+    status: "interrupted",
+    triggerKind: "event",
+    executionClass: null,
+    reason: null,
+    retryAt: null,
+    activeChildTaskKey: null,
+    activeChildTitle: null,
+    managedRunId: null,
+    sessionId: "storybook-session",
+    revision: 118,
+  },
+  {
+    segmentId: "storybook-resource-deferral",
+    kind: "deferral",
+    taskKey: "long_term_projection",
+    title: "长期统计投影",
+    startedAt: new Date(STORYBOOK_TASK_NOW - 8 * 60_000).toISOString(),
+    lastObservedAt: new Date(STORYBOOK_TASK_NOW - 2 * 60_000).toISOString(),
+    finishedAt: new Date(STORYBOOK_TASK_NOW - 2 * 60_000).toISOString(),
+    durationMs: 360_000,
+    status: "released",
+    triggerKind: null,
+    executionClass: null,
+    reason: "resource_busy",
+    retryAt: null,
+    activeChildTaskKey: null,
+    activeChildTitle: null,
+    managedRunId: null,
+    sessionId: "storybook-session",
+    revision: 117,
+  },
+  {
+    segmentId: "storybook-pressure-deferral",
+    kind: "deferral",
+    taskKey: "dashboard_runtime_projection_reconcile",
+    title: "仪表盘运行投影校对",
+    startedAt: new Date(STORYBOOK_TASK_NOW - 6 * 60_000).toISOString(),
+    lastObservedAt: new Date(STORYBOOK_TASK_NOW).toISOString(),
+    finishedAt: null,
+    durationMs: null,
+    status: "waiting",
+    triggerKind: null,
+    executionClass: null,
+    reason: "pressure_cooldown",
+    retryAt: new Date(STORYBOOK_TASK_NOW + 5_000).toISOString(),
+    activeChildTaskKey: null,
+    activeChildTitle: null,
+    managedRunId: null,
+    sessionId: "storybook-session",
+    revision: 116,
+  },
+  ...Array.from({ length: 18 }, (_, index): TaskTimelineSegment => {
+    const startedAt = STORYBOOK_TASK_NOW - 4 * 60_000 + index * 12_000;
+    return {
+      segmentId: `storybook-dense-${index}`,
+      kind: "execution",
+      taskKey: index % 2 ? "timeseries_minute_projection" : "summary_snapshot",
+      title: index % 2 ? "分钟时序投影" : "汇总快照",
+      startedAt: new Date(startedAt).toISOString(),
+      lastObservedAt: new Date(startedAt + 4_000).toISOString(),
+      finishedAt: new Date(startedAt + 4_000).toISOString(),
+      durationMs: 4_000,
+      status: index % 7 === 0 ? "failed" : "success",
+      triggerKind: "event",
+      executionClass: "p2_derived",
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 100 + index,
+      sessionId: "storybook-session",
+      revision: 100 + index,
+    };
+  }),
+];
+
+const STORYBOOK_TASK_TIMELINE_COVERAGE: TaskTimelineCoverage[] = [
+  {
+    sessionId: "storybook-session",
+    startedAt: new Date(STORYBOOK_TASK_NOW - 22 * 60 * 60_000).toISOString(),
+    lastSeenAt: new Date(STORYBOOK_TASK_NOW).toISOString(),
+    endedAt: null,
+    droppedEvents: 0,
+  },
+];
+
+const STORYBOOK_TASK_TIMELINE = {
+  observedAt: new Date(STORYBOOK_TASK_NOW).toISOString(),
+  windowStart: new Date(STORYBOOK_TASK_NOW - 24 * 60 * 60_000).toISOString(),
+  windowEnd: new Date(STORYBOOK_TASK_NOW).toISOString(),
+  watermark: 120,
+  segments: STORYBOOK_TASK_TIMELINE_SEGMENTS,
+  coverage: STORYBOOK_TASK_TIMELINE_COVERAGE,
+  nextCursor: null,
+  resetRequired: false,
 };
 
 function storybookManagedTaskDetail(
@@ -935,6 +1110,10 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse(clone(storybookRuntime));
     }
 
+    if (url.pathname === "/api/system/managed-tasks/timeline" && method === "GET") {
+      return jsonResponse(clone(STORYBOOK_TASK_TIMELINE));
+    }
+
     const managedTaskDetailMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
     if (managedTaskDetailMatch && method === "GET") {
       return jsonResponse(
@@ -1044,6 +1223,7 @@ function buildSystemWorkspaceRequestHandler(
             ...storybookRuntime.activeRuns,
             {
               executionId: 8,
+              executionUid: "storybook-manual-run",
               taskKey,
               title: task.title,
               activeChildTaskKey: null,
@@ -1893,12 +2073,47 @@ export const StatusRawInventoryUnknown: Story = {
 export const Tasks: Story = {
   render: () => renderWorkspace("/system/tasks"),
   tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "desktop1440", isRotated: false },
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expect(canvasElement.ownerDocument.defaultView?.innerWidth).toBe(1440);
     await expect(canvas.findByRole("heading", { name: "任务运维" })).resolves.toBeVisible();
     await expect(canvas.findByTestId("system-tasks-list")).resolves.toBeVisible();
-    await expect(canvas.findByText("当前正在工作")).resolves.toBeVisible();
-    await expect(canvas.findByText(/仪表盘运行投影校对/)).resolves.toBeVisible();
+    await expect(canvas.findByText("正在执行")).resolves.toBeVisible();
+    await expect(canvas.findByTestId("task-timeline")).resolves.toBeVisible();
+    await expect(canvas.findByText("最近 24 小时")).resolves.toBeVisible();
+  },
+};
+
+export const TasksMobile: Story = {
+  render: () => renderWorkspace("/system/tasks"),
+  tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "mobile393", isRotated: false },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvasElement.ownerDocument.defaultView?.innerWidth).toBe(393);
+    await expect(canvas.findByTestId("task-timeline")).resolves.toBeVisible();
+  },
+};
+
+export const TasksDark: Story = {
+  render: () => renderWorkspace("/system/tasks"),
+  tags: ["test"],
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1440", isRotated: false },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvasElement.ownerDocument.defaultView?.innerWidth).toBe(1440);
+    await expect(canvas.findByTestId("task-timeline")).resolves.toBeVisible();
+    await expect(canvasElement.ownerDocument.documentElement.dataset.colorMode).toBe("dark");
   },
 };
 
