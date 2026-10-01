@@ -681,13 +681,14 @@ function buildSystemWorkspaceRequestHandler(
       const intervalProvided = Object.hasOwn(payload, "intervalSecs");
       const cronProvided = Object.hasOwn(payload, "cronExpr");
       const hasInterval = intervalProvided && payload.intervalSecs != null;
-      const hasCron = cronProvided && Boolean(payload.cronExpr?.trim());
+      const hasCron = cronProvided && payload.cronExpr != null;
+      const cronHasContent = hasCron && Boolean(payload.cronExpr?.trim());
       if (task.isManual && (intervalProvided || cronProvided)) {
         return jsonResponse({ error: "manual tasks do not have a schedule" }, 400);
       }
       if (
         !task.scheduleEditable &&
-        ((intervalProvided && payload.intervalSecs != null) || hasCron)
+        ((intervalProvided && payload.intervalSecs != null) || cronHasContent)
       ) {
         return jsonResponse(
           { error: "task does not support a new interval or cron override" },
@@ -700,7 +701,10 @@ function buildSystemWorkspaceRequestHandler(
       if (hasInterval && payload.intervalSecs! < 60) {
         return jsonResponse({ error: "interval must be at least 60 seconds" }, 400);
       }
-      if (hasCron && payload.cronExpr!.trim().split(/\s+/).length !== 5) {
+      if (hasCron && !cronHasContent) {
+        return jsonResponse({ error: "cron must contain five UTC fields" }, 400);
+      }
+      if (cronHasContent && payload.cronExpr!.trim().split(/\s+/).length !== 5) {
         return jsonResponse({ error: "cron must contain five UTC fields" }, 400);
       }
       if (hasInterval) {
@@ -716,11 +720,28 @@ function buildSystemWorkspaceRequestHandler(
         next.effectivePolicy = `UTC cron：${payload.cronExpr}`;
         next.policySource = "运维自定义";
       } else if (intervalProvided || cronProvided) {
-        next.intervalSecs = null;
-        next.cronExpr = null;
-        next.nextTriggerAt = defaultTask?.nextTriggerAt ?? null;
-        next.effectivePolicy = defaultTask?.effectivePolicy;
-        next.policySource = defaultTask?.policySource;
+        if (intervalProvided) next.intervalSecs = payload.intervalSecs ?? null;
+        if (cronProvided) next.cronExpr = payload.cronExpr ?? null;
+        const resolvedInterval = Object.hasOwn(next, "intervalSecs")
+          ? (next.intervalSecs ?? null)
+          : (task.intervalSecs ?? null);
+        const resolvedCron = Object.hasOwn(next, "cronExpr")
+          ? (next.cronExpr ?? null)
+          : (task.cronExpr ?? null);
+        next.nextTriggerAt =
+          resolvedInterval != null || resolvedCron != null
+            ? task.nextTriggerAt
+            : (defaultTask?.nextTriggerAt ?? null);
+        next.effectivePolicy =
+          resolvedCron != null
+            ? `UTC cron：${resolvedCron}`
+            : resolvedInterval != null
+              ? `固定检查间隔：${resolvedInterval} 秒`
+              : defaultTask?.effectivePolicy;
+        next.policySource =
+          resolvedCron != null || resolvedInterval != null
+            ? "运维自定义"
+            : defaultTask?.policySource;
       }
       if (Object.hasOwn(payload, "enabled")) {
         next.enabled = payload.enabled;
@@ -1616,6 +1637,33 @@ export const TaskDetail: Story = {
     await userEvent.type(interval, "120");
     await userEvent.click(canvas.getByRole("button", { name: "保存调度" }));
     await expect(canvas.findByText("固定检查间隔：120 秒")).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "UTC crontab" }));
+    const cron = canvas.getByLabelText("UTC crontab");
+    await userEvent.type(cron, "*/5 * * * *");
+    await userEvent.click(canvas.getByRole("button", { name: "保存调度" }));
+    await expect(canvas.findByText("UTC cron：*/5 * * * *")).resolves.toBeVisible();
+    const singleFieldClear = await fetch(
+      "/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intervalSecs: null }),
+      },
+    );
+    const preservedCron = (await singleFieldClear.json()) as {
+      task: { cronExpr: string | null };
+    };
+    expect(singleFieldClear.ok).toBe(true);
+    expect(preservedCron.task.cronExpr).toBe("*/5 * * * *");
+    const emptyCron = await fetch(
+      "/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cronExpr: "" }),
+      },
+    );
+    expect(emptyCron.status).toBe(400);
     await userEvent.click(canvas.getByRole("button", { name: "恢复默认" }));
     await expect(canvas.findByText("固定检查间隔：60 秒；受压力准入约束")).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "立即运行" }));
