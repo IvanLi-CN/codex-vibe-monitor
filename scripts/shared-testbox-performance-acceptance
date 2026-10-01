@@ -336,8 +336,22 @@ class Handler(BaseHTTPRequestHandler):
             if override_delay_ms
             else (1.2 if self.path == '/v1/responses' else 0.8)
         )
-        time.sleep(delay)
         body = json.dumps({'ok': True, 'path': self.path}).encode()
+        if payload.get('testScenario') == 'cancel':
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[:1])
+                self.wfile.flush()
+                time.sleep(delay)
+                self.wfile.write(body[1:])
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        time.sleep(delay)
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -532,14 +546,29 @@ def long_wait_terminal(invoke_id, response_finished):
     return None
 
 
-def cancel_invocation_by_key(prompt_cache_key):
+def cancel_attempt_by_key(prompt_cache_key):
     try:
         connection = sqlite3.connect(os.path.join(DATA_DIR, 'codex_vibe_monitor.db'), timeout=0.25)
         connection.execute('PRAGMA busy_timeout=250')
         row = connection.execute(
-            'SELECT invoke_id, status, failure_kind, failure_class, error_message '
-            'FROM codex_invocations WHERE payload LIKE ? ORDER BY id DESC LIMIT 1',
-            (f'%{prompt_cache_key}%',),
+            'SELECT invoke_id, status, phase, failure_kind, error_message, downstream_error_message '
+            'FROM pool_upstream_request_attempts WHERE sticky_key = ? ORDER BY id DESC LIMIT 1',
+            (prompt_cache_key,),
+        ).fetchone()
+        connection.close()
+        return row
+    except sqlite3.OperationalError:
+        return None
+
+
+def cancel_attempt_by_id(invoke_id):
+    try:
+        connection = sqlite3.connect(os.path.join(DATA_DIR, 'codex_vibe_monitor.db'), timeout=0.25)
+        connection.execute('PRAGMA busy_timeout=250')
+        row = connection.execute(
+            'SELECT status, phase, failure_kind, error_message, downstream_error_message '
+            'FROM pool_upstream_request_attempts WHERE invoke_id = ? ORDER BY id DESC LIMIT 1',
+            (invoke_id,),
         ).fetchone()
         connection.close()
         return row
@@ -565,7 +594,7 @@ def cancel_invocation_by_id(invoke_id):
 def wait_for_cancel_invocation(prompt_cache_key, timeout_seconds):
     deadline = time.perf_counter() + timeout_seconds
     while time.perf_counter() < deadline:
-        row = cancel_invocation_by_key(prompt_cache_key)
+        row = cancel_attempt_by_key(prompt_cache_key)
         if row:
             return row
         time.sleep(0.01)
@@ -575,13 +604,23 @@ def wait_for_cancel_invocation(prompt_cache_key, timeout_seconds):
 def wait_for_cancel_terminal(invoke_id, timeout_seconds):
     deadline = time.perf_counter() + timeout_seconds
     while time.perf_counter() < deadline:
-        row = cancel_invocation_by_id(invoke_id)
-        if row and str(row[0] or '').lower() not in ('running', 'pending', 'in_flight'):
+        attempt = cancel_attempt_by_id(invoke_id)
+        if attempt and (
+            str(attempt[0] or '').lower() not in ('running', 'pending', 'in_flight')
+            and str(attempt[1] or '').lower()
+            not in ('running', 'pending', 'started', 'in_flight', 'active', 'waiting')
+        ):
+            invocation = cancel_invocation_by_id(invoke_id)
             return {
-                'status': row[0],
-                'failure_kind': row[1],
-                'failure_class': row[2],
-                'error_message': row[3],
+                'attempt_status': attempt[0],
+                'attempt_phase': attempt[1],
+                'attempt_failure_kind': attempt[2],
+                'attempt_error_message': attempt[3],
+                'attempt_downstream_error_message': attempt[4],
+                'invocation_status': invocation[0] if invocation else None,
+                'invocation_failure_kind': invocation[1] if invocation else None,
+                'invocation_failure_class': invocation[2] if invocation else None,
+                'invocation_error_message': invocation[3] if invocation else None,
             }
         time.sleep(0.01)
     return None
@@ -779,11 +818,15 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         and isinstance(cancel_result.get('duration_ms'), (int, float))
         and cancel_result['duration_ms'] <= 5000
         and cancel_result.get('server_accepted') is True
-        and str(cancel_terminal.get('status') or '').lower()
+        and str(cancel_terminal.get('attempt_status') or '').lower()
         not in ('', 'running', 'pending', 'in_flight')
+        and str(cancel_terminal.get('attempt_phase') or '').lower()
+        not in ('', 'running', 'pending', 'started', 'in_flight', 'active', 'waiting')
         and (
-            cancel_terminal.get('failure_kind') == 'downstream_closed'
-            or cancel_terminal.get('failure_class') == 'client_abort'
+            cancel_terminal.get('attempt_failure_kind') == 'downstream_closed'
+            or cancel_terminal.get('invocation_failure_kind') == 'downstream_closed'
+            or cancel_terminal.get('invocation_failure_class') == 'client_abort'
+            or 'downstream_closed' in str(cancel_terminal.get('attempt_downstream_error_message') or '')
         )
     )
     success_ok = all(
