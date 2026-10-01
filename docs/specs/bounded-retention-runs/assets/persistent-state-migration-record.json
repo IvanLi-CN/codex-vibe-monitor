@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "candidate-implemented-visual-validation-pending",
+  "status": "candidate-implemented-visual-validation-confirmed",
   "migration": {
     "description": "Add bounded conversation scan continuation, generation-safe staged statistics and optional task observation fields.",
     "release_unit_description": "Bounded retention execution and its task observation contract.",
@@ -48,7 +48,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "No readiness-wide historical scan or fabricated history. Existing durable queue entries initialize conservatively and resume in bounded background pages; absent counters/outcomes/durations stay unknown.",
+      "description": "No readiness-wide historical scan or fabricated history. Existing durable queue entries initialize conservatively and resume in bounded background pages; absent counters/outcomes/durations stay unknown. Duplicate active maintenance rows are terminalized with an auditable failure result rather than deleted.",
         "order": 4,
         "depends_on": ["ddl-001", "dml-001"],
         "observable": true,

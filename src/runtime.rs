@@ -1142,7 +1142,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     continue;
                 }
             };
-            let Some((run_id, task_key, _started_at)) = claim else {
+            let Some((run_id, task_key, requested_at)) = claim else {
                 continue;
             };
             let Some(_execution_lease) =
@@ -1162,7 +1162,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 });
                 continue;
             };
-            let started_at = Instant::now();
+            let execution_started_at = Instant::now();
             let initial_stages = (task_key == "retention_archive").then(|| {
                 vec![
                     crate::maintenance_store::TaskStage {
@@ -1214,10 +1214,10 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             let result = run_managed_task_once_with_observation(&state, &task_key).await;
             let (status, summary, detail, completion, core_completion, details) = match result {
                 Ok(execution) => {
-                    let status = if execution.completion.as_deref() == Some("deferred") {
-                        SystemTaskStatus::Skipped
-                    } else {
-                        SystemTaskStatus::Success
+                    let status = match execution.completion.as_deref() {
+                        Some("deferred") => SystemTaskStatus::Skipped,
+                        Some("failed") => SystemTaskStatus::Failed,
+                        _ => SystemTaskStatus::Success,
                     };
                     (
                         status,
@@ -1237,7 +1237,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     None,
                 ),
             };
-            let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
             let task_dimension = managed_task_metric_dimension(&task_key);
             state.performance_telemetry.record_duration_ms(
                 "maintenance.task_run_duration_ms",
@@ -1329,7 +1329,19 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     },
                     crate::maintenance_store::TaskStage {
                         name: "orphan_cleanup".to_string(),
-                        status: "completed".to_string(),
+                        status: finish
+                            .details
+                            .as_ref()
+                            .and_then(|details| details.get("orphanCleanupState"))
+                            .and_then(Value::as_str)
+                            .unwrap_or(if finish.status == SystemTaskStatus::Failed {
+                                "failed"
+                            } else if matches!(finish.completion.as_deref(), Some("deferred")) {
+                                "deferred"
+                            } else {
+                                "unknown"
+                            })
+                            .to_string(),
                         completed: None,
                         total: None,
                         elapsed_ms: None,
@@ -1498,6 +1510,22 @@ struct ManagedTaskExecution {
     details: Option<Value>,
 }
 
+fn managed_task_elapsed_ms(requested_at: &str, fallback_started_at: Instant) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(requested_at)
+        .ok()
+        .map(|started| {
+            (Utc::now() - started.with_timezone(&Utc))
+                .num_milliseconds()
+                .max(0)
+        })
+        .unwrap_or_else(|| {
+            fallback_started_at
+                .elapsed()
+                .as_millis()
+                .min(i64::MAX as u128) as i64
+        })
+}
+
 impl ManagedTaskExecution {
     fn simple(summary: String) -> Self {
         Self {
@@ -1515,8 +1543,15 @@ async fn run_managed_task_once_with_observation(
     task_key: &str,
 ) -> Result<ManagedTaskExecution> {
     if task_key == "retention_archive" {
-        let summary =
-            run_data_retention_maintenance(&state.pool, &state.config, Some(false), None).await?;
+        let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
+            &state.pool,
+            &state.config,
+            Some(false),
+            Some(&state.shutdown),
+            state.raw_capture_circuit.clone(),
+            Some(&state.prompt_cache_conversation_cache),
+        )
+        .await?;
         let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);
         let prompt_cache_pending = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue",
@@ -1536,8 +1571,16 @@ async fn run_managed_task_once_with_observation(
             (Some(true), Some(_)) => ("available", "fresh"),
             _ => ("unknown", "stats_query_failed"),
         };
+        let completion = if summary.completion() == "completed"
+            && (prompt_cache_pending.is_some_and(|pending| pending > 0)
+                || prompt_cache_state.0 == "unknown")
+        {
+            "partial"
+        } else {
+            summary.completion()
+        };
         let details = json!({
-            "completion": summary.completion(),
+            "completion": completion,
             "coreCompletion": summary.core_completion(),
             "budgetMs": summary.work_budget_ms,
             "elapsedMs": summary.elapsed_ms,
@@ -1555,6 +1598,14 @@ async fn run_managed_task_once_with_observation(
             "rawFilesRemoved": summary.raw_files_removed,
             "promptCacheConversationsReleased": summary.prompt_cache_conversations_released,
             "summary": detail,
+            "fatalError": summary.fatal_error.clone(),
+            "orphanCleanupState": if summary.orphan_cleanup_completed {
+                "completed"
+            } else if summary.budget_exhausted || summary.deferred {
+                "deferred"
+            } else {
+                "unknown"
+            },
             "promptCacheStats": {
                 "state": prompt_cache_state.0,
                 "pending": prompt_cache_pending,
@@ -1564,7 +1615,7 @@ async fn run_managed_task_once_with_observation(
         return Ok(ManagedTaskExecution {
             summary: brief,
             detail: Some(detail),
-            completion: Some(summary.completion().to_string()),
+            completion: Some(completion.to_string()),
             core_completion: Some(summary.core_completion().to_string()),
             details: Some(details),
         });
@@ -1577,9 +1628,15 @@ async fn run_managed_task_once_with_observation(
 async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<String> {
     match task_key {
         "retention_archive" => {
-            let summary =
-                run_data_retention_maintenance(&state.pool, &state.config, Some(false), None)
-                    .await?;
+            let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
+                &state.pool,
+                &state.config,
+                Some(false),
+                Some(&state.shutdown),
+                state.raw_capture_circuit.clone(),
+                Some(&state.prompt_cache_conversation_cache),
+            )
+            .await?;
             let (brief, _detail) = crate::api::summarize_retention_run_for_system_task(&summary);
             Ok(brief)
         }

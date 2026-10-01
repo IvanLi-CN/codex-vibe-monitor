@@ -914,9 +914,23 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
+    let superseded_at = format_utc_iso_millis(Utc::now());
     sqlx::query(
-        "DELETE FROM managed_task_runs WHERE id IN (SELECT duplicate.id FROM managed_task_runs duplicate JOIN managed_task_runs kept ON kept.task_key = duplicate.task_key AND kept.status IN ('running','requested') AND duplicate.status IN ('running','requested') AND kept.id < duplicate.id)",
+        "UPDATE managed_task_runs
+         SET status='failed', finished_at=COALESCE(finished_at, ?1), duration_ms=COALESCE(duration_ms, 0),
+             summary=COALESCE(summary, '重复的活动运行已停止'),
+             error_detail=COALESCE(error_detail, '迁移时保留较早活动运行，重复记录已终止')
+         WHERE id IN (
+             SELECT duplicate.id
+             FROM managed_task_runs duplicate
+             JOIN managed_task_runs kept
+               ON kept.task_key = duplicate.task_key
+              AND kept.status IN ('running','requested')
+              AND duplicate.status IN ('running','requested')
+              AND kept.id < duplicate.id
+         )",
     )
+    .bind(&superseded_at)
     .execute(pool)
     .await?;
     sqlx::query(
@@ -1676,6 +1690,70 @@ mod tests {
         MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, ensure_schema, next_trigger_at,
         sanitize_task_detail, seed_tasks, task_enabled_by_default, validate_cron_expr,
     };
+
+    #[tokio::test]
+    async fn schema_repair_preserves_duplicate_active_run_history() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect maintenance migration fixture");
+        sqlx::query(
+            "CREATE TABLE managed_tasks (
+                task_key TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
+                trigger_mode TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                interval_secs INTEGER, cron_expr TEXT, next_trigger_at TEXT,
+                is_manual INTEGER NOT NULL DEFAULT 0, schedule_source TEXT, updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy task table");
+        sqlx::query(
+            "CREATE TABLE managed_task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, legacy_id INTEGER UNIQUE, task_key TEXT NOT NULL,
+                trigger_kind TEXT NOT NULL DEFAULT 'unknown', started_at TEXT NOT NULL, finished_at TEXT,
+                duration_ms INTEGER, status TEXT NOT NULL, summary TEXT, processed_count INTEGER,
+                updated_count INTEGER, error_detail TEXT, completion TEXT, core_completion TEXT, details TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy task-run table");
+        sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,updated_at) VALUES ('retention_archive','Retention','Retention','interval','2026-10-01T00:00:00.000Z')")
+            .execute(&pool)
+            .await
+            .expect("seed task");
+        for status in ["running", "requested"] {
+            sqlx::query("INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('retention_archive','manual','2026-10-01T00:00:00.000Z',?,?)")
+                .bind(status)
+                .bind(format!("{status} run"))
+                .execute(&pool)
+                .await
+                .expect("seed duplicate active run");
+        }
+
+        ensure_schema(&pool)
+            .await
+            .expect("repair maintenance schema");
+
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id,status,finished_at,error_detail FROM managed_task_runs ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load repaired run history");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "running");
+        assert_eq!(rows[1].1, "failed");
+        assert!(rows[1].2.is_some());
+        assert!(rows[1].3.is_some());
+        let active_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_task_runs WHERE task_key='retention_archive' AND status IN ('running','requested')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count active runs");
+        assert_eq!(active_count, 1);
+    }
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {

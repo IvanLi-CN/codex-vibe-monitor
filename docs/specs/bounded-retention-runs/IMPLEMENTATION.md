@@ -2,10 +2,10 @@
 
 ## Current Status
 
-- Implementation: Candidate 已实现；代码、迁移、API、Demo 页面及主要验证证据已进入交付收敛。
+- Implementation: Candidate 已实现；代码、迁移、API、Demo 页面及主要验证证据已进入交付收敛，审查修复批次已补齐失败、计时和历史保留契约。
 - Lifecycle: active。
 - 当前分支：`th/retention-bounded-recovery-design`，开发基线为 `a02b08f12c84d3c52ce4bae6f2c3e58a31243aab`。
-- 已提交设计基线：`b018ae06`；本轮实现尚未形成最终提交或 PR。
+- 已提交设计基线：`b018ae06`；本轮实现提交为 `b151c895`，修复批次提交后刷新审查证据再创建 PR。
 - shared-testbox 三个资源 profile 已通过，百万行候选/开发基线对照也已完成；v2.71.x/v2.80.2 前向修复夹具已通过，视觉比较确认仍是交付前门禁。
 
 ## 调查证据与限制
@@ -115,11 +115,11 @@
 
 实施验收对应 SPEC 的 VER-BRR-001..007。代表性大表至少包含超过百万 invocation、稀疏孤儿和单 key 倾斜；同时施加在线读写，验证有界查询、主库锁释放、公平推进及静默后统计收敛。性能门槛不能用 4,000-key/40,000-invocation 小 fixture 代替，也不能从生产的历史时间倒推保证。
 
-Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动已在本地 Demo 生成桌面/移动端状态证据，但视觉比较仍待最终快照确认。
+Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动已在本地 Demo 生成桌面/移动端状态证据；主人已确认当前桌面、移动端和 partial 状态截图准确。
 
 ## Visual Evidence
 
-最终 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新。当前截图来自本地 Demo，尚未与基线做自动像素比较；按 UI visual evidence 规则，视觉比较状态为“需确认”，不能当作真实生产页面证据。
+最终 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新。当前截图来自本地 Demo，主人已确认截图准确；这些截图是 owner-facing 的本地 Demo 证据，不冒充生产页面。
 
 ## References
 

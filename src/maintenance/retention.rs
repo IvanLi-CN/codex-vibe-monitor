@@ -1364,6 +1364,8 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) orphan_raw_files_removed: usize,
     pub(crate) model_route_rows_pruned: usize,
     pub(crate) system_task_run_rows_pruned: usize,
+    pub(crate) fatal_error: Option<String>,
+    pub(crate) orphan_cleanup_completed: bool,
 }
 
 impl RetentionRunSummary {
@@ -1394,7 +1396,9 @@ impl RetentionRunSummary {
     }
 
     pub(crate) fn completion(&self) -> &'static str {
-        if self.budget_exhausted || self.deferred {
+        if self.fatal_error.is_some() {
+            "failed"
+        } else if self.budget_exhausted || self.deferred {
             if self.touched_anything() {
                 "partial"
             } else {
@@ -8647,8 +8651,12 @@ async fn run_data_retention_maintenance_inner(
             Err(error) => {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("finalizing");
+                    summary.deferred = true;
+                    summary.wait_reason = Some("retention_write_admission".to_string());
                 } else if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("finalizing", &error);
+                    summary.deferred = true;
+                    summary.wait_reason = Some("retention_recovery_failure".to_string());
                 } else {
                     retention_recovery_persist_latest_failure_best_effort(
                         pool,
@@ -8656,6 +8664,7 @@ async fn run_data_retention_maintenance_inner(
                         &error,
                     )
                     .await;
+                    summary.fatal_error = Some(format!("invocation archive failed: {error:#}"));
                 }
                 retention_recovery_log_event(
                     tracing::Level::WARN,
@@ -8689,10 +8698,16 @@ async fn run_data_retention_maintenance_inner(
             Err(error) => {
                 if dry_run {
                     retention_recovery_record_failure("detail_prune", &error);
+                    summary.fatal_error =
+                        Some(format!("invocation detail pruning failed: {error:#}"));
                 } else if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("detail_prune");
+                    summary.deferred = true;
+                    summary.wait_reason = Some("retention_write_admission".to_string());
                 } else if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("detail_prune", &error);
+                    summary.deferred = true;
+                    summary.wait_reason = Some("retention_recovery_failure".to_string());
                 } else {
                     retention_recovery_persist_latest_failure_best_effort(
                         pool,
@@ -8700,6 +8715,8 @@ async fn run_data_retention_maintenance_inner(
                         &error,
                     )
                     .await;
+                    summary.fatal_error =
+                        Some(format!("invocation detail pruning failed: {error:#}"));
                 }
                 retention_recovery_log_event(
                     tracing::Level::WARN,
@@ -8734,6 +8751,7 @@ async fn run_data_retention_maintenance_inner(
             })
             .context("failed to release orphan prompt-cache conversation identities")?,
     };
+    summary.orphan_cleanup_completed = true;
     if summary.prompt_cache_conversations_released > 0 {
         info!(
             dry_run,
@@ -8751,6 +8769,8 @@ async fn run_data_retention_maintenance_inner(
         }
         if let Err(error) = retention_recovery_refresh_counts(pool, config).await {
             retention_recovery_record_failure("status_refresh", &error);
+            summary.deferred = true;
+            summary.wait_reason = Some("status_refresh".to_string());
             retention_recovery_log_event(
                 tracing::Level::WARN,
                 "status_refresh",

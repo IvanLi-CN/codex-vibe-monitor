@@ -14,10 +14,14 @@ fn percentile_micros(samples: &[u128], percentile: usize) -> u128 {
     sorted[rank.min(sorted.len().saturating_sub(1))]
 }
 
-#[tokio::test]
-#[ignore = "manual million-row retention and prompt-cache benchmark"]
-async fn retention_prompt_cache_million_row_candidate_benchmark() {
-    let temp_dir = make_temp_test_dir("retention-prompt-cache-million-row");
+struct BenchmarkFixture {
+    temp_dir: std::path::PathBuf,
+    pool: SqlitePool,
+    read_pool: SqlitePool,
+}
+
+async fn build_benchmark_fixture(prefix: &str) -> BenchmarkFixture {
+    let temp_dir = make_temp_test_dir(prefix);
     let db_path = temp_dir.join("benchmark.db");
     let db_url = test_sqlite_url_for_path(&db_path);
     let pool = SqlitePoolOptions::new()
@@ -98,6 +102,21 @@ async fn retention_prompt_cache_million_row_candidate_benchmark() {
         )
         .await
         .expect("open benchmark reader database");
+    BenchmarkFixture {
+        temp_dir,
+        pool,
+        read_pool,
+    }
+}
+
+#[tokio::test]
+#[ignore = "manual million-row retention and prompt-cache benchmark"]
+async fn retention_prompt_cache_million_row_candidate_benchmark() {
+    let BenchmarkFixture {
+        temp_dir,
+        pool,
+        read_pool,
+    } = build_benchmark_fixture("retention-prompt-cache-million-row").await;
     let reader_pool = read_pool.clone();
     let reader = tokio::spawn(async move {
         let mut samples = Vec::with_capacity(READ_SAMPLES);
@@ -172,6 +191,92 @@ async fn retention_prompt_cache_million_row_candidate_benchmark() {
         TOTAL_ROWS,
         HOT_ROWS,
         pages,
+        elapsed_ms,
+        read_samples.len(),
+        percentile_micros(&read_samples, 95),
+        percentile_micros(&read_samples, 99),
+        request_count,
+        queue_count,
+    );
+
+    pool.close().await;
+    read_pool.close().await;
+    let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+#[ignore = "manual million-row baseline comparison benchmark"]
+async fn retention_prompt_cache_million_row_baseline_benchmark() {
+    let BenchmarkFixture {
+        temp_dir,
+        pool,
+        read_pool,
+    } = build_benchmark_fixture("retention-prompt-cache-million-row-baseline").await;
+    let reader_pool = read_pool.clone();
+    let reader = tokio::spawn(async move {
+        let mut samples = Vec::with_capacity(READ_SAMPLES);
+        while samples.len() < READ_SAMPLES {
+            let started_at = Instant::now();
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations WHERE id > ?1")
+                .bind(0_i64)
+                .fetch_one(&reader_pool)
+                .await
+                .expect("run baseline online read");
+            samples.push(started_at.elapsed().as_micros());
+            tokio::task::yield_now().await;
+        }
+        samples
+    });
+    let writer_pool = pool.clone();
+    let writer = tokio::spawn(async move {
+        for _ in 0..READ_SAMPLES {
+            sqlx::query("INSERT INTO prompt_cache_benchmark_writes(written_at) VALUES (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))")
+                .execute(&writer_pool)
+                .await
+                .expect("run baseline online write");
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let started_at = Instant::now();
+    let request_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE json_extract(payload, '$.promptCacheKey') = ?1",
+    )
+    .bind(HOT_KEY)
+    .fetch_one(&pool)
+    .await
+    .expect("run baseline aggregate");
+    sqlx::query(
+        "UPDATE prompt_cache_conversations SET request_count=?1, success_count=?1, failure_count=0 WHERE prompt_cache_key=?2",
+    )
+    .bind(request_count)
+    .bind(HOT_KEY)
+    .execute(&pool)
+    .await
+    .expect("publish baseline aggregate");
+    sqlx::query(
+        "DELETE FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key=?1",
+    )
+    .bind(HOT_KEY)
+    .execute(&pool)
+    .await
+    .expect("clear baseline refresh queue");
+    let read_samples = reader.await.expect("join baseline online reader");
+    writer.await.expect("join baseline online writer");
+    let elapsed_ms = started_at.elapsed().as_millis();
+    let queue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key=?1",
+    )
+    .bind(HOT_KEY)
+    .fetch_one(&pool)
+    .await
+    .expect("read baseline queue");
+    assert_eq!(request_count, HOT_ROWS as i64);
+    assert_eq!(queue_count, 0);
+    eprintln!(
+        "retention-million-row baseline total_rows={} hot_rows={} pages=1 elapsed_ms={} read_samples={} read_p95_us={} read_p99_us={} exact_request_count={} queue_count={}",
+        TOTAL_ROWS,
+        HOT_ROWS,
         elapsed_ms,
         read_samples.len(),
         percentile_micros(&read_samples, 95),
