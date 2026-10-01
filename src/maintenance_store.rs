@@ -403,7 +403,7 @@ fn task_trigger_kinds(task_key: &str, trigger_mode: &str, is_manual: bool) -> Ve
         "summary_coverage_recovery" | "long_term_projection" => &["adaptive", "interval"],
         "timeseries_minute_projection" => &["startup", "interval", "adaptive"],
         "startup_backfill" => &["startup", "event", "adaptive"],
-        key if key.starts_with("startup_backfill.") => &["event"],
+        key if key.starts_with("startup_backfill.") => &["event", "interval"],
         _ if trigger_mode == "startup" => &["startup"],
         _ if trigger_mode == "event" => &["event"],
         _ => &["interval"],
@@ -628,6 +628,19 @@ fn cron_field_is_unrestricted(field: &str) -> bool {
     field == "*" || field.starts_with("*/")
 }
 
+fn cron_day_matches(dom_field: &str, dow_field: &str, candidate: chrono::DateTime<Utc>) -> bool {
+    let dom_unrestricted = cron_field_is_unrestricted(dom_field);
+    let dow_unrestricted = cron_field_is_unrestricted(dow_field);
+    let dom_match = cron_field_matches(dom_field, candidate.day(), 1, 31);
+    let dow_match = cron_field_matches(dow_field, candidate.weekday().num_days_from_sunday(), 0, 6);
+    match (dom_unrestricted, dow_unrestricted) {
+        (true, true) => true,
+        (true, false) => dow_match,
+        (false, true) => dom_match,
+        (false, false) => dom_match || dow_match,
+    }
+}
+
 pub(crate) fn sanitize_task_detail(value: &str) -> String {
     let mut sanitized = value.replace(['\r', '\n'], " ");
     for marker in [
@@ -668,22 +681,12 @@ fn next_trigger_at(interval_secs: Option<i64>, cron_expr: Option<&str>) -> Optio
         let base = now
             - ChronoDuration::seconds(i64::from(now.second()))
             - ChronoDuration::nanoseconds(i64::from(now.nanosecond()));
-        let dom_unrestricted = cron_field_is_unrestricted(fields[2]);
-        let dow_unrestricted = cron_field_is_unrestricted(fields[4]);
-        for offset in 1..=(366 * 24 * 60) {
+        for offset in 1..=(5 * 366 * 24 * 60) {
             let candidate = base + ChronoDuration::minutes(offset);
-            let dom_match = cron_field_matches(fields[2], candidate.day(), 1, 31);
-            let dow_match =
-                cron_field_matches(fields[4], candidate.weekday().num_days_from_sunday(), 0, 6);
-            let day_match = if dom_unrestricted || dow_unrestricted {
-                dom_match && dow_match
-            } else {
-                dom_match || dow_match
-            };
             if cron_field_matches(fields[0], candidate.minute(), 0, 59)
                 && cron_field_matches(fields[1], candidate.hour(), 0, 23)
                 && cron_field_matches(fields[3], candidate.month(), 1, 12)
-                && day_match
+                && cron_day_matches(fields[2], fields[4], candidate)
             {
                 return Some(format_utc_iso_millis(candidate));
             }
@@ -1523,12 +1526,14 @@ pub(crate) fn path(config: &AppConfig) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
     use chrono::{Timelike, Utc};
     use sqlx::SqlitePool;
 
     use super::{
-        MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, ensure_schema, next_trigger_at,
-        sanitize_task_detail, seed_tasks, task_enabled_by_default, validate_cron_expr,
+        MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, cron_day_matches, ensure_schema,
+        next_trigger_at, sanitize_task_detail, seed_tasks, task_enabled_by_default,
+        validate_cron_expr,
     };
 
     #[test]
@@ -1590,6 +1595,25 @@ mod tests {
     }
 
     #[test]
+    fn cron_day_fields_follow_unrestricted_and_restricted_semantics() {
+        let monday = chrono::Utc.with_ymd_and_hms(2026, 10, 12, 0, 0, 0).unwrap();
+        assert!(cron_day_matches("*/2", "1", monday));
+        assert!(cron_day_matches("12", "*/2", monday));
+    }
+
+    #[test]
+    fn computes_a_next_trigger_beyond_one_year() {
+        let now = chrono::Utc::now();
+        let next = next_trigger_at(None, Some("0 0 29 2 *"))
+            .expect("a valid leap-day cron should have a future trigger");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&next)
+            .expect("next trigger should be RFC3339")
+            .with_timezone(&chrono::Utc);
+        assert!(parsed > now);
+        assert!(parsed <= now + chrono::Duration::days(5 * 366));
+    }
+
+    #[test]
     fn rejects_cron_expressions_without_five_utc_fields() {
         assert!(validate_cron_expr(Some("*/5 * * *")).is_err());
         assert!(validate_cron_expr(Some("*/5 * * * *")).is_ok());
@@ -1642,7 +1666,7 @@ mod tests {
             .iter()
             .find(|task| task.task_key == "startup_backfill.proxy_usage")
             .expect("backfill child task");
-        assert_eq!(child.trigger_kinds, vec!["event"]);
+        assert_eq!(child.trigger_kinds, vec!["event", "interval"]);
         assert!(!child.schedule_editable);
         assert!(child.schedule_capability_reason.is_some());
     }

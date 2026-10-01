@@ -87,7 +87,10 @@ export default function SystemTaskDetailPage() {
       try {
         const snapshot = await fetchManagedTaskRuntime();
         if (disposed) return;
-        const next = snapshot.activeRuns.find((run) => run.taskKey === taskKey) ?? null;
+        const next =
+          snapshot.activeRuns.find(
+            (run) => run.taskKey === taskKey || run.activeChildTaskKey === taskKey,
+          ) ?? null;
         setActiveRuntime(next);
         setRuntimeSampleElapsedMs(next?.elapsedMs ?? null);
         setRuntimeSampleClock(window.performance.now());

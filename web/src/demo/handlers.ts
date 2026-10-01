@@ -3102,7 +3102,7 @@ function managedTasks() {
       cronExpr: null,
       nextTriggerAt: null,
       isManual: false,
-      triggerKinds: ["event"],
+      triggerKinds: ["event", "interval"],
       effectivePolicy: "回填父任务按事件和检查点调度",
       policySource: "系统默认",
       scheduleEditable: false,
