@@ -12,6 +12,7 @@ import type {
   SettingsPayload,
   SystemStatusResponse,
   SystemTaskRunsResponse,
+  TaskRuntimeSnapshot,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
 import SystemLayout from "../../pages/system/SystemLayout";
@@ -633,6 +634,45 @@ function retentionTaskDetailForState(
   return detail;
 }
 
+const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
+  observedAt: "2026-06-22T09:28:00.000Z",
+  activeRuns: [
+    {
+      executionId: 7,
+      taskKey: "raw_payload_metrics_inventory",
+      title: "原始载荷指标盘点",
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      triggerKind: "interval",
+      phase: "processing",
+      executionClass: "maintenance_retention",
+      startedAt: "2026-06-22T09:27:42.000Z",
+      elapsedMs: 18_000,
+    },
+  ],
+};
+
+function storybookManagedTaskDetail(
+  taskKey: string,
+  override: Partial<ManagedTask> = {},
+): ManagedTaskDetail {
+  const task =
+    STORYBOOK_MANAGED_TASKS.find((item) => item.taskKey === taskKey) ?? STORYBOOK_MANAGED_TASKS[0];
+  return {
+    task: { ...task, ...override },
+    progress: null,
+    recentRuns: [],
+    performance: {
+      runCount: 4,
+      successCount: 4,
+      failureCount: 0,
+      averageDurationMs: 1_840,
+      latestDurationMs: 1_760,
+      observedAt: STORYBOOK_MANAGED_TASK_RUNTIME.observedAt,
+    },
+  };
+}
+
 const STORYBOOK_SETTINGS: SettingsPayload = {
   proxy: {
     hijackEnabled: true,
@@ -850,6 +890,13 @@ function buildSystemWorkspaceRequestHandler(
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
+  const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
+  const currentManagedTasks = () =>
+    STORYBOOK_MANAGED_TASKS.map((task) => ({
+      ...task,
+      ...managedTaskOverrides.get(task.taskKey),
+    }));
+  let storybookRuntime = clone(STORYBOOK_MANAGED_TASK_RUNTIME);
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const jsonResponse = (payload: unknown, status = 200) =>
@@ -908,6 +955,141 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse(clone(filterStorybookSystemTasks(url)));
     }
 
+    if (url.pathname === "/api/system/managed-tasks" && method === "GET") {
+      return jsonResponse(clone(currentManagedTasks()));
+    }
+
+    if (url.pathname === "/api/system/managed-tasks/runtime" && method === "GET") {
+      return jsonResponse(clone(storybookRuntime));
+    }
+
+    const managedTaskDetailMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
+    if (managedTaskDetailMatch && method === "GET") {
+      return jsonResponse(
+        clone(
+          storybookManagedTaskDetail(
+            managedTaskDetailMatch[1],
+            managedTaskOverrides.get(managedTaskDetailMatch[1]),
+          ),
+        ),
+      );
+    }
+
+    if (managedTaskDetailMatch && method === "PATCH") {
+      const taskKey = managedTaskDetailMatch[1];
+      const task = currentManagedTasks().find((item) => item.taskKey === taskKey);
+      const defaultTask = STORYBOOK_MANAGED_TASKS.find((item) => item.taskKey === taskKey);
+      if (!task) return jsonResponse({ error: "not found" }, 404);
+      const payload = parseBody<{
+        enabled?: boolean;
+        intervalSecs?: number | null;
+        cronExpr?: string | null;
+      }>({});
+      const next = { ...(managedTaskOverrides.get(taskKey) ?? {}) };
+      const intervalProvided = Object.hasOwn(payload, "intervalSecs");
+      const cronProvided = Object.hasOwn(payload, "cronExpr");
+      const hasInterval = intervalProvided && payload.intervalSecs != null;
+      const hasCron = cronProvided && payload.cronExpr != null;
+      const cronHasContent = hasCron && Boolean(payload.cronExpr?.trim());
+      if (task.isManual && (intervalProvided || cronProvided)) {
+        return jsonResponse({ error: "manual tasks do not have a schedule" }, 400);
+      }
+      if (
+        !task.scheduleEditable &&
+        ((intervalProvided && payload.intervalSecs != null) || cronHasContent)
+      ) {
+        return jsonResponse(
+          { error: "task does not support a new interval or cron override" },
+          400,
+        );
+      }
+      if (hasInterval && hasCron) {
+        return jsonResponse({ error: "interval and cron schedule are mutually exclusive" }, 400);
+      }
+      if (hasInterval && payload.intervalSecs! < 60) {
+        return jsonResponse({ error: "interval must be at least 60 seconds" }, 400);
+      }
+      if (hasCron && !cronHasContent) {
+        return jsonResponse({ error: "cron must contain five UTC fields" }, 400);
+      }
+      if (cronHasContent && payload.cronExpr!.trim().split(/\s+/).length !== 5) {
+        return jsonResponse({ error: "cron must contain five UTC fields" }, 400);
+      }
+      if (hasInterval) {
+        next.intervalSecs = payload.intervalSecs!;
+        next.cronExpr = null;
+        next.nextTriggerAt = "2026-06-22T09:29:00.000Z";
+        next.effectivePolicy = `固定检查间隔：${payload.intervalSecs} 秒`;
+        next.policySource = "运维自定义";
+      } else if (hasCron) {
+        next.cronExpr = payload.cronExpr!;
+        next.intervalSecs = null;
+        next.nextTriggerAt = "2026-06-22T09:30:00.000Z";
+        next.effectivePolicy = `UTC cron：${payload.cronExpr}`;
+        next.policySource = "运维自定义";
+      } else if (intervalProvided || cronProvided) {
+        if (intervalProvided) next.intervalSecs = payload.intervalSecs ?? null;
+        if (cronProvided) next.cronExpr = payload.cronExpr ?? null;
+        const resolvedInterval = Object.hasOwn(next, "intervalSecs")
+          ? (next.intervalSecs ?? null)
+          : (task.intervalSecs ?? null);
+        const resolvedCron = Object.hasOwn(next, "cronExpr")
+          ? (next.cronExpr ?? null)
+          : (task.cronExpr ?? null);
+        next.nextTriggerAt =
+          resolvedInterval != null || resolvedCron != null
+            ? task.nextTriggerAt
+            : (defaultTask?.nextTriggerAt ?? null);
+        next.effectivePolicy =
+          resolvedCron != null
+            ? `UTC cron：${resolvedCron}`
+            : resolvedInterval != null
+              ? `固定检查间隔：${resolvedInterval} 秒`
+              : defaultTask?.effectivePolicy;
+        next.policySource =
+          resolvedCron != null || resolvedInterval != null
+            ? "运维自定义"
+            : defaultTask?.policySource;
+      }
+      if (Object.hasOwn(payload, "enabled")) {
+        next.enabled = payload.enabled;
+        next.nextTriggerAt = payload.enabled
+          ? (next.nextTriggerAt ?? task.nextTriggerAt ?? null)
+          : null;
+      }
+      managedTaskOverrides.set(taskKey, next);
+      return jsonResponse(clone(storybookManagedTaskDetail(taskKey, next)));
+    }
+
+    const managedTaskRunMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)\/run$/);
+    if (managedTaskRunMatch && method === "POST") {
+      const taskKey = managedTaskRunMatch[1];
+      const task = storybookManagedTaskDetail(taskKey).task;
+      if (!storybookRuntime.activeRuns.some((run) => run.taskKey === taskKey)) {
+        storybookRuntime = {
+          ...storybookRuntime,
+          activeRuns: [
+            ...storybookRuntime.activeRuns,
+            {
+              executionId: 8,
+              taskKey,
+              title: task.title,
+              activeChildTaskKey: null,
+              activeChildTitle: null,
+              triggerKind: "manual",
+              phase: "processing",
+              executionClass: task.executionClass ?? null,
+              startedAt: "2026-06-22T09:28:30.000Z",
+              elapsedMs: 0,
+            },
+          ],
+        };
+      }
+      return jsonResponse(
+        clone(storybookManagedTaskDetail(taskKey, managedTaskOverrides.get(taskKey))),
+      );
+    }
+
     if (url.pathname === "/api/stats/invocation-timeline" && method === "GET") {
       return jsonResponse({
         rangeStart: "2026-01-01T00:00:00.000Z",
@@ -943,7 +1125,9 @@ function buildSystemWorkspaceRequestHandler(
         source: "models.dev",
       }));
       const pricesByModel = new Map(settings.pricing.entries.map((entry) => [entry.model, entry]));
-      selectedEntries.forEach((entry) => pricesByModel.set(entry.model, entry));
+      selectedEntries.forEach((entry) => {
+        pricesByModel.set(entry.model, entry);
+      });
       settings.pricing.entries = Array.from(pricesByModel.values()).sort((a, b) =>
         a.model.localeCompare(b.model),
       );
@@ -1736,15 +1920,66 @@ export const StatusRawInventoryUnknown: Story = {
 
 export const Tasks: Story = {
   render: () => renderWorkspace("/system/tasks"),
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "后台任务" })).toBeVisible();
-    await expect(canvas.getByTestId("system-tasks-list")).toBeVisible();
-    await expect(canvas.getByText(/forward_proxy_subscription_refresh/)).toBeVisible();
+    await expect(canvas.findByRole("heading", { name: "任务运维" })).resolves.toBeVisible();
+    await expect(canvas.findByTestId("system-tasks-list")).resolves.toBeVisible();
+    await expect(canvas.findByText("当前正在工作")).resolves.toBeVisible();
+    await expect(canvas.findByText(/仪表盘运行投影校对/)).resolves.toBeVisible();
   },
 };
 
 export const TaskDetail: Story = {
+  render: () => renderWorkspace("/system/tasks/dashboard_runtime_projection_reconcile"),
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.findByRole("heading", { name: "仪表盘运行投影校对" }),
+    ).resolves.toBeVisible();
+    await expect(canvas.findByText("调度与观测")).resolves.toBeVisible();
+    await expect(canvas.findByText("固定检查间隔：60 秒；受压力准入约束")).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: "保存调度" })).resolves.toBeVisible();
+    const interval = canvas.getByLabelText("间隔（秒）");
+    await userEvent.clear(interval);
+    await userEvent.type(interval, "120");
+    await userEvent.click(canvas.getByRole("button", { name: "保存调度" }));
+    await expect(canvas.findByText("固定检查间隔：120 秒")).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "UTC crontab" }));
+    const cron = canvas.getByLabelText("UTC crontab");
+    await userEvent.type(cron, "*/5 * * * *");
+    await userEvent.click(canvas.getByRole("button", { name: "保存调度" }));
+    await expect(canvas.findByText("UTC cron：*/5 * * * *")).resolves.toBeVisible();
+    const singleFieldClear = await fetch(
+      "/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intervalSecs: null }),
+      },
+    );
+    const preservedCron = (await singleFieldClear.json()) as {
+      task: { cronExpr: string | null };
+    };
+    expect(singleFieldClear.ok).toBe(true);
+    expect(preservedCron.task.cronExpr).toBe("*/5 * * * *");
+    const emptyCron = await fetch(
+      "/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cronExpr: "" }),
+      },
+    );
+    expect(emptyCron.status).toBe(400);
+    await userEvent.click(canvas.getByRole("button", { name: "恢复默认" }));
+    await expect(canvas.findByText("固定检查间隔：60 秒；受压力准入约束")).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "立即运行" }));
+  },
+};
+
+export const RetentionTaskDetail: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

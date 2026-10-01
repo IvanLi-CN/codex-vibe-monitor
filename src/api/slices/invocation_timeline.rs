@@ -1011,6 +1011,15 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
             ) else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "invocation_timeline_snapshot",
+                &crate::maintenance_store::task_title_for_observation(
+                    "invocation_timeline_snapshot",
+                ),
+                "interval",
+                crate::maintenance_store::task_execution_class("invocation_timeline_snapshot"),
+                "processing",
+            );
             let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool);
             tokio::select! {
                 _ = state.shutdown.cancelled() => return,

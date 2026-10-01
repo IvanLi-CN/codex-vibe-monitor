@@ -1,10 +1,23 @@
 import type { ManagedTask } from "../../lib/api";
 
 export function managedTaskTriggerLabel(
-  task: Pick<ManagedTask, "isManual" | "triggerMode" | "cronExpr">,
+  task: Pick<ManagedTask, "isManual" | "triggerMode" | "cronExpr"> & { triggerKinds?: string[] },
 ): string {
   if (task.isManual || task.triggerMode === "manual") return "手动";
   if (task.cronExpr?.trim()) return "UTC 定时";
+  if (task.triggerKinds && task.triggerKinds.length > 1) {
+    return task.triggerKinds
+      .map((trigger) =>
+        managedTaskTriggerLabel({
+          ...task,
+          triggerKinds: undefined,
+          triggerMode: trigger,
+          isManual: trigger === "manual",
+          cronExpr: null,
+        }),
+      )
+      .join(" / ");
+  }
   switch (task.triggerMode) {
     case "interval":
       return "固定间隔";
@@ -12,8 +25,27 @@ export function managedTaskTriggerLabel(
       return "事件触发";
     case "startup":
       return "启动触发";
+    case "adaptive":
+      return "自适应";
     default:
       return task.triggerMode || "未设置";
+  }
+}
+
+export function managedTaskExecutionClassLabel(value?: string | null): string {
+  switch (value) {
+    case "p1_terminal":
+      return "P1 终态";
+    case "interactive_proxy":
+      return "交互代理";
+    case "p2_derived":
+      return "P2 派生";
+    case "maintenance_retention":
+      return "维护保留";
+    case "maintenance":
+      return "维护";
+    default:
+      return "未定义";
   }
 }
 
@@ -112,5 +144,6 @@ export function managedTaskNextTriggerLabel(task: ManagedTask): string {
   if (task.isManual || task.triggerMode === "manual") return "手动触发";
   if (task.triggerMode === "event") return "等待事件";
   if (task.triggerMode === "startup") return "等待启动触发";
+  if (task.effectivePolicy && task.policySource !== "运维自定义") return "由 worker 决定";
   return "未设置";
 }

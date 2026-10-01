@@ -979,6 +979,14 @@ _Avoid_: 任意后台线程, 单次 SQL, 页面刷新
 One execution of a Managed Task with a trigger, start and finish timestamps, terminal status, duration, summary, and bounded error detail. A Task Run is an operational record, not a business invocation.
 _Avoid_: 对外调用, 上游尝试, 日志行
 
+**任务执行／让行级别（Task Execution/Deferral Class）**:
+A read-only description of the execution or resource-deferral rules that actually apply to a Managed Task. It remains undefined when no corresponding rule exists and does not grant operators a configurable cross-task execution rank.
+_Avoid_: 可编辑任务优先级, 人工重要性标签, 跨任务排队顺序
+
+**当前执行实例（Current Task Execution）**:
+The actual ongoing work of a Managed Task, with its execution start and elapsed time independent of when a request was queued or a history record was published. A backfill parent and its active child describe one execution instance rather than two concurrent tasks.
+_Avoid_: 已请求即运行中, 最新历史记录, 父子重复计数
+
 **任务进度快照（Task Progress Snapshot）**:
 The latest durable operational state for a Managed Task, including phase, unit-aware total and completed counts, cursor or checkpoint, last update, and an optional estimate. Unknown or open-ended work remains explicitly unknown instead of being represented as zero or complete.
 _Avoid_: 数据库行数, 实时日志, 伪造百分比
@@ -994,6 +1002,14 @@ _Avoid_: 强制取消, 事务中断, 立即杀死任务
 **任务触发模式（Task Trigger Mode）**:
 The declared way a Managed Task becomes eligible: event wake, fixed interval, cron schedule, or startup. Event-driven tasks retain their event wake path and may use interval or cron only for bounded fallback probes.
 _Avoid_: 固定轮询, 触发来源混用, 把所有任务改成 cron
+
+**任务自定义计划（Configured Task Schedule）**:
+An operator-selected interval or UTC cron override for a Managed Task that supports that control. Its absence means no operator override and does not mean the task has no automatic scheduling policy.
+_Avoid_: 系统默认周期, 当前生效策略, 空值即无计划
+
+**任务生效策略（Effective Task Policy）**:
+The actual eligibility and scheduling rules currently governing a Managed Task, including their source and any fixed, event-driven, startup, or adaptive behavior. A check cadence describes opportunities to consider work rather than a guarantee that work executes at every check.
+_Avoid_: 目录静态标签, 自定义计划值, 保证执行时间
 
 **主库业务事实（Business Main Facts）**:
 The durable request, account, archive, and projection facts that serve product behavior. New task controls, progress snapshots, and run history must not add synchronous writes to this store.

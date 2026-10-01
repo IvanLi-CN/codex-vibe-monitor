@@ -547,6 +547,59 @@ export const OverflowConcurrency360: Story = {
   },
 };
 
+export const FitsSeventeenLanesAtViewportEdge: Story = {
+  args: {
+    response,
+    loading: false,
+    timelineData: {
+      ...records,
+      total: 17,
+      records: [
+        ...Array.from({ length: 16 }, (_, index) => ({
+          id: 100 + index,
+          invokeId: `invoke-edge-overlap-${index}`,
+          occurredAt: "2026-07-16T10:50:00.000Z",
+          endAt: "2026-07-16T11:10:00.000Z",
+          isInFlight: false,
+          status: "success" as const,
+          tTotalMs: 20 * 60_000,
+          firstTokenMs: null,
+        })),
+        {
+          id: 117,
+          invokeId: "invoke-edge-zero-duration",
+          occurredAt: "2026-07-16T11:09:59.999Z",
+          endAt: "2026-07-16T11:09:59.999Z",
+          isInFlight: false,
+          status: "success" as const,
+          tTotalMs: 0,
+          firstTokenMs: null,
+        },
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const frame = within(canvasElement).getByTestId("dashboard-invocation-timeline-lanes");
+    const laneScroll = within(canvasElement).getByTestId(
+      "dashboard-invocation-timeline-lane-scroll",
+    );
+    expect({
+      laneCount: frame.getAttribute("data-total-lanes"),
+      verticalOverflowPx: laneScroll.scrollHeight - laneScroll.clientHeight,
+      horizontalOverflowPx: laneScroll.scrollWidth - laneScroll.clientWidth,
+    }).toEqual({
+      laneCount: "17",
+      verticalOverflowPx: 0,
+      horizontalOverflowPx: 0,
+    });
+  },
+};
+
+export const MobileFitsSeventeenLanesAtViewportEdge: Story = {
+  ...FitsSeventeenLanesAtViewportEdge,
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
 export const OverflowScrollPositionRetention: Story = {
   args: {
     response,

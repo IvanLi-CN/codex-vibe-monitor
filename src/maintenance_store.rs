@@ -24,6 +24,7 @@ const TASK_RUNNING_RECOVERY_STALE_AFTER_SECS: i64 = 5 * 60;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
+const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
@@ -87,7 +88,7 @@ pub(crate) struct MaintenanceStore {
     pub(crate) pool: Pool<Sqlite>,
 }
 
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ManagedTask {
     pub(crate) task_key: String,
@@ -104,6 +105,18 @@ pub(crate) struct ManagedTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[sqlx(skip)]
     pub(crate) effective_schedule: Option<ManagedTaskSchedule>,
+    #[sqlx(skip)]
+    pub(crate) trigger_kinds: Vec<String>,
+    #[sqlx(skip)]
+    pub(crate) effective_policy: String,
+    #[sqlx(skip)]
+    pub(crate) policy_source: String,
+    #[sqlx(skip)]
+    pub(crate) schedule_editable: bool,
+    #[sqlx(skip)]
+    pub(crate) schedule_capability_reason: Option<String>,
+    #[sqlx(skip)]
+    pub(crate) execution_class: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -431,8 +444,153 @@ fn startup_backfill_task_metadata(key: &str) -> (&'static str, &'static str) {
     }
 }
 
+pub(crate) fn task_title_for_observation(task_key: &str) -> String {
+    if let Some((_, title, _, _, _)) = MANAGED_TASKS.iter().find(|(key, ..)| *key == task_key) {
+        return (*title).to_string();
+    }
+    if let Some(child) = task_key.strip_prefix("startup_backfill.") {
+        return startup_backfill_task_metadata(child).0.to_string();
+    }
+    task_key.to_string()
+}
+
+pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
+    match task_key {
+        "retention_archive"
+        | "upstream_account_maintenance"
+        | "pool_orphan_recovery"
+        | "invocation_timeline_snapshot"
+        | "raw_payload_metrics_inventory" => Some("maintenance_retention"),
+        "dashboard_runtime_projection_reconcile"
+        | "forward_proxy_subscription_refresh"
+        | "long_term_projection"
+        | "timeseries_minute_projection" => Some("p2_derived"),
+        _ => None,
+    }
+}
+
 pub(crate) fn task_enabled_by_default(task_key: &str, is_manual: bool) -> bool {
     !is_manual && DEFAULT_ENABLED_TASKS.contains(&task_key)
+}
+
+const EDITABLE_SCHEDULE_TASKS: &[&str] = &[
+    "retention_archive",
+    "upstream_account_maintenance",
+    "pool_orphan_recovery",
+    "system_status_snapshot",
+    "invocation_timeline_snapshot",
+    "dashboard_runtime_projection_reconcile",
+];
+
+fn task_trigger_kinds(task_key: &str, trigger_mode: &str, is_manual: bool) -> Vec<String> {
+    if is_manual || trigger_mode == "manual" {
+        return vec!["manual".to_string()];
+    }
+    let kinds: &[&str] = match task_key {
+        "retention_archive" | "upstream_account_maintenance" => &["startup", "interval"],
+        "forward_proxy_subscription_refresh" => &["startup", "interval"],
+        "dashboard_runtime_projection_reconcile" => &["interval", "adaptive"],
+        "summary_snapshot" | "prompt_cache_materialization" => &["event", "interval"],
+        "summary_coverage_recovery" | "long_term_projection" => &["adaptive", "interval"],
+        "timeseries_minute_projection" => &["startup", "interval", "adaptive"],
+        "startup_backfill" => &["startup", "event", "adaptive"],
+        key if key.starts_with("startup_backfill.") => &["event", "interval"],
+        _ if trigger_mode == "startup" => &["startup"],
+        _ if trigger_mode == "event" => &["event"],
+        _ => &["interval"],
+    };
+    kinds.iter().map(|kind| (*kind).to_string()).collect()
+}
+
+fn task_policy_text(
+    task_key: &str,
+    interval_secs: Option<i64>,
+    cron_expr: Option<&str>,
+) -> (&'static str, String) {
+    if let Some(cron) = cron_expr.map(str::trim).filter(|value| !value.is_empty()) {
+        return ("运维自定义", format!("UTC cron：{cron}"));
+    }
+    if let Some(interval) = interval_secs {
+        return ("运维自定义", format!("固定检查间隔：{interval} 秒"));
+    }
+    if MANAGED_TASKS
+        .iter()
+        .any(|(key, .., is_manual)| *key == task_key && *is_manual)
+    {
+        return ("系统规则", "手动触发；不适用周期计划".to_string());
+    }
+    match task_key {
+        "system_status_snapshot" => (
+            "系统默认",
+            "固定检查间隔：55 秒（60 秒缓存上限，提前 5 秒）".to_string(),
+        ),
+        "upstream_account_maintenance" => (
+            "系统默认",
+            "固定检查间隔：60 秒；账号同步按账号策略".to_string(),
+        ),
+        "pool_orphan_recovery" => ("系统默认", "固定检查间隔：60 秒".to_string()),
+        "invocation_timeline_snapshot" => ("系统默认", "固定检查间隔：60 秒".to_string()),
+        "dashboard_runtime_projection_reconcile" => (
+            "系统默认",
+            "固定检查间隔：60 秒；受压力准入约束".to_string(),
+        ),
+        "retention_archive" => (
+            "运行配置",
+            "启动检查与保留策略周期；按配置判断是否有工作".to_string(),
+        ),
+        "forward_proxy_subscription_refresh" => {
+            ("系统默认", "启动刷新与固定检查间隔：60 秒".to_string())
+        }
+        "long_term_projection" => (
+            "系统默认",
+            "自适应检查；60 秒刷新、300 秒修复、每日校验".to_string(),
+        ),
+        "timeseries_minute_projection" => ("系统默认", "启动、固定检查与压力准入唤醒".to_string()),
+        "summary_snapshot" => ("系统默认", "事件唤醒；最小刷新间隔 10 秒".to_string()),
+        "summary_coverage_recovery" => ("系统默认", "自适应恢复；按覆盖和压力准入唤醒".to_string()),
+        "prompt_cache_materialization" => ("系统默认", "事件对账与 60 秒检查".to_string()),
+        "startup_backfill" => (
+            "系统默认",
+            "启动监督器；按事件、检查点和压力准入唤醒".to_string(),
+        ),
+        key if key.starts_with("startup_backfill.") => {
+            ("系统默认", "回填父任务按事件和检查点调度".to_string())
+        }
+        key if key.contains("hourly") => ("启动规则", "仅在服务启动阶段检查".to_string()),
+        _ => ("系统默认", "由 worker 的固定或事件规则检查".to_string()),
+    }
+}
+
+fn decorate_task(mut task: ManagedTask) -> ManagedTask {
+    let editable = EDITABLE_SCHEDULE_TASKS.contains(&task.task_key.as_str());
+    let policy_interval_secs = (task.schedule_source.as_deref() != Some("default"))
+        .then_some(task.interval_secs)
+        .flatten();
+    let (policy_source, effective_policy) = task_policy_text(
+        &task.task_key,
+        policy_interval_secs,
+        task.cron_expr.as_deref(),
+    );
+    task.trigger_kinds = task_trigger_kinds(&task.task_key, &task.trigger_mode, task.is_manual);
+    task.effective_policy = effective_policy;
+    task.policy_source = policy_source.to_string();
+    task.schedule_editable = editable;
+    task.schedule_capability_reason = if task.is_manual {
+        Some("手动任务没有周期或 cron 计划".to_string())
+    } else if editable {
+        None
+    } else if task.interval_secs.is_some()
+        || task
+            .cron_expr
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        Some("当前 worker 为事件、启动或自适应路径，保留已有覆盖但不支持新增覆盖".to_string())
+    } else {
+        Some("当前任务只读展示真实 worker 策略".to_string())
+    };
+    task.execution_class = task_execution_class(&task.task_key).map(str::to_string);
+    task
 }
 
 pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
@@ -458,9 +616,14 @@ pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
 }
 
 fn validate_cron_expr(expr: Option<&str>) -> Result<()> {
-    let Some(expr) = expr.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(expr) = expr.map(str::trim) else {
         return Ok(());
     };
+    if expr.is_empty() {
+        return Err(anyhow!(
+            "cron expression must contain exactly five UTC fields"
+        ));
+    }
     let fields: Vec<&str> = expr.split_whitespace().collect();
     if fields.len() != 5 || fields.iter().any(|field| field.is_empty()) {
         return Err(anyhow!(
@@ -556,7 +719,20 @@ fn cron_field_matches(field: &str, value: u32, minimum: u32, maximum: u32) -> bo
 }
 
 fn cron_field_is_unrestricted(field: &str) -> bool {
-    field == "*" || field.starts_with("*/")
+    field == "*"
+}
+
+fn cron_day_matches(dom_field: &str, dow_field: &str, candidate: chrono::DateTime<Utc>) -> bool {
+    let dom_unrestricted = cron_field_is_unrestricted(dom_field);
+    let dow_unrestricted = cron_field_is_unrestricted(dow_field);
+    let dom_match = cron_field_matches(dom_field, candidate.day(), 1, 31);
+    let dow_match = cron_field_matches(dow_field, candidate.weekday().num_days_from_sunday(), 0, 6);
+    match (dom_unrestricted, dow_unrestricted) {
+        (true, true) => true,
+        (true, false) => dow_match,
+        (false, true) => dom_match,
+        (false, false) => dom_match || dow_match,
+    }
 }
 
 pub(crate) fn sanitize_task_detail(value: &str) -> String {
@@ -599,22 +775,12 @@ fn next_trigger_at(interval_secs: Option<i64>, cron_expr: Option<&str>) -> Optio
         let base = now
             - ChronoDuration::seconds(i64::from(now.second()))
             - ChronoDuration::nanoseconds(i64::from(now.nanosecond()));
-        let dom_unrestricted = cron_field_is_unrestricted(fields[2]);
-        let dow_unrestricted = cron_field_is_unrestricted(fields[4]);
-        for offset in 1..=(366 * 24 * 60) {
+        for offset in 1..=(5 * 366 * 24 * 60) {
             let candidate = base + ChronoDuration::minutes(offset);
-            let dom_match = cron_field_matches(fields[2], candidate.day(), 1, 31);
-            let dow_match =
-                cron_field_matches(fields[4], candidate.weekday().num_days_from_sunday(), 0, 6);
-            let day_match = if dom_unrestricted || dow_unrestricted {
-                dom_match && dow_match
-            } else {
-                dom_match || dow_match
-            };
             if cron_field_matches(fields[0], candidate.minute(), 0, 59)
                 && cron_field_matches(fields[1], candidate.hour(), 0, 23)
                 && cron_field_matches(fields[3], candidate.month(), 1, 12)
-                && day_match
+                && cron_day_matches(fields[2], fields[4], candidate)
             {
                 return Some(format_utc_iso_millis(candidate));
             }
@@ -907,11 +1073,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     }
     // Keep databases written by the old dual-field form deterministic: an explicit cron wins.
+    // Recompute the persisted trigger at the same time; an interval-derived timestamp is not
+    // valid once the cron field becomes authoritative.
+    let legacy_dual_schedule_rows = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT task_key,cron_expr FROM managed_tasks WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await?;
     sqlx::query(
         "UPDATE managed_tasks SET interval_secs=NULL WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
     )
     .execute(pool)
     .await?;
+    for (task_key, cron_expr) in legacy_dual_schedule_rows {
+        sqlx::query("UPDATE managed_tasks SET next_trigger_at=? WHERE task_key=?")
+            .bind(next_trigger_at(None, cron_expr.as_deref()))
+            .bind(task_key)
+            .execute(pool)
+            .await?;
+    }
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
@@ -1002,7 +1182,9 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
 }
 
 impl MaintenanceStore {
-    pub(crate) async fn claim_requested_run(&self) -> Result<Option<(i64, String, String)>> {
+    pub(crate) async fn claim_requested_run(
+        &self,
+    ) -> Result<Option<(i64, String, String, String)>> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
         sqlx::query(
@@ -1017,7 +1199,7 @@ impl MaintenanceStore {
         .bind(&finished_at)
         .execute(&mut *transaction)
         .await?;
-        let claimed = sqlx::query_as::<_, (i64, String, String)>(
+        let claimed = sqlx::query_as::<_, (i64, String, String, String)>(
             "UPDATE managed_task_runs
              SET status='running'
              WHERE id = (
@@ -1030,16 +1212,16 @@ impl MaintenanceStore {
                  LIMIT 1
              )
              AND status='requested'
-             RETURNING id,task_key,started_at",
+             RETURNING id,task_key,started_at,trigger_kind",
         )
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((id, task_key, started_at)) = claimed else {
+        let Some((id, task_key, started_at, trigger_kind)) = claimed else {
             transaction.commit().await?;
             return Ok(None);
         };
         transaction.commit().await?;
-        Ok(Some((id, task_key, started_at)))
+        Ok(Some((id, task_key, started_at, trigger_kind)))
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
@@ -1281,12 +1463,17 @@ impl MaintenanceStore {
                 .await?;
             changed = true;
         }
-        let already_applied: Option<String> =
+        let defaults_applied: Option<String> =
             sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
                 .bind(INITIAL_TASK_DEFAULTS_MARKER)
                 .fetch_optional(&mut *transaction)
                 .await?;
-        if already_applied.is_some() {
+        let legacy_enablement_reconciled: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(LEGACY_BACKFILL_ENABLEMENT_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if defaults_applied.is_some() && legacy_enablement_reconciled.is_some() {
             transaction.commit().await?;
             return Ok(changed);
         }
@@ -1318,6 +1505,23 @@ impl MaintenanceStore {
                 continue;
             };
             let managed_key = format!("startup_backfill.{managed_suffix}");
+            // The legacy progress row is the only durable enablement source before this
+            // catalog exists. Seed the managed row from it once, then let the managed row
+            // remain authoritative for later operator changes.
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET enabled = COALESCE(
+                     (SELECT MAX(enabled) FROM startup_backfill_progress
+                      WHERE task_name=? OR task_name LIKE ?),
+                     enabled
+                 )
+                 WHERE task_key=?",
+            )
+            .bind(task_name)
+            .bind(&like_pattern)
+            .bind(&managed_key)
+            .execute(&mut *transaction)
+            .await?;
             sqlx::query(
                 "UPDATE startup_backfill_progress
                  SET enabled=COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0),
@@ -1336,14 +1540,26 @@ impl MaintenanceStore {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query(
-            "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
-        )
-        .bind(INITIAL_TASK_DEFAULTS_MARKER)
-        .bind("applied")
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
+        if defaults_applied.is_none() {
+            sqlx::query(
+                "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
+            )
+            .bind(INITIAL_TASK_DEFAULTS_MARKER)
+            .bind("applied")
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        if legacy_enablement_reconciled.is_none() {
+            sqlx::query(
+                "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
+            )
+            .bind(LEGACY_BACKFILL_ENABLEMENT_MARKER)
+            .bind("applied")
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+        }
         transaction.commit().await?;
         Ok(true)
     }
@@ -1540,13 +1756,17 @@ impl MaintenanceStore {
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
         let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual,schedule_source FROM managed_tasks ORDER BY task_key")
             .fetch_all(&self.pool).await?;
-        Ok(tasks.into_iter().map(decorate_effective_schedule).collect())
+        Ok(tasks
+            .into_iter()
+            .map(decorate_effective_schedule)
+            .map(decorate_task)
+            .collect())
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
         let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual,schedule_source FROM managed_tasks WHERE task_key=?")
         .bind(task_key).fetch_optional(&self.pool).await?;
-        let Some(task) = task.map(decorate_effective_schedule) else {
+        let Some(task) = task.map(decorate_effective_schedule).map(decorate_task) else {
             return Ok(None);
         };
         let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,stages FROM managed_task_progress WHERE task_key=?")
@@ -1653,11 +1873,38 @@ impl MaintenanceStore {
             return Err(anyhow!("manual or unknown task cannot be scheduled"));
         }
         let next_enabled = enabled.unwrap_or(current_enabled);
-        let next_interval = interval_secs.unwrap_or(current_interval);
-        let next_cron = cron_expr
-            .map(|value| value.map(str::to_owned))
-            .unwrap_or(current_cron);
+        let interval_value_provided = interval_secs.is_some_and(|value| value.is_some());
+        let cron_value_provided = cron_expr.is_some_and(|value| value.is_some());
+        if interval_value_provided && cron_value_provided {
+            transaction.commit().await?;
+            return Err(anyhow!("interval and cron schedule are mutually exclusive"));
+        }
+        let next_interval = if let Some(value) = interval_secs {
+            value
+        } else if cron_value_provided {
+            None
+        } else {
+            current_interval
+        };
+        let next_cron = if let Some(value) = cron_expr {
+            value.map(str::to_owned)
+        } else if interval_value_provided {
+            None
+        } else {
+            current_cron
+        };
         if update_schedule {
+            if !EDITABLE_SCHEDULE_TASKS.contains(&task_key)
+                && (next_interval.is_some()
+                    || next_cron
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty()))
+            {
+                transaction.commit().await?;
+                return Err(anyhow!(
+                    "task does not support a new interval or cron override"
+                ));
+            }
             Self::validate_schedule(next_interval, next_cron.as_deref()).await?;
         }
         let next_trigger_at = if next_enabled && !is_manual {
@@ -1680,6 +1927,21 @@ impl MaintenanceStore {
         transaction.commit().await?;
         Ok(true)
     }
+
+    pub(crate) async fn restore_control_state(&self, task: &ManagedTask) -> Result<()> {
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
+        )
+        .bind(task.enabled as i64)
+        .bind(task.interval_secs)
+        .bind(task.cron_expr.as_deref())
+        .bind(task.next_trigger_at.as_deref())
+        .bind(format_utc_iso_millis(Utc::now()))
+        .bind(&task.task_key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 pub(crate) fn path(config: &AppConfig) -> PathBuf {
@@ -1688,12 +1950,14 @@ pub(crate) fn path(config: &AppConfig) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
     use chrono::{Timelike, Utc};
     use sqlx::SqlitePool;
 
     use super::{
-        MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, ensure_schema, next_trigger_at,
-        sanitize_task_detail, seed_tasks, task_enabled_by_default, validate_cron_expr,
+        MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, cron_day_matches, ensure_schema,
+        next_trigger_at, sanitize_task_detail, seed_tasks, task_enabled_by_default,
+        validate_cron_expr,
     };
 
     #[tokio::test]
@@ -1819,9 +2083,31 @@ mod tests {
     }
 
     #[test]
+    fn cron_day_fields_follow_unrestricted_and_restricted_semantics() {
+        let monday = chrono::Utc.with_ymd_and_hms(2026, 10, 12, 0, 0, 0).unwrap();
+        let tuesday = chrono::Utc.with_ymd_and_hms(2026, 10, 13, 0, 0, 0).unwrap();
+        assert!(cron_day_matches("*", "1", monday));
+        assert!(cron_day_matches("12", "*", monday));
+        assert!(cron_day_matches("*/2", "1", tuesday));
+    }
+
+    #[test]
+    fn computes_a_next_trigger_beyond_one_year() {
+        let now = chrono::Utc::now();
+        let next = next_trigger_at(None, Some("0 0 29 2 *"))
+            .expect("a valid leap-day cron should have a future trigger");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&next)
+            .expect("next trigger should be RFC3339")
+            .with_timezone(&chrono::Utc);
+        assert!(parsed > now);
+        assert!(parsed <= now + chrono::Duration::days(5 * 366));
+    }
+
+    #[test]
     fn rejects_cron_expressions_without_five_utc_fields() {
         assert!(validate_cron_expr(Some("*/5 * * *")).is_err());
         assert!(validate_cron_expr(Some("*/5 * * * *")).is_ok());
+        assert!(validate_cron_expr(Some("   ")).is_err());
     }
 
     #[test]
@@ -1837,6 +2123,163 @@ mod tests {
         assert!(!detail.contains("secret"));
         assert!(!detail.contains("abc"));
         assert_eq!(sanitize_task_detail(&"x".repeat(5_000)).len(), 4_000);
+    }
+
+    #[tokio::test]
+    async fn decorates_root_and_backfill_tasks_with_effective_policy_and_capability() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        let tasks = store.list_tasks().await.expect("list decorated tasks");
+        assert_eq!(
+            tasks.len(),
+            MANAGED_TASKS.len() + STARTUP_BACKFILL_TASKS.len()
+        );
+        assert!(tasks.iter().all(|task| {
+            !task.trigger_kinds.is_empty()
+                && !task.effective_policy.is_empty()
+                && !task.policy_source.is_empty()
+        }));
+        let status = tasks
+            .iter()
+            .find(|task| task.task_key == "system_status_snapshot")
+            .expect("system status task");
+        assert!(status.effective_policy.contains("55 秒"));
+        assert!(status.schedule_editable);
+        let child = tasks
+            .iter()
+            .find(|task| task.task_key == "startup_backfill.proxy_usage")
+            .expect("backfill child task");
+        assert_eq!(child.trigger_kinds, vec!["event", "interval"]);
+        assert!(!child.schedule_editable);
+        assert!(child.schedule_capability_reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn repairs_legacy_dual_schedule_trigger_on_schema_open() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance migration test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks SET interval_secs=120, cron_expr='*/5 * * * *', next_trigger_at='2000-01-01T00:02:00.000Z' WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy dual schedule");
+
+        ensure_schema(&pool).await.expect("repair legacy schedule");
+        let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
+            "SELECT interval_secs,cron_expr,next_trigger_at FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load repaired schedule");
+        assert_eq!(row.0, None);
+        assert_eq!(row.1.as_deref(), Some("*/5 * * * *"));
+        assert_ne!(row.2.as_deref(), Some("2000-01-01T00:02:00.000Z"));
+        assert!(row.2.is_some());
+    }
+
+    #[tokio::test]
+    async fn preserves_enabled_when_clearing_unsupported_override_and_rejects_new_one() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1, interval_secs=120 WHERE task_key='summary_snapshot'",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy unsupported override");
+        let store = MaintenanceStore { pool };
+
+        let error = store
+            .update_control("summary_snapshot", None, Some(Some(180)), None)
+            .await
+            .expect_err("unsupported task should reject a new override");
+        assert!(error.to_string().contains("does not support"));
+        assert!(
+            store
+                .update_control("summary_snapshot", None, Some(None), Some(None))
+                .await
+                .expect("clearing an existing override should succeed")
+        );
+        let row = sqlx::query_as::<_, (bool, Option<i64>, Option<String>)>(
+            "SELECT enabled,interval_secs,cron_expr FROM managed_tasks WHERE task_key='summary_snapshot'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load cleared task control");
+        assert_eq!(row, (true, None, None));
+    }
+
+    #[tokio::test]
+    async fn switching_supported_schedule_types_clears_the_previous_override() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance schedule test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        store
+            .update_control(
+                "dashboard_runtime_projection_reconcile",
+                None,
+                Some(Some(120)),
+                None,
+            )
+            .await
+            .expect("set interval override");
+        store
+            .update_control(
+                "dashboard_runtime_projection_reconcile",
+                None,
+                None,
+                Some(Some("*/5 * * * *")),
+            )
+            .await
+            .expect("switch to cron override");
+        let cron_state = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load cron override");
+        assert_eq!(cron_state, (None, Some("*/5 * * * *".to_string())));
+
+        store
+            .update_control(
+                "dashboard_runtime_projection_reconcile",
+                None,
+                Some(Some(180)),
+                None,
+            )
+            .await
+            .expect("switch back to interval override");
+        let interval_state = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load interval override");
+        assert_eq!(interval_state, (Some(180), None));
     }
 
     #[tokio::test]
@@ -2019,6 +2462,14 @@ mod tests {
             .await
             .unwrap()
         );
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill.proxy_usage'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT enabled FROM startup_backfill_progress WHERE task_name='proxy_usage_tokens_v1'",
@@ -2026,7 +2477,7 @@ mod tests {
             .fetch_one(&store.pool)
             .await
             .unwrap(),
-            0
+            1
         );
 
         sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key='raw_compression'")
@@ -2087,6 +2538,41 @@ mod tests {
                 .source,
             "override"
         );
+    }
+
+    #[tokio::test]
+    async fn reconciles_legacy_backfill_enablement_after_defaults_marker_exists() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "INSERT INTO maintenance_metadata (key,value,updated_at) VALUES ('managed_task_defaults_v1','applied','2026-10-01T00:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed existing defaults marker");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress (task_name,enabled) VALUES ('proxy_usage_tokens_v1',1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy enabled backfill row");
+
+        let store = MaintenanceStore { pool };
+        assert!(store.apply_initial_task_defaults().await.unwrap());
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill.proxy_usage'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
+        assert!(!store.apply_initial_task_defaults().await.unwrap());
     }
 
     #[tokio::test]

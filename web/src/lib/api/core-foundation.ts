@@ -2629,6 +2629,30 @@ export interface ManagedTask {
     cronExpr?: string | null;
     nextTriggerAt?: string | null;
   } | null;
+  triggerKinds?: string[];
+  effectivePolicy?: string;
+  policySource?: string;
+  scheduleEditable?: boolean;
+  scheduleCapabilityReason?: string | null;
+  executionClass?: string | null;
+}
+
+export interface CurrentTaskExecution {
+  executionId: number;
+  taskKey: string;
+  title: string;
+  activeChildTaskKey?: string | null;
+  activeChildTitle?: string | null;
+  triggerKind: string;
+  phase: string;
+  executionClass?: string | null;
+  startedAt: string;
+  elapsedMs: number;
+}
+
+export interface TaskRuntimeSnapshot {
+  observedAt: string;
+  activeRuns: CurrentTaskExecution[];
 }
 
 export interface ManagedTaskProgress {
@@ -5695,6 +5719,10 @@ export async function fetchManagedTasks(): Promise<ManagedTask[]> {
   return Array.isArray(response)
     ? response.map(normalizeManagedTask).filter((task): task is ManagedTask => task != null)
     : [];
+}
+
+export async function fetchManagedTaskRuntime(): Promise<TaskRuntimeSnapshot> {
+  return fetchJson<TaskRuntimeSnapshot>("/api/system/managed-tasks/runtime");
 }
 
 export async function fetchManagedTask(taskKey: string): Promise<ManagedTaskDetail> {

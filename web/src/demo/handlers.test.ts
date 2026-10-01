@@ -544,6 +544,9 @@ describe("demo MSW handlers", () => {
     const tasks = (await response.json()) as Array<{
       taskKey: string;
       isManual: boolean;
+      effectivePolicy?: string;
+      policySource?: string;
+      executionClass?: string | null;
     }>;
 
     expect(tasks).toHaveLength(37);
@@ -559,17 +562,52 @@ describe("demo MSW handlers", () => {
         "prune_legacy_archive_batches",
       ]),
     );
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taskKey: "retention_archive",
+          policySource: "运行配置",
+          effectivePolicy: "启动检查与保留策略周期；按配置判断是否有工作",
+          executionClass: "maintenance_retention",
+        }),
+        expect.objectContaining({
+          taskKey: "summary_snapshot",
+          effectivePolicy: "事件唤醒；最小刷新间隔 10 秒",
+        }),
+        expect.objectContaining({
+          taskKey: "prompt_cache_materialization",
+          effectivePolicy: "事件对账与 60 秒检查",
+        }),
+        expect.objectContaining({
+          taskKey: "forward_proxy_subscription_refresh",
+          executionClass: "p2_derived",
+        }),
+        expect.objectContaining({
+          taskKey: "long_term_projection",
+          executionClass: "p2_derived",
+        }),
+        expect.objectContaining({
+          taskKey: "timeseries_minute_projection",
+          executionClass: "p2_derived",
+        }),
+        expect.objectContaining({
+          taskKey: "invocation_timeline_snapshot",
+          executionClass: "maintenance_retention",
+        }),
+      ]),
+    );
   });
 
-  it("persists task controls, exposes the next run, and rejects duplicate active runs", async () => {
+  it("persists task controls, exposes effective policy, and rejects duplicate active runs", async () => {
     const initialResponse = await fetch(
       "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
     );
     const initial = (await initialResponse.json()) as {
-      task: { title: string; nextTriggerAt: string | null };
+      task: { title: string; nextTriggerAt: string | null; effectivePolicy?: string };
     };
     expect(initial.task.title).toBe("汇总覆盖恢复");
-    expect(initial.task.nextTriggerAt).toEqual(expect.any(String));
+    expect(initial.task.nextTriggerAt).toBeNull();
+    expect(initial.task.effectivePolicy).toContain("自适应");
 
     const disabledResponse = await fetch(
       "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
@@ -585,7 +623,7 @@ describe("demo MSW handlers", () => {
     expect(disabled.task).toMatchObject({ enabled: false, nextTriggerAt: null });
 
     const enabledResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -598,8 +636,42 @@ describe("demo MSW handlers", () => {
     expect(enabled.task).toMatchObject({ enabled: true, intervalSecs: 120 });
     expect(enabled.task.nextTriggerAt).toEqual(expect.any(String));
 
+    const cronResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cronExpr: "*/5 * * * *" }),
+      },
+    );
+    const cron = (await cronResponse.json()) as {
+      task: { intervalSecs: number | null; cronExpr: string | null; effectivePolicy?: string };
+    };
+    expect(cron.task).toMatchObject({
+      intervalSecs: null,
+      cronExpr: "*/5 * * * *",
+      effectivePolicy: "UTC cron：*/5 * * * *",
+    });
+
+    const intervalResponse = await fetch(
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ intervalSecs: 180 }),
+      },
+    );
+    const interval = (await intervalResponse.json()) as {
+      task: { intervalSecs: number | null; cronExpr: string | null; effectivePolicy?: string };
+    };
+    expect(interval.task).toMatchObject({
+      intervalSecs: 180,
+      cronExpr: null,
+      effectivePolicy: "固定检查间隔：180 秒",
+    });
+
     const scheduleConflictResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -609,7 +681,7 @@ describe("demo MSW handlers", () => {
     expect(scheduleConflictResponse.status).toBe(400);
 
     const runResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
+      "http://demo.invalid/api/system/managed-tasks/raw_compression/run",
       { method: "POST" },
     );
     const running = (await runResponse.json()) as {
@@ -618,7 +690,7 @@ describe("demo MSW handlers", () => {
     expect(running.recentRuns[0]?.status).toBe("running");
 
     const conflictResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
+      "http://demo.invalid/api/system/managed-tasks/raw_compression/run",
       { method: "POST" },
     );
     expect(conflictResponse.status).toBe(409);

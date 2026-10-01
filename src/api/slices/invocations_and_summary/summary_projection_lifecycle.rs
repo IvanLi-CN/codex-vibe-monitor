@@ -743,12 +743,22 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             else {
                 return;
             };
-            match SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
-                state.as_ref(),
-                startup_priority,
-            )
-            .await
-            {
+            let _observation = crate::TaskExecutionObservation::begin(
+                "summary_coverage_recovery",
+                &crate::maintenance_store::task_title_for_observation("summary_coverage_recovery"),
+                "startup",
+                crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
+                "processing",
+            );
+            let initial_result = tokio::select! {
+                biased;
+                _ = state.shutdown.cancelled() => return,
+                result = SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
+                    state.as_ref(),
+                    startup_priority,
+                ) => result,
+            };
+            match initial_result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {
                     warn!(error = ?error, "initial summary historical coverage recovery deferred");
@@ -772,12 +782,22 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             else {
                 continue;
             };
-            next_turn = match SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
-                state.as_ref(),
-                None,
-            )
-            .await
-            {
+            let _observation = crate::TaskExecutionObservation::begin(
+                "summary_coverage_recovery",
+                &crate::maintenance_store::task_title_for_observation("summary_coverage_recovery"),
+                "adaptive",
+                crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
+                "processing",
+            );
+            let result = tokio::select! {
+                biased;
+                _ = state.shutdown.cancelled() => return,
+                result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                    state.as_ref(),
+                    None,
+                ) => result,
+            };
+            next_turn = match result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {
                     warn!(error = ?error, "summary historical coverage recovery deferred");

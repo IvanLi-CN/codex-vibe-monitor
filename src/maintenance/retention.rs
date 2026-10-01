@@ -8159,6 +8159,13 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     else {
         return true;
     };
+    let observation = crate::TaskExecutionObservation::begin(
+        "retention_archive",
+        &crate::maintenance_store::task_title_for_observation("retention_archive"),
+        trigger,
+        crate::maintenance_store::task_execution_class("retention_archive"),
+        "processing",
+    );
     let started_at = Instant::now();
     match run_data_retention_maintenance_with_circuit_and_prompt_cache(
         &state.pool,
@@ -8259,6 +8266,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             }
             let touched_anything = summary.touched_anything();
             if touched_anything && !summary.dry_run {
+                observation.finish();
                 let task_run = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return false,
@@ -8296,6 +8304,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 .record_error("data_retention_maintenance", &err);
             retention_record_error("data_retention_maintenance", &err);
             if !state.config.retention_dry_run {
+                observation.finish();
                 let task_run = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return false,

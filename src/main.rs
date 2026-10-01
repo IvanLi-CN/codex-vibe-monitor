@@ -142,6 +142,7 @@ mod sqlite_batch_writer;
     reason = "Statistics row tuples mirror persisted query shapes."
 )]
 mod stats;
+mod task_runtime_observation;
 mod terminal_journal;
 mod terminal_projection;
 #[cfg(test)]
@@ -169,6 +170,7 @@ pub(crate) use share_links::*;
 use sqlite_batch_writer::*;
 use stats::*;
 pub(crate) use summary_source_change::*;
+pub(crate) use task_runtime_observation::*;
 pub(crate) use terminal_projection::*;
 use upstream_accounts::*;
 #[cfg_attr(not(test), allow(dead_code))]

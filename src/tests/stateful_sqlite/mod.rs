@@ -139,6 +139,7 @@ mod routing_failover_terminal_reasoning;
 mod routing_timeout_and_overload_failover;
 mod runtime_overlay_and_group_rule_behaviors;
 mod schema_templates;
+mod startup_bootstrap_cancellation;
 mod startup_rebuild_and_retention_basics;
 mod system_status_and_account_roster;
 
