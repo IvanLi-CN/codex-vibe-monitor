@@ -236,14 +236,42 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
-      - name: Cargo fmt check
-        run: cargo fmt --all -- --check
+      - name: Restore Cargo Clippy artifacts
+        id: cargo-clippy-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
-      - name: Cargo clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Prepare exact Cargo Clippy cache reuse
+        if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
+          for input in build.rs .cargo/config.toml; do
+            if [ -f "$input" ]; then touch -d '@1' "$input"; fi
+          done
+
+      - name: Rust source quality
+        id: rust-source-quality
+        env:
+          CARGO_BUILD_JOBS: 8
+          CARGO_TARGET_DIR: target-clippy
+        run: bash .github/scripts/run-rust-source-quality.sh
+
+      - name: Save Cargo Clippy artifacts
+        if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: |
@@ -399,7 +427,7 @@ jobs:
 
       - name: Install Playwright Chromium for Storybook
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Run Storybook accessibility suite
         working-directory: web
@@ -603,9 +631,18 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+
+      - name: Prepare exact Cargo test cache reuse
+        if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
+          for input in build.rs .cargo/config.toml; do
+            if [ -f "$input" ]; then touch -d '@1' "$input"; fi
+          done
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -625,6 +662,7 @@ jobs:
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: |
@@ -634,10 +672,11 @@ jobs:
 
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
 
   backend-tests-lightweight:
     needs: backend-test-archive
@@ -646,6 +685,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -676,6 +720,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -706,6 +755,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -756,6 +810,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 

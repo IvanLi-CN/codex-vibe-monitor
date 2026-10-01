@@ -38,6 +38,7 @@
 - 2026-09-30：PR [#1056](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1056) 的基线 CI 显示 Lightweight 在 4 threads 下为 `222s`，6 threads 下为 `230s`；因此不继续加线程，转向减少 current-schema 重复初始化、真实 freshness 等待与 Lightweight 中的 gzip file I/O。
 - 2026-09-30：PR #1056 的首轮优化 run `36723460863` 中，Archive / File I/O `149s`，Lightweight `115s` 但因 freshness 回归失败，Stateful SQLite `304s`。失败说明测试仅把 rolling 快照时间改旧、却没有像 production maintenance 一样通过 generation fence 续租 freshness；修复为直接调用该生产 helper，并把共享 schema-template 支撑代码移入独立测试模块以恢复 Rust 文件行数预算。修复结果记录在下一条。
 - 2026-09-30：PR #1056 repair run `36726941619` 在 head `844d691c` 上所有 checks 通过。Lightweight `1,228/1,228`，nextest 执行 `77.715s`、job wall `113s`；Archive / File I/O `299/299`、job wall `146s`；Stateful SQLite `1,370/1,370`、job wall `314s`。原始 Lightweight 单线程执行 `427.558s`、job wall 约 `464s`，因此链接 job 的执行时间下降约 `82%`、job wall 下降约 `76%`。Stateful `314s`、Representative Scale `314s`、Lint `190s` 仍超过 `180s`，全 required-job 预算没有完成。
+- 2026-10-01：PR #1057 同一 head 的 cold/hot Actions 显示 Clippy Lint `220s`/`57s`、archive producer `236s`/`26s`，required runner 成本低于原门槛。冷编译测量支持 cold `250s`、hot `180s` 的分档预算，并保留原 runner 总成本与 Stateful 限值。热轮还暴露四个基于 `Utc::now()` 的 invocation timeline fixtures 在 UTC 午夜后越过自然日边界；后续候选将时间固定到当天中午。
 
 ## Key Reasons / Replacements
 

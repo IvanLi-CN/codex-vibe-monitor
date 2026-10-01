@@ -59,11 +59,59 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Cargo fmt check
-        run: cargo fmt --all -- --check
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
 
-      - name: Cargo clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Restore Cargo Clippy artifacts
+        id: cargo-clippy-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+
+      - name: Prepare exact Cargo Clippy cache reuse
+        if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
+          for input in build.rs .cargo/config.toml; do
+            if [ -f "$input" ]; then touch -d '@1' "$input"; fi
+          done
+
+      - name: Rust source quality
+        id: rust-source-quality
+        env:
+          CARGO_BUILD_JOBS: 8
+          CARGO_TARGET_DIR: target-clippy
+        run: bash .github/scripts/run-rust-source-quality.sh
+
+      - name: Save Cargo Clippy artifacts
+        if: ${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: target-clippy
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -316,7 +364,7 @@ jobs:
 
       - name: Install Playwright Chromium for Storybook
         working-directory: web
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Run Storybook accessibility suite
         working-directory: web
@@ -472,13 +520,58 @@ jobs:
     name: Backend Test Archive Producer
     runs-on: ubuntu-24.04
     steps:
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo test artifacts
+        id: cargo-test-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+
+      - name: Prepare exact Cargo test cache reuse
+        if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
+          for input in build.rs .cargo/config.toml; do
+            if [ -f "$input" ]; then touch -d '@1' "$input"; fi
+          done
+
       - name: Build backend test archive
         id: build-backend-test-archive
         run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
+      - name: Upload backend test archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-tests.tar.zst
+          if-no-files-found: error
+          overwrite: true
+
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
   backend-tests-lightweight:
     needs: backend-test-archive
@@ -487,6 +580,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -512,16 +610,27 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
 
-  backend-tests-stateful-sqlite:
+      - name: Run lightweight backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
     if: always()
-    name: Backend Tests (Stateful SQLite)
+    name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -533,22 +642,61 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
-        uses: actions/cache@v5
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Run stateful SQLite backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite-shard-2:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Stateful SQLite shard 2/2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite:
+    name: Backend Tests (Stateful SQLite)
+    needs:
+      - backend-tests-stateful-sqlite-shard-1
+      - backend-tests-stateful-sqlite-shard-2
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both Stateful SQLite shards
+        env:
+          SHARD_ONE_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-1.result }}
+          SHARD_TWO_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-2.result }}
+        run: |
+          set -euo pipefail
+          echo "Stateful SQLite shard 1/2: ${SHARD_ONE_RESULT}"
+          echo "Stateful SQLite shard 2/2: ${SHARD_TWO_RESULT}"
+          test "${SHARD_ONE_RESULT}" = success
+          test "${SHARD_TWO_RESULT}" = success
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
@@ -557,6 +705,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Verify backend test archive producer
+        env:
+          PRODUCER_RESULT: ${{ needs.backend-test-archive.result }}
+        run: test "$PRODUCER_RESULT" = success
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -582,14 +735,38 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
   build-pr-smoke-artifacts:
     name: PR Smoke Artifact Producer
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
+      - name: Restore Cargo test artifacts
+        id: cargo-test-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+
+      - name: Prepare exact Cargo test cache reuse
+        if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
+        run: |
+          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
+          for input in build.rs .cargo/config.toml; do
+            if [ -f "$input" ]; then touch -d '@1' "$input"; fi
+          done
+
       - name: Build PR smoke artifacts
         run: mkdir -p .ci-smoke
 
