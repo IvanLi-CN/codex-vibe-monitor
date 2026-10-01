@@ -1,6 +1,6 @@
 {
-  "candidate_head": "ee06c91a6937aa10cab2afdd24794bfdad3ef6d1",
-  "implementation_commit": "ee06c91a6937aa10cab2afdd24794bfdad3ef6d1",
+  "candidate_head": "1c08a8a1e3f1c5f66a760c78a8f27ce93e47e326",
+  "implementation_commit": "1c08a8a1e3f1c5f66a760c78a8f27ce93e47e326",
   "service": {
     "bind": "127.0.0.1:17940",
     "database": "isolated temporary SQLite files",
@@ -25,8 +25,8 @@
     "phase": "processing",
     "execution_class": "maintenance_retention",
     "trigger_kind": "interval",
-    "started_at": "2026-10-01T10:29:07.600Z",
-    "elapsed_ms": 26798
+    "started_at": "2026-10-01T11:06:40.978Z",
+    "elapsed_ms": 28376
   },
   "schedule_controls": {
     "custom_interval": {
@@ -51,6 +51,6 @@
     "task_key": "dashboard_runtime_projection_reconcile",
     "request_status": 200,
     "final_status": "success",
-    "duration_ms": 3
+    "duration_ms": 1
   }
 }
