@@ -1531,10 +1531,26 @@ impl MaintenanceStore {
             return Err(anyhow!("manual or unknown task cannot be scheduled"));
         }
         let next_enabled = enabled.unwrap_or(current_enabled);
-        let next_interval = interval_secs.unwrap_or(current_interval);
-        let next_cron = cron_expr
-            .map(|value| value.map(str::to_owned))
-            .unwrap_or(current_cron);
+        let interval_value_provided = interval_secs.is_some_and(|value| value.is_some());
+        let cron_value_provided = cron_expr.is_some_and(|value| value.is_some());
+        if interval_value_provided && cron_value_provided {
+            transaction.commit().await?;
+            return Err(anyhow!("interval and cron schedule are mutually exclusive"));
+        }
+        let next_interval = if let Some(value) = interval_secs {
+            value
+        } else if cron_value_provided {
+            None
+        } else {
+            current_interval
+        };
+        let next_cron = if let Some(value) = cron_expr {
+            value.map(str::to_owned)
+        } else if interval_value_provided {
+            None
+        } else {
+            current_cron
+        };
         if update_schedule {
             if !EDITABLE_SCHEDULE_TASKS.contains(&task_key)
                 && (next_interval.is_some()
@@ -1802,6 +1818,61 @@ mod tests {
         .await
         .expect("load cleared task control");
         assert_eq!(row, (true, None, None));
+    }
+
+    #[tokio::test]
+    async fn switching_supported_schedule_types_clears_the_previous_override() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance schedule test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+
+        store
+            .update_control(
+                "dashboard_runtime_projection_reconcile",
+                None,
+                Some(Some(120)),
+                None,
+            )
+            .await
+            .expect("set interval override");
+        store
+            .update_control(
+                "dashboard_runtime_projection_reconcile",
+                None,
+                None,
+                Some(Some("*/5 * * * *")),
+            )
+            .await
+            .expect("switch to cron override");
+        let cron_state = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load cron override");
+        assert_eq!(cron_state, (None, Some("*/5 * * * *".to_string())));
+
+        store
+            .update_control(
+                "dashboard_runtime_projection_reconcile",
+                None,
+                Some(Some(180)),
+                None,
+            )
+            .await
+            .expect("switch back to interval override");
+        let interval_state = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load interval override");
+        assert_eq!(interval_state, (Some(180), None));
     }
 
     #[tokio::test]

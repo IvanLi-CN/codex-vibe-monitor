@@ -2869,6 +2869,91 @@ function demoNextTriggerAt(
   return new Date(Date.parse(demoNow()) + intervalSecs * 1000).toISOString();
 }
 
+function demoDefaultTaskPolicy(
+  taskKey: string,
+  isManual: boolean,
+): { policySource: string; effectivePolicy: string } {
+  if (isManual) {
+    return { policySource: "系统规则", effectivePolicy: "手动触发；不适用周期计划" };
+  }
+  switch (taskKey) {
+    case "system_status_snapshot":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "固定检查间隔：55 秒（60 秒缓存上限，提前 5 秒）",
+      };
+    case "upstream_account_maintenance":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "固定检查间隔：60 秒；账号同步按账号策略",
+      };
+    case "pool_orphan_recovery":
+    case "invocation_timeline_snapshot":
+      return { policySource: "系统默认", effectivePolicy: "固定检查间隔：60 秒" };
+    case "dashboard_runtime_projection_reconcile":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "固定检查间隔：60 秒；受压力准入约束",
+      };
+    case "retention_archive":
+      return {
+        policySource: "运行配置",
+        effectivePolicy: "启动检查与保留策略周期；按配置判断是否有工作",
+      };
+    case "forward_proxy_subscription_refresh":
+      return { policySource: "系统默认", effectivePolicy: "启动刷新与固定检查间隔：60 秒" };
+    case "long_term_projection":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "自适应检查；60 秒刷新、300 秒修复、每日校验",
+      };
+    case "timeseries_minute_projection":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "启动、固定检查与压力准入唤醒",
+      };
+    case "summary_snapshot":
+      return { policySource: "系统默认", effectivePolicy: "事件唤醒；最小刷新间隔 10 秒" };
+    case "summary_coverage_recovery":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "自适应恢复；按覆盖和压力准入唤醒",
+      };
+    case "prompt_cache_materialization":
+      return { policySource: "系统默认", effectivePolicy: "事件对账与 60 秒检查" };
+    case "startup_backfill":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "启动监督器；按事件、检查点和压力准入唤醒",
+      };
+    case "startup_hourly_rollup_bootstrap":
+      return { policySource: "启动规则", effectivePolicy: "仅在服务启动阶段检查" };
+    default:
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "由 worker 的固定或事件规则检查",
+      };
+  }
+}
+
+function demoTaskExecutionClass(taskKey: string): string | null {
+  switch (taskKey) {
+    case "retention_archive":
+    case "upstream_account_maintenance":
+    case "pool_orphan_recovery":
+    case "invocation_timeline_snapshot":
+    case "raw_payload_metrics_inventory":
+      return "maintenance_retention";
+    case "dashboard_runtime_projection_reconcile":
+    case "forward_proxy_subscription_refresh":
+    case "long_term_projection":
+    case "timeseries_minute_projection":
+      return "p2_derived";
+    default:
+      return null;
+  }
+}
+
 export function managedTasks() {
   type DemoManagedTask = {
     taskKey: string;
@@ -3046,34 +3131,12 @@ export function managedTasks() {
                         : isManual
                           ? ["manual"]
                           : [triggerMode];
+        const defaultPolicy = demoDefaultTaskPolicy(taskKey, isManual);
         const effectivePolicy = cronExpr
           ? `UTC cron：${cronExpr}`
           : intervalSecs != null
             ? `固定检查间隔：${intervalSecs} 秒`
-            : isManual
-              ? "手动触发；不适用周期计划"
-              : taskKey === "system_status_snapshot"
-                ? "固定检查间隔：55 秒（60 秒缓存上限，提前 5 秒）"
-                : taskKey === "upstream_account_maintenance"
-                  ? "固定检查间隔：60 秒；账号同步按账号策略"
-                  : taskKey === "forward_proxy_subscription_refresh"
-                    ? "启动刷新与固定检查间隔：60 秒"
-                    : taskKey === "pool_orphan_recovery" ||
-                        taskKey === "invocation_timeline_snapshot"
-                      ? "固定检查间隔：60 秒"
-                      : taskKey === "dashboard_runtime_projection_reconcile"
-                        ? "固定检查间隔：60 秒；受压力准入约束"
-                        : taskKey === "summary_coverage_recovery"
-                          ? "自适应恢复；按覆盖和压力准入唤醒"
-                          : taskKey === "long_term_projection"
-                            ? "自适应检查；60 秒刷新、300 秒修复、每日校验"
-                            : taskKey === "timeseries_minute_projection"
-                              ? "启动、固定检查与压力准入唤醒"
-                              : taskKey === "startup_backfill"
-                                ? "启动监督器；按事件、检查点和压力准入唤醒"
-                                : triggerMode === "event"
-                                  ? "事件唤醒；固定检查作兜底"
-                                  : "由 worker 默认规则管理";
+            : defaultPolicy.effectivePolicy;
         return {
           enabled,
           intervalSecs,
@@ -3087,19 +3150,10 @@ export function managedTasks() {
           policySource:
             override?.intervalSecs !== undefined || override?.cronExpr !== undefined
               ? "运维自定义"
-              : "系统默认",
+              : defaultPolicy.policySource,
           scheduleEditable,
           scheduleCapabilityReason: isManual ? "手动任务没有周期或 cron 计划" : undefined,
-          executionClass: [
-            "retention_archive",
-            "upstream_account_maintenance",
-            "pool_orphan_recovery",
-            "raw_payload_metrics_inventory",
-          ].includes(taskKey)
-            ? "maintenance_retention"
-            : taskKey === "dashboard_runtime_projection_reconcile"
-              ? "p2_derived"
-              : null,
+          executionClass: demoTaskExecutionClass(taskKey),
         };
       })(),
       taskKey,
@@ -4588,11 +4642,17 @@ export async function handleDemoRequest(request: Request) {
     if (body.enabled !== undefined) next.enabled = body.enabled;
     if (body.intervalSecs !== undefined) {
       if (body.intervalSecs === null) delete next.intervalSecs;
-      else next.intervalSecs = body.intervalSecs;
+      else {
+        next.intervalSecs = body.intervalSecs;
+        delete next.cronExpr;
+      }
     }
     if (body.cronExpr !== undefined) {
       if (body.cronExpr === null) delete next.cronExpr;
-      else next.cronExpr = body.cronExpr;
+      else {
+        next.cronExpr = body.cronExpr;
+        delete next.intervalSecs;
+      }
     }
     const enabled = next.enabled ?? detail.task.enabled;
     const intervalSecs =
