@@ -2883,7 +2883,7 @@ function managedTasks() {
       "forward_proxy_subscription_refresh",
       "正向代理订阅刷新",
       "刷新代理订阅并更新代理节点状态",
-      "interval",
+      "event",
       false,
     ],
     ["pool_orphan_recovery", "连接池孤儿记录恢复", "恢复超时或中断的连接池记录", "interval", false],

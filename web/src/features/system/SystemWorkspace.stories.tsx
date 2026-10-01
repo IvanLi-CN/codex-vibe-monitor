@@ -389,7 +389,7 @@ const STORYBOOK_MANAGED_TASKS: ManagedTask[] = [
     isManual: false,
     triggerKinds: ["startup", "interval"],
     effectivePolicy: "启动刷新与固定检查间隔：60 秒",
-    policySource: "系统规则",
+    policySource: "系统默认",
     scheduleEditable: false,
     scheduleCapabilityReason: "当前 worker 为事件、启动或自适应路径，保留已有覆盖但不支持新增覆盖",
     executionClass: "p2_derived",
@@ -414,11 +414,14 @@ const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
   ],
 };
 
-function storybookManagedTaskDetail(taskKey: string): ManagedTaskDetail {
+function storybookManagedTaskDetail(
+  taskKey: string,
+  override: Partial<ManagedTask> = {},
+): ManagedTaskDetail {
   const task =
     STORYBOOK_MANAGED_TASKS.find((item) => item.taskKey === taskKey) ?? STORYBOOK_MANAGED_TASKS[0];
   return {
-    task,
+    task: { ...task, ...override },
     progress: null,
     recentRuns: [],
     performance: {
@@ -647,6 +650,7 @@ function buildSystemWorkspaceRequestHandler(
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
+  const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const jsonResponse = (payload: unknown, status = 200) =>
@@ -680,8 +684,61 @@ function buildSystemWorkspaceRequestHandler(
     }
 
     const managedTaskDetailMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
-    if (managedTaskDetailMatch && (method === "GET" || method === "PATCH")) {
-      return jsonResponse(clone(storybookManagedTaskDetail(managedTaskDetailMatch[1])));
+    if (managedTaskDetailMatch && method === "GET") {
+      return jsonResponse(
+        clone(
+          storybookManagedTaskDetail(
+            managedTaskDetailMatch[1],
+            managedTaskOverrides.get(managedTaskDetailMatch[1]),
+          ),
+        ),
+      );
+    }
+
+    if (managedTaskDetailMatch && method === "PATCH") {
+      const taskKey = managedTaskDetailMatch[1];
+      const payload = parseBody<{
+        enabled?: boolean;
+        intervalSecs?: number | null;
+        cronExpr?: string | null;
+      }>({});
+      const next = { ...(managedTaskOverrides.get(taskKey) ?? {}) };
+      if (Object.hasOwn(payload, "enabled")) {
+        next.enabled = payload.enabled;
+      }
+      if (Object.hasOwn(payload, "intervalSecs")) {
+        next.intervalSecs = payload.intervalSecs ?? null;
+        next.cronExpr = null;
+        next.nextTriggerAt = payload.intervalSecs == null ? null : "2026-06-22T09:29:00.000Z";
+        next.effectivePolicy =
+          payload.intervalSecs == null
+            ? "固定检查间隔：60 秒；受压力准入约束"
+            : `固定检查间隔：${payload.intervalSecs} 秒`;
+        next.policySource = payload.intervalSecs == null ? "系统默认" : "运维自定义";
+      }
+      if (Object.hasOwn(payload, "cronExpr")) {
+        next.cronExpr = payload.cronExpr ?? null;
+        next.intervalSecs = null;
+        next.nextTriggerAt = payload.cronExpr ? "2026-06-22T09:30:00.000Z" : null;
+        next.effectivePolicy = payload.cronExpr
+          ? `UTC cron：${payload.cronExpr}`
+          : "固定检查间隔：60 秒；受压力准入约束";
+        next.policySource = payload.cronExpr ? "运维自定义" : "系统默认";
+      }
+      managedTaskOverrides.set(taskKey, next);
+      return jsonResponse(clone(storybookManagedTaskDetail(taskKey, next)));
+    }
+
+    const managedTaskRunMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)\/run$/);
+    if (managedTaskRunMatch && method === "POST") {
+      return jsonResponse(
+        clone(
+          storybookManagedTaskDetail(
+            managedTaskRunMatch[1],
+            managedTaskOverrides.get(managedTaskRunMatch[1]),
+          ),
+        ),
+      );
     }
 
     if (url.pathname === "/api/stats/invocation-timeline" && method === "GET") {
@@ -1530,6 +1587,14 @@ export const TaskDetail: Story = {
     await expect(canvas.getByText("调度与观测")).toBeVisible();
     await expect(canvas.getByText("固定检查间隔：60 秒；受压力准入约束")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "保存调度" })).toBeVisible();
+    const interval = canvas.getByLabelText("间隔（秒）");
+    await userEvent.clear(interval);
+    await userEvent.type(interval, "120");
+    await userEvent.click(canvas.getByRole("button", { name: "保存调度" }));
+    await expect(canvas.getByText("固定检查间隔：120 秒")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "恢复默认" }));
+    await expect(canvas.getByText("固定检查间隔：60 秒；受压力准入约束")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "立即运行" }));
   },
 };
 

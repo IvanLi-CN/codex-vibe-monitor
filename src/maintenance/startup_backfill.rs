@@ -1110,10 +1110,16 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
         return Err(anyhow!("unknown startup backfill task: {task_name}"));
     }
+    let mut previous_control = None;
     if let Some(store) = crate::maintenance_store::global() {
         let suffix = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
             .expect("validated managed startup backfill task");
         let managed_key = format!("startup_backfill.{suffix}");
+        previous_control = store
+            .detail(&managed_key)
+            .await
+            .with_context(|| format!("failed to load managed task control for {managed_key}"))?
+            .map(|detail| detail.task);
         if !store
             .update_control(&managed_key, Some(enabled), None, None)
             .await
@@ -1124,7 +1130,21 @@ pub(crate) async fn set_startup_backfill_task_enabled(
             ));
         }
     }
-    set_startup_backfill_progress_enabled(pool, task, enabled).await
+    match set_startup_backfill_progress_enabled(pool, task, enabled).await {
+        Ok(progress) => Ok(progress),
+        Err(progress_error) => {
+            if let (Some(store), Some(previous)) = (
+                crate::maintenance_store::global(),
+                previous_control.as_ref(),
+            ) && let Err(rollback_error) = store.restore_control_state(previous).await
+            {
+                return Err(anyhow!(
+                    "startup backfill control update failed: {progress_error}; rollback failed: {rollback_error}"
+                ));
+            }
+            Err(progress_error)
+        }
+    }
 }
 
 pub(crate) async fn set_startup_backfill_progress_enabled(

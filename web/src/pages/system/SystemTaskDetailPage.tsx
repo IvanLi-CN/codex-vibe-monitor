@@ -47,6 +47,7 @@ export default function SystemTaskDetailPage() {
   const { taskKey = "" } = useParams();
   const [detail, setDetail] = useState<ManagedTaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [intervalSecs, setIntervalSecs] = useState("");
   const [cronExpr, setCronExpr] = useState("");
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("interval");
@@ -94,14 +95,15 @@ export default function SystemTaskDetailPage() {
         setActiveRuntime(next);
         setRuntimeSampleElapsedMs(next?.elapsedMs ?? null);
         setRuntimeSampleClock(window.performance.now());
+        setRuntimeError(null);
         setRuntimeUnavailable(false);
       } catch (reason) {
         if (!disposed) {
           setActiveRuntime(null);
           setRuntimeSampleElapsedMs(null);
           setRuntimeSampleClock(null);
+          setRuntimeError(reason instanceof Error ? reason.message : String(reason));
           setRuntimeUnavailable(true);
-          setError(reason instanceof Error ? reason.message : String(reason));
         }
       } finally {
         inFlight = false;
@@ -195,6 +197,7 @@ export default function SystemTaskDetailPage() {
           </div>
         </div>
         {error ? <Alert variant="error">{error}</Alert> : null}
+        {!error && runtimeError ? <Alert variant="error">{runtimeError}</Alert> : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
             ["总量", progress?.total == null ? "—" : progress.total.toLocaleString()],

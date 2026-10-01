@@ -1170,7 +1170,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         &crate::maintenance_store::task_title_for_observation(&task_key),
                         &trigger_kind,
                         crate::maintenance_store::task_execution_class(&task_key),
-                        "processing",
+                        "resource_wait",
                     )
                 });
                 let started_at = Instant::now();
@@ -2349,7 +2349,16 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                         crate::maintenance_store::task_execution_class("pool_orphan_recovery"),
                         "processing",
                     );
-                    match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
+                    let result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        result = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()) => Some(result),
+                    };
+                    let Some(result) = result else {
+                        info!("pool orphan recovery cancelled during execution");
+                        break;
+                    };
+                    match result {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {
                                 warn!(
