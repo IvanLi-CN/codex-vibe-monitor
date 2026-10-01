@@ -608,7 +608,17 @@ def wait_for_cancel_terminal(invoke_id, timeout_seconds):
         if attempt and (
             str(attempt[0] or '').lower() not in ('running', 'pending', 'in_flight')
             and str(attempt[1] or '').lower()
-            not in ('running', 'pending', 'started', 'in_flight', 'active', 'waiting')
+            not in (
+                'running',
+                'pending',
+                'started',
+                'in_flight',
+                'active',
+                'waiting',
+                'streaming_response',
+                'response_headers',
+                'body_streaming',
+            )
         ):
             invocation = cancel_invocation_by_id(invoke_id)
             return {
@@ -712,12 +722,13 @@ def long_wait_cancel(round_index):
                 'invoke_id': None,
                 'terminal': None,
             }
+        close_started = time.perf_counter()
         time.sleep(1.0)
         sock.close()
         terminal = wait_for_cancel_terminal(accepted[0], 15)
         return {
             'status': 'client_closed',
-            'duration_ms': (time.perf_counter() - started) * 1000,
+            'duration_ms': (time.perf_counter() - close_started) * 1000,
             'server_accepted': True,
             'invoke_id': accepted[0],
             'terminal': terminal,
@@ -821,7 +832,18 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         and str(cancel_terminal.get('attempt_status') or '').lower()
         not in ('', 'running', 'pending', 'in_flight')
         and str(cancel_terminal.get('attempt_phase') or '').lower()
-        not in ('', 'running', 'pending', 'started', 'in_flight', 'active', 'waiting')
+        not in (
+            '',
+            'running',
+            'pending',
+            'started',
+            'in_flight',
+            'active',
+            'waiting',
+            'streaming_response',
+            'response_headers',
+            'body_streaming',
+        )
         and (
             cancel_terminal.get('attempt_failure_kind') == 'downstream_closed'
             or cancel_terminal.get('invocation_failure_kind') == 'downstream_closed'
