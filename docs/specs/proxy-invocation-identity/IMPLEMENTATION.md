@@ -15,6 +15,7 @@
 - `REQ-PII-003`: `AppState` cache state carries conversation identities; normalized prompt-cache keys use independent `Arc`/`Weak` allocation locks whose idle registry entries are reclaimed. Identity recovery and sequence reservation run outside the global cache mutex, then update cached state briefly after the interactive SQLite permit is released. Active references are registered before waiting and a drop guard releases them on cancellation; cache capacity remains 4096 and a full cache remains a durable-cache miss rather than a request rejection. Unbound hourly prefixes use a process-local namespace lock only during initialization and exclude issued prefixes, conversation masters, and invocation prefixes.
 - `REQ-PII-004`: `src/sqlite_batch_writer.rs` and prompt-cache key backfill enqueue touched keys without synchronously scanning retained invocations; the startup materialization task drains the durable refresh queue. Prompt-cache micro-batches use one set-based aggregate writeback per transaction, yield only at transaction boundaries, and pause for a 10 ms cooperative scheduler window between adaptive commits, while other startup backfills retain their existing cancellation behavior. `src/maintenance/retention.rs` deletes archived invocations before refreshing affected aggregates, releases orphan masters, and clears released identities from memory.
 - `REQ-PII-005`: Allocation, migration, recovery, statistics, retention, collision, and exhaustion paths emit structured diagnostic events using prompt-key fingerprints.
+- Long-wait acceptance coverage: `scripts/shared-testbox-performance-acceptance --scenario long-wait --duration 600 --rounds 3 --rate 4` drives eight 179-second/180-second-boundary proxy calls, two fast workers, same-key/different-key/unbound allocation, and cancellation while recording allocation, request, terminal confirmation, status, and incomplete-work samples. The workload keeps fast-call terminal reads in one batched SQLite sampler so measurement does not add per-call read-lock pressure.
 - Operational follow-up: `GET/PATCH /api/system/prompt-cache/materialization` and the System > Cache materialization page expose durable progress, estimated remaining time, recent bounded run history, and a pause/resume control. The control takes effect at the next committed micro-batch boundary and resumes from the durable cursor.
 
 ## Verification
@@ -29,6 +30,7 @@
 - `cargo test prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale -- --ignored --nocapture --test-threads=1`
 - `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
 - Focused stateful SQLite tests in `src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs`.
+- The long-wait workload is a required Linux shared-testbox acceptance run; its candidate SHA, run directory, and per-round gate results are recorded with the delivery evidence.
 
 ## Coverage / rollout summary
 
