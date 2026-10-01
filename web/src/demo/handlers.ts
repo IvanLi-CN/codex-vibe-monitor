@@ -3234,7 +3234,7 @@ function managedTaskDetail(taskKey: string) {
     processedCount: task.isManual ? null : 1842,
     updatedCount: task.isManual ? null : 1780,
     errorDetail: null,
-    completion: "completed",
+    completion: taskKey === "retention_archive" ? "partial" : "completed",
     coreCompletion: task.isManual ? null : "completed",
     details:
       taskKey === "retention_archive"
