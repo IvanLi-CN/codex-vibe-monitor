@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "design-only-not-implemented",
+  "migration": {
+    "description": "Add bounded conversation scan continuation, generation-safe staged statistics and optional task observation fields.",
+    "release_unit_description": "Bounded retention execution and its task observation contract.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Retention source scope, orphan scan epoch/cursor, generation-checked per-key aggregate staging and source-page cursor, queue mutation generations, nullable run completion and progress/schedule evidence.",
+    "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
+    "source_compatibility_range": {
+      "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; cover actual intervening schema variants with fixtures.",
+      "to_program_version": "Unreleased candidate based on a4270dac42d6996497ececdd69bbc07ba50ec45c; no version identity selected.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Idempotently install main-database correctness cursor/staging/generation structure and bounded lookup indexes; add nullable maintenance-database result/progress fields. Existing deployed migrations are immutable.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "Atomically invalidate/enqueue on source mutations, checkpoint bounded source pages, and conditionally publish precise aggregate results/clear only the consumed generation. Commit orphan deletion with its safe cursor boundary.",
+        "order": 2,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-002",
+        "description": "Asynchronously publish coalesced operational progress and immutable run results to the maintenance database; never add a main-database operational fallback.",
+        "order": 3,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No readiness-wide historical scan or fabricated history. Existing durable queue entries initialize conservatively and resume in bounded background pages; absent counters/outcomes/durations stay unknown.",
+        "order": 4,
+        "depends_on": ["ddl-001", "dml-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-001", "dml-001", "dml-002", "backfill-001"],
+    "progress_signals": ["Core/stage outcomes and pending work", "Business cursor/generation and last committed progress", "Query budget/cancellation/settlement evidence", "Operational observation freshness and effective schedule"],
+    "pause_points": ["Between idempotent structure installation and background recovery", "At each committed business page/batch; operator disable prevents the next batch"]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; older Minor binaries are not promised to preserve new continuation semantics",
+    "faulty_release_recovery": "A newer version recognizes unfinished cursor/staging generations, discards stale derived staging conservatively and resumes the durable queue without changing archive proof or source ownership.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {"required_test_evidence": []},
+    "minor": {
+      "required_test_evidence": [
+        "Candidate reads all declared supported old schema variants; original API fields/status remain compatible.",
+        "Repeated DDL and re-entry after interruption are idempotent; no historical scan occurs in readiness.",
+        "A forward-repair candidate resumes stopped-release staging and cursors without stale publication or lost queue generations.",
+        "Legacy missing operational evidence stays unknown and maintenance-store failure does not block business work.",
+        "Real SQLite query interruption, rollback and lock release meet the page budget contract."
+      ]
+    },
+    "major": {"required_test_evidence": []},
+    "completed_evidence": []
+  }
+}

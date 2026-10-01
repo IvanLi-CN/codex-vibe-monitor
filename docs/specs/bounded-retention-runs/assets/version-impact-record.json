@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "design-only-not-release-verified",
+  "change": {
+    "description": "Bound retention runs, separate conversation-derived maintenance, and add compatible completion/progress/schedule evidence.",
+    "release_unit_description": "Bounded retention execution and its task observation contract.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "Public API retains existing fields and status values; new durable continuation semantics require forward repair and are not promised to older Minor binaries.",
+      "assessed_at": "2026-10-01T04:49:33Z",
+      "evidence": ["SPEC.md", "../../adr/0025-retention-core-and-conversation-derived-maintenance.md"]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {"detected": false, "description": "Design-only; implementation has not started."},
+      "reasoning": "The proposed API impact is patch and proposed persistent-state impact is minor; the release unit takes their maximum.",
+      "reassessed_at": "2026-10-01T04:49:33Z",
+      "evidence": ["IMPLEMENTATION.md"]
+    },
+    "verified": {
+      "impact": null,
+      "reasoning": "No candidate implementation or release compatibility tests exist.",
+      "verified_at": null,
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "planned_impact": "patch",
+      "change": "compatible",
+      "supported_consumer_range": "Existing current-Major consumers of managed task detail and performance fields, including original TaskRun.status values.",
+      "evidence": ["Design retains original fields and status values; completion, stage detail, schedule source and coverage are optional additions. This is an acceptance contract, not tested evidence."]
+    },
+    "persistent_state": {
+      "planned_impact": "minor",
+      "applicable": true,
+      "state_description": "Business correctness cursors, generation-checked staged aggregates and queue entries; nullable operational outcomes and snapshots in the maintenance database.",
+      "source_program_compatibility_range": "Existing retention support boundary v2.71.x through the observed v2.80.2 schema, including intervening migration structures; fixtures required before release.",
+      "evidence": ["Old missing evidence remains unknown. Candidate reads supported earlier state; older Minor binaries need not preserve new continuation semantics. No migration has been implemented or tested."]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["bounded-retention-runs"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": ["Planned public_api=patch, persistent_state=minor; planned maximum=minor. Verified maximum is intentionally unset."]
+  }
+}

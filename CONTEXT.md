@@ -953,6 +953,22 @@ _Avoid_: Completed archive, orphan archive
 The autonomous, pressure-aware background process that resumes a Retention Backlog without an operator CLI, restart, or manual database repair.
 _Avoid_: Manual cleanup, maintenance window
 
+**归档核心（Retention Core）**:
+The retention stages that establish a Verified Archive and commit the corresponding source-row transition. Their completion is distinct from the freshness or cleanup of derived prompt-cache conversation data.
+_Avoid_: 会话统计刷新, 全部维护完成, 文件写出即完成
+
+**会话派生维护（Conversation Derived Maintenance）**:
+The aggregate refresh and orphan-conversation cleanup required after retained invocation facts change. It preserves exact conversation statistics and deletion safety independently of Retention Core completion.
+_Avoid_: Prompt token 缓存失效, 调用归档, 在线请求阻塞步骤
+
+**运行积压快照（Run Backlog Snapshot）**:
+The observed expired invocation population associated with a retention run, with its observation time and scope. It is a denominator in invocation rows, not a sum of conversation keys, archive batches, or raw files.
+_Avoid_: 永久总量, 全局完成率, 混合单位总数
+
+**运行完成度（Run Completion Outcome）**:
+The extent of work completed within a retention run's captured scope: completed, partial, or deferred, alongside its execution status. It does not rewrite an earlier run when background maintenance later finishes.
+_Avoid_: 成功即全部完成, 延迟即失败, 后台完成后改写历史
+
 ## Task Operations
 
 **纳管任务（Managed Task）**:
