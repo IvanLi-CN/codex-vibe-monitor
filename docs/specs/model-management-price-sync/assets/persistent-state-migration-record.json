@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Add a persistent model candidate directory and migrate existing static preset candidates and priced model IDs once, preserving current enabled preset membership.",
+    "release_unit_description": "Persistent model management, dynamic proxy model listing, and reviewed models.dev price synchronization.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Managed model IDs, enabled preset model IDs, local pricing rows, and historical invocation costs.",
+    "storage_implementation": "SQLite managed_models catalog, proxy_model_settings.enabled_preset_models_json, and pricing_settings_models.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported repository versions using static PROXY_PRESET_MODEL_IDS and pricing_settings_models before the managed model catalog exists.",
+      "to_program_version": "Candidate release implementing model management and models.dev price synchronization.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Create the managed_models table, a durable suppression table for user-deleted IDs, and a schema migration marker table idempotently; existing proxy and pricing tables remain readable.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "In a transaction guarded by a one-time migration marker, insert the pre-existing static preset candidates and existing priced model IDs into managed_models. Keep enabled_preset_models_json values intact; do not infer or enable additional models.",
+        "order": 2,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-002",
+        "description": "On explicit sync apply, upsert only selected model IDs and selected supported token prices, mark imported prices as models.dev, and leave preset membership unchanged. On delete, remove the model directory row, price row, and preset member atomically.",
+        "order": 3,
+        "depends_on": ["dml-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No historical invocation cost is rewritten. Existing non-null costs remain byte-for-byte unchanged; existing price rows are included in the managed model directory without changing their source or values.",
+        "order": 4,
+        "depends_on": ["dml-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-001", "dml-001", "dml-002", "backfill-001"],
+    "progress_signals": [
+      "Schema inspection confirms managed_models and the migration marker exist.",
+      "The migration marker distinguishes an empty migrated catalog from a catalog that still needs legacy candidates seeded.",
+      "A suppression row prevents default pricing seeds from resurrecting a deleted model; explicit manual or source re-addition clears the suppression.",
+      "The model settings API exposes the migrated candidate set and existing enabled set.",
+      "Pricing and history tests confirm sync/delete do not change non-null historical invocation costs."
+    ],
+    "pause_points": [
+      "After table creation and before one-time legacy candidate import.",
+      "Each selected price apply and each model deletion is a bounded SQLite transaction."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Older binaries can ignore the additive managed_models tables. They do not provide dynamic model listing and may drop dynamic enabled IDs when a legacy proxy settings write normalizes the list. Existing static presets, pricing rows, and history remain readable.",
+    "faulty_release_recovery": "A forward release re-enters table creation and the versioned seed migration idempotently. Do not drop managed_models or rewrite historical costs as rollback. A deleted model remains absent because its suppression and the seed migration marker are durable; a later explicit source or manual price apply may insert it again with preset state off.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {"required_test_evidence": []},
+    "minor": {
+      "required_test_evidence": [
+        "The candidate migrates an earlier database and preserves existing static candidates and enabled membership across restart.",
+        "A migrated and subsequently deleted static candidate remains absent after restart.",
+        "Explicitly re-adding a deleted model creates it with preset membership disabled.",
+        "Delete and price synchronization leave historical non-null invocation costs unchanged.",
+        "The stateful-sqlite profile validates the migration and model lifecycle behavior."
+      ]
+    },
+    "major": {"required_test_evidence": []}
+  }
+}

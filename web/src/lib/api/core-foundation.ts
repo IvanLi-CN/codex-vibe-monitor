@@ -1651,6 +1651,39 @@ export interface PricingSettings {
   entries: PricingEntry[];
 }
 
+export interface ModelsDevSyncProvider {
+  id: string;
+  name: string;
+  docUrl: string | null;
+}
+
+export interface ModelsDevPriceCandidate {
+  model: string;
+  name: string;
+  providerId: string;
+  providerName: string;
+  docUrl: string | null;
+  inputPer1m: number | null;
+  outputPer1m: number | null;
+  cacheReadPer1m: number | null;
+  cacheWritePer1m: number | null;
+  reasoningPer1m: number | null;
+  unsupportedDimensions: string[];
+  importable: boolean;
+}
+
+export interface ModelsDevSyncPreview {
+  fetchedAt: string;
+  providerCount: number;
+  candidateCount: number;
+  providers: ModelsDevSyncProvider[];
+  candidates: ModelsDevPriceCandidate[];
+}
+
+export interface ManagedModelDeleteResponse {
+  deletedModel: string;
+}
+
 export type ProxyFastModeRewriteMode = "disabled" | "fill_missing" | "force_priority";
 
 export interface ProxySettings {
@@ -3088,6 +3121,55 @@ function normalizePricingSettings(raw: unknown): PricingSettings {
         ? payload.catalogVersion.trim()
         : "custom",
     entries,
+  };
+}
+
+function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const providersRaw = Array.isArray(payload.providers) ? payload.providers : [];
+  const candidatesRaw = Array.isArray(payload.candidates) ? payload.candidates : [];
+  const providers = providersRaw.flatMap((item): ModelsDevSyncProvider[] => {
+    const value = (item ?? {}) as Record<string, unknown>;
+    const id = typeof value.id === "string" ? value.id.trim() : "";
+    const name = typeof value.name === "string" ? value.name.trim() : "";
+    if (!id || !name) return [];
+    return [{ id, name, docUrl: typeof value.docUrl === "string" ? value.docUrl : null }];
+  });
+  const candidates = candidatesRaw.flatMap((item): ModelsDevPriceCandidate[] => {
+    const value = (item ?? {}) as Record<string, unknown>;
+    const model = typeof value.model === "string" ? value.model.trim() : "";
+    const providerId = typeof value.providerId === "string" ? value.providerId.trim() : "";
+    const providerName = typeof value.providerName === "string" ? value.providerName.trim() : "";
+    const name = typeof value.name === "string" ? value.name.trim() : "";
+    if (!model || !providerId || !providerName || !name) return [];
+    const unsupportedRaw = Array.isArray(value.unsupportedDimensions)
+      ? value.unsupportedDimensions
+      : [];
+    return [
+      {
+        model,
+        name,
+        providerId,
+        providerName,
+        docUrl: typeof value.docUrl === "string" ? value.docUrl : null,
+        inputPer1m: normalizeFiniteNumber(value.inputPer1m) ?? null,
+        outputPer1m: normalizeFiniteNumber(value.outputPer1m) ?? null,
+        cacheReadPer1m: normalizeFiniteNumber(value.cacheReadPer1m) ?? null,
+        cacheWritePer1m: normalizeFiniteNumber(value.cacheWritePer1m) ?? null,
+        reasoningPer1m: normalizeFiniteNumber(value.reasoningPer1m) ?? null,
+        unsupportedDimensions: unsupportedRaw.filter(
+          (dimension): dimension is string => typeof dimension === "string",
+        ),
+        importable: value.importable === true,
+      },
+    ];
+  });
+  return {
+    fetchedAt: typeof payload.fetchedAt === "string" ? payload.fetchedAt : "",
+    providerCount: normalizeFiniteNumber(payload.providerCount) ?? providers.length,
+    candidateCount: normalizeFiniteNumber(payload.candidateCount) ?? candidates.length,
+    providers,
+    candidates,
   };
 }
 
@@ -5475,6 +5557,45 @@ export async function updatePricingSettings(payload: PricingSettings): Promise<P
     body: JSON.stringify(payload),
   });
   return normalizePricingSettings(response);
+}
+
+export async function previewModelsDevPriceSync(): Promise<ModelsDevSyncPreview> {
+  const response = await fetchJson<unknown>("/api/settings/models/sync/preview", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  return normalizeModelsDevSyncPreview(response);
+}
+
+export async function applyModelsDevPriceSync(entries: PricingEntry[]): Promise<PricingSettings> {
+  const response = await fetchJson<unknown>("/api/settings/models/sync/apply", {
+    method: "POST",
+    body: JSON.stringify({ entries }),
+  });
+  return normalizePricingSettings(response);
+}
+
+export async function updateManagedModelPreset(
+  model: string,
+  enabled: boolean,
+): Promise<ProxySettings> {
+  const response = await fetchJson<unknown>("/api/settings/models/preset", {
+    method: "PUT",
+    body: JSON.stringify({ model, enabled }),
+  });
+  return normalizeProxySettings(response);
+}
+
+export async function deleteManagedModel(model: string): Promise<ManagedModelDeleteResponse> {
+  const response = await fetchJson<unknown>("/api/settings/models", {
+    method: "DELETE",
+    body: JSON.stringify({ model }),
+  });
+  const payload = (response ?? {}) as Record<string, unknown>;
+  if (typeof payload.deletedModel !== "string") {
+    throw new Error("invalid model deletion response");
+  }
+  return { deletedModel: payload.deletedModel };
 }
 
 export async function updateProxySettings(payload: {

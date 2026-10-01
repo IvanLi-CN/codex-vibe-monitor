@@ -5102,17 +5102,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     ensure_nullable_real_column(pool, "pricing_settings_models", "cache_write_per_1m")
         .await
         .context("failed to ensure pricing_settings_models.cache_write_per_1m")?;
-    sqlx::query(
-        r#"
-        UPDATE pricing_settings_models
-        SET cache_read_per_1m = cache_input_per_1m
-        WHERE cache_read_per_1m IS NULL
-          AND cache_input_per_1m IS NOT NULL
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to backfill pricing_settings_models.cache_read_per_1m")?;
+    ensure_pricing_settings_catalog_migrations(pool).await?;
 
     sqlx::query(
         r#"

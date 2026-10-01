@@ -1308,6 +1308,17 @@ pub(crate) struct ProxyModelSettingsResponse {
 
 impl ProxyModelSettingsResponse {
     pub(crate) fn from_settings(value: ProxyModelSettings) -> Self {
+        let models = PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|model| (*model).to_string())
+            .collect();
+        Self::from_settings_with_models(value, models)
+    }
+
+    pub(crate) fn from_settings_with_models(
+        value: ProxyModelSettings,
+        models: Vec<String>,
+    ) -> Self {
         Self {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
@@ -1319,10 +1330,7 @@ impl ProxyModelSettingsResponse {
             response_body_logging_enabled: value.response_body_logging_enabled,
             encrypted_session_owner_routing_enabled: value.encrypted_session_owner_routing_enabled,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
-            models: PROXY_PRESET_MODEL_IDS
-                .iter()
-                .map(|model| (*model).to_string())
-                .collect(),
+            models,
             image_models: PROXY_IMAGE_MODEL_IDS
                 .iter()
                 .map(|model| (*model).to_string())
@@ -1409,12 +1417,33 @@ pub(crate) fn default_enabled_preset_models() -> Vec<String> {
 }
 
 pub(crate) fn normalize_enabled_preset_models(enabled_models: Vec<String>) -> Vec<String> {
-    let enabled_set: HashSet<&str> = enabled_models.iter().map(String::as_str).collect();
-    PROXY_PRESET_MODEL_IDS
+    let mut seen = HashSet::new();
+    let normalized = enabled_models
+        .into_iter()
+        .filter_map(|model| {
+            let model = model.trim().to_string();
+            (!model.is_empty() && model.len() <= 128 && seen.insert(model.clone())).then_some(model)
+        })
+        .collect::<Vec<_>>();
+    let enabled = normalized
         .iter()
-        .filter(|model| enabled_set.contains(**model))
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let static_models = PROXY_PRESET_MODEL_IDS
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut ordered = PROXY_PRESET_MODEL_IDS
+        .iter()
+        .filter(|model| enabled.contains(**model))
         .map(|model| (*model).to_string())
-        .collect()
+        .collect::<Vec<_>>();
+    ordered.extend(
+        normalized
+            .into_iter()
+            .filter(|model| !static_models.contains(model.as_str())),
+    );
+    ordered
 }
 
 pub(crate) fn decode_enabled_preset_models(raw: Option<&str>) -> Vec<String> {
@@ -1453,6 +1482,7 @@ pub(crate) struct HttpClients {
     pub(crate) shared: Client,
     pub(crate) pool_upstream: Client,
     pub(crate) proxy: Client,
+    pub(crate) models_dev: Client,
     pub(crate) timeout: Duration,
     pub(crate) user_agent: String,
 }
@@ -1466,6 +1496,12 @@ impl HttpClients {
             .pool_max_idle_per_host(config.shared_connection_parallelism)
             .build()
             .context("failed to construct shared HTTP client")?;
+
+        let models_dev = Self::builder(Some(timeout), &user_agent)
+            .pool_max_idle_per_host(config.shared_connection_parallelism)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to construct models.dev HTTP client")?;
 
         // Pool live upstream traffic can legitimately stream well past REQUEST_TIMEOUT_SECS.
         // Handshake and upload budgets are enforced by route-specific timeout wrappers instead.
@@ -1485,6 +1521,7 @@ impl HttpClients {
             shared,
             pool_upstream,
             proxy,
+            models_dev,
             timeout,
             user_agent,
         })

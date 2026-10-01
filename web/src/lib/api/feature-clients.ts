@@ -46,6 +46,7 @@ export type {
   UpstreamAccountActivityResponse,
 } from "./core";
 export {
+  applyModelsDevPriceSync,
   bulkUpdatePromptCacheConversationBindings,
   bulkUpdateUpstreamAccounts,
   cancelBulkUpstreamAccountSyncJob,
@@ -62,6 +63,7 @@ export {
   createOauthLoginSession,
   createOauthMailboxSession,
   createTag,
+  deleteManagedModel,
   deleteOauthMailboxSession,
   deleteTag,
   deleteUpstreamAccount,
@@ -131,6 +133,7 @@ export {
   normalizeForwardProxyLatencyTestStreamEvent,
   postBrowserPerformanceTelemetry,
   preflightApiKeyGroupMigration,
+  previewModelsDevPriceSync,
   refreshForwardProxySubscriptions,
   refreshUpstreamAccountModels,
   releaseInvocationTimelineSnapshot,
@@ -141,6 +144,7 @@ export {
   runManagedTaskNow,
   syncUpstreamAccount,
   updateForwardProxySettings,
+  updateManagedModelPreset,
   updateManagedTask,
   updateOauthLoginSession,
   updateOauthLoginSessionKeepalive,
