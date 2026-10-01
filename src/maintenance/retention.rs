@@ -1410,13 +1410,15 @@ impl RetentionRunSummary {
     }
 
     pub(crate) fn core_completion(&self) -> &'static str {
-        if self.invocation_rows_archived > 0 || self.invocation_details_pruned > 0 {
-            if self.budget_exhausted {
+        if self.fatal_error.is_some() {
+            "failed"
+        } else if self.invocation_rows_archived > 0 || self.invocation_details_pruned > 0 {
+            if self.budget_exhausted || self.deferred {
                 "partial"
             } else {
                 "completed"
             }
-        } else if self.budget_exhausted {
+        } else if self.budget_exhausted || self.deferred {
             "deferred"
         } else {
             "completed"
