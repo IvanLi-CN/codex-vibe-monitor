@@ -52,6 +52,10 @@ REVIEW_POLICY_REVIEW_TYPES = {"submitted", "dismissed", "edited"}
 RUNNER_X64 = "ubuntu-24.04"
 RUNNER_ARM64 = "ubuntu-24.04-arm"
 ACTION_CHECKOUT = "actions/checkout@v7"
+TEST_CACHE_INPUT_HASH = "${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}"
+RUST_SOURCE_INPUT_HASH = "${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}"
+CARGO_TEST_CACHE_KEY = "${{ runner.os }}-cargo-test-v4-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
+CARGO_CLIPPY_CACHE_KEY = "${{ runner.os }}-cargo-clippy-v2-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,6 +87,91 @@ def parse_args() -> argparse.Namespace:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ContractError(message)
+
+
+def require_backend_partition_command(run: str, partition: str, workflow_name: str) -> None:
+    expected_args = [
+        "bash",
+        ".github/scripts/run-backend-tests.sh",
+        "--profile",
+        "stateful-sqlite",
+        "--partition",
+        partition,
+        "--archive-file",
+        "$RUNNER_TEMP/backend-tests.tar.zst",
+    ]
+    try:
+        actual_args = shlex.split(run)
+    except ValueError:
+        actual_args = []
+    require(
+        actual_args == expected_args,
+        f"{workflow_name} must run partition {partition}",
+    )
+
+
+def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:
+    cache = step_config(lint_job, "Restore Cargo Clippy artifacts", f"{workflow_name}.jobs.lint")
+    cache_with = require_mapping(cache.get("with"), f"{workflow_name}.jobs.lint Clippy cache")
+    expected_key = CARGO_CLIPPY_CACHE_KEY
+    require(
+        cache.get("uses") == "actions/cache/restore@v5"
+        and cache_with.get("path") == "target-clippy"
+        and cache_with.get("key") == expected_key
+        and str(cache_with.get("restore-keys", "")).strip()
+        == "${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-",
+        f"{workflow_name}.jobs.lint Clippy cache must be isolated and source-keyed",
+    )
+
+    require_exact_cargo_cache_reuse(
+        lint_job,
+        "Prepare exact Cargo Clippy cache reuse",
+        "cargo-clippy-cache",
+        f"{workflow_name}.jobs.lint",
+    )
+
+    quality = step_config(lint_job, "Rust source quality", f"{workflow_name}.jobs.lint")
+    quality_env = require_mapping(quality.get("env"), f"{workflow_name}.jobs.lint Rust source quality environment")
+    require(
+        quality.get("id") == "rust-source-quality"
+        and quality.get("run") == "bash .github/scripts/run-rust-source-quality.sh"
+        and quality_env.get("CARGO_BUILD_JOBS") == 8
+        and quality_env.get("CARGO_TARGET_DIR") == "target-clippy",
+        f"{workflow_name}.jobs.lint must preserve full source checks in the isolated Clippy cache",
+    )
+
+    save = step_config(lint_job, "Save Cargo Clippy artifacts", f"{workflow_name}.jobs.lint")
+    save_with = require_mapping(save.get("with"), f"{workflow_name}.jobs.lint Clippy cache save")
+    require(
+        save.get("uses") == "actions/cache/save@v5"
+        and save.get("continue-on-error") is True
+        and save.get("if")
+        == "${{ steps.rust-source-quality.outcome == 'success' && steps.cargo-clippy-cache.outputs.cache-hit != 'true' }}"
+        and save_with.get("path") == "target-clippy"
+        and save_with.get("key") == expected_key,
+        f"{workflow_name}.jobs.lint must save Clippy artifacts best-effort after successful source checks",
+    )
+    registry_save = step_config(lint_job, "Save Cargo registry", f"{workflow_name}.jobs.lint")
+    require(
+        registry_save.get("uses") == "actions/cache/save@v5"
+        and registry_save.get("continue-on-error") is True,
+        f"{workflow_name}.jobs.lint registry cache writes must be best-effort",
+    )
+
+
+def require_fail_closed_stateful_aggregate(run: str, workflow_name: str) -> None:
+    expected_lines = [
+        "set -euo pipefail",
+        'echo "Stateful SQLite shard 1/2: ${SHARD_ONE_RESULT}"',
+        'echo "Stateful SQLite shard 2/2: ${SHARD_TWO_RESULT}"',
+        'test "${SHARD_ONE_RESULT}" = success',
+        'test "${SHARD_TWO_RESULT}" = success',
+    ]
+    actual_lines = [line.strip() for line in run.splitlines() if line.strip()]
+    require(
+        actual_lines == expected_lines,
+        f"{workflow_name} Stateful SQLite aggregate must preserve the exact fail-closed script",
+    )
 
 
 def load_module(path: Path):
@@ -295,6 +384,109 @@ def require_fail_closed(mapping: dict[str, Any], where: str) -> None:
     require(mapping.get("continue-on-error") in (None, False), f"{where}.continue-on-error must not ignore failures")
 
 
+def require_job_and_steps_fail_closed(
+    job: dict[str, Any],
+    where: str,
+    best_effort_steps: tuple[str, ...] = (),
+) -> None:
+    require_fail_closed(job, where)
+    steps = job.get("steps")
+    require(isinstance(steps, list), f"{where}.steps must be a list")
+    for index, value in enumerate(steps):
+        step = require_mapping(value, f"{where}.steps[{index}]")
+        step_where = f"{where}.steps[{step.get('name', index)}]"
+        if step.get("name") in best_effort_steps:
+            require(step.get("continue-on-error") is True, f"{step_where}.continue-on-error must keep cache writes best-effort")
+        else:
+            require_fail_closed(step, step_where)
+
+
+def require_backend_archive_consumer(job: dict[str, Any], workflow_name: str, job_id: str) -> None:
+    where = f"{workflow_name}.jobs.{job_id}"
+    require_job_and_steps_fail_closed(job, where)
+    producer_check = step_config(job, "Verify backend test archive producer", where)
+    producer_env = require_mapping(producer_check.get("env"), f"{where} producer result environment")
+    require(
+        producer_env.get("PRODUCER_RESULT") == "${{ needs.backend-test-archive.result }}"
+        and producer_check.get("run") == 'test "$PRODUCER_RESULT" = success',
+        f"{where} must fail when its backend archive producer fails",
+    )
+    download = uses_step_config(job, "Download backend test archive", "actions/download-artifact@v7", where)
+    download_with = require_mapping(download.get("with"), f"{where} archive download")
+    require(
+        download_with.get("name") == "backend-test-archive-${{ github.run_id }}",
+        f"{where} must download the backend test archive for its workflow run",
+    )
+    require(
+        download_with.get("path") == "${{ runner.temp }}",
+        f"{where} must download the backend test archive to runner.temp",
+    )
+
+    expected_profiles = {
+        "backend-tests-lightweight": (
+            "Run lightweight backend profile",
+            [
+                "bash",
+                ".github/scripts/run-backend-tests.sh",
+                "--profile",
+                "lightweight",
+                "--archive-file",
+                "$RUNNER_TEMP/backend-tests.tar.zst",
+            ],
+        ),
+        "backend-tests-archive-file-io": (
+            "Run archive / file I/O backend profile",
+            [
+                "bash",
+                ".github/scripts/run-backend-tests.sh",
+                "--profile",
+                "archive-file-io",
+                "--archive-file",
+                "$RUNNER_TEMP/backend-tests.tar.zst",
+            ],
+        ),
+    }
+    expected_profile = expected_profiles.get(job_id)
+    if expected_profile is not None:
+        step_name, expected_args = expected_profile
+        replay = step_config(job, step_name, where)
+        try:
+            actual_args = shlex.split(str(replay.get("run", "")))
+        except ValueError:
+            actual_args = []
+        require(
+            actual_args == expected_args,
+            f"{where} must replay the expected backend profile from the workflow archive",
+        )
+
+
+def require_exact_cargo_cache_reuse(job: dict[str, Any], step_name: str, cache_id: str, where: str) -> None:
+    reuse = step_config(job, step_name, where)
+    run = str(reuse.get("run", ""))
+    require(
+        reuse.get("if") == f"${{{{ steps.{cache_id}.outputs.cache-hit == 'true' }}}}"
+        and "find src -type f -name '*.rs' -exec touch -d '@1' {} +" in run
+        and "touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml" in run
+        and "for input in build.rs .cargo/config.toml; do" in run
+        and 'if [ -f "$input" ]; then touch -d \'@1\' "$input"; fi' in run,
+        f"{where}: only an exact Rust source/toolchain cache may normalize checkout mtimes",
+    )
+
+
+def require_cargo_test_cache_restore(job: dict[str, Any], where: str) -> None:
+    restore = step_config(job, "Restore Cargo test artifacts", where)
+    cache_with = require_mapping(restore.get("with"), f"{where}. Cargo test cache")
+    require(
+        restore.get("id") == "cargo-test-cache"
+        and restore.get("uses") == "actions/cache/restore@v5"
+        and cache_with.get("path") == "target"
+        and cache_with.get("key") == CARGO_TEST_CACHE_KEY
+        and str(cache_with.get("restore-keys", "")).strip()
+        == "${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-",
+        f"{where}: Cargo test cache must be isolated and keyed by source and toolchain inputs",
+    )
+
+
 def parse_expected_workflows(payload: dict[str, Any], key: str) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     raw_expected = payload.get(key)
     require(isinstance(raw_expected, list) and raw_expected, f"quality-gates.json: {key} must be a non-empty array")
@@ -445,6 +637,19 @@ def validate_metadata_policy(module: Any, contract: ContractModel) -> None:
     )
 
 
+def require_storybook_browser_install(workflow, workflow_path: str) -> None:
+    storybook_job = job_config(workflow, "storybook-accessibility-tests", workflow_path)
+    playwright_install = step_config(
+        storybook_job,
+        "Install Playwright Chromium for Storybook",
+        f"{workflow_path}.jobs.storybook-accessibility-tests",
+    )
+    require(
+        playwright_install.get("run") == "bunx playwright install chromium",
+        f"{workflow_path}.jobs.storybook-accessibility-tests must install Chromium without system dependencies",
+    )
+
+
 def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
     workflow_name = workflow.get("name")
@@ -453,6 +658,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require(expected_jobs, f"ci-pr.yml: workflow {workflow_name!r} must be declared in expected_pr_workflows")
     auxiliary_jobs = set(contract.expected_pr_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-pr.yml")
+    require_storybook_browser_install(workflow, "ci-pr.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-pr.yml.on")
     require("push" not in on_section, "ci-pr.yml: push must stay disabled")
@@ -481,6 +687,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "target" not in legacy_lint_cache_paths.splitlines(),
         "ci-pr.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
     )
+    require_lint_cache_contract(lint_job, "ci-pr.yml")
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-pr.yml")
     require_no_if(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
     require_fail_closed(tooling_job, "ci-pr.yml.jobs.repository-tooling-checks")
@@ -556,12 +763,54 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     if "Backend Tests (Representative Scale)" in expected_jobs:
         representative_job = named_job_config(workflow, "backend-tests-representative-scale", expected_jobs, "ci-pr.yml")
         require(representative_job.get("name") == "Backend Tests (Representative Scale)", "ci-pr.yml representative-scale job name drifted")
-        build_step = step_config(representative_job, "Build candidate backend-test image (linux/amd64)", "ci-pr.yml.jobs.backend-tests-representative-scale")
-        require(build_step.get("uses") == "docker/build-push-action@v7", "ci-pr.yml representative-scale image build action drifted")
-        require(build_step.get("with", {}).get("target") == "backend-test", "ci-pr.yml representative-scale image target drifted")
+        require_job_and_steps_fail_closed(representative_job, "ci-pr.yml.jobs.backend-tests-representative-scale")
+        require(
+            representative_job.get("needs") == "backend-test-archive",
+            "ci-pr.yml representative-scale job must replay the current run's backend archive",
+        )
+        require_exact_if(representative_job, "always()", "ci-pr.yml.jobs.backend-tests-representative-scale")
+        require_backend_archive_consumer(representative_job, "ci-pr.yml", "backend-tests-representative-scale")
+        producer_check = step_config(
+            representative_job,
+            "Verify backend test archive producer",
+            "ci-pr.yml.jobs.backend-tests-representative-scale",
+        )
+        require(
+            producer_check.get("run") == 'test "$PRODUCER_RESULT" = success',
+            "ci-pr.yml representative-scale job must fail when its archive producer fails",
+        )
+        archive_download = step_config(
+            representative_job,
+            "Download backend test archive",
+            "ci-pr.yml.jobs.backend-tests-representative-scale",
+        )
+        require(
+            archive_download.get("uses") == "actions/download-artifact@v7"
+            and archive_download.get("with", {}).get("name")
+            == "backend-test-archive-${{ github.run_id }}"
+            and archive_download.get("with", {}).get("path") == "${{ runner.temp }}",
+            "ci-pr.yml representative-scale job must download the current run's archive",
+        )
         run_step = step_config(representative_job, "Run deterministic representative-scale acceptance", "ci-pr.yml.jobs.backend-tests-representative-scale")
         run_text = str(run_step.get("run", ""))
-        require("--profile stateful-sqlite" in run_text and "representative_scale_acceptance" in run_text, "ci-pr.yml representative-scale selector drifted")
+        try:
+            run_args = shlex.split(run_text)
+        except ValueError:
+            run_args = []
+        require(
+            run_args
+            == [
+                "bash",
+                ".github/scripts/run-backend-tests.sh",
+                "--profile",
+                "stateful-sqlite",
+                "--archive-file",
+                "$RUNNER_TEMP/backend-tests.tar.zst",
+                "--test-filter",
+                "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)",
+            ],
+            "ci-pr.yml representative-scale selector must replay its exact archived test",
+        )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     require(
@@ -579,7 +828,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "ci-pr.yml.jobs.build.steps['Verify smoke artifact producer'].env",
     )
     require(
-        producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}",
+        producer_result_env.get("PRODUCER_RESULT") == "${{ needs.build-pr-smoke-artifacts.result }}"
+        and producer_result_step.get("run") == 'test "$PRODUCER_RESULT" = success',
         "ci-pr.yml.jobs.build must fail when the PR smoke artifact producer fails",
     )
     step_config(build_job, "Download PR smoke artifacts", "ci-pr.yml.jobs.build")
@@ -597,7 +847,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "ci-pr.yml.jobs.records-overlay-e2e.steps['Verify E2E test producer'].env",
     )
     require(
-        e2e_producer_result_env.get("PRODUCER_RESULT") == "${{ needs.records-overlay-e2e-producer.result }}",
+        e2e_producer_result_env.get("PRODUCER_RESULT") == "${{ needs.records-overlay-e2e-producer.result }}"
+        and e2e_producer_result_step.get("run") == 'test "$PRODUCER_RESULT" = success',
         "ci-pr.yml.jobs.records-overlay-e2e must fail when the E2E test producer fails",
     )
 
@@ -666,7 +917,14 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "github.event_name == 'pull_request'",
             "ci-pr.yml.jobs.build-pr-smoke-artifacts",
         )
-        require_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_job_and_steps_fail_closed(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_cargo_test_cache_restore(smoke_artifact_job, "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_exact_cargo_cache_reuse(
+            smoke_artifact_job,
+            "Prepare exact Cargo test cache reuse",
+            "cargo-test-cache",
+            "ci-pr.yml.jobs.build-pr-smoke-artifacts",
+        )
         step_config(smoke_artifact_job, "Upload PR smoke artifacts", "ci-pr.yml.jobs.build-pr-smoke-artifacts")
         archive_job = job_config(workflow, "backend-test-archive", "ci-pr.yml")
         require(
@@ -674,7 +932,12 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "ci-pr.yml.jobs.backend-test-archive must be the declared archive producer",
         )
         require_no_if(archive_job, "ci-pr.yml.jobs.backend-test-archive")
-        require_fail_closed(archive_job, "ci-pr.yml.jobs.backend-test-archive")
+        require_job_and_steps_fail_closed(
+            archive_job,
+            "ci-pr.yml.jobs.backend-test-archive",
+            best_effort_steps=("Save Cargo registry", "Save Cargo test artifacts"),
+        )
+        require_cargo_test_cache_restore(archive_job, "ci-pr.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-pr.yml.jobs.backend-test-archive")
         require(
             archive_build_step.get("id") == "build-backend-test-archive",
@@ -686,7 +949,41 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
             "ci-pr.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
         )
-        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+        target_cache_save_with = require_mapping(
+            target_cache_save_step.get("with"),
+            "ci-pr.yml.jobs.backend-test-archive target cache save",
+        )
+        require(
+            target_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and target_cache_save_with.get("path") == "target"
+            and target_cache_save_with.get("key") == CARGO_TEST_CACHE_KEY,
+            "ci-pr.yml.jobs.backend-test-archive: save the source/toolchain-keyed Cargo test artifacts",
+        )
+        registry_cache_save_step = step_config(archive_job, "Save Cargo registry", "ci-pr.yml.jobs.backend-test-archive")
+        require(
+            registry_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and registry_cache_save_step.get("continue-on-error") is True,
+            "ci-pr.yml.jobs.backend-test-archive: registry cache writes must be best-effort",
+        )
+        archive_upload = uses_step_config(
+            archive_job,
+            "Upload backend test archive",
+            "actions/upload-artifact@v7",
+            "ci-pr.yml.jobs.backend-test-archive",
+        )
+        archive_upload_with = require_mapping(archive_upload.get("with"), "ci-pr.yml backend archive upload")
+        require(
+            archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}"
+            and archive_upload_with.get("overwrite") is True,
+            "ci-pr.yml backend archive artifact must be run-scoped and replace the prior attempt",
+        )
+        require_exact_cargo_cache_reuse(
+            archive_job,
+            "Prepare exact Cargo test cache reuse",
+            "cargo-test-cache",
+            "ci-pr.yml.jobs.backend-test-archive",
+        )
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-archive-file-io"):
             require(
                 job_config(workflow, backend_job_id, "ci-pr.yml").get("needs") == "backend-test-archive",
                 f"ci-pr.yml.jobs.{backend_job_id}.needs must use the archive producer",
@@ -696,6 +993,57 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-pr.yml.jobs.{backend_job_id}",
             )
+            require_backend_archive_consumer(job_config(workflow, backend_job_id, "ci-pr.yml"), "ci-pr.yml", backend_job_id)
+        for shard_id, partition, expected_name in (
+            (
+                "backend-tests-stateful-sqlite-shard-1",
+                "hash:1/2",
+                "Backend Tests (Stateful SQLite shard 1/2)",
+            ),
+            (
+                "backend-tests-stateful-sqlite-shard-2",
+                "hash:2/2",
+                "Backend Tests (Stateful SQLite shard 2/2)",
+            ),
+        ):
+            shard_job = job_config(workflow, shard_id, "ci-pr.yml")
+            require(
+                shard_job.get("name") == expected_name and expected_name in auxiliary_jobs,
+                f"ci-pr.yml.jobs.{shard_id} must be a declared Stateful SQLite auxiliary job",
+            )
+            require_job_and_steps_fail_closed(shard_job, f"ci-pr.yml.jobs.{shard_id}")
+            require(shard_job.get("needs") == "backend-test-archive", f"ci-pr.yml.jobs.{shard_id}.needs must use the archive producer")
+            require_exact_if(shard_job, "always()", f"ci-pr.yml.jobs.{shard_id}")
+            require_backend_archive_consumer(shard_job, "ci-pr.yml", shard_id)
+            shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-pr.yml.jobs.{shard_id}").get("run", ""))
+            require_backend_partition_command(shard_run, partition, f"ci-pr.yml.jobs.{shard_id}")
+        aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-pr.yml")
+        require_job_and_steps_fail_closed(aggregate_job, "ci-pr.yml.jobs.backend-tests-stateful-sqlite")
+        require(
+            aggregate_job.get("name") == "Backend Tests (Stateful SQLite)"
+            and aggregate_job.get("needs") == [
+                "backend-tests-stateful-sqlite-shard-1",
+                "backend-tests-stateful-sqlite-shard-2",
+            ],
+            "ci-pr.yml.jobs.backend-tests-stateful-sqlite must aggregate both Stateful SQLite shards under the required check name",
+        )
+        require_exact_if(aggregate_job, "always()", "ci-pr.yml.jobs.backend-tests-stateful-sqlite")
+        aggregate_step = step_config(
+            aggregate_job,
+            "Require both Stateful SQLite shards",
+            "ci-pr.yml.jobs.backend-tests-stateful-sqlite",
+        )
+        aggregate_env = require_mapping(
+            aggregate_step.get("env"),
+            "ci-pr.yml.jobs.backend-tests-stateful-sqlite.steps['Require both Stateful SQLite shards'].env",
+        )
+        require(
+            aggregate_env.get("SHARD_ONE_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-1.result }}"
+            and aggregate_env.get("SHARD_TWO_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-2.result }}",
+            "ci-pr.yml Stateful SQLite aggregate must read both shard results",
+        )
+        aggregate_run = str(aggregate_step.get("run", ""))
+        require_fail_closed_stateful_aggregate(aggregate_run, "ci-pr.yml")
 
 
 def validate_ci_main(path: Path, contract: ContractModel) -> None:
@@ -706,6 +1054,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     require(expected_jobs, f"ci-main.yml: workflow {workflow_name!r} must be declared in expected_main_workflows")
     auxiliary_jobs = set(contract.expected_main_auxiliary_workflows.get(workflow_name, ()))
     require_exact_named_jobs(workflow, expected_jobs | auxiliary_jobs, "ci-main.yml")
+    require_storybook_browser_install(workflow, "ci-main.yml")
 
     on_section = require_mapping(mapping_get(workflow, "on"), "ci-main.yml.on")
     require("pull_request" not in on_section, "ci-main.yml: pull_request must stay disabled")
@@ -730,6 +1079,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         "target" not in legacy_lint_cache_paths.splitlines(),
         "ci-main.yml.jobs.lint: legacy cache must not restore Cargo target artifacts",
     )
+    require_lint_cache_contract(lint_job, "ci-main.yml")
     tooling_job = named_job_config(workflow, "repository-tooling-checks", expected_jobs, "ci-main.yml")
     require_no_if(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
     require_fail_closed(tooling_job, "ci-main.yml.jobs.repository-tooling-checks")
@@ -782,7 +1132,12 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             "ci-main.yml.jobs.backend-test-archive must be the declared archive producer",
         )
         require_no_if(archive_job, "ci-main.yml.jobs.backend-test-archive")
-        require_fail_closed(archive_job, "ci-main.yml.jobs.backend-test-archive")
+        require_job_and_steps_fail_closed(
+            archive_job,
+            "ci-main.yml.jobs.backend-test-archive",
+            best_effort_steps=("Save Cargo registry", "Save Cargo test artifacts"),
+        )
+        require_cargo_test_cache_restore(archive_job, "ci-main.yml.jobs.backend-test-archive")
         archive_build_step = step_config(archive_job, "Build backend test archive", "ci-main.yml.jobs.backend-test-archive")
         require(
             archive_build_step.get("id") == "build-backend-test-archive",
@@ -794,6 +1149,40 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
             "ci-main.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
         )
+        target_cache_save_with = require_mapping(
+            target_cache_save_step.get("with"),
+            "ci-main.yml.jobs.backend-test-archive target cache save",
+        )
+        require(
+            target_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and target_cache_save_with.get("path") == "target"
+            and target_cache_save_with.get("key") == CARGO_TEST_CACHE_KEY,
+            "ci-main.yml.jobs.backend-test-archive: save the source/toolchain-keyed Cargo test artifacts",
+        )
+        registry_cache_save_step = step_config(archive_job, "Save Cargo registry", "ci-main.yml.jobs.backend-test-archive")
+        require(
+            registry_cache_save_step.get("uses") == "actions/cache/save@v5"
+            and registry_cache_save_step.get("continue-on-error") is True,
+            "ci-main.yml.jobs.backend-test-archive: registry cache writes must be best-effort",
+        )
+        archive_upload = uses_step_config(
+            archive_job,
+            "Upload backend test archive",
+            "actions/upload-artifact@v7",
+            "ci-main.yml.jobs.backend-test-archive",
+        )
+        archive_upload_with = require_mapping(archive_upload.get("with"), "ci-main.yml backend archive upload")
+        require(
+            archive_upload_with.get("name") == "backend-test-archive-${{ github.run_id }}"
+            and archive_upload_with.get("overwrite") is True,
+            "ci-main.yml backend archive artifact must be run-scoped and replace the prior attempt",
+        )
+        require_exact_cargo_cache_reuse(
+            archive_job,
+            "Prepare exact Cargo test cache reuse",
+            "cargo-test-cache",
+            "ci-main.yml.jobs.backend-test-archive",
+        )
         for backend_job_id in ("backend-tests-lightweight", "backend-tests-archive-file-io"):
             require(
                 job_config(workflow, backend_job_id, "ci-main.yml").get("needs") == "backend-test-archive",
@@ -804,23 +1193,41 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-main.yml.jobs.{backend_job_id}",
             )
+            require_backend_archive_consumer(job_config(workflow, backend_job_id, "ci-main.yml"), "ci-main.yml", backend_job_id)
         for shard_id, partition in (
             ("backend-tests-stateful-sqlite-shard-1", "hash:1/2"),
             ("backend-tests-stateful-sqlite-shard-2", "hash:2/2"),
         ):
             shard_job = job_config(workflow, shard_id, "ci-main.yml")
+            require_job_and_steps_fail_closed(shard_job, f"ci-main.yml.jobs.{shard_id}")
             require(shard_job.get("needs") == "backend-test-archive", f"ci-main.yml.jobs.{shard_id}.needs must use the archive producer")
             require_exact_if(shard_job, "always()", f"ci-main.yml.jobs.{shard_id}")
+            require_backend_archive_consumer(shard_job, "ci-main.yml", shard_id)
             shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-main.yml.jobs.{shard_id}").get("run", ""))
-            require(f"--partition {partition}" in shard_run, f"ci-main.yml.jobs.{shard_id} must run partition {partition}")
+            require_backend_partition_command(shard_run, partition, f"ci-main.yml.jobs.{shard_id}")
         aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-main.yml")
+        require_job_and_steps_fail_closed(aggregate_job, "ci-main.yml.jobs.backend-tests-stateful-sqlite")
         require(
             aggregate_job.get("needs") == ["backend-tests-stateful-sqlite-shard-1", "backend-tests-stateful-sqlite-shard-2"],
             "ci-main.yml.jobs.backend-tests-stateful-sqlite.needs must aggregate both shards",
         )
         require_exact_if(aggregate_job, "always()", "ci-main.yml.jobs.backend-tests-stateful-sqlite")
-        aggregate_run = str(step_config(aggregate_job, "Require both Stateful SQLite shards", "ci-main.yml.jobs.backend-tests-stateful-sqlite").get("run", ""))
-        require("SHARD_ONE_RESULT" in aggregate_run and "SHARD_TWO_RESULT" in aggregate_run, "ci-main.yml Stateful SQLite aggregate must inspect both shard results")
+        aggregate_step = step_config(
+            aggregate_job,
+            "Require both Stateful SQLite shards",
+            "ci-main.yml.jobs.backend-tests-stateful-sqlite",
+        )
+        aggregate_env = require_mapping(
+            aggregate_step.get("env"),
+            "ci-main.yml.jobs.backend-tests-stateful-sqlite.steps['Require both Stateful SQLite shards'].env",
+        )
+        require(
+            aggregate_env.get("SHARD_ONE_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-1.result }}"
+            and aggregate_env.get("SHARD_TWO_RESULT") == "${{ needs.backend-tests-stateful-sqlite-shard-2.result }}",
+            "ci-main.yml Stateful SQLite aggregate must read both matching shard results",
+        )
+        aggregate_run = str(aggregate_step.get("run", ""))
+        require_fail_closed_stateful_aggregate(aggregate_run, "ci-main.yml")
 
         candidate_meta = job_config(workflow, "candidate-meta", "ci-main.yml")
         require(candidate_meta.get("name") == "Candidate Image Metadata", "ci-main.yml candidate metadata job name drifted")

@@ -1995,20 +1995,38 @@ async fn begin_runtime_startup_hourly_rollup_task(
     }
 }
 
-async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
+pub(crate) async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
     state: &AppState,
     cancel: &CancellationToken,
     started_at_from: &str,
 ) {
+    #[cfg(not(test))]
     let Some(store) = crate::maintenance_store::global() else {
         return;
     };
     let deadline = Instant::now() + Duration::from_millis(250);
     loop {
-        let task = tokio::time::timeout(
-            Duration::from_millis(50),
-            sqlx::query_as::<_, (i64, String)>(
-                r#"
+        #[cfg(test)]
+        let task_query = sqlx::query_as::<_, (i64, String)>(
+            r#"
+            SELECT id, trigger_kind
+            FROM system_task_runs
+            WHERE task_kind = ?1
+              AND trigger_kind = 'startup'
+              AND status = ?2
+              AND summary = 'background hourly rollup bootstrap started'
+              AND started_at >= ?3
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind("hourly_rollup_bootstrap")
+        .bind(SystemTaskStatus::Running.as_str())
+        .bind(started_at_from)
+        .fetch_optional(&state.pool);
+        #[cfg(not(test))]
+        let task_query = sqlx::query_as::<_, (i64, String)>(
+            r#"
                 SELECT id, trigger_kind
                 FROM managed_task_runs
                 WHERE task_key = ?1
@@ -2019,13 +2037,12 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
                 ORDER BY id DESC
                 LIMIT 1
                 "#,
-            )
-            .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
-            .bind(SystemTaskStatus::Running.as_str())
-            .bind(started_at_from)
-            .fetch_optional(&store.pool),
         )
-        .await;
+        .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
+        .bind(SystemTaskStatus::Running.as_str())
+        .bind(started_at_from)
+        .fetch_optional(&store.pool);
+        let task = tokio::time::timeout(Duration::from_millis(50), task_query).await;
         match task {
             Ok(Ok(Some((id, trigger_kind)))) => {
                 let task_run = SystemTaskRunHandle {
@@ -2039,7 +2056,7 @@ async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
                     cancel,
                     Some(&task_run),
                     SystemTaskStatus::Skipped,
-                    "background hourly rollup bootstrap cancelled before recording task start",
+                    "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
                     None,
                 )
                 .await;
