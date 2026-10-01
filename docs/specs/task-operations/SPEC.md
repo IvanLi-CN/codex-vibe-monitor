@@ -64,6 +64,16 @@
 
 ## Visual Evidence
 
+- source_type: `ui_demo`
+- target_program: `vite_web_demo`
+- viewport_strategy: `ui-demo-source + devtools-emulate`
+- desktop_viewport: `1440x900`
+- mobile_viewport: `393x852`
+- state: dark operational scene with an active dashboard projection reconciliation and all trigger filters selected
+- owner_confirmation: confirmed in chat after candidate `f16c2c02`
+- assets:
+  - `./assets/task-operations-runtime-desktop.png`
+  - `./assets/task-operations-runtime-mobile-393x852.png`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
 
 ## References

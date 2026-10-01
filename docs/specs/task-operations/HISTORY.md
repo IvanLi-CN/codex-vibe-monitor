@@ -13,6 +13,12 @@
 - ADR 0024 records the accepted decision to separate actual execution observation from durable history and to centralize effective schedule policy in a capability catalog.
 - The diagnostic solution records the root cause: worker defaults were not present in the database projection, while the detail page rendered an empty override as a fixed interval.
 
+## Current Delivery Facts
+
+- The accepted implementation adds process-local runtime observation, a 37-entry capability catalog, safe interval/UTC-cron editing for the approved task set, reset-to-default semantics, the running-task section, combined filters, and responsive detail views.
+- The catalog computes default policy metadata without writing schedule overrides. Existing unsupported overrides remain readable and require an explicit reset; `enabled` is preserved when overrides are cleared.
+- Confirmed mock-only desktop and mobile evidence is stored in `docs/specs/task-operations/assets/` and linked from `SPEC.md`.
+
 ## Related Changes
 
 - `docs/adr/0024-task-runtime-observation-and-effective-schedules.md`
