@@ -121,6 +121,10 @@ Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分�
 
 最终 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新。当前截图来自本地 Demo，主人已确认截图准确；这些截图是 owner-facing 的本地 Demo 证据，不冒充生产页面。
 
+- [桌面任务详情](assets/retention-task-desktop.png)
+- [移动端完成状态](assets/retention-task-mobile.png)
+- [移动端部分完成状态](assets/retention-task-partial-mobile.png)
+
 ## References
 
 - [长期需求](SPEC.md)
