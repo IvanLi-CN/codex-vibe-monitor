@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, userEvent, within } from "storybook/test";
+import { managedTasks as demoManagedTasks } from "../../demo/handlers";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
@@ -359,36 +360,7 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
   };
 }
 
-const STORYBOOK_MANAGED_TASKS: ManagedTask[] = [
-  {
-    taskKey: "retention_archive",
-    title: "数据保留与归档",
-    description: "按保留策略归档并清理历史数据",
-    triggerMode: "interval",
-    enabled: true,
-    intervalSecs: 3600,
-    cronExpr: null,
-    nextTriggerAt: "2026-10-01T01:00:00Z",
-    isManual: false,
-    effectiveSchedule: {
-      source: "default",
-      intervalSecs: 3600,
-      cronExpr: null,
-      nextTriggerAt: "2026-10-01T01:00:00Z",
-    },
-  },
-  {
-    taskKey: "forward_proxy_subscription_refresh",
-    title: "正向代理订阅刷新",
-    description: "刷新代理订阅并更新代理节点状态",
-    triggerMode: "event",
-    enabled: true,
-    intervalSecs: null,
-    cronExpr: null,
-    nextTriggerAt: null,
-    isManual: false,
-  },
-];
+const STORYBOOK_MANAGED_TASKS: ManagedTask[] = demoManagedTasks();
 
 const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
   task: STORYBOOK_MANAGED_TASKS[0],

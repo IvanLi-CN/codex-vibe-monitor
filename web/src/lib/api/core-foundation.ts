@@ -5380,6 +5380,21 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
               typeof schedule.nextTriggerAt === "string" ? schedule.nextTriggerAt : null,
           }
         : undefined,
+    triggerKinds: Array.isArray(payload.triggerKinds)
+      ? payload.triggerKinds.filter((value): value is string => typeof value === "string")
+      : undefined,
+    effectivePolicy:
+      typeof payload.effectivePolicy === "string" ? payload.effectivePolicy : undefined,
+    policySource: typeof payload.policySource === "string" ? payload.policySource : undefined,
+    scheduleEditable:
+      typeof payload.scheduleEditable === "boolean" ? payload.scheduleEditable : undefined,
+    scheduleCapabilityReason:
+      typeof payload.scheduleCapabilityReason === "string"
+        ? payload.scheduleCapabilityReason
+        : payload.scheduleCapabilityReason == null
+          ? null
+          : undefined,
+    executionClass: typeof payload.executionClass === "string" ? payload.executionClass : null,
   };
 }
 
