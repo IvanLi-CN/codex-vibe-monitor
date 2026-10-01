@@ -105,6 +105,17 @@ test.describe("Web Demo runtime", () => {
     await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
   });
 
+  test("shows bounded retention outcomes and pending prompt-cache statistics", async ({ page }) => {
+    await page.goto("/#/system/tasks/retention_archive?demoScene=operational&demoTheme=dark");
+
+    await expect(page.getByRole("heading", { name: "数据保留与归档" })).toBeVisible();
+    await expect(page.getByText("默认计划 · 3600s")).toBeVisible();
+    await expect(page.getByText("invocations", { exact: true })).toBeVisible();
+    await expect(page.getByText(/完成度：部分完成/)).toBeVisible();
+    await expect(page.getByText(/Prompt 缓存统计：暂不可用（积压 3）/)).toBeVisible();
+    await expect(page.getByText("92.0%", { exact: true })).toBeVisible();
+  });
+
   test("keeps an external key creation flow inside the local memory model", async ({ page }) => {
     await page.goto("/#/system/settings?demoScene=operational&demoTheme=light");
 

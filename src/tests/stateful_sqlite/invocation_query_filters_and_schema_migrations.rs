@@ -19,6 +19,245 @@ async fn fetch_prompt_cache_conversations(
     crate::fetch_prompt_cache_conversations(State(state), query).await
 }
 
+#[derive(Clone, Copy)]
+enum HistoricalRetentionSchema {
+    V271,
+    V2802,
+}
+
+fn historical_codex_invocations_schema_sql(version: HistoricalRetentionSchema) -> &'static str {
+    match version {
+        HistoricalRetentionSchema::V271 => {
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'xy',
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_input_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                total_tokens INTEGER,
+                cost REAL,
+                cost_input REAL,
+                cost_cache_write REAL,
+                cost_cache_read REAL,
+                cost_output REAL,
+                cost_reasoning REAL,
+                status TEXT,
+                error_message TEXT,
+                failure_kind TEXT,
+                failure_class TEXT,
+                is_actionable INTEGER NOT NULL DEFAULT 0,
+                payload TEXT,
+                raw_response TEXT NOT NULL,
+                cost_estimated INTEGER NOT NULL DEFAULT 0,
+                price_version TEXT,
+                request_raw_path TEXT,
+                request_raw_codec TEXT NOT NULL DEFAULT 'identity',
+                request_raw_size INTEGER,
+                request_raw_truncated INTEGER NOT NULL DEFAULT 0,
+                request_raw_truncated_reason TEXT,
+                response_raw_path TEXT,
+                response_raw_codec TEXT NOT NULL DEFAULT 'identity',
+                response_raw_size INTEGER,
+                response_raw_truncated INTEGER NOT NULL DEFAULT 0,
+                response_raw_truncated_reason TEXT,
+                timeline_json TEXT,
+                detail_level TEXT NOT NULL DEFAULT 'full',
+                detail_pruned_at TEXT,
+                detail_prune_reason TEXT,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                first_token_ms REAL,
+                t_upstream_stream_ms REAL,
+                t_resp_parse_ms REAL,
+                t_persist_ms REAL,
+                created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(invoke_id, occurred_at)
+            )
+            "#
+        }
+        HistoricalRetentionSchema::V2802 => {
+            r#"
+            CREATE TABLE codex_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoke_id TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'xy',
+                model TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_input_tokens INTEGER,
+                reported_cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                total_tokens INTEGER,
+                cost REAL,
+                cost_input REAL,
+                cost_cache_write REAL,
+                cost_cache_read REAL,
+                cost_output REAL,
+                cost_reasoning REAL,
+                status TEXT,
+                error_message TEXT,
+                failure_kind TEXT,
+                failure_class TEXT,
+                is_actionable INTEGER NOT NULL DEFAULT 0,
+                payload TEXT,
+                raw_response TEXT NOT NULL,
+                cost_estimated INTEGER NOT NULL DEFAULT 0,
+                price_version TEXT,
+                request_raw_path TEXT,
+                request_raw_codec TEXT NOT NULL DEFAULT 'identity',
+                request_raw_size INTEGER,
+                request_raw_truncated INTEGER NOT NULL DEFAULT 0,
+                request_raw_truncated_reason TEXT,
+                response_raw_path TEXT,
+                response_raw_codec TEXT NOT NULL DEFAULT 'identity',
+                response_raw_size INTEGER,
+                response_raw_truncated INTEGER NOT NULL DEFAULT 0,
+                response_raw_truncated_reason TEXT,
+                timeline_json TEXT,
+                detail_level TEXT NOT NULL DEFAULT 'full',
+                detail_pruned_at TEXT,
+                detail_prune_reason TEXT,
+                t_total_ms REAL,
+                t_req_read_ms REAL,
+                t_req_parse_ms REAL,
+                t_upstream_connect_ms REAL,
+                t_upstream_ttfb_ms REAL,
+                first_token_ms REAL,
+                t_upstream_stream_ms REAL,
+                t_resp_parse_ms REAL,
+                t_persist_ms REAL,
+                created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(invoke_id, occurred_at)
+            )
+            "#
+        }
+    }
+}
+
+async fn create_historical_retention_fixture(version: HistoricalRetentionSchema) -> SqlitePool {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("historical fixture sqlite");
+    sqlx::query(historical_codex_invocations_schema_sql(version))
+        .execute(&pool)
+        .await
+        .expect("create historical invocation schema");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES ('historical-retention-row','2026-09-01 00:00:00',?1,'success',?2,'{}')",
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "historical-retention-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("seed historical invocation");
+
+    if matches!(version, HistoricalRetentionSchema::V2802) {
+        sqlx::query(
+            "CREATE TABLE prompt_cache_conversation_stats_refresh_queue (prompt_cache_key TEXT PRIMARY KEY, enqueued_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')))"
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2.80.2 refresh queue");
+        sqlx::query("INSERT INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key) VALUES ('stopped-release-key')")
+            .execute(&pool)
+            .await
+            .expect("seed stopped-release queue");
+    }
+    pool
+}
+
+#[tokio::test]
+async fn ensure_schema_repairs_v271_and_v2802_retention_fixtures_without_historical_backfill() {
+    for version in [
+        HistoricalRetentionSchema::V271,
+        HistoricalRetentionSchema::V2802,
+    ] {
+        let pool = create_historical_retention_fixture(version).await;
+        let source_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("count historical invocations before repair");
+
+        ensure_schema(&pool)
+            .await
+            .expect("repair historical retention schema");
+        ensure_schema(&pool)
+            .await
+            .expect("repeat historical retention schema repair");
+
+        let source_count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("count historical invocations after repair");
+        assert_eq!(source_count_after, source_count_before);
+
+        let materialization_progress: (String, Option<i64>, i64) = sqlx::query_as(
+            "SELECT phase,total_keys,completed_keys FROM prompt_cache_conversation_migration_progress WHERE migration_name='prompt_cache_conversations_materialization_v1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load untouched materialization progress");
+        assert_eq!(materialization_progress.0, "identity_backfill");
+        assert_eq!(materialization_progress.1, None);
+        assert_eq!(materialization_progress.2, 0);
+
+        let conversation_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM prompt_cache_conversations")
+                .fetch_one(&pool)
+                .await
+                .expect("count conversations after repair");
+        assert_eq!(conversation_count, 0);
+
+        for table in [
+            "prompt_cache_conversation_stats_generation_clock",
+            "prompt_cache_conversation_stats_refresh_staging",
+            "prompt_cache_conversation_orphan_cleanup_state",
+        ] {
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .expect("check repaired retention table");
+            assert_eq!(exists, 1, "missing repaired table {table}");
+        }
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key,generation) VALUES ('stopped-release-key',7)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed resumable queue generation");
+        sqlx::query(
+            "INSERT OR REPLACE INTO prompt_cache_conversation_stats_refresh_staging (prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size) VALUES ('stopped-release-key',7,1,'2026-09-01 00:00:00',1,'{}',64)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed resumable aggregate staging");
+
+        ensure_schema(&pool)
+            .await
+            .expect("repair after interrupted retention continuation");
+        let continuation: (i64, i64) = sqlx::query_as(
+            "SELECT queue.generation, staging.generation FROM prompt_cache_conversation_stats_refresh_queue queue JOIN prompt_cache_conversation_stats_refresh_staging staging USING(prompt_cache_key) WHERE queue.prompt_cache_key='stopped-release-key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load preserved continuation state");
+        assert_eq!(continuation, (7, 7));
+    }
+}
+
 #[tokio::test]
 async fn ensure_schema_adds_nullable_reported_cache_write_tokens_to_legacy_invocations() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -618,6 +857,73 @@ async fn prompt_cache_conversation_materialization_checkpoints_and_resumes_with_
     assert!(resumed.complete);
     resumed_pool.close().await;
     let _ = fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn prompt_cache_stats_generation_clock_survives_queue_drain() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache conversation structure");
+
+    let payload = json!({"promptCacheKey": "generation-key"}).to_string();
+    for invoke_id in ["generation-a", "generation-b"] {
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES (?1,'2026-09-01 00:00:00',?2,'success',?3,'{}')",
+        )
+        .bind(invoke_id)
+        .bind(SOURCE_PROXY)
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("insert generation fixture");
+    }
+    let first_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key='generation-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load first queue generation");
+    assert_eq!(first_generation, 2);
+
+    for _ in 0..16 {
+        if run_prompt_cache_conversations_materialization(&pool, 16, None)
+            .await
+            .expect("drain generation fixture")
+            .complete
+        {
+            break;
+        }
+    }
+    let queue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key='generation-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count drained generation queue");
+    assert_eq!(queue_count, 0);
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES ('generation-c','2026-09-01 00:00:00',?1,'success',?2,'{}')",
+    )
+    .bind(SOURCE_PROXY)
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .expect("insert post-drain generation fixture");
+    let next_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM prompt_cache_conversation_stats_refresh_queue WHERE prompt_cache_key='generation-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load post-drain queue generation");
+    assert!(next_generation > first_generation);
 }
 
 #[tokio::test]

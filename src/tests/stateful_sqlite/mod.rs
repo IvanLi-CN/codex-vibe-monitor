@@ -122,6 +122,7 @@ mod proxy_pool_roundtrip_and_retry_servers;
 mod record_budget;
 mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;
+mod retention_scale_benchmark;
 #[expect(
     clippy::await_holding_lock,
     reason = "Mock upstream attempt logs intentionally stay locked until async assertions observe requests."

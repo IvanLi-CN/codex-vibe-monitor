@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "candidate-implemented-visual-validation-confirmed",
+  "migration": {
+    "description": "Add bounded conversation scan continuation, generation-safe staged statistics and optional task observation fields.",
+    "release_unit_description": "Bounded retention execution and its task observation contract.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Retention source scope, orphan scan epoch/cursor, generation-checked per-key aggregate staging and source-page cursor, queue mutation generations, nullable run completion and progress/schedule evidence.",
+    "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
+    "source_compatibility_range": {
+      "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; v2.71.45 and v2.80.2 are the declared reproducible fixtures, and unobserved intervening snapshots are not claimed as covered.",
+      "to_program_version": "Candidate commit 12802cb3 on th/retention-bounded-recovery-design.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Idempotently install prompt_cache_conversation_stats_refresh_queue generation, generation_clock, refresh_staging and orphan_cleanup_state structures plus existing migration progress; add nullable managed-task result/progress/schedule fields and indexes. Existing deployed migrations are immutable.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "Atomically invalidate/enqueue on source mutations, advance the persistent generation clock, checkpoint bounded source pages and conditionally publish precise aggregate results/clear only the consumed generation. Commit orphan deletion with its safe cursor boundary.",
+        "order": 2,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-002",
+        "description": "Asynchronously publish coalesced operational progress, effective schedule and immutable run results/details to the maintenance database; never add a main-database operational fallback.",
+        "order": 3,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+      "description": "No readiness-wide historical scan or fabricated history. Existing durable queue entries initialize conservatively and resume in bounded background pages; absent counters/outcomes/durations stay unknown. Duplicate active maintenance rows are terminalized with an auditable failure result rather than deleted.",
+        "order": 4,
+        "depends_on": ["ddl-001", "dml-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-001", "dml-001", "dml-002", "backfill-001"],
+    "progress_signals": ["Core/stage outcomes and pending work", "Business cursor/generation and last committed progress", "Query budget/cancellation/settlement evidence", "Operational observation freshness and effective schedule"],
+    "pause_points": ["Between idempotent structure installation and background recovery", "At each committed business page/batch; operator disable prevents the next batch"]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; older Minor binaries are not promised to preserve new continuation semantics",
+    "faulty_release_recovery": "A newer version recognizes unfinished cursor/staging generations, discards stale derived staging conservatively and resumes the durable queue without changing archive proof or source ownership.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {"required_test_evidence": []},
+    "minor": {
+      "required_test_evidence": [
+        "Candidate reads the v2.71.45 and v2.80.2 declared retention schema fixtures; original API fields/status remain compatible.",
+        "Repeated DDL and re-entry after interruption are idempotent; no historical scan occurs in readiness.",
+        "A forward-repair candidate resumes stopped-release staging and cursors without stale publication or lost queue generations.",
+        "Legacy missing operational evidence stays unknown and maintenance-store failure does not block business work.",
+        "Real SQLite query interruption, rollback and lock release meet the page budget contract."
+      ]
+    },
+    "major": {"required_test_evidence": []},
+    "completed_evidence": [
+      "cargo check and clippy pass on the Candidate; targeted maintenance-store, prompt-cache generation/paging, orphan-retention and retention regressions pass locally.",
+      "Web unit tests, typecheck, lint and production build pass locally; Demo task page shows completed/partial, default schedule, stage progress, stale/unknown-compatible fields and unavailable Prompt statistics.",
+      "Repeated trigger installation is transactional and idempotent; the generation-clock regression proves queue drain followed by re-enqueue uses a higher generation.",
+      "shared-testbox lightweight (1,246/1,246), stateful-sqlite (1,375/1,375), and archive-file-io (299/299) profiles pass.",
+      "Same-seed 1,300,000-row candidate/baseline benchmark proves exact 500,000-row aggregation and queue drainage; the card records the candidate's higher total refresh elapsed and 4%/15% higher online-read p95/p99 under this fixed load.",
+      "v2.71.45 and v2.80.2 forward-repair fixtures pass repeated DDL, preserve historical row counts and stopped-release queue/staging generations, and leave readiness materialization totals unknown without historical backfill.",
+      "Web Storybook (136 tests) and retention task-page E2E (7/7) pass; non-aligned performance-window regression passes."
+    ]
+  }
+}
