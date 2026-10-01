@@ -12,7 +12,7 @@
     "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
     "source_compatibility_range": {
       "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; v2.71.45 and v2.80.2 are the declared reproducible fixtures, and unobserved intervening snapshots are not claimed as covered.",
-      "to_program_version": "Unreleased candidate on th/retention-bounded-recovery-design; final commit identity pending.",
+      "to_program_version": "Candidate commit 12802cb3 on th/retention-bounded-recovery-design.",
       "direct_major_skips_supported": false
     }
   },
