@@ -6815,6 +6815,48 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useRealTimers();
   });
 
+  it("shows provisional TTFT after the first byte while token timing is unavailable", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
+    renderSection(
+      createResponse([
+        createConversation("pck-live-first-byte", [
+          createPreview({
+            id: 73,
+            invokeId: "invoke-live-first-byte",
+            occurredAt: "2026-04-04T10:04:58.800Z",
+            status: "running",
+            livePhase: "responding",
+            tReqReadMs: 10,
+            tReqParseMs: 7,
+            tUpstreamConnectMs: 90,
+            tUpstreamTtfbMs: 91,
+            firstTokenMs: null,
+            tUpstreamStreamMs: null,
+            tTotalMs: null,
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    const readings = currentSlot?.querySelector('[data-testid="dashboard-compact-latency-pills"]');
+    expect(
+      currentSlot?.querySelector('[data-testid="dashboard-compact-latency-request"]')?.textContent,
+    ).toBe("0.2s");
+    expect(
+      currentSlot?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent,
+    ).toBe("1.2s");
+    expect(
+      currentSlot?.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+    ).toBeNull();
+    expect(readings?.getAttribute("aria-label")).toMatch(/TTFT \((estimated|暂估)\)/i);
+
+    vi.useRealTimers();
+  });
+
   it("updates upstream account recent request timing with the same section clock", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));

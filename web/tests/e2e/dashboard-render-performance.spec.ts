@@ -1,4 +1,9 @@
 import { expect, type Page, test } from "@playwright/test";
+import {
+  type DashboardPhaseMetrics,
+  type LongTaskEntry,
+  summarizeLongTasks,
+} from "../../src/test-fixtures/dashboardLongTaskMetrics";
 
 const DASHBOARD_PERFORMANCE_URL =
   "/#/dashboard?demoScene=operational&demoTheme=light&demoViewport=default&demoPerformanceTimeseries=minute-day";
@@ -7,11 +12,6 @@ const SUSTAINED_UPDATE_COUNT = 6;
 const LONG_TASK_LIMIT_MS = 200;
 const TIMELINE_REFRESH_INTERVAL_MS = 15_000;
 const TIMELINE_REFRESH_TIMER_GUARD_MS = 50;
-
-type LongTaskEntry = {
-  startTime: number;
-  duration: number;
-};
 
 type DashboardPerformanceWindow = Window & {
   __dashboardPerformance?: {
@@ -32,39 +32,12 @@ type LongTaskState = {
   observerSupported: boolean;
 };
 
-type PhaseMetrics = {
-  longTaskCount: number;
-  maxLongTaskMs: number;
-  over50msCount: number;
-  totalBlockingTimeMs: number;
-  p95LongTaskMs: number;
-};
-
 type RunMetrics = {
   run: number;
-  dataReady: PhaseMetrics;
-  dataUpdate: PhaseMetrics;
-  sustainedUpdates: PhaseMetrics;
+  dataReady: DashboardPhaseMetrics;
+  dataUpdate: DashboardPhaseMetrics;
+  sustainedUpdates: DashboardPhaseMetrics;
 };
-
-function summarizeLongTasks(entries: LongTaskEntry[], startTime: number, endTime: number) {
-  const durations = entries
-    .filter((entry) => entry.startTime < endTime && entry.startTime + entry.duration > startTime)
-    .map((entry) => entry.duration)
-    .sort((left, right) => left - right);
-  const p95Index = Math.max(0, Math.ceil(durations.length * 0.95) - 1);
-
-  return {
-    longTaskCount: durations.length,
-    maxLongTaskMs: durations.length > 0 ? Math.max(...durations) : 0,
-    over50msCount: durations.filter((duration) => duration > 50).length,
-    totalBlockingTimeMs: durations.reduce(
-      (total, duration) => total + Math.max(0, duration - 50),
-      0,
-    ),
-    p95LongTaskMs: durations[p95Index] ?? 0,
-  } satisfies PhaseMetrics;
-}
 
 async function readLongTaskState(page: Page) {
   return page.evaluate(() => {
@@ -99,26 +72,6 @@ test.describe("Dashboard render performance", () => {
         "dashboard-render-performance.spec.ts requires E2E_PRODUCTION_BUILD=1 and a production demo preview",
       );
     }
-  });
-
-  test("counts tasks overlapping a measurement boundary", () => {
-    expect(
-      summarizeLongTasks(
-        [
-          { startTime: 80, duration: 70 },
-          { startTime: 150, duration: 75 },
-          { startTime: 225, duration: 60 },
-        ],
-        100,
-        200,
-      ),
-    ).toEqual({
-      longTaskCount: 2,
-      maxLongTaskMs: 75,
-      over50msCount: 2,
-      totalBlockingTimeMs: 45,
-      p95LongTaskMs: 75,
-    });
   });
 
   test("keeps data-ready and same-scale update renders below the long-task budget", async ({
