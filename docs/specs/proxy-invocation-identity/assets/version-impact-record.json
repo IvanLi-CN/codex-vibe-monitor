@@ -38,7 +38,7 @@
       "evidence": [
         "src/prompt_cache_conversations.rs",
         "src/schema.rs",
-        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs"
+        "src/tests/stateful_sqlite/proxy_long_wait_allocation_and_index.rs"
       ]
     },
     "verified": {

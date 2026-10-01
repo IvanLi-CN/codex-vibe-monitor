@@ -532,6 +532,61 @@ def long_wait_terminal(invoke_id, response_finished):
     return None
 
 
+def cancel_invocation_by_key(prompt_cache_key):
+    try:
+        connection = sqlite3.connect(os.path.join(DATA_DIR, 'codex_vibe_monitor.db'), timeout=0.25)
+        connection.execute('PRAGMA busy_timeout=250')
+        row = connection.execute(
+            'SELECT invoke_id, status, failure_kind, failure_class, error_message '
+            'FROM codex_invocations WHERE payload LIKE ? ORDER BY id DESC LIMIT 1',
+            (f'%{prompt_cache_key}%',),
+        ).fetchone()
+        connection.close()
+        return row
+    except sqlite3.OperationalError:
+        return None
+
+
+def cancel_invocation_by_id(invoke_id):
+    try:
+        connection = sqlite3.connect(os.path.join(DATA_DIR, 'codex_vibe_monitor.db'), timeout=0.25)
+        connection.execute('PRAGMA busy_timeout=250')
+        row = connection.execute(
+            'SELECT status, failure_kind, failure_class, error_message '
+            'FROM codex_invocations WHERE invoke_id = ? ORDER BY id DESC LIMIT 1',
+            (invoke_id,),
+        ).fetchone()
+        connection.close()
+        return row
+    except sqlite3.OperationalError:
+        return None
+
+
+def wait_for_cancel_invocation(prompt_cache_key, timeout_seconds):
+    deadline = time.perf_counter() + timeout_seconds
+    while time.perf_counter() < deadline:
+        row = cancel_invocation_by_key(prompt_cache_key)
+        if row:
+            return row
+        time.sleep(0.01)
+    return None
+
+
+def wait_for_cancel_terminal(invoke_id, timeout_seconds):
+    deadline = time.perf_counter() + timeout_seconds
+    while time.perf_counter() < deadline:
+        row = cancel_invocation_by_id(invoke_id)
+        if row and str(row[0] or '').lower() not in ('running', 'pending', 'in_flight'):
+            return {
+                'status': row[0],
+                'failure_kind': row[1],
+                'failure_class': row[2],
+                'error_message': row[3],
+            }
+        time.sleep(0.01)
+    return None
+
+
 def long_wait_proxy_once(spec, timeout_seconds):
     payload = {
         'model': 'gpt-5',
@@ -589,11 +644,12 @@ def long_wait_proxy_once(spec, timeout_seconds):
 
 
 def long_wait_cancel(round_index):
+    prompt_cache_key = f'cancel-{round_index}'
     payload = json.dumps({
         'model': 'gpt-5',
         'input': f'long-wait-cancel-{round_index}',
         'testScenario': 'cancel',
-        'promptCacheKey': f'cancel-{round_index}',
+        'promptCacheKey': prompt_cache_key,
     }).encode()
     headers = (
         f'POST /v1/responses HTTP/1.1\r\n'
@@ -603,14 +659,41 @@ def long_wait_cancel(round_index):
         f'Content-Length: {len(payload)}\r\n\r\n'
     ).encode()
     started = time.perf_counter()
+    sock = None
     try:
         sock = socket.create_connection(('app', 8080), timeout=5)
         sock.sendall(headers + payload)
+        accepted = wait_for_cancel_invocation(prompt_cache_key, 5)
+        if accepted is None:
+            sock.close()
+            return {
+                'status': 'client_closed',
+                'duration_ms': (time.perf_counter() - started) * 1000,
+                'server_accepted': False,
+                'invoke_id': None,
+                'terminal': None,
+            }
         time.sleep(1.0)
         sock.close()
-        return {'status': 'client_closed', 'duration_ms': (time.perf_counter() - started) * 1000}
+        terminal = wait_for_cancel_terminal(accepted[0], 15)
+        return {
+            'status': 'client_closed',
+            'duration_ms': (time.perf_counter() - started) * 1000,
+            'server_accepted': True,
+            'invoke_id': accepted[0],
+            'terminal': terminal,
+        }
     except Exception as exc:
-        return {'status': 'exception', 'error': str(exc), 'duration_ms': (time.perf_counter() - started) * 1000}
+        if sock is not None:
+            sock.close()
+        return {
+            'status': 'exception',
+            'error': str(exc),
+            'duration_ms': (time.perf_counter() - started) * 1000,
+            'server_accepted': False,
+            'invoke_id': None,
+            'terminal': None,
+        }
 
 
 def run_long_wait_round(round_index, duration_seconds, request_rate):
@@ -690,10 +773,18 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
     ]
     slow_success = [item for item in slow_results if item['scenario'] == 'slow-success']
     slow_timeout = [item for item in slow_results if item['scenario'] == 'slow-timeout']
+    cancel_terminal = cancel_result.get('terminal') or {}
     cancel_ok = (
         cancel_result.get('status') == 'client_closed'
         and isinstance(cancel_result.get('duration_ms'), (int, float))
         and cancel_result['duration_ms'] <= 5000
+        and cancel_result.get('server_accepted') is True
+        and str(cancel_terminal.get('status') or '').lower()
+        not in ('', 'running', 'pending', 'in_flight')
+        and (
+            cancel_terminal.get('failure_kind') == 'downstream_closed'
+            or cancel_terminal.get('failure_class') == 'client_abort'
+        )
     )
     success_ok = all(
         item['status'] == 200
