@@ -72,6 +72,8 @@ export function managedTaskCompletionLabel(completion?: string | null): string {
       return "部分完成";
     case "deferred":
       return "已延期";
+    case "failed":
+      return "本轮失败";
     default:
       return "未知";
   }

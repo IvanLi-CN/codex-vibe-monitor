@@ -456,6 +456,183 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
   },
 };
 
+function retentionTaskDetailForState(
+  state: "completed" | "deferred" | "failed" | "recoverable" | "unknown" | "empty",
+): ManagedTaskDetail {
+  const detail = clone(STORYBOOK_RETENTION_TASK_DETAIL);
+  const run = detail.recentRuns[0];
+  if (!run || !detail.progress) return detail;
+  if (state === "completed") {
+    detail.progress = {
+      ...detail.progress,
+      completed: 128_000,
+      phase: "completed",
+      freshness: "fresh",
+      waitReason: null,
+      nextRetryAt: null,
+      stages: detail.progress.stages?.map((stage) => ({
+        ...stage,
+        status: "completed",
+        completed: stage.total ?? stage.completed,
+        waitReason: null,
+      })),
+    };
+    Object.assign(run, {
+      status: "success",
+      summary: "归档与统计刷新已完成。",
+      completion: "completed",
+      coreCompletion: "completed",
+      details: {
+        ...run.details,
+        completion: "completed",
+        coreCompletion: "completed",
+        budgetExhausted: false,
+        waitReason: null,
+        promptCacheStats: { state: "available", pending: 0, reason: "fresh" },
+      },
+    });
+  } else if (state === "deferred") {
+    detail.progress = {
+      ...detail.progress,
+      phase: "deferred",
+      freshness: "fresh",
+      waitReason: "sqlite_pressure",
+      nextRetryAt: "2026-10-01T00:13:00Z",
+      stages: detail.progress.stages?.map((stage) => ({
+        ...stage,
+        status: "deferred",
+        waitReason: "sqlite_pressure",
+      })),
+    };
+    Object.assign(run, {
+      status: "skipped",
+      summary: "本轮等待数据库压力恢复后重试。",
+      completion: "deferred",
+      coreCompletion: "deferred",
+      details: {
+        ...run.details,
+        completion: "deferred",
+        coreCompletion: "deferred",
+        budgetExhausted: false,
+        waitReason: "sqlite_pressure",
+        promptCacheStats: { state: "unavailable", pending: 3, reason: "sqlite_pressure" },
+      },
+    });
+  } else if (state === "failed") {
+    detail.progress = {
+      ...detail.progress,
+      phase: "failed",
+      freshness: "fresh",
+      waitReason: "fatal_error",
+      stages: detail.progress.stages?.map((stage) => ({ ...stage, status: "failed" })),
+    };
+    Object.assign(run, {
+      status: "failed",
+      summary: "归档阶段失败，需要检查错误详情。",
+      completion: "failed",
+      coreCompletion: "failed",
+      details: {
+        ...run.details,
+        completion: "failed",
+        coreCompletion: "failed",
+        budgetExhausted: false,
+        waitReason: "fatal_error",
+        fatalError: "archive artifact verification failed",
+        promptCacheStats: { state: "unknown", pending: null, reason: "fatal_error" },
+      },
+    });
+  } else if (state === "recoverable") {
+    detail.progress = {
+      ...detail.progress,
+      phase: "recovery",
+      freshness: "fresh",
+      waitReason: "retention_recovery_failure",
+      stages: detail.progress.stages?.map((stage) => ({
+        ...stage,
+        status: "deferred",
+        completed: 0,
+        waitReason: "retention_recovery_failure",
+      })),
+    };
+    Object.assign(run, {
+      status: "success",
+      summary: "本轮未提交新行，已保留恢复状态等待重试。",
+      completion: "partial",
+      coreCompletion: "partial",
+      details: {
+        ...run.details,
+        completion: "partial",
+        coreCompletion: "partial",
+        recoverableFailure: true,
+        budgetExhausted: false,
+        waitReason: "retention_recovery_failure",
+        promptCacheStats: {
+          state: "unavailable",
+          pending: 3,
+          reason: "retention_recovery_failure",
+        },
+      },
+    });
+  } else if (state === "empty") {
+    detail.progress = {
+      ...detail.progress,
+      total: null,
+      completed: null,
+      phase: "idle",
+      freshness: "missing",
+      unit: "invocations",
+      sourceScope: null,
+      lastProgressAt: null,
+      waitReason: null,
+      nextRetryAt: null,
+      stages: null,
+    };
+    detail.recentRuns = [];
+    detail.performance = {
+      runCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      averageDurationMs: null,
+      latestDurationMs: null,
+      observedAt: null,
+      coverage: null,
+    };
+  } else {
+    detail.progress = {
+      total: null,
+      completed: null,
+      phase: null,
+      checkpoint: null,
+      etaSeconds: null,
+      updatedAt: null,
+      freshness: "stale",
+      unit: null,
+      sourceScope: null,
+      lastProgressAt: null,
+      waitReason: null,
+      nextRetryAt: null,
+      stages: null,
+    };
+    Object.assign(run, {
+      status: "success",
+      summary: null,
+      completion: null,
+      coreCompletion: null,
+      details: null,
+    });
+    detail.performance = {
+      runCount: detail.performance?.runCount ?? 0,
+      successCount: detail.performance?.successCount ?? 0,
+      failureCount: detail.performance?.failureCount ?? 0,
+      averageDurationMs: null,
+      latestDurationMs: null,
+      observedAt: null,
+      coverage: null,
+    };
+  }
+  return detail;
+}
+
 const STORYBOOK_SETTINGS: SettingsPayload = {
   proxy: {
     hijackEnabled: true,
@@ -668,9 +845,10 @@ function buildSystemWorkspaceRequestHandler(
   statusOverride?: SystemStatusResponse,
   settingsOverride?: SettingsPayload,
   failFirstModelsPreview = false,
+  retentionTaskDetailOverride?: ManagedTaskDetail,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
-  const retentionTaskDetail = clone(STORYBOOK_RETENTION_TASK_DETAIL);
+  const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
@@ -863,6 +1041,7 @@ const meta = {
               context.parameters.systemStatusOverride as SystemStatusResponse | undefined,
               context.parameters.settingsOverride as SettingsPayload | undefined,
               context.parameters.failFirstModelsPreview === true,
+              context.parameters.retentionTaskDetailOverride as ManagedTaskDetail | undefined,
             )}
           >
             <FullPageStorySurface>
@@ -1576,6 +1755,76 @@ export const TaskDetail: Story = {
     await expect(canvas.getByText("暂不可用（积压 3）")).toBeVisible();
     await expect(canvas.getByText("prompt_cache")).toBeVisible();
     await expect(canvas.getByText("92.0%")).toBeVisible();
+  },
+};
+
+export const TaskDetailCompleted: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
+  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("completed") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText(/本轮完成/)).resolves.toBeVisible();
+    await expect(canvas.findByText(/Prompt 缓存统计：可用/)).resolves.toBeVisible();
+  },
+};
+
+export const TaskDetailDeferred: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
+  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("deferred") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText(/已延期/)).resolves.toBeVisible();
+    const deferredReasons = await canvas.findAllByText(/等待：sqlite_pressure/);
+    expect(deferredReasons.length).toBeGreaterThan(0);
+  },
+};
+
+export const TaskDetailFailed: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
+  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("failed") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText(/本轮失败/)).resolves.toBeVisible();
+    await expect(canvas.findByText(/等待：fatal_error/)).resolves.toBeVisible();
+  },
+};
+
+export const TaskDetailRecoverableFailure: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
+  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("recoverable") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText(/部分完成/)).resolves.toBeVisible();
+    const recoveryReasons = await canvas.findAllByText(/等待：retention_recovery_failure/);
+    expect(recoveryReasons.length).toBeGreaterThan(0);
+  },
+};
+
+export const TaskDetailEmptyHistory: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
+  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("empty") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("暂无运行记录")).resolves.toBeVisible();
+    const unknownItems = await canvas.findAllByText("未知");
+    expect(unknownItems.length).toBeGreaterThan(0);
+  },
+};
+
+export const TaskDetailUnknownStale: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
+  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("unknown") },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const unknownItems = await canvas.findAllByText("未知");
+    expect(unknownItems.length).toBeGreaterThan(0);
+    await expect(canvas.findByText("已过期")).resolves.toBeVisible();
   },
 };
 

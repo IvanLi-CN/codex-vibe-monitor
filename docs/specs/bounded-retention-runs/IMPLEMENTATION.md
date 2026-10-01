@@ -103,13 +103,13 @@
 
 主库只增加业务正确性需要的 cursor、source 范围、刷新代次/暂存和索引。维护库增加 nullable 结果/快照字段。结构安装幂等且不历史扫描；运行时逐页产生 DML；旧进度、历史耗时和完成度保持未知。既有 archive artifact、保留天数和 wire 格式不变。
 
-支持状态以既有 retention 的 v2.71.x 旧 schema 和本次生产 v2.80.2 schema 为必测边界，并覆盖其间存在的实际迁移结构；候选读取旧状态，而旧 Minor 程序不承诺维护新续作语义。停止发布后的恢复采用新版本前向修复，备份恢复单独处理。`ensure_schema_repairs_v271_and_v2802_retention_fixtures_without_historical_backfill` 固定了两个标签的旧 invocation/队列形状，重复运行 DDL，并验证历史行、未完成队列和 staging generation 不丢失。
+支持状态以既有 retention 的 v2.71.x 旧 schema 和本次生产 v2.80.2 schema 为必测边界；当前仓库没有额外可复现的中间 retention schema 快照，因此不把未验证的中间结构写成已覆盖事实。候选读取旧状态，而旧 Minor 程序不承诺维护新续作语义。停止发布后的恢复采用新版本前向修复，备份恢复单独处理。`ensure_schema_repairs_v271_and_v2802_retention_fixtures_without_historical_backfill` 固定了两个声明边界的旧 invocation/队列形状，重复运行 DDL，并验证历史行、未完成队列和 staging generation 不丢失；新增结构仍由幂等 DDL 和缺列修复覆盖。
 
 ## Verification and Remaining Gaps
 
 当前已完成：Rust `cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings`；Prompt 统计代次/分页、预算入口、retention 和性能窗口定向回归；Web 单测 1,682 项通过、typecheck、lint（仅既有 warning）和 build；Storybook 136 项通过；任务页 E2E 7/7 通过。shared-testbox 三 profile 通过：lightweight 1,246/1,246、stateful-sqlite 1,375/1,375、archive-file-io 299/299。profile 耗时不作为候选性能结论，百万行对照单独记录在 benchmark card。
 
-百万行同种子对照也已完成：同一测试机上候选 130 万行/热 key 50 万行，刷新 347.6s、在线读 p95/p99 为 225/250ms；开发基线刷新 103.2s、在线读 p95/p99 为 247/278ms；两者精确计数均为 500,000 且队列归零。候选读延迟满足门槛，但分页提交带来的总刷新耗时约为基线 3.37 倍，不能把有界执行表述为吞吐提升；证据卡保留该限制。
+百万行同种子对照也已完成：同一测试机上候选 130 万行/热 key 50 万行，刷新 370.8s、在线读 p95/p99 为 238/290ms；开发基线刷新 101.7s、在线读 p95/p99 为 230/253ms；两者精确计数均为 500,000 且队列归零。候选读延迟在本次负载下略高于基线，分页提交带来的总刷新耗时约为基线 3.65 倍，不能把有界执行表述为吞吐提升；证据卡保留该限制。
 
 尚未形成最终证据的项目：最终截图的基线视觉比较确认。任何缺少该证据的验收项保持未验证，不降低门槛。
 

@@ -1365,6 +1365,7 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) model_route_rows_pruned: usize,
     pub(crate) system_task_run_rows_pruned: usize,
     pub(crate) fatal_error: Option<String>,
+    pub(crate) recoverable_failure: bool,
     pub(crate) orphan_cleanup_completed: bool,
 }
 
@@ -1398,6 +1399,8 @@ impl RetentionRunSummary {
     pub(crate) fn completion(&self) -> &'static str {
         if self.fatal_error.is_some() {
             "failed"
+        } else if self.recoverable_failure {
+            "partial"
         } else if self.budget_exhausted || self.deferred {
             if self.touched_anything() {
                 "partial"
@@ -1412,6 +1415,8 @@ impl RetentionRunSummary {
     pub(crate) fn core_completion(&self) -> &'static str {
         if self.fatal_error.is_some() {
             "failed"
+        } else if self.recoverable_failure {
+            "partial"
         } else if self.invocation_rows_archived > 0 || self.invocation_details_pruned > 0 {
             if self.budget_exhausted || self.deferred {
                 "partial"
@@ -8662,6 +8667,7 @@ async fn run_data_retention_maintenance_inner(
                 } else if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("finalizing", &error);
                     summary.deferred = true;
+                    summary.recoverable_failure = true;
                     summary.wait_reason = Some("retention_recovery_failure".to_string());
                 } else {
                     retention_recovery_persist_latest_failure_best_effort(
@@ -8713,6 +8719,7 @@ async fn run_data_retention_maintenance_inner(
                 } else if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("detail_prune", &error);
                     summary.deferred = true;
+                    summary.recoverable_failure = true;
                     summary.wait_reason = Some("retention_recovery_failure".to_string());
                 } else {
                     retention_recovery_persist_latest_failure_best_effort(
@@ -8787,6 +8794,7 @@ async fn run_data_retention_maintenance_inner(
         if let Err(error) = retention_recovery_refresh_counts(pool, config).await {
             retention_recovery_record_failure("status_refresh", &error);
             summary.deferred = true;
+            summary.recoverable_failure = true;
             summary.wait_reason = Some("status_refresh".to_string());
             retention_recovery_log_event(
                 tracing::Level::WARN,
@@ -9979,6 +9987,9 @@ pub(crate) async fn prune_old_invocation_details(
     let mut raw_files_removed = 0usize;
 
     loop {
+        if retention_run_budget_expired() {
+            break;
+        }
         let sql = format!(
             r#"
             SELECT id, occurred_at, request_raw_path, response_raw_path,
@@ -9995,13 +10006,20 @@ pub(crate) async fn prune_old_invocation_details(
             success_like_condition = success_like_condition,
         );
         let candidate_limit = retention_candidate_limit(config, "invocation_detail_prune");
-        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
+        let candidates_query = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
             .bind(DETAIL_LEVEL_FULL)
             .bind(&prune_cutoff)
             .bind(&archive_cutoff)
             .bind(candidate_limit as i64)
-            .fetch_all(pool)
-            .await?;
+            .fetch_all(pool);
+        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, candidates_query).await {
+                Ok(result) => result?,
+                Err(_) => break,
+            }
+        } else {
+            candidates_query.await?
+        };
 
         if candidates.is_empty() {
             break;
@@ -10010,11 +10028,17 @@ pub(crate) async fn prune_old_invocation_details(
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
         for candidate in candidates {
+            if retention_run_budget_expired() {
+                break;
+            }
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
             by_group.entry(group_key).or_default().push(candidate);
         }
 
         for (group_key, group) in by_group {
+            if retention_run_budget_expired() {
+                break;
+            }
             let group = take_retention_micro_batch(group, |candidate| {
                 candidate.estimated_write_bytes.max(1) as usize
             });
@@ -10032,14 +10056,27 @@ pub(crate) async fn prune_old_invocation_details(
                     ]
                 })
                 .collect::<Vec<_>>();
+            if ids.is_empty() || retention_run_budget_expired() {
+                break;
+            }
             let mut source_connection = pool.acquire().await?;
-            let source_identity_sha256 = invocation_archive_source_identity_sha256(
+            let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
                 &ids,
-            )
-            .await?;
+            );
+            let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, source_identity_query).await {
+                    Ok(result) => result?,
+                    Err(_) => break,
+                }
+            } else {
+                source_identity_query.await?
+            };
             drop(source_connection);
+            if retention_run_budget_expired() {
+                break;
+            }
             let mut descriptor = retention_prepared_archive_descriptor(
                 config,
                 spec.dataset,
@@ -10136,7 +10173,13 @@ pub(crate) async fn prune_old_invocation_details(
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            if retention_run_budget_expired() {
+                break;
+            }
             let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
+            if retention_run_budget_expired() {
+                break;
+            }
             if actual_archive_sha256 != archive_outcome.sha256 {
                 let error =
                     anyhow!("retention prepared archive artifact digest verification failed");
@@ -10267,7 +10310,7 @@ pub(crate) async fn archive_old_invocations(
     let candidate_limit = retention_candidate_limit(config, "invocation_archive");
 
     if dry_run {
-        let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
+        let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
             r#"
             SELECT
                 id,
@@ -10291,8 +10334,15 @@ pub(crate) async fn archive_old_invocations(
             "#,
         )
         .bind(&cutoff)
-        .fetch_all(pool)
-        .await?;
+        .fetch_all(pool);
+        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, candidates_query).await {
+                Ok(result) => result?,
+                Err(_) => return Ok((0, 0, 0, std::collections::HashSet::new())),
+            }
+        } else {
+            candidates_query.await?
+        };
 
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
@@ -10331,7 +10381,10 @@ pub(crate) async fn archive_old_invocations(
     let mut prompt_cache_keys = std::collections::HashSet::new();
 
     loop {
-        let candidates = sqlx::query_as::<_, InvocationArchiveCandidate>(
+        if retention_run_budget_expired() {
+            break;
+        }
+        let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
             r#"
             SELECT
                 id,
@@ -10357,8 +10410,15 @@ pub(crate) async fn archive_old_invocations(
         )
         .bind(&cutoff)
         .bind(candidate_limit as i64)
-        .fetch_all(pool)
-        .await?;
+        .fetch_all(pool);
+        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, candidates_query).await {
+                Ok(result) => result?,
+                Err(_) => break,
+            }
+        } else {
+            candidates_query.await?
+        };
 
         if candidates.is_empty() {
             break;
@@ -10367,11 +10427,17 @@ pub(crate) async fn archive_old_invocations(
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
+            if retention_run_budget_expired() {
+                break;
+            }
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
             by_group.entry(group_key).or_default().push(candidate);
         }
 
         for (group_key, group) in by_group {
+            if retention_run_budget_expired() {
+                break;
+            }
             let group = take_retention_micro_batch(group, |candidate| {
                 candidate.payload.as_deref().map_or(256, str::len).max(1)
             });
@@ -10379,14 +10445,27 @@ pub(crate) async fn archive_old_invocations(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
+            if ids.is_empty() || retention_run_budget_expired() {
+                break;
+            }
             let mut source_connection = pool.acquire().await?;
-            let source_identity_sha256 = invocation_archive_source_identity_sha256(
+            let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
                 &ids,
-            )
-            .await?;
+            );
+            let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, source_identity_query).await {
+                    Ok(result) => result?,
+                    Err(_) => break,
+                }
+            } else {
+                source_identity_query.await?
+            };
             drop(source_connection);
+            if retention_run_budget_expired() {
+                break;
+            }
             let prepare_started = Instant::now();
             let descriptor = retention_prepared_archive_descriptor(
                 config,
@@ -10437,13 +10516,23 @@ pub(crate) async fn archive_old_invocations(
                 .iter()
                 .map(invocation_archive_candidate_to_hourly_source_record)
                 .collect::<Vec<_>>();
-            let archive_result = match archive_layout_for_dataset(config, spec.dataset) {
-                ArchiveBatchLayout::LegacyMonth => {
-                    archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
+            let archive_future = async {
+                match archive_layout_for_dataset(config, spec.dataset) {
+                    ArchiveBatchLayout::LegacyMonth => {
+                        archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
+                    }
+                    ArchiveBatchLayout::SegmentV1 => {
+                        archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
+                    }
                 }
-                ArchiveBatchLayout::SegmentV1 => {
-                    archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
+            };
+            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, archive_future).await {
+                    Ok(result) => result,
+                    Err(_) => break,
                 }
+            } else {
+                archive_future.await
             };
             let Some(mut archive_outcome) = (match archive_result {
                 Ok(outcome) => Some(outcome),
@@ -10508,7 +10597,13 @@ pub(crate) async fn archive_old_invocations(
             retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
             let prepare_elapsed = prepare_started.elapsed();
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            if retention_run_budget_expired() {
+                break;
+            }
             let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
+            if retention_run_budget_expired() {
+                break;
+            }
             if actual_archive_sha256 != archive_outcome.sha256 {
                 let error =
                     anyhow!("retention prepared archive artifact changed before publication");
@@ -10804,12 +10899,22 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut raw_files_removed = 0usize;
 
     loop {
+        if retention_run_budget_expired() {
+            break;
+        }
         let candidate_limit = retention_candidate_limit(config, "timestamped_archive");
-        let candidates = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
+        let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
             .bind(&cutoff)
             .bind(candidate_limit as i64)
-            .fetch_all(pool)
-            .await?;
+            .fetch_all(pool);
+        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, candidates_query).await {
+                Ok(result) => result?,
+                Err(_) => break,
+            }
+        } else {
+            candidates_query.await?
+        };
 
         if candidates.is_empty() {
             break;
@@ -10818,18 +10923,27 @@ pub(crate) async fn archive_timestamped_dataset(
         let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
+            if retention_run_budget_expired() {
+                break;
+            }
             let month_key =
                 archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
             by_month.entry(month_key).or_default().push(candidate);
         }
 
         for (month_key, group) in by_month {
+            if retention_run_budget_expired() {
+                break;
+            }
             let group = take_retention_micro_batch(group, |_| 256);
             let prepare_started = Instant::now();
             let ids = group
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
+            if ids.is_empty() || retention_run_budget_expired() {
+                break;
+            }
             let pool_attempt_raw_paths = if spec.dataset == "pool_upstream_request_attempts" {
                 let placeholders = std::iter::repeat_n("?", ids.len())
                     .collect::<Vec<_>>()
@@ -10874,9 +10988,17 @@ pub(crate) async fn archive_timestamped_dataset(
             } else {
                 Vec::new()
             };
-            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await,
-            )?
+            let archive_future =
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
+            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, archive_future).await {
+                    Ok(result) => result,
+                    Err(_) => break,
+                }
+            } else {
+                archive_future.await
+            };
+            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
@@ -10907,6 +11029,9 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             let prepare_elapsed = prepare_started.elapsed();
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            if retention_run_budget_expired() {
+                break;
+            }
             let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
                 Ok(value) => value,
                 Err(_) => return Ok((rows_archived, archive_batches, raw_files_removed)),
@@ -11625,4 +11750,31 @@ mod retention_recovery_race_tests {
 pub(crate) struct ArchiveExpiryBackfillCandidate {
     pub(crate) id: i64,
     pub(crate) coverage_end_at: String,
+}
+
+#[cfg(test)]
+mod retention_summary_tests {
+    use super::RetentionRunSummary;
+
+    #[test]
+    fn recoverable_failure_is_partial_without_progress() {
+        let summary = RetentionRunSummary {
+            deferred: true,
+            recoverable_failure: true,
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        assert_eq!(summary.core_completion(), "partial");
+    }
+
+    #[test]
+    fn fatal_error_remains_failed_even_when_recoverable_state_is_present() {
+        let summary = RetentionRunSummary {
+            fatal_error: Some("archive failed".to_string()),
+            recoverable_failure: true,
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "failed");
+        assert_eq!(summary.core_completion(), "failed");
+    }
 }

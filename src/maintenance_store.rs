@@ -20,6 +20,7 @@ const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
+const TASK_RUNNING_RECOVERY_STALE_AFTER_SECS: i64 = 5 * 60;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
@@ -1042,17 +1043,21 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
+        let recovery_cutoff = format_utc_iso_millis(
+            Utc::now() - ChronoDuration::seconds(TASK_RUNNING_RECOVERY_STALE_AFTER_SECS),
+        );
         let finished_at = format_utc_iso_millis(Utc::now());
         let result = sqlx::query(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary=COALESCE(summary, ?),
                  error_detail=COALESCE(error_detail, ?)
-             WHERE status='running'",
+             WHERE status='running' AND started_at < ?",
         )
         .bind(&finished_at)
         .bind("服务重启前运行未完成，已标记为失败")
         .bind("服务重启时回收未完成运行")
+        .bind(&recovery_cutoff)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -1849,6 +1854,14 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert incomplete managed task run");
+        let fresh_started_at = crate::format_utc_iso_millis(Utc::now());
+        sqlx::query(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES ('forward_proxy_subscription_refresh','startup',?1,'running','started')",
+        )
+        .bind(&fresh_started_at)
+        .execute(&pool)
+        .await
+        .expect("insert fresh managed task run");
 
         let store = MaintenanceStore { pool };
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 1);
@@ -1861,6 +1874,13 @@ mod tests {
         assert_eq!(row.0, "failed");
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
+        let fresh_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load fresh managed task run");
+        assert_eq!(fresh_status, "running");
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
     }
 

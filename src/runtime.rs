@@ -1211,7 +1211,12 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             {
                 warn!(task = %task_key, error = %error, "managed task progress snapshot could not be published");
             }
-            let result = run_managed_task_once_with_observation(&state, &task_key).await;
+            let result = tokio::select! {
+                result = run_managed_task_once_with_observation(&state, &task_key) => result,
+                _ = state.shutdown.cancelled() => {
+                    Err(anyhow!("managed task execution cancelled during shutdown"))
+                }
+            };
             let (status, summary, detail, completion, core_completion, details) = match result {
                 Ok(execution) => {
                     let status = match execution.completion.as_deref() {
@@ -1586,6 +1591,7 @@ async fn run_managed_task_once_with_observation(
             "elapsedMs": summary.elapsed_ms,
             "settlementMs": summary.settlement_ms,
             "budgetExhausted": summary.budget_exhausted,
+            "recoverableFailure": summary.recoverable_failure,
             "waitReason": summary.wait_reason,
             "processedCount": summary.processed_row_count(),
             "total": summary.backlog_total,

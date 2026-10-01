@@ -11,7 +11,7 @@
     "description": "Retention source scope, orphan scan epoch/cursor, generation-checked per-key aggregate staging and source-page cursor, queue mutation generations, nullable run completion and progress/schedule evidence.",
     "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
     "source_compatibility_range": {
-      "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; cover actual intervening schema variants with fixtures.",
+      "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; v2.71.45 and v2.80.2 are the declared reproducible fixtures, and unobserved intervening snapshots are not claimed as covered.",
       "to_program_version": "Unreleased candidate on th/retention-bounded-recovery-design; final commit identity pending.",
       "direct_major_skips_supported": false
     }
@@ -85,7 +85,7 @@
       "Web unit tests, typecheck, lint and production build pass locally; Demo task page shows completed/partial, default schedule, stage progress, stale/unknown-compatible fields and unavailable Prompt statistics.",
       "Repeated trigger installation is transactional and idempotent; the generation-clock regression proves queue drain followed by re-enqueue uses a higher generation.",
       "shared-testbox lightweight (1,246/1,246), stateful-sqlite (1,375/1,375), and archive-file-io (299/299) profiles pass.",
-      "Same-seed 1,300,000-row candidate/baseline benchmark proves exact 500,000-row aggregation, queue drainage, and candidate online-read p95/p99 below baseline; the card records the candidate's higher total refresh elapsed.",
+      "Same-seed 1,300,000-row candidate/baseline benchmark proves exact 500,000-row aggregation and queue drainage; the card records the candidate's higher total refresh elapsed and 4%/15% higher online-read p95/p99 under this fixed load.",
       "v2.71.45 and v2.80.2 forward-repair fixtures pass repeated DDL, preserve historical row counts and stopped-release queue/staging generations, and leave readiness materialization totals unknown without historical backfill.",
       "Web Storybook (136 tests) and retention task-page E2E (7/7) pass; non-aligned performance-window regression passes."
     ]
