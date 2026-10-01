@@ -12,18 +12,14 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
-import { SelectField } from "../../components/ui/select-field";
 import { Switch } from "../../components/ui/switch";
 import { AppIcon } from "../../features/shared/AppIcon";
+import { ModelsDevSyncDialog } from "../../features/system/models-dev-sync/ModelsDevSyncDialog";
 import { useTranslation } from "../../i18n";
 import {
-  applyModelsDevPriceSync,
   deleteManagedModel,
   fetchSettings,
-  type ModelsDevPriceCandidate,
-  type ModelsDevSyncPreview,
   type PricingEntry,
-  previewModelsDevPriceSync,
   type SettingsPayload,
   updateManagedModelPreset,
   updatePricingSettings,
@@ -37,13 +33,6 @@ type PriceDraft = {
   cacheWrite: string;
   reasoning: string;
 };
-
-type ModelCandidateGroup = {
-  model: string;
-  candidates: ModelsDevPriceCandidate[];
-};
-
-type SyncSelectionOverrides = Record<string, Record<string, boolean>>;
 
 const PRICE_FIELDS = [
   ["inputPer1m", "input"],
@@ -80,22 +69,6 @@ function localPriceFields(entry: PricingEntry | undefined) {
   };
 }
 
-function candidatePriceFields(candidate: ModelsDevPriceCandidate) {
-  return {
-    inputPer1m: candidate.inputPer1m,
-    outputPer1m: candidate.outputPer1m,
-    cacheReadPer1m: candidate.cacheReadPer1m,
-    cacheWritePer1m: candidate.cacheWritePer1m,
-    reasoningPer1m: candidate.reasoningPer1m,
-  };
-}
-
-function pricesEqual(local: PricingEntry | undefined, candidate: ModelsDevPriceCandidate): boolean {
-  const existing = localPriceFields(local);
-  const incoming = candidatePriceFields(candidate);
-  return PRICE_FIELDS.every(([field]) => existing[field] === incoming[field]);
-}
-
 function formatDraft(entry?: PricingEntry, model = ""): PriceDraft {
   return {
     model: entry?.model ?? model,
@@ -124,16 +97,6 @@ export default function SystemModelsPage() {
   const [savingPrice, setSavingPrice] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
-  const [syncState, setSyncState] = useState<
-    "loading" | "ready" | "error" | "applying" | "applied"
-  >("loading");
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncPreview, setSyncPreview] = useState<ModelsDevSyncPreview | null>(null);
-  const [syncSearch, setSyncSearch] = useState("");
-  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(() => new Set());
-  const [providerChoices, setProviderChoices] = useState<Record<string, string>>({});
-  const [selectionOverrides, setSelectionOverrides] = useState<SyncSelectionOverrides>({});
-  const [syncResultCount, setSyncResultCount] = useState(0);
 
   const reloadSettings = useCallback(async () => {
     const loaded = await fetchSettings();
@@ -186,87 +149,6 @@ export default function SystemModelsPage() {
     () => new Set(settings?.proxy.enabledModels ?? []),
     [settings?.proxy.enabledModels],
   );
-
-  const openSyncPreview = useCallback(async () => {
-    setSyncOpen(true);
-    setSyncState("loading");
-    setSyncError(null);
-    setSyncPreview(null);
-    setSyncSearch("");
-    setSelectedProviders(new Set());
-    setProviderChoices({});
-    setSelectionOverrides({});
-    try {
-      const result = await previewModelsDevPriceSync();
-      setSyncPreview(result);
-      setSelectedProviders(new Set(result.providers.map((provider) => provider.id)));
-      setSyncState("ready");
-    } catch (error) {
-      setSyncError(error instanceof Error ? error.message : String(error));
-      setSyncState("error");
-    }
-  }, []);
-
-  const retrySyncPreview = useCallback(() => {
-    void openSyncPreview();
-  }, [openSyncPreview]);
-
-  const candidateGroups = useMemo<ModelCandidateGroup[]>(() => {
-    if (!syncPreview) return [];
-    const groups = new Map<string, ModelsDevPriceCandidate[]>();
-    for (const candidate of syncPreview.candidates) {
-      if (!selectedProviders.has(candidate.providerId)) continue;
-      const existing = groups.get(candidate.model) ?? [];
-      existing.push(candidate);
-      groups.set(candidate.model, existing);
-    }
-    return Array.from(groups, ([model, candidates]) => ({ model, candidates })).sort((a, b) =>
-      a.model.localeCompare(b.model),
-    );
-  }, [selectedProviders, syncPreview]);
-
-  const visibleCandidateGroups = useMemo(() => {
-    const query = syncSearch.trim().toLocaleLowerCase();
-    if (!query) return candidateGroups;
-    return candidateGroups.filter(
-      ({ model, candidates }) =>
-        model.toLocaleLowerCase().includes(query) ||
-        candidates.some(
-          (candidate) =>
-            candidate.name.toLocaleLowerCase().includes(query) ||
-            candidate.providerName.toLocaleLowerCase().includes(query) ||
-            candidate.providerId.toLocaleLowerCase().includes(query),
-        ),
-    );
-  }, [candidateGroups, syncSearch]);
-
-  const selectedSyncEntries = useMemo(() => {
-    const entries: PricingEntry[] = [];
-    for (const group of candidateGroups) {
-      const local = pricesByModel.get(group.model);
-      const selectedProvider = providerChoices[group.model];
-      const candidate =
-        group.candidates.find((item) => item.providerId === selectedProvider) ??
-        (group.candidates.length === 1 ? group.candidates[0] : undefined);
-      if (!candidate || !candidate.importable || pricesEqual(local, candidate)) continue;
-      const defaultSelected = group.candidates.length === 1 || Boolean(selectedProvider);
-      const checked =
-        selectionOverrides[group.model]?.[candidate.providerId] ??
-        (defaultSelected && local?.source !== "custom");
-      if (!checked) continue;
-      entries.push({
-        model: candidate.model,
-        inputPer1m: candidate.inputPer1m ?? 0,
-        outputPer1m: candidate.outputPer1m ?? 0,
-        cacheInputPer1m: candidate.cacheReadPer1m,
-        cacheReadPer1m: candidate.cacheReadPer1m,
-        cacheWritePer1m: candidate.cacheWritePer1m,
-        reasoningPer1m: candidate.reasoningPer1m,
-        source: "models.dev",
-      });
-    }
-    return entries;
-  }, [candidateGroups, pricesByModel, providerChoices, selectionOverrides]);
 
   const saveManualPrice = useCallback(async () => {
     if (!settings || savingPrice) return;
@@ -362,45 +244,24 @@ export default function SystemModelsPage() {
     [busyModel],
   );
 
-  const applySelectedPrices = useCallback(async () => {
-    if (selectedSyncEntries.length === 0) return;
-    setSyncState("applying");
-    setSyncError(null);
-    try {
-      const result = await applyModelsDevPriceSync(selectedSyncEntries);
-      setSyncResultCount(selectedSyncEntries.length);
-      setSyncState("applied");
+  const handleSyncPricesApplied = useCallback(
+    (pricing: SettingsPayload["pricing"], entries: PricingEntry[]) => {
       setSettings((current) =>
         current
           ? {
               ...current,
-              pricing: result,
+              pricing,
               proxy: {
                 ...current.proxy,
                 models: Array.from(
-                  new Set([
-                    ...current.proxy.models,
-                    ...selectedSyncEntries.map((entry) => entry.model),
-                  ]),
+                  new Set([...current.proxy.models, ...entries.map((entry) => entry.model)]),
                 ).sort((a, b) => a.localeCompare(b)),
               },
             }
           : current,
       );
-    } catch (error) {
-      setSyncError(error instanceof Error ? error.message : String(error));
-      setSyncState("ready");
-    }
-  }, [selectedSyncEntries]);
-
-  const closeSyncDialog = useCallback(
-    (open: boolean) => {
-      setSyncOpen(open);
-      if (!open && syncState === "applied") {
-        setSyncPreview(null);
-      }
     },
-    [syncState],
+    [],
   );
 
   const openPriceEditor = useCallback(
@@ -452,7 +313,7 @@ export default function SystemModelsPage() {
             <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
             {t("system.models.add")}
           </Button>
-          <Button type="button" onClick={() => void openSyncPreview()}>
+          <Button type="button" onClick={() => setSyncOpen(true)}>
             <AppIcon name="sync" className="mr-2 h-4 w-4" aria-hidden />
             {t("system.models.syncAll")}
           </Button>
@@ -764,343 +625,12 @@ export default function SystemModelsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={syncOpen} onOpenChange={closeSyncDialog}>
-        <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden desktop:w-[min(78rem,calc(100vw-2rem))]">
-          <div className="flex min-h-0 flex-col px-4 pb-4 pt-4 desktop:px-6 desktop:pt-5">
-            <div className="flex items-start justify-between gap-4">
-              <DialogHeader className="min-w-0">
-                <DialogTitle>{t("system.models.syncTitle")}</DialogTitle>
-                <DialogDescription>{t("system.models.syncDescription")}</DialogDescription>
-              </DialogHeader>
-              <DialogCloseIcon aria-label={t("system.models.close")} />
-            </div>
-
-            {syncState === "loading" ? (
-              <div
-                className="flex min-h-48 items-center justify-center gap-3 text-sm text-base-content/70"
-                role="status"
-              >
-                <span className="loading loading-spinner loading-sm" aria-hidden />
-                {t("system.models.fetching")}
-              </div>
-            ) : null}
-            {syncState === "error" ? (
-              <div className="space-y-4 py-5">
-                <Alert variant="error" role="alert">
-                  {syncError ?? t("system.models.fetchFailed")}
-                </Alert>
-                <Button type="button" variant="secondary" onClick={retrySyncPreview}>
-                  <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
-                  {t("system.models.retry")}
-                </Button>
-              </div>
-            ) : null}
-            {(syncState === "ready" || syncState === "applying") && syncPreview ? (
-              <>
-                {syncError ? (
-                  <Alert variant="error" role="alert" className="mt-3">
-                    {syncError}
-                  </Alert>
-                ) : null}
-                <div className="mt-4 grid gap-3 desktop:grid-cols-[minmax(0,1fr)_18rem]">
-                  <label className="relative block">
-                    <AppIcon
-                      name="magnify"
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-base-content/55"
-                      aria-hidden
-                    />
-                    <Input
-                      value={syncSearch}
-                      className="pl-9"
-                      placeholder={t("system.models.search")}
-                      aria-label={t("system.models.search")}
-                      onChange={(event) => setSyncSearch(event.target.value)}
-                    />
-                  </label>
-                  <details className="group relative min-w-0">
-                    <summary className="flex h-10 cursor-pointer list-none items-center justify-between gap-2 rounded-md border border-base-300 bg-base-100 px-3 text-sm">
-                      <span className="truncate">
-                        {t("system.models.providersSelected", {
-                          count: selectedProviders.size,
-                          total: syncPreview.providers.length,
-                        })}
-                      </span>
-                      <AppIcon
-                        name="chevron-down"
-                        className="h-4 w-4 shrink-0 text-base-content/65"
-                        aria-hidden
-                      />
-                    </summary>
-                    <div className="absolute right-0 top-11 z-10 w-full min-w-[17rem] space-y-2 rounded-lg border border-base-300 bg-base-100 p-3 shadow-lg">
-                      <div className="flex gap-2 border-b border-base-300/70 pb-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setSelectedProviders(
-                              new Set(syncPreview.providers.map((provider) => provider.id)),
-                            );
-                            setProviderChoices({});
-                          }}
-                        >
-                          {t("system.models.selectAll")}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setSelectedProviders(new Set());
-                            setProviderChoices({});
-                          }}
-                        >
-                          {t("system.models.clearAll")}
-                        </Button>
-                      </div>
-                      <div className="max-h-52 space-y-1 overflow-y-auto">
-                        {syncPreview.providers.map((provider) => (
-                          <label
-                            key={provider.id}
-                            className="flex min-h-9 items-center gap-2 rounded px-1 text-sm hover:bg-base-200/60"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedProviders.has(provider.id)}
-                              className="checkbox checkbox-sm"
-                              onChange={(event) => {
-                                const next = new Set(selectedProviders);
-                                if (event.target.checked) next.add(provider.id);
-                                else next.delete(provider.id);
-                                setSelectedProviders(next);
-                                setProviderChoices({});
-                              }}
-                            />
-                            <span className="min-w-0 flex-1 truncate">{provider.name}</span>
-                            <span className="text-xs text-base-content/55">{provider.id}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  </details>
-                </div>
-
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-base-content/65">
-                  <span>
-                    {t("system.models.fetchSummary", {
-                      providers: syncPreview.providerCount,
-                      models: syncPreview.candidateCount,
-                    })}
-                  </span>
-                  <span>
-                    {t("system.models.selectedCount", { count: selectedSyncEntries.length })}
-                  </span>
-                </div>
-
-                <div className="mt-3 min-h-0 flex-1 overflow-y-auto border-y border-base-300/70">
-                  {visibleCandidateGroups.length === 0 ? (
-                    <div className="px-2 py-10 text-center text-sm text-base-content/65">
-                      {t("system.models.noMatches")}
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-base-300/60">
-                      {visibleCandidateGroups.map((group) => {
-                        const local = pricesByModel.get(group.model);
-                        const selectedProvider = providerChoices[group.model];
-                        const candidate =
-                          group.candidates.find((item) => item.providerId === selectedProvider) ??
-                          (group.candidates.length === 1 ? group.candidates[0] : undefined);
-                        const isDuplicate = group.candidates.length > 1;
-                        const changed = candidate ? !pricesEqual(local, candidate) : false;
-                        const defaultSelected = Boolean(
-                          candidate && (group.candidates.length === 1 || selectedProvider),
-                        );
-                        const checked =
-                          candidate && candidate.importable && changed
-                            ? (selectionOverrides[group.model]?.[candidate.providerId] ??
-                              (defaultSelected && local?.source !== "custom"))
-                            : false;
-                        return (
-                          <article
-                            key={group.model}
-                            className="grid gap-3 px-2 py-3 desktop:grid-cols-[minmax(13rem,1.2fr)_minmax(17rem,1.4fr)_minmax(17rem,1.4fr)_8rem] desktop:items-start"
-                          >
-                            <div className="min-w-0">
-                              <div className="break-all font-mono text-[13px] font-medium">
-                                {group.model}
-                              </div>
-                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-base-content/65">
-                                {!local ? <span>{t("system.models.newModel")}</span> : null}
-                                {local?.source === "custom" ? (
-                                  <span>{t("system.models.manualPrice")}</span>
-                                ) : null}
-                                {!changed && local ? (
-                                  <span>{t("system.models.noPriceChange")}</span>
-                                ) : null}
-                              </div>
-                              {isDuplicate ? (
-                                <SelectField
-                                  className="mt-2"
-                                  triggerClassName="h-9 min-w-0 rounded-md border border-base-300 px-2 text-sm"
-                                  value={selectedProvider ?? ""}
-                                  placeholder={t("system.models.chooseProviderPlaceholder")}
-                                  aria-label={t("system.models.chooseProviderFor", {
-                                    model: group.model,
-                                  })}
-                                  options={group.candidates.map((item) => ({
-                                    value: item.providerId,
-                                    label: `${item.providerName} (${item.providerId})`,
-                                  }))}
-                                  onValueChange={(providerId) => {
-                                    setProviderChoices((current) => ({
-                                      ...current,
-                                      [group.model]: providerId,
-                                    }));
-                                  }}
-                                />
-                              ) : candidate ? (
-                                <div className="mt-1 text-xs text-base-content/65">
-                                  {candidate.providerName}
-                                </div>
-                              ) : null}
-                              {candidate?.docUrl ? (
-                                <a
-                                  className="mt-2 inline-block text-xs text-primary underline-offset-2 hover:underline"
-                                  href={candidate.docUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {t("system.models.providerDocs")}
-                                </a>
-                              ) : null}
-                            </div>
-
-                            <div className="min-w-0">
-                              <div className="mb-1 text-xs font-medium text-base-content/60">
-                                {t("system.models.localPrice")}
-                              </div>
-                              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs desktop:grid-cols-1">
-                                {PRICE_FIELDS.map(([field, label]) => (
-                                  <div key={field} className="flex min-w-0 justify-between gap-2">
-                                    <span className="truncate text-base-content/60">
-                                      {t(`settings.pricing.columns.${label}`)}
-                                    </span>
-                                    <span className="shrink-0 tabular-nums">
-                                      {priceText(localPriceFields(local)[field])}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-
-                            <div className="min-w-0">
-                              <div className="mb-1 text-xs font-medium text-base-content/60">
-                                {t("system.models.candidatePrice")}
-                              </div>
-                              {candidate ? (
-                                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs desktop:grid-cols-1">
-                                  {PRICE_FIELDS.map(([field, label]) => (
-                                    <div key={field} className="flex min-w-0 justify-between gap-2">
-                                      <span className="truncate text-base-content/60">
-                                        {t(`settings.pricing.columns.${label}`)}
-                                      </span>
-                                      <span className="shrink-0 tabular-nums">
-                                        {priceText(candidatePriceFields(candidate)[field])}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <span className="text-xs text-base-content/55">
-                                  {t("system.models.chooseProviderFirst")}
-                                </span>
-                              )}
-                              {candidate?.unsupportedDimensions.length ? (
-                                <p className="mt-2 break-words text-xs text-warning">
-                                  {t("system.models.unsupported", {
-                                    fields: candidate.unsupportedDimensions.join(", "),
-                                  })}
-                                </p>
-                              ) : null}
-                              {candidate && !candidate.importable ? (
-                                <p className="mt-2 text-xs text-base-content/65">
-                                  {t("system.models.notImportable")}
-                                </p>
-                              ) : null}
-                            </div>
-
-                            <div className="flex items-center justify-between gap-3 border-t border-base-300/50 pt-2 desktop:justify-end desktop:border-0 desktop:pt-0">
-                              <span className="text-xs text-base-content/70">
-                                {t("system.models.syncThisPrice")}
-                              </span>
-                              <input
-                                type="checkbox"
-                                className="checkbox checkbox-sm"
-                                checked={Boolean(checked)}
-                                disabled={
-                                  !candidate ||
-                                  !candidate.importable ||
-                                  !changed ||
-                                  syncState === "applying"
-                                }
-                                aria-label={t("system.models.syncModelPrice", {
-                                  model: group.model,
-                                })}
-                                onChange={(event) => {
-                                  if (!candidate) return;
-                                  setSelectionOverrides((current) => ({
-                                    ...current,
-                                    [group.model]: {
-                                      ...current[group.model],
-                                      [candidate.providerId]: event.target.checked,
-                                    },
-                                  }));
-                                }}
-                              />
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                <DialogFooter className="mt-3 items-center desktop:justify-between">
-                  <span className="text-xs text-base-content/65">
-                    {t("system.models.sourceLabel")}
-                  </span>
-                  <div className="flex gap-2">
-                    <Button type="button" variant="secondary" onClick={() => setSyncOpen(false)}>
-                      {t("system.models.cancel")}
-                    </Button>
-                    <Button
-                      type="button"
-                      disabled={selectedSyncEntries.length === 0 || syncState === "applying"}
-                      onClick={() => void applySelectedPrices()}
-                    >
-                      {syncState === "applying"
-                        ? t("system.models.syncing")
-                        : t("system.models.syncSelected", { count: selectedSyncEntries.length })}
-                    </Button>
-                  </div>
-                </DialogFooter>
-              </>
-            ) : null}
-            {syncState === "applied" ? (
-              <div className="space-y-4 py-6">
-                <Alert role="status">
-                  {t("system.models.syncSuccess", { count: syncResultCount })}
-                </Alert>
-                <div className="flex justify-end">
-                  <Button type="button" onClick={() => setSyncOpen(false)}>
-                    {t("system.models.done")}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ModelsDevSyncDialog
+        open={syncOpen}
+        onOpenChange={setSyncOpen}
+        pricesByModel={pricesByModel}
+        onPricesApplied={handleSyncPricesApplied}
+      />
     </div>
   );
 }

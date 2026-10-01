@@ -1,13 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { managedTasks as demoManagedTasks } from "../../demo/handlers";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
   ManagedTask,
   ManagedTaskDetail,
+  ModelsDevSyncMemoryPatch,
+  ModelsDevSyncMemoryState,
   ModelsDevSyncPreview,
   PricingEntry,
   SettingsPayload,
@@ -771,7 +773,7 @@ const STORYBOOK_MODELS_SETTINGS: SettingsPayload = {
 const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
   fetchedAt: "2026-09-30T00:00:00Z",
   providerCount: 3,
-  candidateCount: 4,
+  candidateCount: 5,
   providers: [
     { id: "openai", name: "OpenAI", docUrl: "https://platform.openai.com/docs" },
     { id: "openrouter", name: "OpenRouter", docUrl: "https://openrouter.ai/docs" },
@@ -784,6 +786,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "openai",
       providerName: "OpenAI",
       docUrl: "https://platform.openai.com/docs",
+      status: null,
       inputPer1m: 2.25,
       outputPer1m: 11,
       cacheReadPer1m: 0.22,
@@ -798,6 +801,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "openrouter",
       providerName: "OpenRouter",
       docUrl: "https://openrouter.ai/docs",
+      status: null,
       inputPer1m: 2.5,
       outputPer1m: 12,
       cacheReadPer1m: null,
@@ -812,6 +816,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "openrouter",
       providerName: "OpenRouter",
       docUrl: "https://openrouter.ai/docs",
+      status: "beta",
       inputPer1m: 3.5,
       outputPer1m: 17,
       cacheReadPer1m: 0.35,
@@ -826,6 +831,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "deepseek",
       providerName: "DeepSeek",
       docUrl: "https://api-docs.deepseek.com/",
+      status: null,
       inputPer1m: 0.28,
       outputPer1m: 0.42,
       cacheReadPer1m: 0.028,
@@ -834,7 +840,40 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       unsupportedDimensions: ["batch", "image"],
       importable: true,
     },
+    {
+      model: "gpt-4o-mini-legacy",
+      name: "GPT-4o mini legacy",
+      providerId: "openai",
+      providerName: "OpenAI",
+      docUrl: "https://platform.openai.com/docs",
+      status: "deprecated",
+      inputPer1m: 0.15,
+      outputPer1m: 0.6,
+      cacheReadPer1m: null,
+      cacheWritePer1m: null,
+      reasoningPer1m: null,
+      unsupportedDimensions: [],
+      importable: true,
+    },
   ],
+  syncState: {
+    catalogBaselineInitialized: true,
+    providerSelectionInitialized: true,
+    providerSelections: [
+      { providerId: "openai", selected: true },
+      { providerId: "openrouter", selected: true },
+      { providerId: "deepseek", selected: true },
+    ],
+    modelSelections: [
+      { model: "gpt-6-sol", providerId: "openai", selected: false },
+      { model: "gpt-6-sol", providerId: "openrouter", selected: true },
+      { model: "claude-sonnet-4", providerId: "openrouter", selected: false },
+      { model: "deepseek-v3.2", providerId: "deepseek", selected: false },
+      { model: "gpt-4o-mini-legacy", providerId: "openai", selected: false },
+    ],
+    quoteProviderChoices: [{ model: "gpt-6-sol", providerId: "openrouter" }],
+    unviewedModelIds: ["deepseek-v3.2"],
+  },
 };
 
 const STORYBOOK_EXTERNAL_API_KEYS: ExternalApiKeySummary[] = [
@@ -858,10 +897,14 @@ function buildSystemWorkspaceRequestHandler(
   settingsOverride?: SettingsPayload,
   failFirstModelsPreview = false,
   retentionTaskDetailOverride?: ManagedTaskDetail,
+  syncMemoryOverride?: ModelsDevSyncMemoryState,
+  failModelSelectionSave = false,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
+  let modelSelectionFailuresRemaining = failModelSelectionSave ? 1 : 0;
+  let syncMemory = clone(syncMemoryOverride ?? STORYBOOK_MODELS_DEV_PREVIEW.syncState);
   const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
   const currentManagedTasks = () =>
     STORYBOOK_MANAGED_TASKS.map((task) => ({
@@ -1082,12 +1125,47 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse({ items: clone(STORYBOOK_EXTERNAL_API_KEYS) });
     }
 
+    if (url.pathname === "/api/settings/models/sync/state" && method === "GET") {
+      return jsonResponse(clone(syncMemory));
+    }
+
+    if (url.pathname === "/api/settings/models/sync/state" && method === "PATCH") {
+      const body = parseBody<ModelsDevSyncMemoryPatch>({});
+      if ((body.modelSelections?.length ?? 0) > 0 && modelSelectionFailuresRemaining > 0) {
+        modelSelectionFailuresRemaining -= 1;
+        return jsonResponse({ message: "Selection memory is temporarily unavailable" }, 502);
+      }
+      const providers = new Map(
+        syncMemory.providerSelections.map((item) => [item.providerId, item]),
+      );
+      body.providerSelections?.forEach((item) => providers.set(item.providerId, item));
+      const selections = new Map(
+        syncMemory.modelSelections.map((item) => [`${item.model}\\0${item.providerId}`, item]),
+      );
+      body.modelSelections?.forEach((item) =>
+        selections.set(`${item.model}\\0${item.providerId}`, item),
+      );
+      const quoteChoices = new Map(
+        syncMemory.quoteProviderChoices.map((item) => [item.model, item]),
+      );
+      body.quoteProviderChoices?.forEach((item) => quoteChoices.set(item.model, item));
+      const viewedModelIds = new Set(body.viewedModelIds ?? []);
+      syncMemory = {
+        ...syncMemory,
+        providerSelections: Array.from(providers.values()),
+        modelSelections: Array.from(selections.values()),
+        quoteProviderChoices: Array.from(quoteChoices.values()),
+        unviewedModelIds: syncMemory.unviewedModelIds.filter((model) => !viewedModelIds.has(model)),
+      };
+      return jsonResponse(clone(syncMemory));
+    }
+
     if (url.pathname === "/api/settings/models/sync/preview" && method === "POST") {
       if (previewFailuresRemaining > 0) {
         previewFailuresRemaining -= 1;
         return jsonResponse({ message: "models.dev is temporarily unavailable" }, 502);
       }
-      return jsonResponse(clone(STORYBOOK_MODELS_DEV_PREVIEW));
+      return jsonResponse({ ...clone(STORYBOOK_MODELS_DEV_PREVIEW), syncState: clone(syncMemory) });
     }
 
     if (url.pathname === "/api/settings/models/sync/apply" && method === "POST") {
@@ -1190,7 +1268,7 @@ const meta = {
   },
   decorators: [
     (Story, context) => (
-      <I18nProvider>
+      <I18nProvider initialLocale="zh">
         <StorybookSystemWorkspaceMock>
           <StorybookPageEnvironment
             onRequest={buildSystemWorkspaceRequestHandler(
@@ -1198,6 +1276,8 @@ const meta = {
               context.parameters.settingsOverride as SettingsPayload | undefined,
               context.parameters.failFirstModelsPreview === true,
               context.parameters.retentionTaskDetailOverride as ManagedTaskDetail | undefined,
+              context.parameters.syncMemoryOverride as ModelsDevSyncMemoryState | undefined,
+              context.parameters.failModelSelectionSave === true,
             )}
           >
             <FullPageStorySurface>
@@ -2098,6 +2178,7 @@ export const ModelsMobileDark: Story = {
 
 export const ModelsSyncReview: Story = {
   ...Models,
+  tags: ["test"],
   parameters: {
     ...Models.parameters,
     docs: { description: { story: "Preview with a resolved cross-provider price conflict." } },
@@ -2110,24 +2191,91 @@ export const ModelsSyncReview: Story = {
     const providerChoice = await page.findByRole("combobox", {
       name: "为 gpt-6-sol 选择一个供应商报价",
     });
-    await userEvent.click(providerChoice);
-    await userEvent.click(await page.findByRole("option", { name: "OpenRouter (openrouter)" }));
+    await expect(providerChoice).toHaveTextContent("OpenRouter (openrouter)");
     await expect(page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" })).toBeChecked();
-    await expect(page.getByText("新模型")).toBeVisible();
-    await expect(page.getByText(/不导入：/)).toBeVisible();
+    await expect(page.getByRole("img", { name: "新发现的模型" })).toBeVisible();
+    await expect(page.findAllByText(/不导入：/)).resolves.toHaveLength(2);
+    await expect(page.queryByText("gpt-4o-mini-legacy")).not.toBeInTheDocument();
   },
+};
+
+export const ModelsSyncReviewDark: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  globals: { themeMode: "dark" },
 };
 
 export const ModelsSyncReviewMobile: Story = {
   ...ModelsSyncReview,
+  tags: ["test"],
   parameters: {
     ...ModelsSyncReview.parameters,
     viewport: { defaultViewport: "mobile393" },
   },
 };
 
+export const ModelsSyncReviewMobileDark: Story = {
+  ...ModelsSyncReviewMobile,
+  tags: ["test"],
+  globals: { themeMode: "dark" },
+};
+
+export const ModelsSyncReviewShort: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    viewport: { defaultViewport: "short1280x500" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog");
+    const footer = dialog.querySelector<HTMLElement>("[data-testid='models-sync-dialog-footer']");
+    await expect(footer).toBeTruthy();
+    const viewportHeight = canvasElement.ownerDocument.defaultView?.innerHeight ?? 0;
+    const dialogRect = dialog.getBoundingClientRect();
+    const footerRect = footer!.getBoundingClientRect();
+    await expect(dialogRect.height).toBeLessThanOrEqual(viewportHeight - 8);
+    await expect(footerRect.bottom).toBeLessThanOrEqual(viewportHeight);
+  },
+};
+
+export const ModelsSyncReviewShortDark: Story = {
+  ...ModelsSyncReviewShort,
+  tags: ["test"],
+  globals: { themeMode: "dark" },
+};
+
+export const ModelsSyncControls: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(page.getByRole("switch", { name: "显示已弃用报价" }));
+    await expect(page.findByText("gpt-4o-mini-legacy")).resolves.toBeVisible();
+
+    const providerPicker = page.getByRole("button", { name: "筛选供应商" });
+    providerPicker.focus();
+    await userEvent.keyboard("{Enter}");
+    const providerSearch = page.getByRole("textbox", { name: "搜索供应商 ID 或名称" });
+    await userEvent.type(providerSearch, "DeepSeek");
+    const deepSeek = page.getByRole("checkbox", { name: /DeepSeek deepseek/ });
+    await expect(deepSeek).toBeChecked();
+    deepSeek.focus();
+    await userEvent.keyboard(" ");
+    await expect(deepSeek).not.toBeChecked();
+    await userEvent.keyboard("{Escape}");
+    await expect(providerPicker).toHaveFocus();
+  },
+};
+
 export const ModelsSyncRetry: Story = {
   ...Models,
+  tags: ["test"],
   parameters: {
     ...Models.parameters,
     failFirstModelsPreview: true,
@@ -2142,5 +2290,88 @@ export const ModelsSyncRetry: Story = {
     );
     await userEvent.click(await page.findByRole("button", { name: "重试" }));
     await expect(page.findByText("deepseek-v3.2")).resolves.toBeVisible();
+  },
+};
+
+export const ModelsSyncSelectionRetry: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failModelSelectionSave: true,
+    docs: {
+      description: {
+        story: "Optimistic selection changes with a retry after a failed memory save.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const checkbox = await page.findByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" });
+    await userEvent.click(checkbox);
+    await expect(page.findByRole("alert")).resolves.toHaveTextContent("选择记忆未保存");
+    await expect(checkbox).toBeChecked();
+    await userEvent.click(page.getByRole("button", { name: "重试" }));
+    await waitFor(() => {
+      expect(page.queryByText(/选择记忆未保存/)).not.toBeInTheDocument();
+    });
+    await expect(checkbox).toBeChecked();
+  },
+};
+
+const STORYBOOK_UNAVAILABLE_QUOTE_MEMORY: ModelsDevSyncMemoryState = {
+  ...STORYBOOK_MODELS_DEV_PREVIEW.syncState,
+  providerSelections: [
+    { providerId: "openai", selected: true },
+    { providerId: "openrouter", selected: false },
+    { providerId: "deepseek", selected: true },
+  ],
+};
+
+export const ModelsSyncUnavailableQuote: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    syncMemoryOverride: STORYBOOK_UNAVAILABLE_QUOTE_MEMORY,
+    docs: {
+      description: {
+        story: "A remembered quote stays unresolved while its provider is filtered out.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("status")).resolves.toHaveTextContent(
+      "已记忆的供应商在当前筛选中不可用",
+    );
+    const checkbox = await page.findByRole("checkbox", { name: "同步 gpt-6-sol 的价格" });
+    await expect(checkbox).toBeDisabled();
+    const providerChoice = page.getByRole("combobox", { name: "为 gpt-6-sol 选择一个供应商报价" });
+    await userEvent.click(providerChoice);
+    await userEvent.click(page.getByRole("option", { name: "OpenAI (openai)" }));
+    await expect(checkbox).toBeEnabled();
+    await expect(checkbox).not.toBeChecked();
+  },
+};
+
+export const ModelsSyncZeroResults: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.type(page.getByRole("textbox", { name: "搜索模型名称或 ID" }), "no-such-model");
+    await expect(page.findByText("没有符合筛选条件的候选。")).resolves.toBeVisible();
+    const dialog = page.getByRole("dialog");
+    const viewportHeight = canvasElement.ownerDocument.defaultView?.innerHeight ?? 0;
+    await expect(dialog.getBoundingClientRect().height).toBeGreaterThanOrEqual(560);
+    await expect(dialog.getBoundingClientRect().height).toBeLessThanOrEqual(viewportHeight - 8);
+    await expect(page.getByRole("button", { name: "取消" })).toBeVisible();
   },
 };

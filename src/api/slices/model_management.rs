@@ -26,6 +26,7 @@ pub(crate) struct ModelsDevPriceCandidate {
     pub(crate) provider_id: String,
     pub(crate) provider_name: String,
     pub(crate) doc_url: Option<String>,
+    pub(crate) status: Option<String>,
     pub(crate) input_per_1m: Option<f64>,
     pub(crate) output_per_1m: Option<f64>,
     pub(crate) cache_read_per_1m: Option<f64>,
@@ -43,6 +44,49 @@ pub(crate) struct ModelsDevSyncPreview {
     pub(crate) candidate_count: usize,
     pub(crate) providers: Vec<ModelsDevSyncProvider>,
     pub(crate) candidates: Vec<ModelsDevPriceCandidate>,
+    pub(crate) sync_state: crate::models_dev_sync_memory::ModelsDevSyncMemoryState,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelsDevSyncMemoryPatch {
+    #[serde(default)]
+    pub(crate) provider_selections: Vec<crate::models_dev_sync_memory::ProviderSelectionChange>,
+    #[serde(default)]
+    pub(crate) model_selections: Vec<crate::models_dev_sync_memory::ModelSelectionChange>,
+    #[serde(default)]
+    pub(crate) quote_provider_choices:
+        Vec<crate::models_dev_sync_memory::QuoteProviderChoiceChange>,
+    #[serde(default)]
+    pub(crate) viewed_model_ids: Vec<String>,
+}
+
+pub(crate) async fn get_models_sync_state(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<crate::models_dev_sync_memory::ModelsDevSyncMemoryState>, (StatusCode, String)> {
+    crate::models_dev_sync_memory::load_models_dev_sync_memory(&state.pool)
+        .await
+        .map(Json)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+pub(crate) async fn patch_models_sync_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ModelsDevSyncMemoryPatch>,
+) -> Result<Json<crate::models_dev_sync_memory::ModelsDevSyncMemoryState>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin settings writes are forbidden".to_string(),
+        ));
+    }
+    crate::models_dev_sync_memory::validate_patch_keys(&payload)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    crate::models_dev_sync_memory::patch_models_dev_sync_memory(&state.pool, payload)
+        .await
+        .map(Json)
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,13 +170,20 @@ pub(crate) async fn post_models_sync_preview(
             format!("models.dev response JSON is invalid: {err}"),
         )
     })?;
-    let preview = parse_models_dev_catalog(&payload).map_err(|err| {
+    let mut preview = parse_models_dev_catalog(&payload).map_err(|err| {
         warn!(error = %err, "failed to normalize models.dev catalog");
         (
             StatusCode::BAD_GATEWAY,
             "models.dev catalog format is invalid".to_string(),
         )
     })?;
+    preview.sync_state = crate::models_dev_sync_memory::record_catalog_success(
+        &state.pool,
+        &preview.providers,
+        &preview.candidates,
+    )
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(Json(preview))
 }
 
@@ -406,6 +457,10 @@ fn parse_models_dev_catalog(payload: &Value) -> Result<ModelsDevSyncPreview, Str
                 provider_id: provider_id.clone(),
                 provider_name: provider_name.clone(),
                 doc_url: doc_url.clone(),
+                status: model
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 input_per_1m,
                 output_per_1m,
                 cache_read_per_1m,
@@ -437,6 +492,7 @@ fn parse_models_dev_catalog(payload: &Value) -> Result<ModelsDevSyncPreview, Str
         candidate_count,
         providers,
         candidates,
+        sync_state: crate::models_dev_sync_memory::ModelsDevSyncMemoryState::default(),
     })
 }
 
@@ -477,6 +533,7 @@ mod tests {
                 "models": {
                     "model-a": {
                         "name": "Model A",
+                        "status": "deprecated",
                         "cost": {
                             "input": 1.0,
                             "output": 2.0,
@@ -492,6 +549,7 @@ mod tests {
         }))
         .expect("parse catalog");
         let candidate = &parsed.candidates[0];
+        assert_eq!(candidate.status.as_deref(), Some("deprecated"));
         assert_eq!(candidate.input_per_1m, Some(1.0));
         assert_eq!(candidate.output_per_1m, Some(2.0));
         assert_eq!(candidate.cache_read_per_1m, Some(0.1));
@@ -512,6 +570,7 @@ mod tests {
         }))
         .expect("parse catalog");
         assert!(!parsed.candidates[0].importable);
+        assert_eq!(parsed.candidates[0].status, None);
         assert_eq!(parsed.candidates[0].unsupported_dimensions, ["input_audio"]);
     }
 

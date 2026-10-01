@@ -1,15 +1,23 @@
 /** @vitest-environment jsdom */
+
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
-import type { ModelsDevSyncPreview, SettingsPayload } from "../../lib/api";
+import type {
+  ModelsDevSyncMemoryPatch,
+  ModelsDevSyncMemoryState,
+  ModelsDevSyncPreview,
+  SettingsPayload,
+} from "../../lib/api";
 import SystemModelsPage from "./SystemModelsPage";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSettings: vi.fn(),
   updatePricingSettings: vi.fn(),
   previewModelsDevPriceSync: vi.fn(),
+  updateModelsDevSyncMemory: vi.fn(),
   applyModelsDevPriceSync: vi.fn(),
   updateManagedModelPreset: vi.fn(),
   deleteManagedModel: vi.fn(),
@@ -22,6 +30,7 @@ vi.mock("../../lib/api", async () => {
     fetchSettings: apiMocks.fetchSettings,
     updatePricingSettings: apiMocks.updatePricingSettings,
     previewModelsDevPriceSync: apiMocks.previewModelsDevPriceSync,
+    updateModelsDevSyncMemory: apiMocks.updateModelsDevSyncMemory,
     applyModelsDevPriceSync: apiMocks.applyModelsDevPriceSync,
     updateManagedModelPreset: apiMocks.updateManagedModelPreset,
     deleteManagedModel: apiMocks.deleteManagedModel,
@@ -30,6 +39,49 @@ vi.mock("../../lib/api", async () => {
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+beforeAll(() => {
+  if (typeof globalThis.PointerEvent === "undefined") {
+    Object.defineProperty(window, "PointerEvent", {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    });
+    Object.defineProperty(globalThis, "PointerEvent", {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    });
+  }
+  if (typeof HTMLElement.prototype.hasPointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+      configurable: true,
+      writable: true,
+      value: () => false,
+    });
+  }
+  if (typeof HTMLElement.prototype.setPointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
+  if (typeof HTMLElement.prototype.releasePointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
+  if (typeof HTMLElement.prototype.scrollIntoView !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
+});
 
 function makeSettings(): SettingsPayload {
   return {
@@ -76,7 +128,45 @@ function makeSettings(): SettingsPayload {
   };
 }
 
-function makePreview(): ModelsDevSyncPreview {
+function makeSyncMemory(): ModelsDevSyncMemoryState {
+  return {
+    catalogBaselineInitialized: true,
+    providerSelectionInitialized: true,
+    providerSelections: [
+      { providerId: "provider-a", selected: true },
+      { providerId: "provider-b", selected: true },
+    ],
+    modelSelections: [],
+    quoteProviderChoices: [],
+    unviewedModelIds: [],
+  };
+}
+
+function applyMemoryPatch(
+  current: ModelsDevSyncMemoryState,
+  patch: ModelsDevSyncMemoryPatch,
+): ModelsDevSyncMemoryState {
+  const providers = new Map(current.providerSelections.map((item) => [item.providerId, item]));
+  patch.providerSelections?.forEach((item) => providers.set(item.providerId, item));
+  const selections = new Map(
+    current.modelSelections.map((item) => [`${item.model}\0${item.providerId}`, item]),
+  );
+  patch.modelSelections?.forEach((item) =>
+    selections.set(`${item.model}\0${item.providerId}`, item),
+  );
+  const quoteChoices = new Map(current.quoteProviderChoices.map((item) => [item.model, item]));
+  patch.quoteProviderChoices?.forEach((item) => quoteChoices.set(item.model, item));
+  const viewed = new Set(patch.viewedModelIds ?? []);
+  return {
+    ...current,
+    providerSelections: Array.from(providers.values()),
+    modelSelections: Array.from(selections.values()),
+    quoteProviderChoices: Array.from(quoteChoices.values()),
+    unviewedModelIds: current.unviewedModelIds.filter((model) => !viewed.has(model)),
+  };
+}
+
+function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
   return {
     fetchedAt: "2026-09-30T00:00:00Z",
     providerCount: 2,
@@ -85,6 +175,7 @@ function makePreview(): ModelsDevSyncPreview {
       { id: "provider-a", name: "Provider A", docUrl: "https://provider-a.example/docs" },
       { id: "provider-b", name: "Provider B", docUrl: "https://provider-b.example/docs" },
     ],
+    syncState,
     candidates: [
       {
         model: "new-model",
@@ -92,6 +183,7 @@ function makePreview(): ModelsDevSyncPreview {
         providerId: "provider-a",
         providerName: "Provider A",
         docUrl: "https://provider-a.example/docs",
+        status: null,
         inputPer1m: 1,
         outputPer1m: 2,
         cacheReadPer1m: null,
@@ -106,6 +198,7 @@ function makePreview(): ModelsDevSyncPreview {
         providerId: "provider-a",
         providerName: "Provider A",
         docUrl: "https://provider-a.example/docs",
+        status: null,
         inputPer1m: 4,
         outputPer1m: 8,
         cacheReadPer1m: null,
@@ -120,6 +213,7 @@ function makePreview(): ModelsDevSyncPreview {
         providerId: "provider-a",
         providerName: "Provider A",
         docUrl: "https://provider-a.example/docs",
+        status: null,
         inputPer1m: 2,
         outputPer1m: 4,
         cacheReadPer1m: null,
@@ -134,6 +228,7 @@ function makePreview(): ModelsDevSyncPreview {
         providerId: "provider-b",
         providerName: "Provider B",
         docUrl: "https://provider-b.example/docs",
+        status: null,
         inputPer1m: 9,
         outputPer1m: 10,
         cacheReadPer1m: null,
@@ -203,11 +298,39 @@ function setLabeledInput(labelText: string, value: string) {
   setInputValue(input!, value);
 }
 
+async function selectQuoteProvider(model: string, providerId: string) {
+  const user = userEvent.setup();
+  const trigger = document.body.querySelector<HTMLButtonElement>(
+    `button[role="combobox"][aria-label="为 ${model} 选择一个供应商报价"]`,
+  );
+  expect(trigger).toBeTruthy();
+  await user.click(trigger!);
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(
+    (item) => item.textContent?.includes(providerId),
+  );
+  expect(option).toBeTruthy();
+  await user.click(option!);
+}
+
+let storedSyncMemory: ModelsDevSyncMemoryState;
+
 describe("SystemModelsPage", () => {
   beforeEach(() => {
     window.localStorage.setItem("codex-vibe-monitor.locale", "zh");
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function () {
+      return this.getAttribute("aria-label") === "模型价格候选列表" ? 520 : 0;
+    });
+    storedSyncMemory = makeSyncMemory();
     apiMocks.fetchSettings.mockResolvedValue(makeSettings());
-    apiMocks.previewModelsDevPriceSync.mockResolvedValue(makePreview());
+    apiMocks.previewModelsDevPriceSync.mockImplementation(async () =>
+      makePreview(storedSyncMemory),
+    );
+    apiMocks.updateModelsDevSyncMemory.mockImplementation(
+      async (patch: ModelsDevSyncMemoryPatch) => {
+        storedSyncMemory = applyMemoryPatch(storedSyncMemory, patch);
+        return storedSyncMemory;
+      },
+    );
     apiMocks.applyModelsDevPriceSync.mockImplementation(async (entries) => ({
       catalogVersion: "test",
       entries,
@@ -223,6 +346,7 @@ describe("SystemModelsPage", () => {
     host = null;
     root = null;
     window.localStorage.removeItem("codex-vibe-monitor.locale");
+    vi.restoreAllMocks();
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
   });
 
@@ -374,32 +498,38 @@ describe("SystemModelsPage", () => {
     expect(document.body.textContent).not.toContain("shared-model");
   });
 
-  it("requires a provider choice and applies only the selected preview prices", async () => {
+  it("keeps quote-provider selections separate and applies only checked prices", async () => {
     renderPage();
     await flushEffects();
     clickButton("全部同步");
     await flushEffects();
 
     expect(document.body.textContent ?? "").toContain("Provider A");
-    expect(document.body.textContent ?? "").toContain("Provider B");
     expect(document.body.textContent ?? "").toContain("不导入");
 
     const priceCheckbox = (model: string) =>
       document.body.querySelector<HTMLInputElement>(`input[aria-label="同步 ${model} 的价格"]`);
-    expect(priceCheckbox("new-model")?.checked).toBe(true);
+    expect(priceCheckbox("new-model")?.checked).toBe(false);
     expect(priceCheckbox("custom-model")?.checked).toBe(false);
     expect(priceCheckbox("shared-model")?.checked).toBe(false);
 
-    const providerTrigger = document.body.querySelector<HTMLButtonElement>(
-      'button[aria-label="为 shared-model 选择一个供应商报价"]',
+    await selectQuoteProvider("shared-model", "provider-b");
+    await flushEffects();
+    expect(document.body.textContent ?? "").toContain("Provider B");
+    expect(priceCheckbox("shared-model")?.checked).toBe(false);
+    expect(apiMocks.updateModelsDevSyncMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quoteProviderChoices: [{ model: "shared-model", providerId: "provider-b" }],
+      }),
     );
-    expect(providerTrigger).toBeTruthy();
-    act(() => providerTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const providerOption = Array.from(document.body.querySelectorAll('[role="option"]')).find(
-      (option) => option.textContent?.includes("Provider B (provider-b)"),
-    );
-    expect(providerOption).toBeTruthy();
-    act(() => providerOption?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    act(() => priceCheckbox("shared-model")?.click());
+    await flushEffects();
+    expect(priceCheckbox("shared-model")?.checked).toBe(true);
+    await selectQuoteProvider("shared-model", "provider-a");
+    await flushEffects();
+    expect(priceCheckbox("shared-model")?.checked).toBe(false);
+    await selectQuoteProvider("shared-model", "provider-b");
     await flushEffects();
     expect(priceCheckbox("shared-model")?.checked).toBe(true);
 
@@ -410,112 +540,6 @@ describe("SystemModelsPage", () => {
     clickButton("同步所选");
     await flushEffects();
 
-    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith([
-      expect.objectContaining({
-        model: "shared-model",
-        inputPer1m: 9,
-        outputPer1m: 10,
-        source: "models.dev",
-      }),
-    ]);
-  });
-
-  it("preserves explicit price deselection when provider filters change", async () => {
-    renderPage();
-    await flushEffects();
-    clickButton("全部同步");
-    await flushEffects();
-
-    const priceCheckbox = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="同步 new-model 的价格"]',
-    );
-    expect(priceCheckbox?.checked).toBe(true);
-    act(() => priceCheckbox?.click());
-    await flushEffects();
-    expect(priceCheckbox?.checked).toBe(false);
-
-    const providerBFilter = Array.from(
-      document.body.querySelectorAll<HTMLInputElement>('details input[type="checkbox"]'),
-    ).find((input) => input.parentElement?.textContent?.includes("provider-b"));
-    expect(providerBFilter?.checked).toBe(true);
-    act(() => providerBFilter?.click());
-    await flushEffects();
-
-    expect(
-      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 new-model 的价格"]')
-        ?.checked,
-    ).toBe(false);
-    clickButton("同步所选");
-    await flushEffects();
-    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
-      expect.not.arrayContaining([expect.objectContaining({ model: "new-model" })]),
-    );
-  });
-
-  it("keeps provider conflicts explicit when searching by provider", async () => {
-    renderPage();
-    await flushEffects();
-    clickButton("全部同步");
-    await flushEffects();
-
-    const search = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="搜索供应商或模型"]',
-    );
-    expect(search).toBeTruthy();
-    setInputValue(search!, "Provider A");
-    await flushEffects();
-
-    expect(
-      document.body.querySelector<HTMLButtonElement>(
-        'button[aria-label="为 shared-model 选择一个供应商报价"]',
-      ),
-    ).toBeTruthy();
-    expect(
-      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 shared-model 的价格"]')
-        ?.checked,
-    ).toBe(false);
-
-    clickButton("同步所选");
-    await flushEffects();
-    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
-      expect.not.arrayContaining([expect.objectContaining({ model: "shared-model" })]),
-    );
-  });
-
-  it("applies selected candidates hidden by the search filter", async () => {
-    renderPage();
-    await flushEffects();
-    clickButton("全部同步");
-    await flushEffects();
-
-    const newModelCheckbox = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="同步 new-model 的价格"]',
-    );
-    expect(newModelCheckbox?.checked).toBe(true);
-    const search = document.body.querySelector<HTMLInputElement>(
-      'input[aria-label="搜索供应商或模型"]',
-    );
-    expect(search).toBeTruthy();
-    setInputValue(search!, "shared-model");
-    await flushEffects();
-    expect(
-      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 new-model 的价格"]'),
-    ).toBeNull();
-
-    const providerTrigger = document.body.querySelector<HTMLButtonElement>(
-      'button[aria-label="为 shared-model 选择一个供应商报价"]',
-    );
-    expect(providerTrigger).toBeTruthy();
-    act(() => providerTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const providerOption = Array.from(document.body.querySelectorAll('[role="option"]')).find(
-      (option) => option.textContent?.includes("Provider B (provider-b)"),
-    );
-    expect(providerOption).toBeTruthy();
-    act(() => providerOption?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await flushEffects();
-
-    clickButton("同步所选");
-    await flushEffects();
     expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ model: "new-model", source: "models.dev" }),
@@ -527,5 +551,130 @@ describe("SystemModelsPage", () => {
         }),
       ]),
     );
+  });
+
+  it("keeps remembered provider choices unresolved when provider filters hide them", async () => {
+    storedSyncMemory.quoteProviderChoices = [{ model: "shared-model", providerId: "provider-b" }];
+    storedSyncMemory.modelSelections = [
+      { model: "shared-model", providerId: "provider-b", selected: true },
+    ];
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const providerTrigger = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="筛选供应商"]',
+    );
+    expect(providerTrigger).toBeTruthy();
+    act(() => providerTrigger?.click());
+    const providerSearch = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="搜索供应商 ID 或名称"]',
+    );
+    expect(providerSearch).toBeTruthy();
+    setInputValue(providerSearch!, "Provider B");
+    clickButton("清空");
+    await flushEffects();
+
+    const priceCheckbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 shared-model 的价格"]',
+    );
+    expect(priceCheckbox?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("已记忆的供应商在当前筛选中不可用");
+    await selectQuoteProvider("shared-model", "provider-a");
+    await flushEffects();
+    expect(priceCheckbox?.disabled).toBe(false);
+    expect(priceCheckbox?.checked).toBe(false);
+    expect(storedSyncMemory.modelSelections).toContainEqual({
+      model: "shared-model",
+      providerId: "provider-b",
+      selected: true,
+    });
+  });
+
+  it("applies selected candidates hidden by model search and reports the hidden count", async () => {
+    storedSyncMemory.modelSelections = [
+      { model: "new-model", providerId: "provider-a", selected: true },
+      { model: "shared-model", providerId: "provider-b", selected: true },
+    ];
+    storedSyncMemory.quoteProviderChoices = [{ model: "shared-model", providerId: "provider-b" }];
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const search = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="搜索模型名称或 ID"]',
+    );
+    expect(search).toBeTruthy();
+    setInputValue(search!, "shared-model");
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("1 个待同步价格被模型搜索隐藏");
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 shared-model 的价格"]')
+        ?.checked,
+    ).toBe(true);
+
+    clickButton("同步所选");
+    await flushEffects();
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "new-model", source: "models.dev" }),
+        expect.objectContaining({ model: "shared-model", source: "models.dev" }),
+      ]),
+    );
+  });
+
+  it("saves checkbox changes immediately and restores them after cancel", async () => {
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const newModelCheckbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    expect(newModelCheckbox?.checked).toBe(false);
+    act(() => newModelCheckbox?.click());
+    await flushEffects();
+    expect(storedSyncMemory.modelSelections).toContainEqual({
+      model: "new-model",
+      providerId: "provider-a",
+      selected: true,
+    });
+    clickButton("取消");
+    await flushEffects();
+    expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
+
+    clickButton("全部同步");
+    await flushEffects();
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 new-model 的价格"]')
+        ?.checked,
+    ).toBe(true);
+  });
+
+  it("keeps optimistic changes and offers a retry when saving memory fails", async () => {
+    apiMocks.updateModelsDevSyncMemory.mockRejectedValueOnce(new Error("memory write failed"));
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    act(() => checkbox?.click());
+    await flushEffects();
+    expect(checkbox?.checked).toBe(true);
+    expect(document.body.textContent).toContain("memory write failed");
+    clickButton("重试");
+    await flushEffects();
+    expect(document.body.textContent).not.toContain("memory write failed");
+    expect(storedSyncMemory.modelSelections).toContainEqual({
+      model: "new-model",
+      providerId: "provider-a",
+      selected: true,
+    });
   });
 });
