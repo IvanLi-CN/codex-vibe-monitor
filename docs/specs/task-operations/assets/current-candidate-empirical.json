@@ -23,6 +23,7 @@
     "observed_task": "raw_payload_metrics_inventory",
     "execution_id": 1,
     "phase": "processing",
+    "execution_class": "maintenance_retention",
     "trigger_kind": "interval",
     "started_at": "2026-10-01T10:29:07.600Z",
     "elapsed_ms": 26798

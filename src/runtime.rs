@@ -435,7 +435,9 @@ pub(crate) async fn run() -> Result<()> {
         warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
     }
     recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
-    spawn_dashboard_runtime_projection_reconcile(state.clone());
+    crate::api::register_dashboard_runtime_projection_handle(
+        spawn_dashboard_runtime_projection_reconcile(state.clone()),
+    );
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
@@ -1604,6 +1606,17 @@ pub(crate) async fn drain_runtime_after_shutdown(
         error!(
             ?err,
             "startup hot-read hydration coordinator terminated unexpectedly"
+        );
+    }
+
+    let dashboard_runtime_projection_handle =
+        crate::api::take_dashboard_runtime_projection_handle();
+    if let Some(handle) = dashboard_runtime_projection_handle
+        && let Err(err) = handle.await
+    {
+        error!(
+            ?err,
+            "dashboard runtime projection worker terminated unexpectedly"
         );
     }
 

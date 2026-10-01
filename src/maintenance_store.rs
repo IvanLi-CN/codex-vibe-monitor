@@ -20,6 +20,7 @@ const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
+const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
@@ -369,7 +370,8 @@ pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
         "retention_archive"
         | "upstream_account_maintenance"
         | "pool_orphan_recovery"
-        | "invocation_timeline_snapshot" => Some("maintenance_retention"),
+        | "invocation_timeline_snapshot"
+        | "raw_payload_metrics_inventory" => Some("maintenance_retention"),
         "dashboard_runtime_projection_reconcile"
         | "forward_proxy_subscription_refresh"
         | "long_term_projection"
@@ -1198,12 +1200,17 @@ impl MaintenanceStore {
 
     pub(crate) async fn apply_initial_task_defaults(&self) -> Result<bool> {
         let mut transaction = self.pool.begin().await?;
-        let already_applied: Option<String> =
+        let defaults_applied: Option<String> =
             sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
                 .bind(INITIAL_TASK_DEFAULTS_MARKER)
                 .fetch_optional(&mut *transaction)
                 .await?;
-        if already_applied.is_some() {
+        let legacy_enablement_reconciled: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(LEGACY_BACKFILL_ENABLEMENT_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if defaults_applied.is_some() && legacy_enablement_reconciled.is_some() {
             transaction.commit().await?;
             return Ok(false);
         }
@@ -1272,14 +1279,26 @@ impl MaintenanceStore {
             .execute(&mut *transaction)
             .await?;
         }
-        sqlx::query(
-            "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
-        )
-        .bind(INITIAL_TASK_DEFAULTS_MARKER)
-        .bind("applied")
-        .bind(&now)
-        .execute(&mut *transaction)
-        .await?;
+        if defaults_applied.is_none() {
+            sqlx::query(
+                "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
+            )
+            .bind(INITIAL_TASK_DEFAULTS_MARKER)
+            .bind("applied")
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        if legacy_enablement_reconciled.is_none() {
+            sqlx::query(
+                "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at) VALUES (?,?,?)",
+            )
+            .bind(LEGACY_BACKFILL_ENABLEMENT_MARKER)
+            .bind("applied")
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+        }
         transaction.commit().await?;
         Ok(true)
     }
@@ -1981,6 +2000,41 @@ mod tests {
             .await
             .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn reconciles_legacy_backfill_enablement_after_defaults_marker_exists() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "INSERT INTO maintenance_metadata (key,value,updated_at) VALUES ('managed_task_defaults_v1','applied','2026-10-01T00:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed existing defaults marker");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress (task_name,enabled) VALUES ('proxy_usage_tokens_v1',1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy enabled backfill row");
+
+        let store = MaintenanceStore { pool };
+        assert!(store.apply_initial_task_defaults().await.unwrap());
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT enabled FROM managed_tasks WHERE task_key='startup_backfill.proxy_usage'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        );
+        assert!(!store.apply_initial_task_defaults().await.unwrap());
     }
 
     #[tokio::test]

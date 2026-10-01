@@ -373,7 +373,7 @@ const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
       activeChildTitle: null,
       triggerKind: "interval",
       phase: "processing",
-      executionClass: null,
+      executionClass: "maintenance_retention",
       startedAt: "2026-06-22T09:27:42.000Z",
       elapsedMs: 18_000,
     },
@@ -669,40 +669,64 @@ function buildSystemWorkspaceRequestHandler(
 
     if (managedTaskDetailMatch && method === "PATCH") {
       const taskKey = managedTaskDetailMatch[1];
+      const task = currentManagedTasks().find((item) => item.taskKey === taskKey);
+      const defaultTask = STORYBOOK_MANAGED_TASKS.find((item) => item.taskKey === taskKey);
+      if (!task) return jsonResponse({ error: "not found" }, 404);
       const payload = parseBody<{
         enabled?: boolean;
         intervalSecs?: number | null;
         cronExpr?: string | null;
       }>({});
       const next = { ...(managedTaskOverrides.get(taskKey) ?? {}) };
-      if (Object.hasOwn(payload, "enabled")) {
-        next.enabled = payload.enabled;
-      }
       const intervalProvided = Object.hasOwn(payload, "intervalSecs");
       const cronProvided = Object.hasOwn(payload, "cronExpr");
-      if (intervalProvided && payload.intervalSecs != null) {
-        next.intervalSecs = payload.intervalSecs ?? null;
+      const hasInterval = intervalProvided && payload.intervalSecs != null;
+      const hasCron = cronProvided && Boolean(payload.cronExpr?.trim());
+      if (task.isManual && (intervalProvided || cronProvided)) {
+        return jsonResponse({ error: "manual tasks do not have a schedule" }, 400);
+      }
+      if (
+        !task.scheduleEditable &&
+        ((intervalProvided && payload.intervalSecs != null) || hasCron)
+      ) {
+        return jsonResponse(
+          { error: "task does not support a new interval or cron override" },
+          400,
+        );
+      }
+      if (hasInterval && hasCron) {
+        return jsonResponse({ error: "interval and cron schedule are mutually exclusive" }, 400);
+      }
+      if (hasInterval && payload.intervalSecs! < 60) {
+        return jsonResponse({ error: "interval must be at least 60 seconds" }, 400);
+      }
+      if (hasCron && payload.cronExpr!.trim().split(/\s+/).length !== 5) {
+        return jsonResponse({ error: "cron must contain five UTC fields" }, 400);
+      }
+      if (hasInterval) {
+        next.intervalSecs = payload.intervalSecs!;
         next.cronExpr = null;
-        next.nextTriggerAt = payload.intervalSecs == null ? null : "2026-06-22T09:29:00.000Z";
-        next.effectivePolicy =
-          payload.intervalSecs == null
-            ? "固定检查间隔：60 秒；受压力准入约束"
-            : `固定检查间隔：${payload.intervalSecs} 秒`;
-        next.policySource = payload.intervalSecs == null ? "系统默认" : "运维自定义";
-      } else if (cronProvided && payload.cronExpr?.trim()) {
-        next.cronExpr = payload.cronExpr ?? null;
+        next.nextTriggerAt = "2026-06-22T09:29:00.000Z";
+        next.effectivePolicy = `固定检查间隔：${payload.intervalSecs} 秒`;
+        next.policySource = "运维自定义";
+      } else if (hasCron) {
+        next.cronExpr = payload.cronExpr!;
         next.intervalSecs = null;
-        next.nextTriggerAt = payload.cronExpr ? "2026-06-22T09:30:00.000Z" : null;
-        next.effectivePolicy = payload.cronExpr
-          ? `UTC cron：${payload.cronExpr}`
-          : "固定检查间隔：60 秒；受压力准入约束";
-        next.policySource = payload.cronExpr ? "运维自定义" : "系统默认";
+        next.nextTriggerAt = "2026-06-22T09:30:00.000Z";
+        next.effectivePolicy = `UTC cron：${payload.cronExpr}`;
+        next.policySource = "运维自定义";
       } else if (intervalProvided || cronProvided) {
         next.intervalSecs = null;
         next.cronExpr = null;
-        next.nextTriggerAt = null;
-        next.effectivePolicy = "固定检查间隔：60 秒；受压力准入约束";
-        next.policySource = "系统默认";
+        next.nextTriggerAt = defaultTask?.nextTriggerAt ?? null;
+        next.effectivePolicy = defaultTask?.effectivePolicy;
+        next.policySource = defaultTask?.policySource;
+      }
+      if (Object.hasOwn(payload, "enabled")) {
+        next.enabled = payload.enabled;
+        next.nextTriggerAt = payload.enabled
+          ? (next.nextTriggerAt ?? task.nextTriggerAt ?? null)
+          : null;
       }
       managedTaskOverrides.set(taskKey, next);
       return jsonResponse(clone(storybookManagedTaskDetail(taskKey, next)));

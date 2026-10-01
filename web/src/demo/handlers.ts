@@ -3094,6 +3094,7 @@ export function managedTasks() {
             "retention_archive",
             "upstream_account_maintenance",
             "pool_orphan_recovery",
+            "raw_payload_metrics_inventory",
           ].includes(taskKey)
             ? "maintenance_retention"
             : taskKey === "dashboard_runtime_projection_reconcile"
@@ -3139,6 +3140,7 @@ function managedTaskDetail(taskKey: string) {
     startedAt: at,
     finishedAt: demoNow(),
     durationMs: 31_000,
+    triggerKind: task.isManual ? "manual" : task.triggerMode,
     status: "success",
     processedCount: task.isManual ? null : 1842,
     updatedCount: task.isManual ? null : 1780,
@@ -4577,6 +4579,9 @@ export async function handleDemoRequest(request: Request) {
     }
     if (body.intervalSecs !== undefined && body.intervalSecs !== null && body.intervalSecs < 60) {
       return json({ error: "interval must be at least 60 seconds" }, { status: 400 });
+    }
+    if (typeof body.cronExpr === "string" && body.cronExpr.trim().split(/\s+/).length !== 5) {
+      return json({ error: "cron must contain five UTC fields" }, { status: 400 });
     }
     const previous = managedTaskOverrides.get(taskKey) ?? {};
     const next = { ...previous };
