@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.82.1",
+  "base_stable_version": "2.82.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-01T19:39:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.82.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "763b5f2bdd83da59f682da8eabf1d6a69060a7ed",
+  "pr_number": 1061,
+  "pr_title": "fix(proxy): isolate long-wait allocation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.82.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.82.1",
+  "target_sha": "867340d4d363792d09aa3d3c3f9fcfbbe552b4a1",
+  "type_label": "type:patch"
+}
