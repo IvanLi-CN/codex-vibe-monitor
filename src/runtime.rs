@@ -1174,6 +1174,9 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     )
                 });
                 let started_at = Instant::now();
+                if let Some(observation) = observation.as_ref() {
+                    observation.set_phase("processing");
+                }
                 let result = tokio::select! {
                     biased;
                     _ = state.shutdown.cancelled() => {

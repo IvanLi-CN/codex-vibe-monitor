@@ -2821,6 +2821,7 @@ type DemoManagedTaskRun = {
   startedAt: string;
   finishedAt: string | null;
   durationMs: number | null;
+  triggerKind?: string;
   status: string;
   processedCount: number | null;
   updatedCount: number | null;
@@ -2830,6 +2831,22 @@ type DemoManagedTaskRun = {
 const managedTaskOverrides = new Map<string, DemoManagedTaskOverride>();
 const managedTaskRuns = new Map<string, DemoManagedTaskRun[]>();
 let nextManagedTaskRunId = 100;
+const DEMO_DEFAULT_ENABLED_TASKS = new Set([
+  "retention_archive",
+  "upstream_account_maintenance",
+  "forward_proxy_subscription_refresh",
+  "pool_orphan_recovery",
+  "startup_hourly_rollup_bootstrap",
+  "system_status_snapshot",
+  "invocation_timeline_snapshot",
+  "summary_snapshot",
+  "summary_coverage_recovery",
+  "dashboard_runtime_projection_reconcile",
+  "long_term_projection",
+  "timeseries_minute_projection",
+  "raw_payload_metrics_inventory",
+  "prompt_cache_materialization",
+]);
 
 export function resetDemoManagedTaskState(): void {
   managedTaskOverrides.clear();
@@ -2852,7 +2869,7 @@ function demoNextTriggerAt(
   return new Date(Date.parse(demoNow()) + intervalSecs * 1000).toISOString();
 }
 
-function managedTasks() {
+export function managedTasks() {
   type DemoManagedTask = {
     taskKey: string;
     title: string;
@@ -3000,7 +3017,7 @@ function managedTasks() {
     ([taskKey, title, description, triggerMode, isManual]) => ({
       ...(() => {
         const override = managedTaskOverrides.get(taskKey);
-        const enabled = override?.enabled ?? true;
+        const enabled = override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey);
         const scheduleEditable = [
           "retention_archive",
           "upstream_account_maintenance",
@@ -3097,7 +3114,7 @@ function managedTasks() {
       title,
       description,
       triggerMode,
-      enabled: true,
+      enabled: false,
       intervalSecs: null,
       cronExpr: null,
       nextTriggerAt: null,
@@ -4498,6 +4515,7 @@ export async function handleDemoRequest(request: Request) {
       startedAt: new Date(Date.parse(demoNow()) - 18_000).toISOString(),
       finishedAt: null,
       durationMs: null,
+      triggerKind: "interval",
       status: "running",
       processedCount: null,
       updatedCount: null,
@@ -4515,7 +4533,7 @@ export async function handleDemoRequest(request: Request) {
           title: managedTasks().find((task) => task.taskKey === taskKey)?.title ?? taskKey,
           activeChildTaskKey: null,
           activeChildTitle: null,
-          triggerKind: "manual",
+          triggerKind: run.triggerKind ?? "manual",
           phase: "processing",
           executionClass:
             managedTasks().find((task) => task.taskKey === taskKey)?.executionClass ?? null,
@@ -4585,7 +4603,11 @@ export async function handleDemoRequest(request: Request) {
     const detail = managedTaskDetail(taskKey);
     if (!detail) return json({ error: "not found" }, { status: 404 });
     const runs = managedTaskRuns.get(taskKey) ?? detail.recentRuns;
-    if (runs.some((run) => run.status === "running" || run.status === "requested")) {
+    const syntheticRunActive = taskKey === "dashboard_runtime_projection_reconcile";
+    if (
+      syntheticRunActive ||
+      runs.some((run) => run.status === "running" || run.status === "requested")
+    ) {
       return json({ error: "task already has an active run" }, { status: 409 });
     }
     const startedAt = demoNow();
@@ -4594,6 +4616,7 @@ export async function handleDemoRequest(request: Request) {
       startedAt,
       finishedAt: null,
       durationMs: null,
+      triggerKind: "manual",
       status: "running",
       processedCount: null,
       updatedCount: null,

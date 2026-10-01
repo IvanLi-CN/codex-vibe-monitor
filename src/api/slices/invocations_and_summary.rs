@@ -16509,7 +16509,12 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 "processing",
             );
             last_refresh_attempt = Some(Instant::now());
-            match refresh_summary_snapshots(state.as_ref()).await {
+            let refresh_result = tokio::select! {
+                biased;
+                _ = state.shutdown.cancelled() => return,
+                result = refresh_summary_snapshots(state.as_ref()) => result,
+            };
+            match refresh_result {
                 Ok(()) => {
                     dirty = false;
                     retry_not_before = None;

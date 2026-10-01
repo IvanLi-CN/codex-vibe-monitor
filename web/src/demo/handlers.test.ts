@@ -610,7 +610,7 @@ describe("demo MSW handlers", () => {
     expect(scheduleConflictResponse.status).toBe(400);
 
     const runResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile/run",
+      "http://demo.invalid/api/system/managed-tasks/raw_compression/run",
       { method: "POST" },
     );
     const running = (await runResponse.json()) as {
@@ -619,7 +619,7 @@ describe("demo MSW handlers", () => {
     expect(running.recentRuns[0]?.status).toBe("running");
 
     const conflictResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile/run",
+      "http://demo.invalid/api/system/managed-tasks/raw_compression/run",
       { method: "POST" },
     );
     expect(conflictResponse.status).toBe(409);

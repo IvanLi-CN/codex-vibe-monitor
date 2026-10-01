@@ -750,12 +750,15 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
                 "processing",
             );
-            match SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
-                state.as_ref(),
-                startup_priority,
-            )
-            .await
-            {
+            let initial_result = tokio::select! {
+                biased;
+                _ = state.shutdown.cancelled() => return,
+                result = SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
+                    state.as_ref(),
+                    startup_priority,
+                ) => result,
+            };
+            match initial_result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {
                     warn!(error = ?error, "initial summary historical coverage recovery deferred");
@@ -786,12 +789,15 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
                 "processing",
             );
-            next_turn = match SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
-                state.as_ref(),
-                None,
-            )
-            .await
-            {
+            let result = tokio::select! {
+                biased;
+                _ = state.shutdown.cancelled() => return,
+                result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                    state.as_ref(),
+                    None,
+                ) => result,
+            };
+            next_turn = match result {
                 Ok(next_turn) => next_turn,
                 Err(error) => {
                     warn!(error = ?error, "summary historical coverage recovery deferred");

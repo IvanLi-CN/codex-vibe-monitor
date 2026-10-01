@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, userEvent, within } from "storybook/test";
+import { managedTasks as demoManagedTasks } from "../../demo/handlers";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
@@ -359,55 +360,20 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
   };
 }
 
-const STORYBOOK_MANAGED_TASKS: ManagedTask[] = [
-  {
-    taskKey: "dashboard_runtime_projection_reconcile",
-    title: "仪表盘运行投影校对",
-    description: "校对仪表盘运行状态投影",
-    triggerMode: "event",
-    enabled: true,
-    intervalSecs: null,
-    cronExpr: null,
-    nextTriggerAt: null,
-    isManual: false,
-    triggerKinds: ["interval", "adaptive"],
-    effectivePolicy: "固定检查间隔：60 秒；受压力准入约束",
-    policySource: "系统默认",
-    scheduleEditable: true,
-    scheduleCapabilityReason: null,
-    executionClass: "p2_derived",
-  },
-  {
-    taskKey: "forward_proxy_subscription_refresh",
-    title: "正向代理订阅刷新",
-    description: "刷新代理订阅并更新代理节点状态",
-    triggerMode: "event",
-    enabled: false,
-    intervalSecs: null,
-    cronExpr: null,
-    nextTriggerAt: null,
-    isManual: false,
-    triggerKinds: ["startup", "interval"],
-    effectivePolicy: "启动刷新与固定检查间隔：60 秒",
-    policySource: "系统默认",
-    scheduleEditable: false,
-    scheduleCapabilityReason: "当前 worker 为事件、启动或自适应路径，保留已有覆盖但不支持新增覆盖",
-    executionClass: "p2_derived",
-  },
-];
+const STORYBOOK_MANAGED_TASKS: ManagedTask[] = demoManagedTasks();
 
 const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
   observedAt: "2026-06-22T09:28:00.000Z",
   activeRuns: [
     {
       executionId: 7,
-      taskKey: "dashboard_runtime_projection_reconcile",
-      title: "仪表盘运行投影校对",
+      taskKey: "raw_payload_metrics_inventory",
+      title: "原始载荷指标盘点",
       activeChildTaskKey: null,
       activeChildTitle: null,
       triggerKind: "interval",
       phase: "processing",
-      executionClass: "p2_derived",
+      executionClass: null,
       startedAt: "2026-06-22T09:27:42.000Z",
       elapsedMs: 18_000,
     },
@@ -651,6 +617,7 @@ function buildSystemWorkspaceRequestHandler(
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
   const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
+  let storybookRuntime = clone(STORYBOOK_MANAGED_TASK_RUNTIME);
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
     const jsonResponse = (payload: unknown, status = 200) =>
@@ -680,7 +647,7 @@ function buildSystemWorkspaceRequestHandler(
     }
 
     if (url.pathname === "/api/system/managed-tasks/runtime" && method === "GET") {
-      return jsonResponse(clone(STORYBOOK_MANAGED_TASK_RUNTIME));
+      return jsonResponse(clone(storybookRuntime));
     }
 
     const managedTaskDetailMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
@@ -706,7 +673,9 @@ function buildSystemWorkspaceRequestHandler(
       if (Object.hasOwn(payload, "enabled")) {
         next.enabled = payload.enabled;
       }
-      if (Object.hasOwn(payload, "intervalSecs")) {
+      const intervalProvided = Object.hasOwn(payload, "intervalSecs");
+      const cronProvided = Object.hasOwn(payload, "cronExpr");
+      if (intervalProvided && payload.intervalSecs != null) {
         next.intervalSecs = payload.intervalSecs ?? null;
         next.cronExpr = null;
         next.nextTriggerAt = payload.intervalSecs == null ? null : "2026-06-22T09:29:00.000Z";
@@ -715,8 +684,7 @@ function buildSystemWorkspaceRequestHandler(
             ? "固定检查间隔：60 秒；受压力准入约束"
             : `固定检查间隔：${payload.intervalSecs} 秒`;
         next.policySource = payload.intervalSecs == null ? "系统默认" : "运维自定义";
-      }
-      if (Object.hasOwn(payload, "cronExpr")) {
+      } else if (cronProvided && payload.cronExpr?.trim()) {
         next.cronExpr = payload.cronExpr ?? null;
         next.intervalSecs = null;
         next.nextTriggerAt = payload.cronExpr ? "2026-06-22T09:30:00.000Z" : null;
@@ -724,6 +692,12 @@ function buildSystemWorkspaceRequestHandler(
           ? `UTC cron：${payload.cronExpr}`
           : "固定检查间隔：60 秒；受压力准入约束";
         next.policySource = payload.cronExpr ? "运维自定义" : "系统默认";
+      } else if (intervalProvided || cronProvided) {
+        next.intervalSecs = null;
+        next.cronExpr = null;
+        next.nextTriggerAt = null;
+        next.effectivePolicy = "固定检查间隔：60 秒；受压力准入约束";
+        next.policySource = "系统默认";
       }
       managedTaskOverrides.set(taskKey, next);
       return jsonResponse(clone(storybookManagedTaskDetail(taskKey, next)));
@@ -731,13 +705,30 @@ function buildSystemWorkspaceRequestHandler(
 
     const managedTaskRunMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)\/run$/);
     if (managedTaskRunMatch && method === "POST") {
+      const taskKey = managedTaskRunMatch[1];
+      const task = storybookManagedTaskDetail(taskKey).task;
+      if (!storybookRuntime.activeRuns.some((run) => run.taskKey === taskKey)) {
+        storybookRuntime = {
+          ...storybookRuntime,
+          activeRuns: [
+            ...storybookRuntime.activeRuns,
+            {
+              executionId: 8,
+              taskKey,
+              title: task.title,
+              activeChildTaskKey: null,
+              activeChildTitle: null,
+              triggerKind: "manual",
+              phase: "processing",
+              executionClass: task.executionClass ?? null,
+              startedAt: "2026-06-22T09:28:30.000Z",
+              elapsedMs: 0,
+            },
+          ],
+        };
+      }
       return jsonResponse(
-        clone(
-          storybookManagedTaskDetail(
-            managedTaskRunMatch[1],
-            managedTaskOverrides.get(managedTaskRunMatch[1]),
-          ),
-        ),
+        clone(storybookManagedTaskDetail(taskKey, managedTaskOverrides.get(taskKey))),
       );
     }
 
@@ -1570,30 +1561,34 @@ export const StatusRawInventoryUnknown: Story = {
 
 export const Tasks: Story = {
   render: () => renderWorkspace("/system/tasks"),
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "任务运维" })).toBeVisible();
-    await expect(canvas.getByTestId("system-tasks-list")).toBeVisible();
-    await expect(canvas.getByText("当前正在工作")).toBeVisible();
-    await expect(canvas.getByText(/仪表盘运行投影校对/)).toBeVisible();
+    await expect(canvas.findByRole("heading", { name: "任务运维" })).resolves.toBeVisible();
+    await expect(canvas.findByTestId("system-tasks-list")).resolves.toBeVisible();
+    await expect(canvas.findByText("当前正在工作")).resolves.toBeVisible();
+    await expect(canvas.findByText(/仪表盘运行投影校对/)).resolves.toBeVisible();
   },
 };
 
 export const TaskDetail: Story = {
   render: () => renderWorkspace("/system/tasks/dashboard_runtime_projection_reconcile"),
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "仪表盘运行投影校对" })).toBeVisible();
-    await expect(canvas.getByText("调度与观测")).toBeVisible();
-    await expect(canvas.getByText("固定检查间隔：60 秒；受压力准入约束")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "保存调度" })).toBeVisible();
+    await expect(
+      canvas.findByRole("heading", { name: "仪表盘运行投影校对" }),
+    ).resolves.toBeVisible();
+    await expect(canvas.findByText("调度与观测")).resolves.toBeVisible();
+    await expect(canvas.findByText("固定检查间隔：60 秒；受压力准入约束")).resolves.toBeVisible();
+    await expect(canvas.findByRole("button", { name: "保存调度" })).resolves.toBeVisible();
     const interval = canvas.getByLabelText("间隔（秒）");
     await userEvent.clear(interval);
     await userEvent.type(interval, "120");
     await userEvent.click(canvas.getByRole("button", { name: "保存调度" }));
-    await expect(canvas.getByText("固定检查间隔：120 秒")).toBeVisible();
+    await expect(canvas.findByText("固定检查间隔：120 秒")).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "恢复默认" }));
-    await expect(canvas.getByText("固定检查间隔：60 秒；受压力准入约束")).toBeVisible();
+    await expect(canvas.findByText("固定检查间隔：60 秒；受压力准入约束")).resolves.toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "立即运行" }));
   },
 };
