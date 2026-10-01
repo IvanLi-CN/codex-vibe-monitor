@@ -1,6 +1,6 @@
 {
-  "candidate_head": "1c08a8a1e3f996b0e3e1fe73f285c4ccb1d4bef5",
-  "implementation_commit": "1c08a8a1e3f996b0e3e1fe73f285c4ccb1d4bef5",
+  "candidate_head": "a7af440662ecc79ee062e3463ad433c8347cedb0",
+  "implementation_commit": "a7af440662ecc79ee062e3463ad433c8347cedb0",
   "service": {
     "bind": "127.0.0.1:17940",
     "database": "isolated temporary SQLite files",
@@ -25,14 +25,26 @@
     "phase": "processing",
     "execution_class": "maintenance_retention",
     "trigger_kind": "interval",
-    "started_at": "2026-10-01T11:06:40.978Z",
-    "elapsed_ms": 28376
+    "started_at": "2026-10-01T11:24:15.756Z",
+    "elapsed_ms": 40581
   },
   "schedule_controls": {
     "custom_interval": {
       "status": 200,
       "enabled": true,
       "interval_secs": 120,
+      "policy_source": "运维自定义"
+    },
+    "custom_cron": {
+      "status": 200,
+      "interval_secs": null,
+      "cron_expr": "*/5 * * * *",
+      "policy_source": "运维自定义"
+    },
+    "switch_back_to_interval": {
+      "status": 200,
+      "interval_secs": 180,
+      "cron_expr": null,
       "policy_source": "运维自定义"
     },
     "restore_default": {
