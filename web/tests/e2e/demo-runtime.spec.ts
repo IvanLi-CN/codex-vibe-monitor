@@ -111,8 +111,8 @@ test.describe("Web Demo runtime", () => {
     await expect(page.getByRole("heading", { name: "数据保留与归档" })).toBeVisible();
     await expect(page.getByText("默认计划 · 3600s")).toBeVisible();
     await expect(page.getByText("invocations", { exact: true })).toBeVisible();
-    await expect(page.getByText("部分完成", { exact: true })).toBeVisible();
-    await expect(page.getByText("暂不可用（积压 3）", { exact: true })).toBeVisible();
+    await expect(page.getByText(/完成度：部分完成/)).toBeVisible();
+    await expect(page.getByText(/Prompt 缓存统计：暂不可用（积压 3）/)).toBeVisible();
     await expect(page.getByText("92.0%", { exact: true })).toBeVisible();
   });
 
