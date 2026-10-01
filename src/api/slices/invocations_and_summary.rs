@@ -16498,6 +16498,16 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             }
             while receiver.try_recv().is_ok() {}
             while mutation_receiver.try_recv().is_ok() {}
+            let _observation = crate::TaskExecutionObservation::begin(
+                "summary_snapshot",
+                &crate::maintenance_store::task_title_for_observation("summary_snapshot"),
+                match trigger {
+                    SummarySnapshotTrigger::Mutation => "event",
+                    SummarySnapshotTrigger::Cadence => "interval",
+                },
+                crate::maintenance_store::task_execution_class("summary_snapshot"),
+                "processing",
+            );
             last_refresh_attempt = Some(Instant::now());
             match refresh_summary_snapshots(state.as_ref()).await {
                 Ok(()) => {

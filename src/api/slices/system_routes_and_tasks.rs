@@ -1462,6 +1462,13 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
             else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "system_status_snapshot",
+                &crate::maintenance_store::task_title_for_observation("system_status_snapshot"),
+                "interval",
+                crate::maintenance_store::task_execution_class("system_status_snapshot"),
+                "processing",
+            );
             if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
                 warn!(
                     ?error,

@@ -1142,7 +1142,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     continue;
                 }
             };
-            let Some((run_id, task_key, _started_at)) = claim else {
+            let Some((run_id, task_key, _started_at, trigger_kind)) = claim else {
                 continue;
             };
             let Some(_execution_lease) =
@@ -1163,7 +1163,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 let observation = crate::TaskExecutionObservation::begin(
                     &task_key,
                     &crate::maintenance_store::task_title_for_observation(&task_key),
-                    "managed_dispatcher",
+                    &trigger_kind,
                     crate::maintenance_store::task_execution_class(&task_key),
                     "processing",
                 );
@@ -2279,6 +2279,15 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     else {
                         continue;
                     };
+                    let _observation = crate::TaskExecutionObservation::begin(
+                        "pool_orphan_recovery",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "pool_orphan_recovery",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class("pool_orphan_recovery"),
+                        "processing",
+                    );
                     match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {

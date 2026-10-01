@@ -522,9 +522,14 @@ pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
 }
 
 fn validate_cron_expr(expr: Option<&str>) -> Result<()> {
-    let Some(expr) = expr.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(expr) = expr.map(str::trim) else {
         return Ok(());
     };
+    if expr.is_empty() {
+        return Err(anyhow!(
+            "cron expression must contain exactly five UTC fields"
+        ));
+    }
     let fields: Vec<&str> = expr.split_whitespace().collect();
     if fields.len() != 5 || fields.iter().any(|field| field.is_empty()) {
         return Err(anyhow!(
@@ -931,7 +936,9 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
 }
 
 impl MaintenanceStore {
-    pub(crate) async fn claim_requested_run(&self) -> Result<Option<(i64, String, String)>> {
+    pub(crate) async fn claim_requested_run(
+        &self,
+    ) -> Result<Option<(i64, String, String, String)>> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
         sqlx::query(
@@ -946,7 +953,7 @@ impl MaintenanceStore {
         .bind(&finished_at)
         .execute(&mut *transaction)
         .await?;
-        let claimed = sqlx::query_as::<_, (i64, String, String)>(
+        let claimed = sqlx::query_as::<_, (i64, String, String, String)>(
             "UPDATE managed_task_runs
              SET status='running'
              WHERE id = (
@@ -959,16 +966,16 @@ impl MaintenanceStore {
                  LIMIT 1
              )
              AND status='requested'
-             RETURNING id,task_key,started_at",
+             RETURNING id,task_key,started_at,trigger_kind",
         )
         .fetch_optional(&mut *transaction)
         .await?;
-        let Some((id, task_key, started_at)) = claimed else {
+        let Some((id, task_key, started_at, trigger_kind)) = claimed else {
             transaction.commit().await?;
             return Ok(None);
         };
         transaction.commit().await?;
-        Ok(Some((id, task_key, started_at)))
+        Ok(Some((id, task_key, started_at, trigger_kind)))
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
@@ -1586,6 +1593,7 @@ mod tests {
     fn rejects_cron_expressions_without_five_utc_fields() {
         assert!(validate_cron_expr(Some("*/5 * * *")).is_err());
         assert!(validate_cron_expr(Some("*/5 * * * *")).is_ok());
+        assert!(validate_cron_expr(Some("   ")).is_err());
     }
 
     #[test]

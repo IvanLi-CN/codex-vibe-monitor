@@ -53,6 +53,10 @@ export default function SystemTaskDetailPage() {
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
   const [activeRuntime, setActiveRuntime] = useState<CurrentTaskExecution | null>(null);
+  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
+  const [runtimeSampleClock, setRuntimeSampleClock] = useState<number | null>(null);
+  const [runtimeSampleElapsedMs, setRuntimeSampleElapsedMs] = useState<number | null>(null);
+  const [runtimeNow, setRuntimeNow] = useState(() => window.performance.now());
 
   useEffect(() => {
     if (!taskKey) return;
@@ -73,21 +77,53 @@ export default function SystemTaskDetailPage() {
     return Math.min(100, Math.max(0, (completed / total) * 100));
   }, [detail]);
 
-  const hasActiveRun = activeRuntime != null;
-
   useEffect(() => {
     if (!taskKey) return;
-    const refreshRuntime = () => {
-      void fetchManagedTaskRuntime()
-        .then((snapshot) =>
-          setActiveRuntime(snapshot.activeRuns.find((run) => run.taskKey === taskKey) ?? null),
-        )
-        .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    let disposed = false;
+    let inFlight = false;
+    const refreshRuntime = async () => {
+      if (disposed || inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const snapshot = await fetchManagedTaskRuntime();
+        if (disposed) return;
+        const next = snapshot.activeRuns.find((run) => run.taskKey === taskKey) ?? null;
+        setActiveRuntime(next);
+        setRuntimeSampleElapsedMs(next?.elapsedMs ?? null);
+        setRuntimeSampleClock(window.performance.now());
+        setRuntimeUnavailable(false);
+      } catch (reason) {
+        if (!disposed) {
+          setActiveRuntime(null);
+          setRuntimeSampleElapsedMs(null);
+          setRuntimeSampleClock(null);
+          setRuntimeUnavailable(true);
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      } finally {
+        inFlight = false;
+      }
     };
-    refreshRuntime();
-    const timer = window.setInterval(refreshRuntime, 2000);
-    return () => window.clearInterval(timer);
+    void refreshRuntime();
+    const timer = window.setInterval(() => void refreshRuntime(), 2000);
+    const elapsedTimer = window.setInterval(() => setRuntimeNow(window.performance.now()), 1000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshRuntime();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.clearInterval(elapsedTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [taskKey]);
+
+  const hasActiveRun = activeRuntime != null;
+  const displayedElapsedMs =
+    activeRuntime && runtimeSampleElapsedMs != null && runtimeSampleClock != null
+      ? runtimeSampleElapsedMs + Math.max(0, runtimeNow - runtimeSampleClock)
+      : activeRuntime?.elapsedMs;
 
   if (error && !detail) return <Alert variant="error">任务观测不可用：{error}</Alert>;
   if (!detail)
@@ -176,13 +212,21 @@ export default function SystemTaskDetailPage() {
             <CardTitle className="text-base">调度与观测</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {activeRuntime ? (
+            {runtimeUnavailable ? (
+              <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 md:col-span-2 xl:col-span-4">
+                <div className="text-xs text-base-content/60">当前实际工作</div>
+                <div className="mt-1 font-medium">未知</div>
+                <div className="mt-1 text-xs text-base-content/60">
+                  最近观测失败，等待下一次刷新。
+                </div>
+              </div>
+            ) : activeRuntime ? (
               <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 md:col-span-2 xl:col-span-4">
                 <div className="text-xs text-base-content/60">当前实际工作</div>
                 <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
                   <span>{managedTaskPhaseLabel(activeRuntime.phase)}</span>
                   <span>实际开始：{formatStartedAt(activeRuntime.startedAt)}</span>
-                  <span>用时：{formatDuration(activeRuntime.elapsedMs)}</span>
+                  <span>用时：{formatDuration(displayedElapsedMs)}</span>
                   <span>级别：{managedTaskExecutionClassLabel(activeRuntime.executionClass)}</span>
                 </div>
                 {activeRuntime.activeChildTitle ? (

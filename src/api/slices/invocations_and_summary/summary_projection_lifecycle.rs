@@ -743,6 +743,13 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             else {
                 return;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "summary_coverage_recovery",
+                &crate::maintenance_store::task_title_for_observation("summary_coverage_recovery"),
+                "startup",
+                crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
+                "processing",
+            );
             match SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
                 state.as_ref(),
                 startup_priority,
@@ -772,6 +779,13 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
             else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "summary_coverage_recovery",
+                &crate::maintenance_store::task_title_for_observation("summary_coverage_recovery"),
+                "adaptive",
+                crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
+                "processing",
+            );
             next_turn = match SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
                 state.as_ref(),
                 None,

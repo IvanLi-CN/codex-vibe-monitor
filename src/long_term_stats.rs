@@ -3343,6 +3343,13 @@ async fn flush_long_term_projection(
             retry_at: Some(Instant::now() + Duration::from_secs(1)),
         });
     };
+    let _observation = crate::TaskExecutionObservation::begin(
+        "long_term_projection",
+        &crate::maintenance_store::task_title_for_observation("long_term_projection"),
+        trigger,
+        crate::maintenance_store::task_execution_class("long_term_projection"),
+        "processing",
+    );
     flush_long_term_projection_unlocked(state, trigger).await
 }
 

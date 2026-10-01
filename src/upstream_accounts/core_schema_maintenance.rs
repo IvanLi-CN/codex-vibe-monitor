@@ -2182,6 +2182,17 @@ pub(crate) fn spawn_upstream_account_maintenance(
                     else {
                         continue;
                     };
+                    let _observation = crate::TaskExecutionObservation::begin(
+                        "upstream_account_maintenance",
+                        &crate::maintenance_store::task_title_for_observation(
+                            "upstream_account_maintenance",
+                        ),
+                        "interval",
+                        crate::maintenance_store::task_execution_class(
+                            "upstream_account_maintenance",
+                        ),
+                        "processing",
+                    );
                     if let Err(err) = run_upstream_account_maintenance_once(state.clone()).await {
                         warn!(error = %err, "failed to run upstream account maintenance");
                     }

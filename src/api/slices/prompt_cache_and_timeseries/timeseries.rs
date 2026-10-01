@@ -2056,6 +2056,13 @@ pub(crate) async fn flush_timeseries_minute_projection(
             },
         ));
     };
+    let _observation = crate::TaskExecutionObservation::begin(
+        "timeseries_minute_projection",
+        &crate::maintenance_store::task_title_for_observation("timeseries_minute_projection"),
+        trigger,
+        crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+        "processing",
+    );
     flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
@@ -2079,6 +2086,13 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
             },
         ));
     };
+    let _observation = crate::TaskExecutionObservation::begin(
+        "timeseries_minute_projection",
+        &crate::maintenance_store::task_title_for_observation("timeseries_minute_projection"),
+        trigger,
+        crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+        "processing",
+    );
     flush_timeseries_minute_projection_with_coordinator_and_cancellation(
         state,
         trigger,
@@ -2400,6 +2414,15 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             ) else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "timeseries_minute_projection",
+                &crate::maintenance_store::task_title_for_observation(
+                    "timeseries_minute_projection",
+                ),
+                "startup",
+                crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+                "processing",
+            );
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
@@ -2492,6 +2515,15 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             ) else {
                 continue;
             };
+            let _observation = crate::TaskExecutionObservation::begin(
+                "timeseries_minute_projection",
+                &crate::maintenance_store::task_title_for_observation(
+                    "timeseries_minute_projection",
+                ),
+                "interval",
+                crate::maintenance_store::task_execution_class("timeseries_minute_projection"),
+                "processing",
+            );
             match flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 state.as_ref(),
                 "terminal_deadline",
