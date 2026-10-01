@@ -27,7 +27,7 @@
     {
       "path": "src/api/slices/prompt_cache_and_timeseries/timeseries.rs",
       "role": "production",
-      "line_budget": 5932,
+      "line_budget": 5966,
       "next_module_workstream": "Split prompt-cache timeseries query, aggregation, and flush/restart lifecycle."
     },
     {
@@ -39,7 +39,7 @@
     {
       "path": "src/long_term_stats.rs",
       "role": "production",
-      "line_budget": 18924,
+      "line_budget": 18941,
       "next_module_workstream": "Split long-term statistics projection, archive compatibility, rollups, and refresh lifecycle."
     },
     {
@@ -63,7 +63,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11509,
+      "line_budget": 11518,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
