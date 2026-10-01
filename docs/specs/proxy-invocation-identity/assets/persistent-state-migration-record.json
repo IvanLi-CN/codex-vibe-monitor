@@ -4,7 +4,9 @@
   "migration": {
     "description": "Introduce a durable prompt-cache conversation master and compact proxy invocation identity allocation, then add the additive latest-success route lookup index used by online routing checks.",
     "release_unit_description": "Prompt-cache conversation background materialization follow-up for the conversation and invoke ID redesign.",
-    "version_impact": "minor"
+    "version_impact": "minor",
+    "version_impact_scope": "topic_history",
+    "current_candidate_version_impact": "patch"
   },
   "durable_state": {
     "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization; pool_upstream_request_attempts also has an additive partial success lookup index.",

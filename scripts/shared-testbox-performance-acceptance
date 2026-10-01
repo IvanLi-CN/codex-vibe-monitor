@@ -690,6 +690,11 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
     ]
     slow_success = [item for item in slow_results if item['scenario'] == 'slow-success']
     slow_timeout = [item for item in slow_results if item['scenario'] == 'slow-timeout']
+    cancel_ok = (
+        cancel_result.get('status') == 'client_closed'
+        and isinstance(cancel_result.get('duration_ms'), (int, float))
+        and cancel_result['duration_ms'] <= 5000
+    )
     success_ok = all(
         item['status'] == 200
         and item['terminal'] is not None
@@ -714,6 +719,7 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         'terminal_confirm_p99_ms': percentile(fast_confirm_ms, 0.99),
         'slow_success_ok': success_ok,
         'slow_timeout_ok': timeout_ok,
+        'cancel_ok': cancel_ok,
         'slow_results': slow_results,
         'cancel_result': cancel_result,
     }
@@ -724,6 +730,7 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         or not fast_confirm_ms
         or not success_ok
         or not timeout_ok
+        or not cancel_ok
         or summary['allocation_parse_p99_ms'] > 100
         or summary['terminal_confirm_p99_ms'] > 1000
     ):

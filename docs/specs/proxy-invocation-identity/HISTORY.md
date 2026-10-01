@@ -16,7 +16,7 @@
 
 - Proxy allocation now uses per-normalized-key async locks with weak idle-entry cleanup, registers active references before waits, and releases them on failure or cancellation. The global cache mutex is held only for short in-memory operations; identity and sequence SQL use one `InteractiveProxy` admission and cache state is updated after admission is released.
 - Unbound hourly prefixes are protected by an independent process-local namespace during initialization and exclude issued prefixes, conversation masters, and invocation prefixes. The route-health latest-success lookup gains one idempotent partial covering index; no public response, account state, timeout, retry budget, or existing business row is changed.
-- The long-wait acceptance harness now covers same-key, different-key, unbound, and cancelled calls with 179-second success and 180-second timeout-boundary samples, while batching terminal reads to keep the observation path outside the allocator and online write window.
+- The long-wait acceptance harness now covers same-key, different-key, unbound, and cancelled calls with 179-second success and 180-second timeout-boundary samples, while observing each fast terminal promptly and gating client cancellation status and duration.
 
 ## Related Changes
 
