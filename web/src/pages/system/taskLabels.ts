@@ -64,10 +64,35 @@ export function managedTaskRunStatusLabel(status: string): string {
   }
 }
 
+export function managedTaskCompletionLabel(completion?: string | null): string {
+  switch (completion) {
+    case "completed":
+      return "本轮完成";
+    case "partial":
+      return "部分完成";
+    case "deferred":
+      return "已延期";
+    default:
+      return "未知";
+  }
+}
+
+export function managedTaskScheduleSourceLabel(source?: string | null): string {
+  switch (source) {
+    case "default":
+      return "默认计划";
+    case "override":
+      return "管理员覆盖";
+    default:
+      return source || "未知";
+  }
+}
+
 export function managedTaskNextTriggerLabel(task: ManagedTask): string {
   if (!task.enabled) return "已停用";
-  if (task.nextTriggerAt) {
-    const timestamp = Date.parse(task.nextTriggerAt);
+  const nextTriggerAt = task.nextTriggerAt ?? task.effectiveSchedule?.nextTriggerAt;
+  if (nextTriggerAt) {
+    const timestamp = Date.parse(nextTriggerAt);
     if (!Number.isNaN(timestamp)) {
       const formatted = new Intl.DateTimeFormat("zh-CN", {
         year: "numeric",

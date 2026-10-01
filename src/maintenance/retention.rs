@@ -33,6 +33,7 @@ const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
+const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(60);
 const SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT: i64 = 200;
 const SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS: usize = 500;
 const SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS: usize = 5_000;
@@ -69,6 +70,7 @@ static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync
 
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
+    static RETENTION_RUN_DEADLINE: RefCell<Option<Instant>>;
     static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
     static RETENTION_TRY_ARCHIVE_LOCKS: ();
     static RETENTION_RAW_CAPTURE_CIRCUIT: RefCell<Option<Arc<RawCaptureCircuitBreaker>>>;
@@ -663,6 +665,27 @@ fn retention_recovery_clear_current_prepared_key() {
     let _ = RETENTION_CURRENT_PREPARED_KEY.try_with(|current| {
         *current.borrow_mut() = None;
     });
+}
+
+fn retention_run_budget_expired() -> bool {
+    RETENTION_RUN_DEADLINE
+        .try_with(|deadline| {
+            deadline
+                .borrow()
+                .is_some_and(|value| Instant::now() >= value)
+        })
+        .unwrap_or(false)
+}
+
+fn retention_run_remaining_budget() -> Option<Duration> {
+    RETENTION_RUN_DEADLINE
+        .try_with(|deadline| {
+            deadline
+                .borrow()
+                .map(|value| value.saturating_duration_since(Instant::now()))
+        })
+        .ok()
+        .flatten()
 }
 
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
@@ -1260,8 +1283,17 @@ pub(super) async fn acquire_retention_write_admission(
         retention_record_defer(operation, reason);
         return None;
     }
+    if retention_run_budget_expired() {
+        retention_record_defer(operation, "retention_work_budget");
+        return None;
+    }
     let (mut write_permit, coordinator_snapshot) =
         acquire_retention_write_coordinator(operation).await?;
+    if retention_run_budget_expired() {
+        retention_record_defer(operation, "retention_work_budget");
+        drop(write_permit);
+        return None;
+    }
     match pressure_gate.try_begin_background(operation) {
         Ok(pressure_permit) => Some(RetentionWriteAdmission {
             write_permit,
@@ -1307,6 +1339,14 @@ async fn acquire_retention_write_coordinator(
 pub(crate) struct RetentionRunSummary {
     pub(crate) dry_run: bool,
     pub(crate) deferred: bool,
+    pub(crate) budget_exhausted: bool,
+    pub(crate) work_budget_ms: Option<u64>,
+    pub(crate) elapsed_ms: Option<u64>,
+    pub(crate) settlement_ms: Option<u64>,
+    pub(crate) wait_reason: Option<String>,
+    pub(crate) backlog_total: Option<i64>,
+    pub(crate) backlog_observed_at: Option<String>,
+    pub(crate) source_max_invocation_id: Option<i64>,
     pub(crate) raw_files_compression_candidates: usize,
     pub(crate) raw_files_compressed: usize,
     pub(crate) raw_bytes_before: u64,
@@ -1327,7 +1367,7 @@ pub(crate) struct RetentionRunSummary {
 }
 
 impl RetentionRunSummary {
-    fn processed_row_count(&self) -> u64 {
+    pub(crate) fn processed_row_count(&self) -> u64 {
         self.invocation_details_pruned as u64
             + self.invocation_rows_archived as u64
             + self.forward_proxy_attempt_rows_archived as u64
@@ -1351,6 +1391,32 @@ impl RetentionRunSummary {
             || self.orphan_raw_files_removed > 0
             || self.model_route_rows_pruned > 0
             || self.system_task_run_rows_pruned > 0
+    }
+
+    pub(crate) fn completion(&self) -> &'static str {
+        if self.budget_exhausted || self.deferred {
+            if self.touched_anything() {
+                "partial"
+            } else {
+                "deferred"
+            }
+        } else {
+            "completed"
+        }
+    }
+
+    pub(crate) fn core_completion(&self) -> &'static str {
+        if self.invocation_rows_archived > 0 || self.invocation_details_pruned > 0 {
+            if self.budget_exhausted {
+                "partial"
+            } else {
+                "completed"
+            }
+        } else if self.budget_exhausted {
+            "deferred"
+        } else {
+            "completed"
+        }
     }
 }
 
@@ -2529,19 +2595,8 @@ async fn retention_recovery_update_detail_rows_tx(
     }
     query.push(")");
     query.build().execute(&mut *tx).await?;
-    refresh_prompt_cache_conversation_stats_on_connection(tx, &prompt_cache_key_refs)
-        .await
-        .context(
-            "failed to refresh prompt-cache conversation statistics after recovered detail prune",
-        )?;
-    if !prompt_cache_key_refs.is_empty() {
-        clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-            tx,
-            &prompt_cache_key_refs,
-        )
-        .await?;
-        mark_prompt_cache_conversation_stats_fresh_on_connection(tx).await?;
-    }
+    // The source mutation and durable invalidation trigger commit together. The materialization
+    // owner refreshes these keys outside the retention publication transaction.
     if let Some(latest) = candidates
         .iter()
         .map(|candidate| candidate.occurred_at.as_str())
@@ -2697,22 +2752,8 @@ async fn retention_recovery_finalize_published(
             mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
         }
         delete_rows_by_ids(tx.as_mut(), descriptor.dataset, &source_ids).await?;
-        refresh_prompt_cache_conversation_stats_on_connection(
-            tx.as_mut(),
-            &archived_prompt_cache_key_refs,
-        )
-        .await
-        .context(
-            "failed to refresh prompt-cache conversation statistics after recovered archive delete",
-        )?;
-        if !archived_prompt_cache_key_refs.is_empty() {
-            clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-                tx.as_mut(),
-                &archived_prompt_cache_key_refs,
-            )
-            .await?;
-            mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
-        }
+        // DELETE triggers persist the affected keys. Prompt-cache materialization is deliberately
+        // outside this archive publication transaction.
         mark_retention_archived_hourly_rollup_targets_tx(
             tx.as_mut(),
             descriptor.dataset,
@@ -8288,7 +8329,13 @@ pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&Cancellat
             "data retention maintenance stopped at a safe boundary because shutdown is in progress"
         );
     }
-    should_stop
+    if !should_stop && retention_run_budget_expired() {
+        info!(
+            budget_ms = RETENTION_WORK_BUDGET.as_millis() as u64,
+            "data retention maintenance stopped at a safe boundary because its work budget expired"
+        );
+    }
+    should_stop || retention_run_budget_expired()
 }
 
 pub(crate) async fn run_data_retention_maintenance(
@@ -8309,6 +8356,8 @@ async fn run_data_retention_maintenance_with_prompt_cache(
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let defer_generation = retention_defer_generation();
+    let run_started_at = Instant::now();
+    let run_deadline = run_started_at + RETENTION_WORK_BUDGET;
     let run = async {
         if let Some(shutdown) = shutdown {
             RETENTION_SHUTDOWN
@@ -8334,11 +8383,23 @@ async fn run_data_retention_maintenance_with_prompt_cache(
             .await
         }
     };
-    let result = RETENTION_CURRENT_PREPARED_KEY
-        .scope(RefCell::new(None), run)
+    let result = RETENTION_RUN_DEADLINE
+        .scope(
+            RefCell::new(Some(run_deadline)),
+            RETENTION_CURRENT_PREPARED_KEY.scope(RefCell::new(None), run),
+        )
         .await;
     result.map(|mut summary| {
         summary.deferred = retention_defer_generation() != defer_generation;
+        summary.work_budget_ms = Some(RETENTION_WORK_BUDGET.as_millis() as u64);
+        summary.elapsed_ms = Some(run_started_at.elapsed().as_millis() as u64);
+        if summary.wait_reason.is_none() && (summary.deferred || summary.budget_exhausted) {
+            summary.wait_reason = if summary.budget_exhausted {
+                Some("retention_work_budget".to_string())
+            } else {
+                retention_recovery_health_snapshot().defer_reason
+            };
+        }
         summary
     })
 }
@@ -8362,13 +8423,19 @@ async fn run_data_retention_maintenance_with_task_run_prune(
     // This janitor must run even when an earlier archive stage fails. Otherwise every
     // failed pass adds a task-run record while the retention policy that bounds those
     // records is unreachable until the unrelated failure clears.
-    let task_run_prune = if should_stop_data_retention_maintenance(shutdown) {
+    let settlement_started_at = Instant::now();
+    let stop_for_shutdown_or_budget = should_stop_data_retention_maintenance(shutdown);
+    let budget_exhausted = retention_run_budget_expired();
+    let task_run_prune = if stop_for_shutdown_or_budget {
         Ok(0)
     } else {
         prune_system_task_runs(pool, dry_run).await
     };
+    let settlement_ms = settlement_started_at.elapsed().as_millis() as u64;
     match result {
         Ok(mut summary) => {
+            summary.budget_exhausted |= budget_exhausted;
+            summary.settlement_ms = Some(settlement_ms);
             summary.system_task_run_rows_pruned +=
                 task_run_prune.context("failed to prune expired system task runs")?;
             Ok(summary)
@@ -8394,6 +8461,40 @@ async fn run_data_retention_maintenance_inner(
         dry_run,
         ..RetentionRunSummary::default()
     };
+    let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let source_max_query =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(pool);
+    let source_max_result = if let Some(remaining) = retention_run_remaining_budget() {
+        tokio::time::timeout(remaining, source_max_query)
+            .await
+            .ok()
+            .and_then(Result::ok)
+    } else {
+        source_max_query.await.ok()
+    };
+    if let Some(source_max_invocation_id) = source_max_result {
+        summary.source_max_invocation_id = source_max_invocation_id;
+        if let Some(source_max_invocation_id) = source_max_invocation_id {
+            let backlog_query = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1 AND id <= ?2",
+            )
+            .bind(&archive_cutoff)
+            .bind(source_max_invocation_id)
+            .fetch_one(pool);
+            summary.backlog_total = if let Some(remaining) = retention_run_remaining_budget() {
+                tokio::time::timeout(remaining, backlog_query)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+            } else {
+                backlog_query.await.ok()
+            };
+            if summary.backlog_total.is_some() {
+                summary.backlog_observed_at = Some(format_utc_iso_millis(Utc::now()));
+            }
+        }
+    }
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
@@ -8502,10 +8603,15 @@ async fn run_data_retention_maintenance_inner(
         drop(admission);
     }
 
-    let raw_compression =
-        compress_cold_proxy_raw_payloads(pool, config, raw_path_fallback_root, dry_run)
-            .await
-            .context("failed to compress cold proxy raw payloads during retention")?;
+    let raw_compression = compress_cold_proxy_raw_payloads_with_budget(
+        pool,
+        config,
+        raw_path_fallback_root,
+        dry_run,
+        retention_run_remaining_budget().or(Some(config.retention_catchup_budget)),
+    )
+    .await
+    .context("failed to compress cold proxy raw payloads during retention")?;
     summary.raw_files_compression_candidates += raw_compression.files_considered;
     summary.raw_files_compressed += raw_compression.files_compressed;
     summary.raw_bytes_before += raw_compression.bytes_before;
@@ -10062,20 +10168,8 @@ pub(crate) async fn prune_old_invocation_details(
             }
             query.push(")");
             query.build().execute(tx.as_mut()).await?;
-            refresh_prompt_cache_conversation_stats_on_connection(
-                tx.as_mut(),
-                &prompt_cache_key_refs,
-            )
-            .await
-            .context("failed to refresh prompt-cache conversation statistics after detail prune")?;
-            if !prompt_cache_key_refs.is_empty() {
-                clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-                    tx.as_mut(),
-                    &prompt_cache_key_refs,
-                )
-                .await?;
-                mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
-            }
+            // UPDATE triggers persist the affected keys. Statistics are refreshed by the
+            // materialization owner after this retention transaction commits.
             if let Some(latest) = group
                 .iter()
                 .map(|candidate| candidate.occurred_at.as_str())
@@ -10537,20 +10631,8 @@ pub(crate) async fn archive_old_invocations(
                 mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
             }
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
-            refresh_prompt_cache_conversation_stats_on_connection(
-                tx.as_mut(),
-                &archived_prompt_cache_key_refs,
-            )
-            .await
-            .context("failed to refresh prompt-cache conversation statistics after invocation archive delete")?;
-            if !archived_prompt_cache_key_refs.is_empty() {
-                clear_prompt_cache_conversation_stats_refresh_queue_on_connection(
-                    tx.as_mut(),
-                    &archived_prompt_cache_key_refs,
-                )
-                .await?;
-                mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
-            }
+            // DELETE triggers persist the affected keys. Statistics are refreshed asynchronously
+            // by the materialization owner after archive publication.
             prompt_cache_keys.extend(archived_prompt_cache_keys);
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),

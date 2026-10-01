@@ -1156,17 +1156,85 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     duration_ms: 0,
                     summary: Some("检测到同一任务正在运行，未重复执行".to_string()),
                     detail: None,
+                    completion: None,
+                    core_completion: None,
+                    details: None,
                 });
                 continue;
             };
             let started_at = Instant::now();
-            let result = run_managed_task_once(&state, &task_key).await;
-            let (status, summary, detail) = match result {
-                Ok(summary) => (SystemTaskStatus::Success, Some(summary), None),
+            let initial_stages = (task_key == "retention_archive").then(|| {
+                vec![
+                    crate::maintenance_store::TaskStage {
+                        name: "archive".to_string(),
+                        status: "running".to_string(),
+                        completed: None,
+                        total: None,
+                        elapsed_ms: None,
+                        wait_reason: None,
+                        checkpoint: Some("admitted".to_string()),
+                    },
+                    crate::maintenance_store::TaskStage {
+                        name: "prompt_cache".to_string(),
+                        status: "pending".to_string(),
+                        completed: None,
+                        total: None,
+                        elapsed_ms: None,
+                        wait_reason: Some("materialization_owner".to_string()),
+                        checkpoint: None,
+                    },
+                    crate::maintenance_store::TaskStage {
+                        name: "orphan_cleanup".to_string(),
+                        status: "pending".to_string(),
+                        completed: None,
+                        total: None,
+                        elapsed_ms: None,
+                        wait_reason: None,
+                        checkpoint: None,
+                    },
+                ]
+            });
+            if let Err(error) = store
+                .publish_progress(
+                    &task_key,
+                    None,
+                    None,
+                    Some("running"),
+                    Some("admitted"),
+                    None,
+                    (task_key == "retention_archive").then_some("expired_invocations"),
+                    None,
+                    None,
+                    initial_stages.as_deref(),
+                )
+                .await
+            {
+                warn!(task = %task_key, error = %error, "managed task progress snapshot could not be published");
+            }
+            let result = run_managed_task_once_with_observation(&state, &task_key).await;
+            let (status, summary, detail, completion, core_completion, details) = match result {
+                Ok(execution) => {
+                    let status = if execution.completion.as_deref() == Some("deferred") {
+                        SystemTaskStatus::Skipped
+                    } else {
+                        SystemTaskStatus::Success
+                    };
+                    (
+                        status,
+                        Some(execution.summary),
+                        execution.detail,
+                        execution.completion,
+                        execution.core_completion,
+                        execution.details,
+                    )
+                }
                 Err(error) => (
                     SystemTaskStatus::Failed,
                     Some(format!("{task_key} 手动运行失败")),
                     Some(error.to_string()),
+                    None,
+                    None,
+                    None,
                 ),
             };
             let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
@@ -1181,15 +1249,19 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 task_dimension,
                 1,
             );
-            state.performance_telemetry.record_counter(
-                if status == SystemTaskStatus::Success {
-                    "maintenance.task_run_success_count"
-                } else {
-                    "maintenance.task_run_failure_count"
-                },
-                task_dimension,
-                1,
-            );
+            if status == SystemTaskStatus::Success {
+                state.performance_telemetry.record_counter(
+                    "maintenance.task_run_success_count",
+                    task_dimension,
+                    1,
+                );
+            } else if status == SystemTaskStatus::Failed {
+                state.performance_telemetry.record_counter(
+                    "maintenance.task_run_failure_count",
+                    task_dimension,
+                    1,
+                );
+            }
             let finish = ManagedTaskFinish {
                 run_id,
                 task_key,
@@ -1198,7 +1270,101 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 duration_ms,
                 summary,
                 detail,
+                completion,
+                core_completion,
+                details,
             };
+            let progress_total = finish
+                .details
+                .as_ref()
+                .and_then(|details| details.get("total"))
+                .and_then(Value::as_i64);
+            let progress_completed = finish
+                .details
+                .as_ref()
+                .and_then(|details| details.get("completed"))
+                .and_then(Value::as_i64);
+            let progress_wait_reason = finish
+                .details
+                .as_ref()
+                .and_then(|details| details.get("waitReason"))
+                .and_then(Value::as_str);
+            let final_stages = (finish.task_key == "retention_archive").then(|| {
+                let archive_status = match finish.completion.as_deref() {
+                    Some("completed") => "completed",
+                    Some("partial") => "partial",
+                    Some("deferred") => "deferred",
+                    _ if finish.status == SystemTaskStatus::Failed => "failed",
+                    _ => "completed",
+                };
+                vec![
+                    crate::maintenance_store::TaskStage {
+                        name: "archive".to_string(),
+                        status: archive_status.to_string(),
+                        completed: progress_completed,
+                        total: progress_total,
+                        elapsed_ms: finish
+                            .details
+                            .as_ref()
+                            .and_then(|details| details.get("elapsedMs"))
+                            .and_then(Value::as_i64),
+                        wait_reason: progress_wait_reason.map(str::to_string),
+                        checkpoint: Some("finished".to_string()),
+                    },
+                    crate::maintenance_store::TaskStage {
+                        name: "prompt_cache".to_string(),
+                        status: finish
+                            .details
+                            .as_ref()
+                            .and_then(|details| details.get("promptCacheStats"))
+                            .and_then(|stats| stats.get("state"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        completed: None,
+                        total: None,
+                        elapsed_ms: None,
+                        wait_reason: Some("materialization_owner".to_string()),
+                        checkpoint: None,
+                    },
+                    crate::maintenance_store::TaskStage {
+                        name: "orphan_cleanup".to_string(),
+                        status: "completed".to_string(),
+                        completed: None,
+                        total: None,
+                        elapsed_ms: None,
+                        wait_reason: None,
+                        checkpoint: None,
+                    },
+                ]
+            });
+            let completion_phase =
+                finish
+                    .completion
+                    .as_deref()
+                    .unwrap_or(if status == SystemTaskStatus::Failed {
+                        "failed"
+                    } else {
+                        "complete"
+                    });
+            if let Err(error) = store
+                .publish_progress(
+                    &finish.task_key,
+                    progress_total,
+                    progress_completed,
+                    Some(completion_phase),
+                    Some("finished"),
+                    (finish.task_key == "retention_archive").then_some("expired_invocations"),
+                    (finish.task_key == "retention_archive").then_some("codex_invocations"),
+                    progress_wait_reason
+                        .or((status == SystemTaskStatus::Failed).then_some("fatal_error")),
+                    None,
+                    final_stages.as_deref().or(initial_stages.as_deref()),
+                )
+                .await
+            {
+                warn!(task = %finish.task_key, error = %error, "managed task final progress snapshot could not be published");
+            }
             if let Err(error) = finish_managed_task_run_bounded(&store, &finish).await {
                 warn!(
                     run_id = finish.run_id,
@@ -1220,6 +1386,9 @@ struct ManagedTaskFinish {
     duration_ms: i64,
     summary: Option<String>,
     detail: Option<String>,
+    completion: Option<String>,
+    core_completion: Option<String>,
+    details: Option<Value>,
 }
 
 async fn finish_managed_task_run_bounded(
@@ -1230,13 +1399,16 @@ async fn finish_managed_task_run_bounded(
     for attempt in 0..=MANAGED_TASK_FINISH_RETRY_ATTEMPTS {
         match tokio::time::timeout(
             MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT,
-            store.finish_run(
+            store.finish_run_with_observation(
                 finish.run_id,
                 finish.status.as_str(),
                 &finish.finished_at,
                 finish.duration_ms,
                 finish.summary.as_deref(),
                 finish.detail.as_deref(),
+                finish.completion.as_deref(),
+                finish.core_completion.as_deref(),
+                finish.details.as_ref(),
             ),
         )
         .await
@@ -1316,6 +1488,90 @@ fn managed_task_metric_dimension(task_key: &str) -> &'static str {
         key if key.starts_with("startup_backfill.") => "startup_backfill_child",
         _ => "unknown_managed_task",
     }
+}
+
+struct ManagedTaskExecution {
+    summary: String,
+    detail: Option<String>,
+    completion: Option<String>,
+    core_completion: Option<String>,
+    details: Option<Value>,
+}
+
+impl ManagedTaskExecution {
+    fn simple(summary: String) -> Self {
+        Self {
+            summary,
+            detail: None,
+            completion: None,
+            core_completion: None,
+            details: None,
+        }
+    }
+}
+
+async fn run_managed_task_once_with_observation(
+    state: &Arc<AppState>,
+    task_key: &str,
+) -> Result<ManagedTaskExecution> {
+    if task_key == "retention_archive" {
+        let summary =
+            run_data_retention_maintenance(&state.pool, &state.config, Some(false), None).await?;
+        let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);
+        let prompt_cache_pending = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .ok();
+        let prompt_cache_enabled =
+            crate::prompt_cache_conversation_materialization_enabled(&state.pool)
+                .await
+                .ok();
+        let prompt_cache_state = match (prompt_cache_enabled, prompt_cache_pending) {
+            (Some(false), _) => ("unavailable", "materialization_disabled"),
+            (Some(true), Some(pending)) if pending > 0 => {
+                ("unavailable", "materialization_pending")
+            }
+            (Some(true), Some(_)) => ("available", "fresh"),
+            _ => ("unknown", "stats_query_failed"),
+        };
+        let details = json!({
+            "completion": summary.completion(),
+            "coreCompletion": summary.core_completion(),
+            "budgetMs": summary.work_budget_ms,
+            "elapsedMs": summary.elapsed_ms,
+            "settlementMs": summary.settlement_ms,
+            "budgetExhausted": summary.budget_exhausted,
+            "waitReason": summary.wait_reason,
+            "processedCount": summary.processed_row_count(),
+            "total": summary.backlog_total,
+            "completed": summary.invocation_rows_archived,
+            "observedAt": summary.backlog_observed_at,
+            "sourceMaxInvocationId": summary.source_max_invocation_id,
+            "invocationRowsArchived": summary.invocation_rows_archived,
+            "invocationDetailsPruned": summary.invocation_details_pruned,
+            "archiveBatchesTouched": summary.archive_batches_touched,
+            "rawFilesRemoved": summary.raw_files_removed,
+            "promptCacheConversationsReleased": summary.prompt_cache_conversations_released,
+            "summary": detail,
+            "promptCacheStats": {
+                "state": prompt_cache_state.0,
+                "pending": prompt_cache_pending,
+                "reason": prompt_cache_state.1,
+            },
+        });
+        return Ok(ManagedTaskExecution {
+            summary: brief,
+            detail: Some(detail),
+            completion: Some(summary.completion().to_string()),
+            core_completion: Some(summary.core_completion().to_string()),
+            details: Some(details),
+        });
+    }
+    run_managed_task_once(state, task_key)
+        .await
+        .map(ManagedTaskExecution::simple)
 }
 
 async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<String> {

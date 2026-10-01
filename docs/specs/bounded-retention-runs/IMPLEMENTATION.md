@@ -2,9 +2,11 @@
 
 ## Current Status
 
-- Implementation: 未开始；本文记录已收敛的设计和实施验收条件。
+- Implementation: Candidate 已实现；代码、迁移、API、Demo 页面及主要验证证据已进入交付收敛。
 - Lifecycle: active。
-- 本次仅修改文档；未修改源码、数据库、生产配置或调度。
+- 当前分支：`th/retention-bounded-recovery-design`，开发基线为 `a02b08f12c84d3c52ce4bae6f2c3e58a31243aab`。
+- 已提交设计基线：`b018ae06`；本轮实现尚未形成最终提交或 PR。
+- shared-testbox 三个资源 profile 已通过，百万行候选/开发基线对照也已完成；v2.71.x/v2.80.2 前向修复夹具已通过，视觉比较确认仍是交付前门禁。
 
 ## 调查证据与限制
 
@@ -85,31 +87,39 @@
 
 ## Implementation Coverage
 
-| 要求                            | 主要源码映射                                                                                                                | 当前缺口                                                |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| REQ-BRR-001/002/004/008         | `src/maintenance/retention.rs`, `src/runtime.rs`                                                                            | 统一入口、预算、分阶段结构结果和公平推进                |
-| REQ-BRR-003/005/015             | `src/prompt_cache_conversations.rs`, `src/maintenance/startup_backfill.rs`, `src/schema.rs`                                 | 去同步刷新、真实 SQLite 查询预算、单 key 分页与安全发布 |
-| REQ-BRR-006/007                 | `src/prompt_cache_conversations.rs`, `src/maintenance/retention.rs`, `src/schema.rs`                                        | 持久化孤儿扫描、短占用保护和原子正确性 checkpoint       |
-| REQ-BRR-009/010/011/013         | `src/maintenance_store.rs`, `src/runtime.rs`, `src/api/slices/system_routes_and_tasks.rs`                                   | 范围化计数、快照发布、完整历史和有效计划                |
-| REQ-BRR-012                     | `src/performance_telemetry.rs`                                                                                              | 相交桶数量、最新有样本桶和覆盖语义                      |
-| REQ-BRR-008/009/010/011/013/015 | `web/src/lib/api/core-foundation.ts`, `web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/pages/system/taskLabels.ts` | 可选字段兼容、阶段成果、未知/过期/暂不可用显示          |
-| REQ-BRR-014                     | `src/schema.rs`, `src/maintenance_store.rs`                                                                                 | 结构/DML/恢复分离及旧状态 fixture                       |
+| 要求                            | 主要源码映射                                                                                                                                            | 当前状态 / 剩余证据                                                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| REQ-BRR-001/002/004/008         | `src/maintenance/retention.rs`, `src/runtime.rs`                                                                                                        | 已实现统一调度入口、60 秒工作预算、独立收尾计时和结构化阶段结果；shared-testbox 三 profile 及历史状态恢复夹具已通过                                      |
+| REQ-BRR-003/005/015             | `src/prompt_cache_conversations.rs`, `src/maintenance/retention.rs`                                                                                     | 已实现 SQLite progress handler、2 秒共享剩余预算、单 key 分页、代次安全发布和暂不可用契约；百万行候选已收敛并释放队列                                    |
+| REQ-BRR-006/007                 | `src/prompt_cache_conversations.rs`, `src/maintenance/retention.rs`                                                                                     | 已实现持久化孤儿 epoch/cursor、候选精确 probe、删除前身份复核和事务 checkpoint；archive-file-io profile 已通过                                           |
+| REQ-BRR-009/010/011/013         | `src/maintenance_store.rs`, `src/runtime.rs`, `src/api/slices/system_routes_and_tasks.rs`                                                               | 已实现固定 source 范围、完整 run details、阶段进度、默认/覆盖计划和 stale 观测；API 兼容及历史状态恢复回归已通过                                         |
+| REQ-BRR-012                     | `src/performance_telemetry.rs`                                                                                                                          | 已修正半开相交桶、覆盖率和最新有样本桶选择；非整点窗口回归已通过                                                                                         |
+| REQ-BRR-008/009/010/011/013/015 | `web/src/lib/api/core-foundation.ts`, `web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/pages/system/taskLabels.ts`, `web/src/demo/handlers.ts` | 已实现可选字段兼容、成果/阶段/单位/计划、未知/过期/统计待刷新显示；Storybook、Web 单测、typecheck、lint、build 和任务页 E2E 已通过，快照比较待确认       |
+| REQ-BRR-014                     | `src/maintenance_store.rs`, `src/prompt_cache_conversations.rs`, `src/tests/stateful_sqlite/*`                                                          | 已实现幂等 DDL、主库续作结构、维护库 nullable 字段和代次回归；v2.71.45/v2.80.2 前向修复、重复 DDL、中断 staging/generation 保留及 ready 不回填回归已通过 |
 
 ## Compatibility and Migration
 
-计划影响：public API 为 patch（原有字段及 status 保留，新增可选字段），持久化语义为 minor（新的跨页及孤儿续作状态只承诺前向恢复），整体按 minor 准备。没有实施或兼容测试证据，不能视为发布验证结论；分别记录在 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)。
+计划影响：public API 为 patch（原有字段及 status 保留，新增可选字段），持久化语义为 minor（新的跨页及孤儿续作状态只承诺前向恢复），整体按 minor 准备。Candidate 已采用该分类，边界旧 schema、重启修复和百万行实测均已有证据；最终发布结论仍依赖视觉门禁。分别记录在 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)。
 
 主库只增加业务正确性需要的 cursor、source 范围、刷新代次/暂存和索引。维护库增加 nullable 结果/快照字段。结构安装幂等且不历史扫描；运行时逐页产生 DML；旧进度、历史耗时和完成度保持未知。既有 archive artifact、保留天数和 wire 格式不变。
 
-支持状态以既有 retention 的 v2.71.x 旧 schema 和本次生产 v2.80.2 schema 为必测边界，并覆盖其间存在的实际迁移结构；候选读取旧状态，而旧 Minor 程序不承诺维护新续作语义。停止发布后的恢复采用新版本前向修复，备份恢复单独处理。
+支持状态以既有 retention 的 v2.71.x 旧 schema 和本次生产 v2.80.2 schema 为必测边界，并覆盖其间存在的实际迁移结构；候选读取旧状态，而旧 Minor 程序不承诺维护新续作语义。停止发布后的恢复采用新版本前向修复，备份恢复单独处理。`ensure_schema_repairs_v271_and_v2802_retention_fixtures_without_historical_backfill` 固定了两个标签的旧 invocation/队列形状，重复运行 DDL，并验证历史行、未完成队列和 staging generation 不丢失。
 
 ## Verification and Remaining Gaps
 
-已完成的只有只读调查、设计文档结构/链接/JSON 检查。源码修改、运行验证、SQL 查询计划、SQLite 真正中断及 UI 验证均未开始。
+当前已完成：Rust `cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings`；Prompt 统计代次/分页、预算入口、retention 和性能窗口定向回归；Web 单测 1,682 项通过、typecheck、lint（仅既有 warning）和 build；Storybook 136 项通过；任务页 E2E 7/7 通过。shared-testbox 三 profile 通过：lightweight 1,246/1,246、stateful-sqlite 1,375/1,375、archive-file-io 299/299。profile 耗时不作为候选性能结论，百万行对照单独记录在 benchmark card。
+
+百万行同种子对照也已完成：同一测试机上候选 130 万行/热 key 50 万行，刷新 347.6s、在线读 p95/p99 为 225/250ms；开发基线刷新 103.2s、在线读 p95/p99 为 247/278ms；两者精确计数均为 500,000 且队列归零。候选读延迟满足门槛，但分页提交带来的总刷新耗时约为基线 3.37 倍，不能把有界执行表述为吞吐提升；证据卡保留该限制。
+
+尚未形成最终证据的项目：最终截图的基线视觉比较确认。任何缺少该证据的验收项保持未验证，不降低门槛。
 
 实施验收对应 SPEC 的 VER-BRR-001..007。代表性大表至少包含超过百万 invocation、稀疏孤儿和单 key 倾斜；同时施加在线读写，验证有界查询、主库锁释放、公平推进及静默后统计收敛。性能门槛不能用 4,000-key/40,000-invocation 小 fixture 代替，也不能从生产的历史时间倒推保证。
 
-Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动完成后按 UI visual evidence 流程生成可控证据；本次文档工作没有 UI 验证结论。
+Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动已在本地 Demo 生成桌面/移动端状态证据，但视觉比较仍待最终快照确认。
+
+## Visual Evidence
+
+最终 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新。当前截图来自本地 Demo，尚未与基线做自动像素比较；按 UI visual evidence 规则，视觉比较状态为“需确认”，不能当作真实生产页面证据。
 
 ## References
 

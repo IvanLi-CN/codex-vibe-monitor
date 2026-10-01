@@ -2138,8 +2138,18 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.orphan_raw_files_removed
     );
     let detail = format!(
-        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} released_prompt_cache_conversations={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={} orphan_raw_files_removed={}",
+        "dry_run={} completion={} core_completion={} budget_ms={} elapsed_ms={} settlement_ms={} budget_exhausted={} wait_reason={:?} backlog_total={:?} observed_at={:?} source_max_invocation_id={:?} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} released_prompt_cache_conversations={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={} orphan_raw_files_removed={}",
         summary.dry_run,
+        summary.completion(),
+        summary.core_completion(),
+        summary.work_budget_ms.unwrap_or_default(),
+        summary.elapsed_ms.unwrap_or_default(),
+        summary.settlement_ms.unwrap_or_default(),
+        summary.budget_exhausted,
+        summary.wait_reason,
+        summary.backlog_total,
+        summary.backlog_observed_at,
+        summary.source_max_invocation_id,
         summary.raw_files_compression_candidates,
         summary.raw_files_compressed,
         summary.raw_bytes_before,

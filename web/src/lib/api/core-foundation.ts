@@ -2623,6 +2623,12 @@ export interface ManagedTask {
   cronExpr?: string | null;
   nextTriggerAt?: string | null;
   isManual: boolean;
+  effectiveSchedule?: {
+    source: string;
+    intervalSecs?: number | null;
+    cronExpr?: string | null;
+    nextTriggerAt?: string | null;
+  } | null;
 }
 
 export interface ManagedTaskProgress {
@@ -2633,6 +2639,36 @@ export interface ManagedTaskProgress {
   etaSeconds?: number | null;
   updatedAt?: string | null;
   freshness: string;
+  unit?: string | null;
+  sourceScope?: string | null;
+  lastProgressAt?: string | null;
+  waitReason?: string | null;
+  nextRetryAt?: string | null;
+  stages?: Array<{
+    name: string;
+    status: string;
+    completed?: number | null;
+    total?: number | null;
+    elapsedMs?: number | null;
+    waitReason?: string | null;
+    checkpoint?: string | null;
+  }> | null;
+}
+
+export interface ManagedTaskRunDetails {
+  completion?: string | null;
+  coreCompletion?: string | null;
+  budgetMs?: number | null;
+  elapsedMs?: number | null;
+  settlementMs?: number | null;
+  budgetExhausted?: boolean | null;
+  waitReason?: string | null;
+  promptCacheStats?: {
+    state?: "available" | "unavailable" | string | null;
+    pending?: number | null;
+    reason?: string | null;
+  } | null;
+  [key: string]: unknown;
 }
 
 export interface ManagedTaskRun {
@@ -2646,6 +2682,9 @@ export interface ManagedTaskRun {
   processedCount?: number | null;
   updatedCount?: number | null;
   errorDetail?: string | null;
+  completion?: string | null;
+  coreCompletion?: string | null;
+  details?: ManagedTaskRunDetails | null;
 }
 
 export interface ManagedTaskPerformance {
@@ -2655,6 +2694,7 @@ export interface ManagedTaskPerformance {
   averageDurationMs?: number | null;
   latestDurationMs?: number | null;
   observedAt?: string | null;
+  coverage?: number | null;
 }
 
 export interface ManagedTaskDetail {
@@ -5262,6 +5302,161 @@ function normalizePromptCacheMaterializationRun(
   };
 }
 
+function asRecord(raw: unknown): Record<string, unknown> | null {
+  return raw != null && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+}
+
+function normalizeManagedTaskStage(raw: unknown) {
+  const payload = asRecord(raw);
+  if (!payload || typeof payload.name !== "string" || typeof payload.status !== "string") {
+    return null;
+  }
+  return {
+    name: payload.name,
+    status: payload.status,
+    completed: normalizeFiniteNumber(payload.completed),
+    total: normalizeFiniteNumber(payload.total),
+    elapsedMs: normalizeFiniteNumber(payload.elapsedMs),
+    waitReason: typeof payload.waitReason === "string" ? payload.waitReason : undefined,
+    checkpoint: typeof payload.checkpoint === "string" ? payload.checkpoint : undefined,
+  };
+}
+
+function normalizeManagedTask(raw: unknown): ManagedTask | null {
+  const payload = asRecord(raw);
+  if (
+    !payload ||
+    typeof payload.taskKey !== "string" ||
+    typeof payload.title !== "string" ||
+    typeof payload.description !== "string" ||
+    typeof payload.triggerMode !== "string" ||
+    typeof payload.enabled !== "boolean" ||
+    typeof payload.isManual !== "boolean"
+  ) {
+    return null;
+  }
+  const schedule = asRecord(payload.effectiveSchedule);
+  return {
+    taskKey: payload.taskKey,
+    title: payload.title,
+    description: payload.description,
+    triggerMode: payload.triggerMode,
+    enabled: payload.enabled,
+    intervalSecs: normalizeFiniteNumber(payload.intervalSecs) ?? null,
+    cronExpr: typeof payload.cronExpr === "string" ? payload.cronExpr : null,
+    nextTriggerAt: typeof payload.nextTriggerAt === "string" ? payload.nextTriggerAt : null,
+    isManual: payload.isManual,
+    effectiveSchedule:
+      schedule && typeof schedule.source === "string"
+        ? {
+            source: schedule.source,
+            intervalSecs: normalizeFiniteNumber(schedule.intervalSecs) ?? null,
+            cronExpr: typeof schedule.cronExpr === "string" ? schedule.cronExpr : null,
+            nextTriggerAt:
+              typeof schedule.nextTriggerAt === "string" ? schedule.nextTriggerAt : null,
+          }
+        : undefined,
+  };
+}
+
+function normalizeManagedTaskProgress(raw: unknown): ManagedTaskProgress | null {
+  const payload = asRecord(raw);
+  if (!payload) return null;
+  const stages = Array.isArray(payload.stages)
+    ? payload.stages
+        .map(normalizeManagedTaskStage)
+        .filter((stage): stage is NonNullable<typeof stage> => stage != null)
+    : undefined;
+  return {
+    total: normalizeFiniteNumber(payload.total),
+    completed: normalizeFiniteNumber(payload.completed),
+    phase: typeof payload.phase === "string" ? payload.phase : undefined,
+    checkpoint: typeof payload.checkpoint === "string" ? payload.checkpoint : undefined,
+    etaSeconds: normalizeFiniteNumber(payload.etaSeconds),
+    updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : undefined,
+    freshness: typeof payload.freshness === "string" ? payload.freshness : "unknown",
+    unit: typeof payload.unit === "string" ? payload.unit : undefined,
+    sourceScope: typeof payload.sourceScope === "string" ? payload.sourceScope : undefined,
+    lastProgressAt: typeof payload.lastProgressAt === "string" ? payload.lastProgressAt : undefined,
+    waitReason: typeof payload.waitReason === "string" ? payload.waitReason : undefined,
+    nextRetryAt: typeof payload.nextRetryAt === "string" ? payload.nextRetryAt : undefined,
+    stages,
+  };
+}
+
+function normalizeManagedTaskRun(raw: unknown): ManagedTaskRun | null {
+  const payload = asRecord(raw);
+  const id = normalizeFiniteNumber(payload?.id);
+  const startedAt = typeof payload?.startedAt === "string" ? payload.startedAt : "";
+  if (id == null || !startedAt || typeof payload?.status !== "string") return null;
+  const details = asRecord(payload.details);
+  const promptCacheStats = asRecord(details?.promptCacheStats);
+  const normalizedDetails = details
+    ? {
+        ...details,
+        promptCacheStats: promptCacheStats
+          ? {
+              state:
+                typeof promptCacheStats.state === "string" ? promptCacheStats.state : undefined,
+              pending: normalizeFiniteNumber(promptCacheStats.pending),
+              reason:
+                typeof promptCacheStats.reason === "string" ? promptCacheStats.reason : undefined,
+            }
+          : undefined,
+      }
+    : undefined;
+  return {
+    id,
+    triggerKind: typeof payload.triggerKind === "string" ? payload.triggerKind : undefined,
+    startedAt,
+    finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
+    durationMs: normalizeFiniteNumber(payload.durationMs),
+    status: payload.status,
+    summary: typeof payload.summary === "string" ? payload.summary : null,
+    processedCount: normalizeFiniteNumber(payload.processedCount),
+    updatedCount: normalizeFiniteNumber(payload.updatedCount),
+    errorDetail: typeof payload.errorDetail === "string" ? payload.errorDetail : null,
+    completion: typeof payload.completion === "string" ? payload.completion : null,
+    coreCompletion: typeof payload.coreCompletion === "string" ? payload.coreCompletion : null,
+    details: normalizedDetails,
+  };
+}
+
+function normalizeManagedTaskPerformance(raw: unknown): ManagedTaskPerformance | null {
+  const payload = asRecord(raw);
+  const runCount = normalizeFiniteNumber(payload?.runCount);
+  const successCount = normalizeFiniteNumber(payload?.successCount);
+  const failureCount = normalizeFiniteNumber(payload?.failureCount);
+  if (runCount == null || successCount == null || failureCount == null) return null;
+  const record = payload ?? {};
+  return {
+    runCount,
+    successCount,
+    failureCount,
+    averageDurationMs: normalizeFiniteNumber(record.averageDurationMs),
+    latestDurationMs: normalizeFiniteNumber(record.latestDurationMs),
+    observedAt: typeof record.observedAt === "string" ? record.observedAt : undefined,
+    coverage: normalizeFiniteNumber(record.coverage),
+  };
+}
+
+function normalizeManagedTaskDetail(raw: unknown): ManagedTaskDetail {
+  const payload = asRecord(raw);
+  const task = normalizeManagedTask(payload?.task);
+  if (!task) throw new Error("managed task response is missing a valid task");
+  const runs = Array.isArray(payload?.recentRuns)
+    ? payload.recentRuns
+        .map(normalizeManagedTaskRun)
+        .filter((run): run is ManagedTaskRun => run != null)
+    : [];
+  return {
+    task,
+    progress: normalizeManagedTaskProgress(payload?.progress),
+    recentRuns: runs,
+    performance: normalizeManagedTaskPerformance(payload?.performance),
+  };
+}
+
 function normalizePromptCacheMaterializationStatus(raw: unknown): PromptCacheMaterializationStatus {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const runs = Array.isArray(payload.recentRuns)
@@ -5496,30 +5691,41 @@ export async function fetchSystemTaskRuns(params?: {
 }
 
 export async function fetchManagedTasks(): Promise<ManagedTask[]> {
-  return fetchJson<ManagedTask[]>("/api/system/managed-tasks");
+  const response = await fetchJson<unknown>("/api/system/managed-tasks");
+  return Array.isArray(response)
+    ? response.map(normalizeManagedTask).filter((task): task is ManagedTask => task != null)
+    : [];
 }
 
 export async function fetchManagedTask(taskKey: string): Promise<ManagedTaskDetail> {
-  return fetchJson<ManagedTaskDetail>(`/api/system/managed-tasks/${encodeURIComponent(taskKey)}`);
+  const response = await fetchJson<unknown>(
+    `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
+  );
+  return normalizeManagedTaskDetail(response);
 }
 
 export async function updateManagedTask(
   taskKey: string,
   payload: { enabled?: boolean; intervalSecs?: number | null; cronExpr?: string | null },
 ): Promise<ManagedTaskDetail> {
-  return fetchJson<ManagedTaskDetail>(`/api/system/managed-tasks/${encodeURIComponent(taskKey)}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
+  const response = await fetchJson<unknown>(
+    `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
+  return normalizeManagedTaskDetail(response);
 }
 
 export async function runManagedTaskNow(taskKey: string): Promise<ManagedTaskDetail> {
-  return fetchJson<ManagedTaskDetail>(
+  const response = await fetchJson<unknown>(
     `/api/system/managed-tasks/${encodeURIComponent(taskKey)}/run`,
     {
       method: "POST",
     },
   );
+  return normalizeManagedTaskDetail(response);
 }
 
 export async function fetchExternalApiKeys(): Promise<ExternalApiKeyListResponse> {

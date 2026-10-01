@@ -2,7 +2,7 @@
 
 ## Lifecycle / Compatibility
 
-主题为 active，实现未开始。新增可选观测字段保留旧 API status；新的持久化续作状态采用前向修复，不承诺较旧 Minor 程序维护新状态的恢复语义。
+主题为 active。Candidate 已实现新增可选观测字段并保留旧 API status；新的持久化续作状态采用前向修复，不承诺较旧 Minor 程序维护新状态的恢复语义。shared-testbox 三个 profile、同种子百万行对照及 v2.71.45/v2.80.2 前向修复夹具已通过；视觉比较仍决定是否可交付。
 
 ## Replacements / Background
 
@@ -17,7 +17,11 @@
 
 ## Related Changes
 
-None。尚无代码实现、PR 或发布关联。
+- `b018ae06`：提交本主题的设计基线与 ADR 0025。
+- 当前实现位于 `th/retention-bounded-recovery-design`，尚未创建 PR 或发布关联。
+- Candidate 资源 profile：lightweight 1,246/1,246、stateful-sqlite 1,375/1,375、archive-file-io 299/299；百万行对照见 [benchmark card](assets/shared-testbox-candidate-benchmark-card.md)。
+- Web Storybook 136 项、任务页 E2E 7/7、Web 单测 1,682 项及 Rust check/Clippy 已通过；本地 Demo 截图的视觉比较仍待确认。
+- 实现阶段新增主库统计代次/分页/孤儿 cursor 结构、维护库 nullable 运行观测字段，以及任务页 Demo 状态；具体覆盖和未验证证据见 [具体方案](IMPLEMENTATION.md)。
 
 ## References
 

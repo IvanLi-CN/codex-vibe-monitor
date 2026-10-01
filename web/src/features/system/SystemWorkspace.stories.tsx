@@ -5,6 +5,8 @@ import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
+  ManagedTask,
+  ManagedTaskDetail,
   ModelsDevSyncPreview,
   PricingEntry,
   SettingsPayload,
@@ -17,6 +19,7 @@ import SystemModelsPage from "../../pages/system/SystemModelsPage";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
 import SystemSettingsPage from "../../pages/system/SystemSettingsPage";
 import SystemStatusPage from "../../pages/system/SystemStatusPage";
+import SystemTaskDetailPage from "../../pages/system/SystemTaskDetailPage";
 import SystemTasksPage from "../../pages/system/SystemTasksPage";
 import {
   FullPageStorySurface,
@@ -355,6 +358,104 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
   };
 }
 
+const STORYBOOK_MANAGED_TASKS: ManagedTask[] = [
+  {
+    taskKey: "retention_archive",
+    title: "数据保留与归档",
+    description: "按保留策略归档并清理历史数据",
+    triggerMode: "interval",
+    enabled: true,
+    intervalSecs: 3600,
+    cronExpr: null,
+    nextTriggerAt: "2026-10-01T01:00:00Z",
+    isManual: false,
+    effectiveSchedule: {
+      source: "default",
+      intervalSecs: 3600,
+      cronExpr: null,
+      nextTriggerAt: "2026-10-01T01:00:00Z",
+    },
+  },
+  {
+    taskKey: "forward_proxy_subscription_refresh",
+    title: "正向代理订阅刷新",
+    description: "刷新代理订阅并更新代理节点状态",
+    triggerMode: "event",
+    enabled: true,
+    intervalSecs: null,
+    cronExpr: null,
+    nextTriggerAt: null,
+    isManual: false,
+  },
+];
+
+const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
+  task: STORYBOOK_MANAGED_TASKS[0],
+  progress: {
+    total: 128_000,
+    completed: 96_000,
+    phase: "archive",
+    checkpoint: "invocation_id=983040",
+    etaSeconds: null,
+    updatedAt: "2026-10-01T00:12:30Z",
+    freshness: "fresh",
+    unit: "invocations",
+    sourceScope: "id <= 1000000",
+    lastProgressAt: "2026-10-01T00:12:30Z",
+    waitReason: "prompt_cache_materialization_pending",
+    nextRetryAt: "2026-10-01T00:13:00Z",
+    stages: [
+      { name: "archive", status: "running", completed: 96_000, total: 128_000 },
+      {
+        name: "prompt_cache",
+        status: "pending",
+        completed: 0,
+        total: 3,
+        waitReason: "prompt_cache_materialization_pending",
+      },
+      { name: "orphan_cleanup", status: "queued", completed: 0, total: 12 },
+    ],
+  },
+  recentRuns: [
+    {
+      id: 104,
+      triggerKind: "manual",
+      startedAt: "2026-10-01T00:10:00Z",
+      finishedAt: "2026-10-01T00:11:04Z",
+      durationMs: 64_000,
+      status: "success",
+      summary: "归档阶段完成，统计刷新仍在后台继续。",
+      processedCount: 96_000,
+      updatedCount: 96_000,
+      completion: "partial",
+      coreCompletion: "completed",
+      details: {
+        completion: "partial",
+        coreCompletion: "completed",
+        budgetMs: 60_000,
+        elapsedMs: 64_000,
+        settlementMs: 4_000,
+        budgetExhausted: true,
+        waitReason: "prompt_cache_materialization_pending",
+        promptCacheStats: {
+          state: "unavailable",
+          pending: 3,
+          reason: "prompt_cache_materialization_pending",
+        },
+      },
+    },
+  ],
+  performance: {
+    runCount: 24,
+    successCount: 22,
+    failureCount: 1,
+    averageDurationMs: 48_500,
+    latestDurationMs: 64_000,
+    observedAt: "2026-10-01T00:12:30Z",
+    coverage: 0.92,
+  },
+};
+
 const STORYBOOK_SETTINGS: SettingsPayload = {
   proxy: {
     hijackEnabled: true,
@@ -569,6 +670,7 @@ function buildSystemWorkspaceRequestHandler(
   failFirstModelsPreview = false,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
+  const retentionTaskDetail = clone(STORYBOOK_RETENTION_TASK_DETAIL);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
   return async ({ url, init }) => {
     const method = (init?.method ?? "GET").toUpperCase();
@@ -588,6 +690,40 @@ function buildSystemWorkspaceRequestHandler(
 
     if (url.pathname === "/api/system/status" && method === "GET") {
       return jsonResponse(clone(statusOverride ?? STORYBOOK_SYSTEM_STATUS));
+    }
+
+    if (url.pathname === "/api/system/managed-tasks" && method === "GET") {
+      return jsonResponse(clone(STORYBOOK_MANAGED_TASKS));
+    }
+
+    if (url.pathname === "/api/system/managed-tasks/retention_archive") {
+      if (method === "PATCH") {
+        const body = parseBody<{
+          enabled?: boolean;
+          intervalSecs?: number | null;
+          cronExpr?: string | null;
+        }>({});
+        retentionTaskDetail.task = {
+          ...retentionTaskDetail.task,
+          enabled: body.enabled ?? retentionTaskDetail.task.enabled,
+          intervalSecs:
+            body.intervalSecs === undefined
+              ? retentionTaskDetail.task.intervalSecs
+              : body.intervalSecs,
+          cronExpr: body.cronExpr === undefined ? retentionTaskDetail.task.cronExpr : body.cronExpr,
+          effectiveSchedule: {
+            source: "override",
+            intervalSecs: body.intervalSecs ?? retentionTaskDetail.task.intervalSecs ?? null,
+            cronExpr: body.cronExpr ?? retentionTaskDetail.task.cronExpr ?? null,
+            nextTriggerAt: retentionTaskDetail.task.nextTriggerAt ?? null,
+          },
+        };
+      }
+      return jsonResponse(clone(retentionTaskDetail));
+    }
+
+    if (url.pathname === "/api/system/managed-tasks/retention_archive/run" && method === "POST") {
+      return jsonResponse(clone(retentionTaskDetail));
     }
 
     if (url.pathname === "/api/system/tasks" && method === "GET") {
@@ -687,6 +823,7 @@ function StorybookSystemWorkspaceRoutes() {
       <Route path="/system" element={<SystemLayout />}>
         <Route path="status" element={<SystemStatusPage />} />
         <Route path="tasks" element={<SystemTasksPage />} />
+        <Route path="tasks/:taskKey" element={<SystemTaskDetailPage />} />
         <Route path="settings" element={<SystemSettingsPage />} />
         <Route path="models" element={<SystemModelsPage />} />
         <Route path="proxy" element={<SystemProxyPage />} />
@@ -1425,6 +1562,20 @@ export const Tasks: Story = {
     await expect(canvas.getByRole("heading", { name: "后台任务" })).toBeVisible();
     await expect(canvas.getByTestId("system-tasks-list")).toBeVisible();
     await expect(canvas.getByText(/forward_proxy_subscription_refresh/)).toBeVisible();
+  },
+};
+
+export const TaskDetail: Story = {
+  render: () => renderWorkspace("/system/tasks/retention_archive"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("heading", { name: "数据保留与归档" })).toBeVisible();
+    await expect(canvas.getByText("默认计划 · 3600s")).toBeVisible();
+    await expect(canvas.getByText("invocations")).toBeVisible();
+    await expect(canvas.getByText("partial")).toBeVisible();
+    await expect(canvas.getByText("暂不可用（积压 3）")).toBeVisible();
+    await expect(canvas.getByText("prompt_cache")).toBeVisible();
+    await expect(canvas.getByText("92.0%")).toBeVisible();
   },
 };
 

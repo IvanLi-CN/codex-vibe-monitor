@@ -2825,6 +2825,9 @@ type DemoManagedTaskRun = {
   processedCount: number | null;
   updatedCount: number | null;
   errorDetail: string | null;
+  completion?: string | null;
+  coreCompletion?: string | null;
+  details?: Record<string, unknown> | null;
 };
 
 const managedTaskOverrides = new Map<string, DemoManagedTaskOverride>();
@@ -2863,6 +2866,12 @@ function managedTasks() {
     cronExpr: string | null;
     nextTriggerAt: string | null;
     isManual: boolean;
+    effectiveSchedule?: {
+      source: string;
+      intervalSecs: number | null;
+      cronExpr: string | null;
+      nextTriggerAt: string | null;
+    } | null;
   };
   const tasks: Array<[string, string, string, string, boolean]> = [
     ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
@@ -2996,8 +3005,16 @@ function managedTasks() {
         const override = managedTaskOverrides.get(taskKey);
         const enabled = override?.enabled ?? true;
         const intervalSecs =
-          override?.intervalSecs !== undefined ? override.intervalSecs : isManual ? null : 300;
+          override?.intervalSecs !== undefined
+            ? override.intervalSecs
+            : isManual
+              ? null
+              : taskKey === "retention_archive"
+                ? 3600
+                : 300;
         const cronExpr = override?.cronExpr !== undefined ? override.cronExpr : null;
+        const effectiveIntervalSecs =
+          intervalSecs ?? (taskKey === "retention_archive" ? 3600 : null);
         return {
           enabled,
           intervalSecs,
@@ -3006,6 +3023,21 @@ function managedTasks() {
             override?.nextTriggerAt !== undefined
               ? override.nextTriggerAt
               : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
+          effectiveSchedule:
+            !isManual &&
+            (intervalSecs != null || cronExpr != null || taskKey === "retention_archive")
+              ? {
+                  source:
+                    override?.intervalSecs !== undefined || override?.cronExpr !== undefined
+                      ? "override"
+                      : "default",
+                  intervalSecs: effectiveIntervalSecs,
+                  cronExpr,
+                  nextTriggerAt:
+                    override?.nextTriggerAt ??
+                    demoNextTriggerAt(enabled, effectiveIntervalSecs, cronExpr),
+                }
+              : null,
         };
       })(),
       taskKey,
@@ -3044,6 +3076,21 @@ function managedTaskDetail(taskKey: string) {
     processedCount: task.isManual ? null : 1842,
     updatedCount: task.isManual ? null : 1780,
     errorDetail: null,
+    completion: "completed",
+    coreCompletion: task.isManual ? null : "completed",
+    details:
+      taskKey === "retention_archive"
+        ? {
+            budgetMs: 60000,
+            elapsedMs: 31000,
+            settlementMs: 2,
+            promptCacheStats: {
+              state: "unavailable",
+              pending: 3,
+              reason: "materialization_pending_or_disabled",
+            },
+          }
+        : null,
   };
   return {
     task,
@@ -3056,6 +3103,10 @@ function managedTaskDetail(taskKey: string) {
           etaSeconds: null,
           updatedAt: at,
           freshness: "fresh",
+          unit: "invocations",
+          sourceScope: "expired_invocations",
+          waitReason: null,
+          stages: [],
         }
       : {
           total: 2547,
@@ -3065,6 +3116,14 @@ function managedTaskDetail(taskKey: string) {
           etaSeconds: 420,
           updatedAt: at,
           freshness: "fresh",
+          unit: "invocations",
+          sourceScope: "expired_invocations",
+          lastProgressAt: at,
+          waitReason: null,
+          stages: [
+            { name: "archive", status: "running", completed: 1842, total: 2547 },
+            { name: "statistics", status: "pending" },
+          ],
         },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
     performance: {
@@ -3074,6 +3133,7 @@ function managedTaskDetail(taskKey: string) {
       averageDurationMs: 31_000,
       latestDurationMs: 31_000,
       observedAt: at,
+      coverage: 0.92,
     },
   };
 }
@@ -4467,6 +4527,9 @@ export async function handleDemoRequest(request: Request) {
       processedCount: null,
       updatedCount: null,
       errorDetail: null,
+      completion: null,
+      coreCompletion: null,
+      details: null,
     };
     managedTaskRuns.set(taskKey, [run, ...runs].slice(0, 10));
     setTimeout(() => {
@@ -4475,6 +4538,21 @@ export async function handleDemoRequest(request: Request) {
       run.durationMs = 1_200;
       run.processedCount = detail.task.isManual ? null : 1842;
       run.updatedCount = detail.task.isManual ? null : 1780;
+      run.completion = detail.task.isManual ? "completed" : "partial";
+      run.coreCompletion = detail.task.isManual ? null : "completed";
+      run.details = detail.task.isManual
+        ? null
+        : {
+            budgetMs: 60000,
+            elapsedMs: 60042,
+            settlementMs: 42,
+            waitReason: "prompt_cache_refresh_pending",
+            promptCacheStats: {
+              state: "unavailable",
+              pending: 3,
+              reason: "materialization_pending_or_disabled",
+            },
+          };
     }, 600);
     return json(managedTaskDetail(taskKey));
   }
