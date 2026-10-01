@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 原模型管理能力与价格审核改进均已实现；定向后端、Web、Storybook 和构建验证通过。
+- Implementation: 原模型管理能力与价格审核改进均已实现；定向后端、Web、Storybook、类型检查、lint 和构建验证通过。
 - Lifecycle: active
 - Catalog note: models.dev is fetched only on explicit preview; local estimates remain user-reviewed.
 - Delivery: 视觉证据已与锁定基线比较并展示候选，等待主人确认；正式审查、CI 收敛和 PR 状态尚未开始。
@@ -31,13 +31,13 @@
 
 ## Verification
 
-- `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`: 1,381 passed, 1,609 skipped on codex-testbox.
+- `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`: 1,384 passed, 1,609 skipped on codex-testbox.
 - `cargo test sync_memory -- --nocapture`: 4 passed after changing the GET path to use a read transaction. `cargo test models_dev_catalog_maps_supported_prices_and_reports_other_dimensions -- --nocapture`: 1 passed.
-- `cargo check --locked --all-targets --all-features` and `bun run verify:rust`: passed on codex-testbox.
-- `cd web && bun run test`: 1,691 passed, 6 skipped; `bun run typecheck:web`, `bun run lint:web`, and `cd web && bun run build`: passed.
-- Focused SystemWorkspace Storybook regression: 45 stories passed. A full repository-wide Storybook run reached 61 passes before an unrelated browser connection closed in `DashboardWorkingConversationsSection`; the changed SystemWorkspace stories passed independently.
-- Controlled Storybook evidence covers desktop/mobile light and dark themes, a 500px short viewport, and a filtered zero-visible-results state. Same-path desktop and mobile comparisons against base `146ee9124388af96c4a59fca76684eb7c7e3d6f8` are readable and show meaningful changes; new dark, short, and zero-results paths have no baseline. Owner confirmation is pending before canonical evidence is updated.
-- `python3 bin/spec_contract_check.py --path docs/specs/model-management-price-sync/SPEC.md` could not run because this repository does not contain `bin/spec_contract_check.py`; the Spec drift check remains to be run during final documentation sync.
+- `cargo check --locked --all-targets --all-features`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `bun run verify:rust`: passed on codex-testbox.
+- `cd web && bun run test`: 170 files, 1,703 passed, 6 skipped; `bun run typecheck:web`, `bun run lint:web`, and `cd web && bun run build`: passed. Web lint reported 92 non-blocking warnings.
+- Focused SystemWorkspace Storybook regression: 45 stories passed locally with the configured Chromium browser. The codex-testbox browser runner did not have its expected Chromium headless-shell build; the equivalent focused run passed locally. A full repository-wide Storybook attempt stopped after 61 passes when the browser connection closed in `DashboardWorkingConversationsSection`.
+- Controlled Storybook evidence covers desktop and mobile in light and dark themes, a 500px short viewport, and a filtered zero-visible-results state. Story-level viewport settings and play assertions verify the requested 1660x960, 393x852, and 1280x500 canvases. Same-path desktop and mobile comparisons against base `b68295595d875aead33ef31514eaf602279ece94` are readable and show meaningful changes; dark, short, and zero-results states have no prior same-path assets. Owner confirmation is pending before canonical evidence is updated.
+- The repository has no `bin/spec_contract_check.py`; the installed Spec drift checker and staged-index contract check remain to be run during final documentation sync.
 
 ## Remaining Delivery Gates
 

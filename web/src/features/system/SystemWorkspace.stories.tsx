@@ -2140,11 +2140,11 @@ export const Models: Story = {
   tags: ["test"],
   parameters: {
     settingsOverride: STORYBOOK_MODELS_SETTINGS,
-    viewport: { defaultViewport: "desktop1660" },
     docs: {
       description: { story: "Merged model directory with local prices and preset switches." },
     },
   },
+  globals: { viewport: { value: "desktop1660", isRotated: false } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByRole("heading", { name: "模型" })).resolves.toBeVisible();
@@ -2160,21 +2160,43 @@ export const Models: Story = {
 
 export const ModelsDark: Story = {
   ...Models,
-  globals: { themeMode: "dark" },
+  globals: { ...Models.globals, themeMode: "dark" },
 };
 
 export const ModelsMobile: Story = {
   ...Models,
-  parameters: {
-    ...Models.parameters,
-    viewport: { defaultViewport: "mobile393" },
-  },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
 };
 
 export const ModelsMobileDark: Story = {
   ...ModelsMobile,
-  globals: { themeMode: "dark" },
+  globals: { ...ModelsMobile.globals, themeMode: "dark" },
 };
+
+async function assertCanvasViewport(
+  canvasElement: HTMLElement,
+  width: number,
+  height: number,
+): Promise<void> {
+  const viewport = canvasElement.ownerDocument.defaultView;
+  await expect(viewport?.innerWidth).toBe(width);
+  await expect(viewport?.innerHeight).toBe(height);
+}
+
+async function playModelsSyncReview(canvasElement: HTMLElement): Promise<void> {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+  const page = within(canvasElement.ownerDocument.body);
+  await expect(page.findByRole("dialog")).resolves.toBeVisible();
+  const providerChoice = await page.findByRole("combobox", {
+    name: "为 gpt-6-sol 选择一个供应商报价",
+  });
+  await expect(providerChoice).toHaveTextContent("OpenRouter (openrouter)");
+  await expect(page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" })).toBeChecked();
+  await expect(page.getByRole("img", { name: "新发现的模型" })).toBeVisible();
+  await expect(page.findAllByText(/不导入：/)).resolves.toHaveLength(2);
+  await expect(page.queryByText("gpt-4o-mini-legacy")).not.toBeInTheDocument();
+}
 
 export const ModelsSyncReview: Story = {
   ...Models,
@@ -2184,50 +2206,39 @@ export const ModelsSyncReview: Story = {
     docs: { description: { story: "Preview with a resolved cross-provider price conflict." } },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
-    const page = within(canvasElement.ownerDocument.body);
-    await expect(page.findByRole("dialog")).resolves.toBeVisible();
-    const providerChoice = await page.findByRole("combobox", {
-      name: "为 gpt-6-sol 选择一个供应商报价",
-    });
-    await expect(providerChoice).toHaveTextContent("OpenRouter (openrouter)");
-    await expect(page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" })).toBeChecked();
-    await expect(page.getByRole("img", { name: "新发现的模型" })).toBeVisible();
-    await expect(page.findAllByText(/不导入：/)).resolves.toHaveLength(2);
-    await expect(page.queryByText("gpt-4o-mini-legacy")).not.toBeInTheDocument();
+    await assertCanvasViewport(canvasElement, 1660, 960);
+    await playModelsSyncReview(canvasElement);
   },
 };
 
 export const ModelsSyncReviewDark: Story = {
   ...ModelsSyncReview,
   tags: ["test"],
-  globals: { themeMode: "dark" },
+  globals: { ...ModelsSyncReview.globals, themeMode: "dark" },
 };
 
 export const ModelsSyncReviewMobile: Story = {
   ...ModelsSyncReview,
   tags: ["test"],
-  parameters: {
-    ...ModelsSyncReview.parameters,
-    viewport: { defaultViewport: "mobile393" },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 393, 852);
+    await playModelsSyncReview(canvasElement);
   },
 };
 
 export const ModelsSyncReviewMobileDark: Story = {
   ...ModelsSyncReviewMobile,
   tags: ["test"],
-  globals: { themeMode: "dark" },
+  globals: { ...ModelsSyncReviewMobile.globals, themeMode: "dark" },
 };
 
 export const ModelsSyncReviewShort: Story = {
   ...ModelsSyncReview,
   tags: ["test"],
-  parameters: {
-    ...ModelsSyncReview.parameters,
-    viewport: { defaultViewport: "short1280x500" },
-  },
+  globals: { viewport: { value: "short1280x500", isRotated: false } },
   play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 1280, 500);
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
@@ -2245,7 +2256,7 @@ export const ModelsSyncReviewShort: Story = {
 export const ModelsSyncReviewShortDark: Story = {
   ...ModelsSyncReviewShort,
   tags: ["test"],
-  globals: { themeMode: "dark" },
+  globals: { ...ModelsSyncReviewShort.globals, themeMode: "dark" },
 };
 
 export const ModelsSyncControls: Story = {
