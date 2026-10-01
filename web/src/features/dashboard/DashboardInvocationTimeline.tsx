@@ -209,9 +209,11 @@ const INVOCATION_MIN_VISIBLE_LANES = 4;
 const INVOCATION_CHART_HEIGHT_COMPACT_PX = 336;
 const INVOCATION_CHART_HEIGHT_DESKTOP_PX = 320;
 const INVOCATION_X_AXIS_HEIGHT_PX = 28;
+const INVOCATION_LANE_TOP_INSET_PX = 24;
 const INVOCATION_LANE_MIN_HEIGHT_PX = 8;
 const INVOCATION_LANE_MAX_HEIGHT_PX = 16;
 const INVOCATION_LANE_GAP_PX = 1;
+const INVOCATION_BAR_MIN_WIDTH_PX = 8;
 const INVOCATION_CALLS_AXIS_LABEL_OFFSET_PX = 16;
 const INVOCATION_TTFT_AXIS_TOP_PX = 20;
 
@@ -241,7 +243,10 @@ export function resolveInvocationTimelineLayout(
     : INVOCATION_CHART_HEIGHT_DESKTOP_PX;
   const laneAreaHeightPx = chartHeightPx - INVOCATION_X_AXIS_HEIGHT_PX;
   const heightWithGap = Math.floor(
-    (laneAreaHeightPx - (visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX) / visibleLaneCount,
+    (laneAreaHeightPx -
+      INVOCATION_LANE_TOP_INSET_PX -
+      (visibleLaneCount - 1) * INVOCATION_LANE_GAP_PX) /
+      visibleLaneCount,
   );
   const laneHeight = Math.min(
     INVOCATION_LANE_MAX_HEIGHT_PX,
@@ -251,7 +256,10 @@ export function resolveInvocationTimelineLayout(
   const laneStep = laneHeight + laneGap;
   const laneContentHeight =
     visibleLaneCount * laneHeight + Math.max(0, visibleLaneCount - 1) * laneGap;
-  const lanePlotHeight = Math.max(laneAreaHeightPx, laneContentHeight + 24);
+  const lanePlotHeight = Math.max(
+    laneAreaHeightPx,
+    laneContentHeight + INVOCATION_LANE_TOP_INSET_PX,
+  );
   return {
     chartHeightPx,
     laneAreaHeightPx,
@@ -892,6 +900,7 @@ export function DashboardInvocationTimeline({
                           const left = Math.max(0, Math.min(100, xFor(item.startMs)));
                           const right = Math.max(left, Math.min(100, xFor(item.endMs)));
                           const width = Math.max(0.25, right - left);
+                          const barLeft = `min(${left}%, calc(100% - ${INVOCATION_BAR_MIN_WIDTH_PX}px))`;
                           const statusLabel =
                             {
                               success: t("dashboard.activityOverview.timelineStatusSuccess"),
@@ -933,10 +942,10 @@ export function DashboardInvocationTimeline({
                               className={`absolute flex appearance-none items-center overflow-visible rounded border shadow-sm ${statusClass(status)}`}
                               aria-label={accessibleLabel}
                               style={{
-                                left: `${left}%`,
+                                left: barLeft,
                                 top: `${laneTopFor(item.lane)}px`,
                                 width: `${width}%`,
-                                minWidth: "8px",
+                                minWidth: `${INVOCATION_BAR_MIN_WIDTH_PX}px`,
                                 height: `${laneHeight}px`,
                               }}
                               title={accessibleLabel}

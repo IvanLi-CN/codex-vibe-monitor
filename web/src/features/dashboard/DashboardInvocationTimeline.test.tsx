@@ -188,7 +188,7 @@ describe("resolveInvocationTimelineLayout", () => {
   });
 
   it("adapts lane height within the readable range and keeps one-pixel gaps", () => {
-    expect(resolveInvocationTimelineLayout(20, false).laneHeight).toBe(13);
+    expect(resolveInvocationTimelineLayout(20, false).laneHeight).toBe(12);
     expect(resolveInvocationTimelineLayout(20, false).laneGap).toBe(1);
     expect(resolveInvocationTimelineLayout(100, true).laneHeight).toBe(8);
     expect(resolveInvocationTimelineLayout(100, true).laneGap).toBe(1);
@@ -196,6 +196,15 @@ describe("resolveInvocationTimelineLayout", () => {
     expect(resolveInvocationTimelineLayout(300, false).laneGap).toBe(1);
     expect(resolveInvocationTimelineLayout(2, true).laneHeight).toBe(16);
     expect(resolveInvocationTimelineLayout(2, true).chartHeightPx).toBe(336);
+  });
+
+  it("fits ordinary concurrency while reserving the lane inset before scrolling", () => {
+    for (const laneCount of [16, 17]) {
+      const layout = resolveInvocationTimelineLayout(laneCount, false);
+
+      expect(layout.laneContentHeight + 24).toBeLessThanOrEqual(layout.laneAreaHeightPx);
+      expect(layout.lanePlotHeight).toBe(layout.laneAreaHeightPx);
+    }
   });
 
   it("keeps 190 lanes readable and scrolls inside the fixed chart viewport", () => {
