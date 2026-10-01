@@ -96,6 +96,7 @@ export {
   fetchLongTermStatsOverview,
   fetchLongTermStatsSeries,
   fetchManagedTask,
+  fetchManagedTaskRuntime,
   fetchManagedTasks,
   fetchModelRoutingLive,
   fetchOauthLoginSession,

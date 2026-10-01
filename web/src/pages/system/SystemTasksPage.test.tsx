@@ -6,10 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import SystemTasksPage from "./SystemTasksPage";
 
-const apiMocks = vi.hoisted(() => ({ fetchManagedTasks: vi.fn() }));
+const apiMocks = vi.hoisted(() => ({
+  fetchManagedTasks: vi.fn(),
+  fetchManagedTaskRuntime: vi.fn(),
+}));
 vi.mock("../../lib/api", async () => ({
   ...(await vi.importActual<typeof import("../../lib/api")>("../../lib/api")),
   fetchManagedTasks: apiMocks.fetchManagedTasks,
+  fetchManagedTaskRuntime: apiMocks.fetchManagedTaskRuntime,
 }));
 
 let host: HTMLDivElement | null = null;
@@ -38,6 +42,23 @@ async function flushEffects() {
 
 describe("SystemTasksPage", () => {
   beforeEach(() => {
+    apiMocks.fetchManagedTaskRuntime.mockResolvedValue({
+      observedAt: "2026-10-01T00:00:00.000Z",
+      activeRuns: [
+        {
+          executionId: 42,
+          taskKey: "retention_archive",
+          title: "数据保留与归档",
+          activeChildTaskKey: null,
+          activeChildTitle: null,
+          triggerKind: "interval",
+          phase: "processing",
+          executionClass: "maintenance_retention",
+          startedAt: "2026-10-01T00:00:00.000Z",
+          elapsedMs: 12_000,
+        },
+      ],
+    });
     apiMocks.fetchManagedTasks.mockResolvedValue([
       {
         taskKey: "retention_archive",
@@ -67,13 +88,16 @@ describe("SystemTasksPage", () => {
     host = null;
     root = null;
     apiMocks.fetchManagedTasks.mockReset();
+    apiMocks.fetchManagedTaskRuntime.mockReset();
   });
 
   it("loads the managed task directory", async () => {
     renderPage();
     await flushEffects();
     expect(apiMocks.fetchManagedTasks).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchManagedTaskRuntime).toHaveBeenCalledTimes(1);
     expect(host?.textContent).toContain("数据保留与归档");
+    expect(host?.textContent).toContain("当前正在工作");
     expect(host?.textContent).toContain("raw_compression");
   });
 

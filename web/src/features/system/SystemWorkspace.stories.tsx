@@ -629,7 +629,9 @@ function buildSystemWorkspaceRequestHandler(
         source: "models.dev",
       }));
       const pricesByModel = new Map(settings.pricing.entries.map((entry) => [entry.model, entry]));
-      selectedEntries.forEach((entry) => pricesByModel.set(entry.model, entry));
+      selectedEntries.forEach((entry) => {
+        pricesByModel.set(entry.model, entry);
+      });
       settings.pricing.entries = Array.from(pricesByModel.values()).sort((a, b) =>
         a.model.localeCompare(b.model),
       );
@@ -1422,9 +1424,10 @@ export const Tasks: Story = {
   render: () => renderWorkspace("/system/tasks"),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "后台任务" })).toBeVisible();
+    await expect(canvas.getByRole("heading", { name: "任务运维" })).toBeVisible();
     await expect(canvas.getByTestId("system-tasks-list")).toBeVisible();
-    await expect(canvas.getByText(/forward_proxy_subscription_refresh/)).toBeVisible();
+    await expect(canvas.getByText("当前正在工作")).toBeVisible();
+    await expect(canvas.getByText(/仪表盘运行投影校对/)).toBeVisible();
   },
 };
 

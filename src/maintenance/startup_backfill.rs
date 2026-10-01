@@ -2321,6 +2321,18 @@ async fn run_startup_backfill_task_if_due_outcome(
             record_startup_backfill_pressure_error(gate, err);
         })?;
 
+    let observation = crate::TaskExecutionObservation::begin(
+        "startup_backfill",
+        &crate::maintenance_store::task_title_for_observation("startup_backfill"),
+        "event_or_due",
+        crate::maintenance_store::task_execution_class("startup_backfill"),
+        "resource_wait",
+    );
+    let child_key = crate::maintenance_store::managed_startup_backfill_suffix(&task_name)
+        .map(|suffix| format!("startup_backfill.{suffix}"))
+        .unwrap_or_else(|| format!("startup_backfill.{}", task.log_label()));
+    observation.set_child(&child_key, task.log_label());
+
     let started_at = Instant::now();
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     // Most backfills combine bounded SQL batches with file reads/decompression. If an interactive
@@ -2328,6 +2340,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     // transaction rolls back. Prompt-cache materialization is the exception: it observes the same
     // signal only after each committed micro-batch.
     let prompt_cache_should_yield = || coordinator.p2_should_yield();
+    observation.set_phase("processing");
     let task_result = if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
         // Prompt-cache materialization checks priority only between committed micro-batches. The
         // enclosing maintenance pass still cancels the task during process shutdown.

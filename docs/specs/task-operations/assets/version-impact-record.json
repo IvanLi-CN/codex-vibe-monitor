@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add process-local managed-task runtime observation, effective schedule metadata, safe schedule reset, and task-operations filters.",
+    "release_unit_description": "Task operations runtime API, maintenance controls, and responsive task workspace.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "The runtime endpoint and catalog fields are additive, and no persistent schema or default override values are added. Existing unsupported overrides remain readable and explicit reset is backwards-compatible for existing control clients.",
+      "assessed_at": "2026-10-01T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0024-task-runtime-observation-and-effective-schedules.md"]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {"detected": false, "description": "The implementation remains additive and does not introduce a schema migration."},
+      "reasoning": "The only durable writes are existing managed-task control columns through the established PATCH route; computed catalog metadata and active observations are in-memory or response-only.",
+      "reassessed_at": "2026-10-01T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/specs/task-operations/persistent-state-migration.json"]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Focused Rust and Web checks verify additive response metadata, in-memory observation cleanup, and schedule reset semantics. Full release evidence remains a gate before publication.",
+      "verified_at": "2026-10-01T00:00:00Z",
+      "evidence": ["cargo check --locked --all-targets --all-features", "cd web && bunx tsc -b"]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing clients may continue reading legacy task fields and sending enabled-only PATCH requests; runtime, triggerKinds, policy, and capability fields are additive.",
+      "evidence": ["docs/specs/task-operations/SPEC.md"]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Existing maintenance task enabled flags, interval/cron overrides, next trigger values, progress, and history.",
+      "source_program_compatibility_range": "Existing same-major releases with the maintenance task tables; direct major skips remain unsupported.",
+      "evidence": ["docs/specs/task-operations/persistent-state-migration.json"]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["docs/specs/task-operations/persistent-state-migration.json"],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": ["verified public_api=patch", "verified persistent_state=patch", "verified release unit=max(public_api,persistent_state)=patch"]
+  }
+}

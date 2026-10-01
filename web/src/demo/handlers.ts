@@ -2863,6 +2863,12 @@ function managedTasks() {
     cronExpr: string | null;
     nextTriggerAt: string | null;
     isManual: boolean;
+    triggerKinds?: string[];
+    effectivePolicy?: string;
+    policySource?: string;
+    scheduleEditable?: boolean;
+    scheduleCapabilityReason?: string | null;
+    executionClass?: string | null;
   };
   const tasks: Array<[string, string, string, string, boolean]> = [
     ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
@@ -2877,7 +2883,7 @@ function managedTasks() {
       "forward_proxy_subscription_refresh",
       "正向代理订阅刷新",
       "刷新代理订阅并更新代理节点状态",
-      "event",
+      "interval",
       false,
     ],
     ["pool_orphan_recovery", "连接池孤儿记录恢复", "恢复超时或中断的连接池记录", "interval", false],
@@ -2995,9 +3001,62 @@ function managedTasks() {
       ...(() => {
         const override = managedTaskOverrides.get(taskKey);
         const enabled = override?.enabled ?? true;
-        const intervalSecs =
-          override?.intervalSecs !== undefined ? override.intervalSecs : isManual ? null : 300;
+        const scheduleEditable = [
+          "retention_archive",
+          "upstream_account_maintenance",
+          "pool_orphan_recovery",
+          "system_status_snapshot",
+          "invocation_timeline_snapshot",
+          "dashboard_runtime_projection_reconcile",
+        ].includes(taskKey);
+        const intervalSecs = override?.intervalSecs !== undefined ? override.intervalSecs : null;
         const cronExpr = override?.cronExpr !== undefined ? override.cronExpr : null;
+        const triggerKinds =
+          taskKey === "retention_archive" || taskKey === "upstream_account_maintenance"
+            ? ["startup", "interval"]
+            : taskKey === "forward_proxy_subscription_refresh"
+              ? ["startup", "interval"]
+              : taskKey === "dashboard_runtime_projection_reconcile"
+                ? ["interval", "adaptive"]
+                : taskKey === "summary_snapshot" || taskKey === "prompt_cache_materialization"
+                  ? ["event", "interval"]
+                  : taskKey === "summary_coverage_recovery" || taskKey === "long_term_projection"
+                    ? ["adaptive", "interval"]
+                    : taskKey === "timeseries_minute_projection"
+                      ? ["startup", "interval", "adaptive"]
+                      : taskKey === "startup_backfill"
+                        ? ["startup", "event", "adaptive"]
+                        : isManual
+                          ? ["manual"]
+                          : [triggerMode];
+        const effectivePolicy = cronExpr
+          ? `UTC cron：${cronExpr}`
+          : intervalSecs != null
+            ? `固定检查间隔：${intervalSecs} 秒`
+            : isManual
+              ? "手动触发；不适用周期计划"
+              : taskKey === "system_status_snapshot"
+                ? "固定检查间隔：55 秒（60 秒缓存上限，提前 5 秒）"
+                : taskKey === "upstream_account_maintenance"
+                  ? "固定检查间隔：60 秒；账号同步按账号策略"
+                  : taskKey === "forward_proxy_subscription_refresh"
+                    ? "启动刷新与固定检查间隔：60 秒"
+                    : taskKey === "pool_orphan_recovery" ||
+                        taskKey === "invocation_timeline_snapshot"
+                      ? "固定检查间隔：60 秒"
+                      : taskKey === "dashboard_runtime_projection_reconcile"
+                        ? "固定检查间隔：60 秒；受压力准入约束"
+                        : taskKey === "summary_coverage_recovery"
+                          ? "自适应恢复；按覆盖和压力准入唤醒"
+                          : taskKey === "long_term_projection"
+                            ? "自适应检查；60 秒刷新、300 秒修复、每日校验"
+                            : taskKey === "timeseries_minute_projection"
+                              ? "启动、固定检查与压力准入唤醒"
+                              : taskKey === "startup_backfill"
+                                ? "启动监督器；按事件、检查点和压力准入唤醒"
+                                : triggerMode === "event"
+                                  ? "事件唤醒；固定检查作兜底"
+                                  : "由 worker 默认规则管理";
         return {
           enabled,
           intervalSecs,
@@ -3006,6 +3065,23 @@ function managedTasks() {
             override?.nextTriggerAt !== undefined
               ? override.nextTriggerAt
               : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
+          triggerKinds,
+          effectivePolicy,
+          policySource:
+            override?.intervalSecs !== undefined || override?.cronExpr !== undefined
+              ? "运维自定义"
+              : "系统默认",
+          scheduleEditable,
+          scheduleCapabilityReason: isManual ? "手动任务没有周期或 cron 计划" : undefined,
+          executionClass: [
+            "retention_archive",
+            "upstream_account_maintenance",
+            "pool_orphan_recovery",
+          ].includes(taskKey)
+            ? "maintenance_retention"
+            : taskKey === "dashboard_runtime_projection_reconcile"
+              ? "p2_derived"
+              : null,
         };
       })(),
       taskKey,
@@ -3026,6 +3102,12 @@ function managedTasks() {
       cronExpr: null,
       nextTriggerAt: null,
       isManual: false,
+      triggerKinds: ["event"],
+      effectivePolicy: "回填父任务按事件和检查点调度",
+      policySource: "系统默认",
+      scheduleEditable: false,
+      scheduleCapabilityReason: "回填子任务由父监督器调度",
+      executionClass: null,
     }),
   );
   return baseTasks.concat(childTasks);
@@ -4410,6 +4492,39 @@ export async function handleDemoRequest(request: Request) {
   }
   if (pathname === "/api/system/managed-tasks" && request.method === "GET")
     return json(managedTasks());
+  if (pathname === "/api/system/managed-tasks/runtime" && request.method === "GET") {
+    const demoActiveRun: DemoManagedTaskRun = {
+      id: 1,
+      startedAt: new Date(Date.parse(demoNow()) - 18_000).toISOString(),
+      finishedAt: null,
+      durationMs: null,
+      status: "running",
+      processedCount: null,
+      updatedCount: null,
+      errorDetail: null,
+    };
+    const activeRuns = [
+      ["dashboard_runtime_projection_reconcile", [demoActiveRun] as DemoManagedTaskRun[]] as const,
+      ...managedTaskRuns.entries(),
+    ].flatMap(([taskKey, runs]) =>
+      runs
+        .filter((run) => run.status === "running")
+        .map((run) => ({
+          executionId: run.id,
+          taskKey,
+          title: managedTasks().find((task) => task.taskKey === taskKey)?.title ?? taskKey,
+          activeChildTaskKey: null,
+          activeChildTitle: null,
+          triggerKind: "manual",
+          phase: "processing",
+          executionClass:
+            managedTasks().find((task) => task.taskKey === taskKey)?.executionClass ?? null,
+          startedAt: run.startedAt,
+          elapsedMs: Math.max(0, Date.parse(demoNow()) - Date.parse(run.startedAt)),
+        })),
+    );
+    return json({ observedAt: demoNow(), activeRuns });
+  }
   const managedTaskMatch = pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
   if (managedTaskMatch && request.method === "GET") {
     const detail = managedTaskDetail(decodeURIComponent(managedTaskMatch[1]));
@@ -4427,6 +4542,16 @@ export async function handleDemoRequest(request: Request) {
     if (detail.task.isManual && (body.intervalSecs !== undefined || body.cronExpr !== undefined)) {
       return json({ error: "manual tasks do not have a schedule" }, { status: 400 });
     }
+    if (
+      !detail.task.scheduleEditable &&
+      ((body.intervalSecs !== undefined && body.intervalSecs !== null) ||
+        (typeof body.cronExpr === "string" && body.cronExpr.trim().length > 0))
+    ) {
+      return json(
+        { error: "task does not support a new interval or cron override" },
+        { status: 400 },
+      );
+    }
     const hasInterval = body.intervalSecs !== undefined && body.intervalSecs !== null;
     const hasCron = typeof body.cronExpr === "string" && body.cronExpr.trim().length > 0;
     if (hasInterval && hasCron) {
@@ -4438,8 +4563,14 @@ export async function handleDemoRequest(request: Request) {
     const previous = managedTaskOverrides.get(taskKey) ?? {};
     const next = { ...previous };
     if (body.enabled !== undefined) next.enabled = body.enabled;
-    if (body.intervalSecs !== undefined) next.intervalSecs = body.intervalSecs;
-    if (body.cronExpr !== undefined) next.cronExpr = body.cronExpr;
+    if (body.intervalSecs !== undefined) {
+      if (body.intervalSecs === null) delete next.intervalSecs;
+      else next.intervalSecs = body.intervalSecs;
+    }
+    if (body.cronExpr !== undefined) {
+      if (body.cronExpr === null) delete next.cronExpr;
+      else next.cronExpr = body.cronExpr;
+    }
     const enabled = next.enabled ?? detail.task.enabled;
     const intervalSecs =
       next.intervalSecs !== undefined ? next.intervalSecs : (detail.task.intervalSecs ?? null);

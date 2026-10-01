@@ -1159,8 +1159,20 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 });
                 continue;
             };
-            let started_at = Instant::now();
-            let result = run_managed_task_once(&state, &task_key).await;
+            let (result, duration_ms) = {
+                let observation = crate::TaskExecutionObservation::begin(
+                    &task_key,
+                    &crate::maintenance_store::task_title_for_observation(&task_key),
+                    "managed_dispatcher",
+                    crate::maintenance_store::task_execution_class(&task_key),
+                    "processing",
+                );
+                let started_at = Instant::now();
+                let result = run_managed_task_once(&state, &task_key).await;
+                let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
+                drop(observation);
+                (result, duration_ms)
+            };
             let (status, summary, detail) = match result {
                 Ok(summary) => (SystemTaskStatus::Success, Some(summary), None),
                 Err(error) => (
@@ -1169,7 +1181,6 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     Some(error.to_string()),
                 ),
             };
-            let duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
             let task_dimension = managed_task_metric_dimension(&task_key);
             state.performance_telemetry.record_duration_ms(
                 "maintenance.task_run_duration_ms",
@@ -2050,6 +2061,7 @@ pub(crate) async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
                     task_kind: SystemTaskKind::HourlyRollupBootstrap,
                     trigger_kind,
                     started_at: Instant::now(),
+                    observation: None,
                 };
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state,

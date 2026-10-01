@@ -561,15 +561,16 @@ describe("demo MSW handlers", () => {
     );
   });
 
-  it("persists task controls, exposes the next run, and rejects duplicate active runs", async () => {
+  it("persists task controls, exposes effective policy, and rejects duplicate active runs", async () => {
     const initialResponse = await fetch(
       "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
     );
     const initial = (await initialResponse.json()) as {
-      task: { title: string; nextTriggerAt: string | null };
+      task: { title: string; nextTriggerAt: string | null; effectivePolicy?: string };
     };
     expect(initial.task.title).toBe("汇总覆盖恢复");
-    expect(initial.task.nextTriggerAt).toEqual(expect.any(String));
+    expect(initial.task.nextTriggerAt).toBeNull();
+    expect(initial.task.effectivePolicy).toContain("自适应");
 
     const disabledResponse = await fetch(
       "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
@@ -585,7 +586,7 @@ describe("demo MSW handlers", () => {
     expect(disabled.task).toMatchObject({ enabled: false, nextTriggerAt: null });
 
     const enabledResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -599,7 +600,7 @@ describe("demo MSW handlers", () => {
     expect(enabled.task.nextTriggerAt).toEqual(expect.any(String));
 
     const scheduleConflictResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery",
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile",
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -609,7 +610,7 @@ describe("demo MSW handlers", () => {
     expect(scheduleConflictResponse.status).toBe(400);
 
     const runResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile/run",
       { method: "POST" },
     );
     const running = (await runResponse.json()) as {
@@ -618,7 +619,7 @@ describe("demo MSW handlers", () => {
     expect(running.recentRuns[0]?.status).toBe("running");
 
     const conflictResponse = await fetch(
-      "http://demo.invalid/api/system/managed-tasks/summary_coverage_recovery/run",
+      "http://demo.invalid/api/system/managed-tasks/dashboard_runtime_projection_reconcile/run",
       { method: "POST" },
     );
     expect(conflictResponse.status).toBe(409);

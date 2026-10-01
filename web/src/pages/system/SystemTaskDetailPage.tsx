@@ -5,12 +5,15 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import {
+  type CurrentTaskExecution,
   fetchManagedTask,
+  fetchManagedTaskRuntime,
   type ManagedTaskDetail,
   runManagedTaskNow,
   updateManagedTask,
 } from "../../lib/api";
 import {
+  managedTaskExecutionClassLabel,
   managedTaskFreshnessLabel,
   managedTaskNextTriggerLabel,
   managedTaskPhaseLabel,
@@ -21,6 +24,21 @@ import {
 function formatDuration(ms?: number | null): string {
   if (ms == null) return "—";
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+function formatStartedAt(value?: string | null): string {
+  if (!value) return "未知";
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(timestamp));
 }
 
 type ScheduleKind = "interval" | "cron";
@@ -34,6 +52,7 @@ export default function SystemTaskDetailPage() {
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("interval");
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
+  const [activeRuntime, setActiveRuntime] = useState<CurrentTaskExecution | null>(null);
 
   useEffect(() => {
     if (!taskKey) return;
@@ -54,18 +73,21 @@ export default function SystemTaskDetailPage() {
     return Math.min(100, Math.max(0, (completed / total) * 100));
   }, [detail]);
 
-  const activeRunStatus = detail?.recentRuns[0]?.status;
-  const hasActiveRun = activeRunStatus === "running" || activeRunStatus === "requested";
+  const hasActiveRun = activeRuntime != null;
 
   useEffect(() => {
-    if (!taskKey || !hasActiveRun) return;
-    const timer = window.setInterval(() => {
-      void fetchManagedTask(taskKey)
-        .then(setDetail)
+    if (!taskKey) return;
+    const refreshRuntime = () => {
+      void fetchManagedTaskRuntime()
+        .then((snapshot) =>
+          setActiveRuntime(snapshot.activeRuns.find((run) => run.taskKey === taskKey) ?? null),
+        )
         .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-    }, 750);
+    };
+    refreshRuntime();
+    const timer = window.setInterval(refreshRuntime, 2000);
     return () => window.clearInterval(timer);
-  }, [hasActiveRun, taskKey]);
+  }, [taskKey]);
 
   if (error && !detail) return <Alert variant="error">任务观测不可用：{error}</Alert>;
   if (!detail)
@@ -154,9 +176,32 @@ export default function SystemTaskDetailPage() {
             <CardTitle className="text-base">调度与观测</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {activeRuntime ? (
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 md:col-span-2 xl:col-span-4">
+                <div className="text-xs text-base-content/60">当前实际工作</div>
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
+                  <span>{managedTaskPhaseLabel(activeRuntime.phase)}</span>
+                  <span>实际开始：{formatStartedAt(activeRuntime.startedAt)}</span>
+                  <span>用时：{formatDuration(activeRuntime.elapsedMs)}</span>
+                  <span>级别：{managedTaskExecutionClassLabel(activeRuntime.executionClass)}</span>
+                </div>
+                {activeRuntime.activeChildTitle ? (
+                  <div className="mt-1 text-xs text-primary">
+                    当前子任务：{activeRuntime.activeChildTitle}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div>
               <div className="text-xs text-base-content/60">触发方式</div>
               <div className="mt-1 font-medium">{managedTaskTriggerLabel(task)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-base-content/60">生效计划</div>
+              <div className="mt-1 font-medium">{task.effectivePolicy ?? "未知"}</div>
+              <div className="mt-1 text-xs text-base-content/60">
+                来源：{task.policySource ?? "未知"}
+              </div>
             </div>
             <div>
               <div className="text-xs text-base-content/60">阶段</div>
@@ -176,7 +221,7 @@ export default function SystemTaskDetailPage() {
               <div className="text-xs text-base-content/60">检查点</div>
               <div className="mt-1 break-all font-medium">{progress?.checkpoint ?? "未知"}</div>
             </div>
-            {!task.isManual ? (
+            {!task.isManual && task.scheduleEditable ? (
               <>
                 <fieldset className="space-y-2 md:col-span-2 xl:col-span-4">
                   <legend className="text-sm font-medium">计划方式</legend>
@@ -225,28 +270,55 @@ export default function SystemTaskDetailPage() {
                   </label>
                 )}
                 <div className="flex items-end">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={saving}
-                    onClick={() =>
-                      void save(
-                        scheduleKind === "interval"
-                          ? {
-                              intervalSecs: intervalSecs ? Number(intervalSecs) : null,
-                              cronExpr: null,
-                            }
-                          : {
-                              intervalSecs: null,
-                              cronExpr: cronExpr.trim() || null,
-                            },
-                      )
-                    }
-                  >
-                    保存调度
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={saving}
+                      onClick={() =>
+                        void save(
+                          scheduleKind === "interval"
+                            ? {
+                                intervalSecs: intervalSecs ? Number(intervalSecs) : null,
+                                cronExpr: null,
+                              }
+                            : { intervalSecs: null, cronExpr: cronExpr.trim() || null },
+                        )
+                      }
+                    >
+                      保存调度
+                    </Button>
+                    {task.intervalSecs != null || task.cronExpr?.trim() ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={saving}
+                        onClick={() => void save({ intervalSecs: null, cronExpr: null })}
+                      >
+                        恢复默认
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               </>
+            ) : !task.isManual ? (
+              <div className="md:col-span-2 xl:col-span-4 rounded-lg border border-base-300/70 bg-base-100/35 p-3 text-sm">
+                <div className="font-medium">计划由 worker 规则管理</div>
+                <div className="mt-1 text-base-content/65">
+                  {task.scheduleCapabilityReason ?? "当前任务只读展示生效策略。"}
+                </div>
+                {task.intervalSecs != null || task.cronExpr?.trim() ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="mt-2"
+                    disabled={saving}
+                    onClick={() => void save({ intervalSecs: null, cronExpr: null })}
+                  >
+                    恢复默认
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </CardContent>
         </Card>
