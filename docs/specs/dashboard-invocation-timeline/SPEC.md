@@ -176,6 +176,38 @@
   evidence_note: verifies the 336px mobile frame, internal vertical scrolling, no horizontal overflow, synchronized axis, and tooltip containment in the narrow plot.
   image: ![Invocation timeline mobile overflow](./assets/invocation-timeline-mobile.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1440x1024
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/FitsSeventeenLanesAtViewportEdge
+  state: 17 invocation lanes including a zero-duration invocation at the viewport edge
+  evidence_note: verifies ordinary concurrency fits inside the fixed desktop frame and the right-edge bar creates no vertical or horizontal scrolling.
+  image: ![17-lane invocation timeline without scrolling (desktop)](./assets/invocation-timeline-17-lanes-no-scroll-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Dashboard/DashboardInvocationTimeline/MobileFitsSeventeenLanesAtViewportEdge
+  state: 17 invocation lanes including a zero-duration invocation at the viewport edge
+  evidence_note: verifies the responsive chart fits the fixed mobile frame without vertical or horizontal scrolling.
+  image: ![17-lane invocation timeline without scrolling (mobile)](./assets/invocation-timeline-17-lanes-no-scroll-mobile.png)
+
 ## References
 
 - `./IMPLEMENTATION.md`
