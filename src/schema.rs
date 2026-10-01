@@ -5599,21 +5599,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .context("failed to ensure index idx_pool_upstream_request_attempts_account_occurred_at")?;
 
     let success_attempt_index_started_at = Instant::now();
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_pool_attempts_account_model_success
-        ON pool_upstream_request_attempts (
-            upstream_account_id,
-            request_model COLLATE NOCASE,
-            id DESC,
-            started_at
-        )
-        WHERE status = 'success'
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure index idx_pool_attempts_account_model_success")?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_pool_attempts_account_model_success ON pool_upstream_request_attempts (upstream_account_id, request_model COLLATE NOCASE, id DESC, started_at) WHERE status = 'success'")
+        .execute(pool).await
+        .context("failed to ensure index idx_pool_attempts_account_model_success")?;
     info!(
         index = "idx_pool_attempts_account_model_success",
         elapsed_ms = success_attempt_index_started_at.elapsed().as_millis() as u64,
