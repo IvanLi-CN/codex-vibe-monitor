@@ -502,8 +502,8 @@ def proxy_once(sequence):
 
 def long_wait_terminal_row(invoke_id):
     try:
-        connection = sqlite3.connect(os.path.join(DATA_DIR, 'codex_vibe_monitor.db'), timeout=5)
-        connection.execute('PRAGMA busy_timeout=5000')
+        connection = sqlite3.connect(os.path.join(DATA_DIR, 'codex_vibe_monitor.db'), timeout=0.25)
+        connection.execute('PRAGMA busy_timeout=250')
         row = connection.execute(
             'SELECT status, t_req_parse_ms, t_persist_ms, t_total_ms, t_upstream_ttfb_ms '
             'FROM codex_invocations WHERE invoke_id = ? ORDER BY id DESC LIMIT 1',
@@ -530,6 +530,44 @@ def long_wait_terminal(invoke_id, response_finished):
             }
         time.sleep(0.01)
     return None
+
+
+def collect_long_wait_terminals(items):
+    pending = {item['invoke_id']: item for item in items if item.get('invoke_id')}
+    deadline = time.perf_counter() + 10.0
+    database_path = os.path.join(DATA_DIR, 'codex_vibe_monitor.db')
+    while pending and time.perf_counter() < deadline:
+        try:
+            connection = sqlite3.connect(database_path, timeout=0.25)
+            connection.execute('PRAGMA busy_timeout=250')
+            pending_ids = list(pending)
+            for offset in range(0, len(pending_ids), 900):
+                chunk = pending_ids[offset:offset + 900]
+                placeholders = ','.join('?' for _ in chunk)
+                rows = connection.execute(
+                    'SELECT invoke_id, status, t_req_parse_ms, t_persist_ms, t_total_ms, '
+                    f't_upstream_ttfb_ms FROM codex_invocations WHERE invoke_id IN ({placeholders}) '
+                    'ORDER BY id DESC',
+                    chunk,
+                ).fetchall()
+                for invoke_id, status, request_parse_ms, persist_ms, total_ms, upstream_ttfb_ms in rows:
+                    if str(status or '').lower() in ('running', 'pending', 'in_flight'):
+                        continue
+                    item = pending.pop(invoke_id, None)
+                    if item is not None:
+                        item['terminal'] = {
+                            'status': status,
+                            'request_parse_ms': request_parse_ms,
+                            'persist_ms': persist_ms,
+                            'total_ms': total_ms,
+                            'upstream_ttfb_ms': upstream_ttfb_ms,
+                            'confirm_ms': (time.perf_counter() - item['response_finished']) * 1000,
+                        }
+            connection.close()
+        except sqlite3.OperationalError:
+            pass
+        if pending:
+            time.sleep(0.02)
 
 
 def long_wait_proxy_once(spec, timeout_seconds):
@@ -570,7 +608,11 @@ def long_wait_proxy_once(spec, timeout_seconds):
     except Exception as exc:
         body = str(exc)[:200]
         response_finished = time.perf_counter()
-    terminal = long_wait_terminal(invoke_id, response_finished) if invoke_id else None
+    terminal = (
+        long_wait_terminal(invoke_id, response_finished)
+        if invoke_id and spec.get('track_terminal', True)
+        else None
+    )
     return {
         'sequence': spec['sequence'],
         'scenario': spec['scenario'],
@@ -578,6 +620,7 @@ def long_wait_proxy_once(spec, timeout_seconds):
         'status': status,
         'body': body,
         'invoke_id': invoke_id,
+        'response_finished': response_finished,
         'response_ms': (response_finished - started) * 1000,
         'terminal': terminal,
     }
@@ -658,6 +701,7 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
                 'scenario': 'fast',
                 'key_mode': key_mode,
                 'prompt_cache_key': prompt_cache_key,
+                'track_terminal': False,
             }, 15))
             sequence += 1
             next_request_at += 1.0 / request_rate
@@ -665,6 +709,7 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
             if delay > 0:
                 time.sleep(delay)
     fast_results = [future.result() for future in fast_futures]
+    collect_long_wait_terminals(fast_results)
     slow_results = [future.result() for future in slow_futures]
     slow_pool.shutdown(wait=True)
     cancel_thread.join(timeout=10)
