@@ -418,18 +418,6 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
             ) else {
                 continue;
             };
-            let observation = crate::TaskExecutionObservation::begin(
-                "dashboard_runtime_projection_reconcile",
-                &crate::maintenance_store::task_title_for_observation(
-                    "dashboard_runtime_projection_reconcile",
-                ),
-                "interval",
-                crate::maintenance_store::task_execution_class(
-                    "dashboard_runtime_projection_reconcile",
-                ),
-                "resource_wait",
-            );
-            let reconcile_started = Instant::now();
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let _pressure_permit = match pressure_gate
                 .try_begin_background("dashboard_runtime_projection_reconcile")
@@ -460,7 +448,18 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(state: Arc<AppState>)
                     continue;
                 }
             };
-            observation.set_phase("processing");
+            let _observation = crate::TaskExecutionObservation::begin(
+                "dashboard_runtime_projection_reconcile",
+                &crate::maintenance_store::task_title_for_observation(
+                    "dashboard_runtime_projection_reconcile",
+                ),
+                "interval",
+                crate::maintenance_store::task_execution_class(
+                    "dashboard_runtime_projection_reconcile",
+                ),
+                "processing",
+            );
+            let reconcile_started = Instant::now();
             match reconcile_dashboard_runtime_projection_once(state.as_ref()).await {
                 Ok(capture) => {
                     state.performance_telemetry.record_counter(

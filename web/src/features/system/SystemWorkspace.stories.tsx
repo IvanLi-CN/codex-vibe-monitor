@@ -5,11 +5,13 @@ import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
+  ManagedTask,
   ModelsDevSyncPreview,
   PricingEntry,
   SettingsPayload,
   SystemStatusResponse,
   SystemTaskRunsResponse,
+  TaskRuntimeSnapshot,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
 import SystemLayout from "../../pages/system/SystemLayout";
@@ -355,6 +357,61 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
   };
 }
 
+const STORYBOOK_MANAGED_TASKS: ManagedTask[] = [
+  {
+    taskKey: "dashboard_runtime_projection_reconcile",
+    title: "仪表盘运行投影校对",
+    description: "校对仪表盘运行状态投影",
+    triggerMode: "event",
+    enabled: true,
+    intervalSecs: null,
+    cronExpr: null,
+    nextTriggerAt: null,
+    isManual: false,
+    triggerKinds: ["interval", "adaptive"],
+    effectivePolicy: "固定检查间隔：60 秒；受压力准入约束",
+    policySource: "系统默认",
+    scheduleEditable: true,
+    scheduleCapabilityReason: null,
+    executionClass: "p2_derived",
+  },
+  {
+    taskKey: "forward_proxy_subscription_refresh",
+    title: "正向代理订阅刷新",
+    description: "刷新代理订阅并更新代理节点状态",
+    triggerMode: "event",
+    enabled: false,
+    intervalSecs: null,
+    cronExpr: null,
+    nextTriggerAt: null,
+    isManual: false,
+    triggerKinds: ["event"],
+    effectivePolicy: "事件触发；停用",
+    policySource: "系统规则",
+    scheduleEditable: false,
+    scheduleCapabilityReason: "事件任务只由事件触发",
+    executionClass: "p1_interactive",
+  },
+];
+
+const STORYBOOK_MANAGED_TASK_RUNTIME: TaskRuntimeSnapshot = {
+  observedAt: "2026-06-22T09:28:00.000Z",
+  activeRuns: [
+    {
+      executionId: 7,
+      taskKey: "dashboard_runtime_projection_reconcile",
+      title: "仪表盘运行投影校对",
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      triggerKind: "interval",
+      phase: "processing",
+      executionClass: "p2_derived",
+      startedAt: "2026-06-22T09:27:42.000Z",
+      elapsedMs: 18_000,
+    },
+  ],
+};
+
 const STORYBOOK_SETTINGS: SettingsPayload = {
   proxy: {
     hijackEnabled: true,
@@ -592,6 +649,14 @@ function buildSystemWorkspaceRequestHandler(
 
     if (url.pathname === "/api/system/tasks" && method === "GET") {
       return jsonResponse(clone(filterStorybookSystemTasks(url)));
+    }
+
+    if (url.pathname === "/api/system/managed-tasks" && method === "GET") {
+      return jsonResponse(clone(STORYBOOK_MANAGED_TASKS));
+    }
+
+    if (url.pathname === "/api/system/managed-tasks/runtime" && method === "GET") {
+      return jsonResponse(clone(STORYBOOK_MANAGED_TASK_RUNTIME));
     }
 
     if (url.pathname === "/api/stats/invocation-timeline" && method === "GET") {

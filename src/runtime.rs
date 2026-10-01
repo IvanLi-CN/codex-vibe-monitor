@@ -1161,6 +1161,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             };
             let (result, duration_ms) = {
                 let observation = (!task_key.eq("prompt_cache_materialization")
+                    && !task_key.eq("timeseries_minute_projection")
                     && !task_key.eq("startup_backfill")
                     && !task_key.starts_with("startup_backfill."))
                 .then(|| {
@@ -1412,6 +1413,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 state.clone(),
                 &state.shutdown,
                 Some(&[task]),
+                Some("prompt_cache_materialization"),
             )
             .await;
             if pass.had_failure {
@@ -1467,6 +1469,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 state.clone(),
                 &state.shutdown,
                 None,
+                None,
             )
             .await;
             if pass.had_failure {
@@ -1496,6 +1499,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 state.clone(),
                 &state.shutdown,
                 Some(&[task]),
+                None,
             )
             .await;
             if pass.had_failure {

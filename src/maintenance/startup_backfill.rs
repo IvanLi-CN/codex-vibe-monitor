@@ -1910,21 +1910,30 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     else {
         return StartupBackfillMaintenancePass::default();
     };
-    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate).await
+    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate, None)
+        .await
 }
 
 pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
     state: Arc<AppState>,
     cancel: &CancellationToken,
     selected_tasks: Option<&[StartupBackfillTask]>,
+    observation_parent_task_key: Option<&'static str>,
 ) -> StartupBackfillMaintenancePass {
     run_startup_backfill_maintenance_pass_with_gate_inner(
         state,
         cancel,
         selected_tasks,
         crate::db_pressure::global_db_pressure_gate(),
+        observation_parent_task_key,
     )
     .await
+}
+
+fn startup_backfill_observation_task_key(
+    observation_parent_task_key: Option<&'static str>,
+) -> &'static str {
+    observation_parent_task_key.unwrap_or("startup_backfill")
 }
 
 async fn begin_startup_backfill_audit(
@@ -1949,6 +1958,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     cancel: &CancellationToken,
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
+    observation_parent_task_key: Option<&'static str>,
 ) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
@@ -1978,7 +1988,12 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
         let task_result = tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
-            result = run_startup_backfill_task_if_due_outcome(&state, *task, gate) => result,
+            result = run_startup_backfill_task_if_due_outcome(
+                &state,
+                *task,
+                gate,
+                observation_parent_task_key,
+            ) => result,
         };
         match task_result {
             Ok((outcome, task_detail)) => {
@@ -2174,6 +2189,7 @@ pub(crate) async fn run_startup_backfill_task_if_due(
         state,
         task,
         crate::db_pressure::global_db_pressure_gate(),
+        None,
     )
     .await
     .map(|(outcome, _)| outcome.actionable)
@@ -2184,7 +2200,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> Result<bool> {
-    run_startup_backfill_task_if_due_outcome(state, task, gate)
+    run_startup_backfill_task_if_due_outcome(state, task, gate, None)
         .await
         .map(|(outcome, _)| outcome.actionable)
 }
@@ -2193,6 +2209,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
+    observation_parent_task_key: Option<&'static str>,
 ) -> Result<(StartupBackfillTaskRunOutcome, Option<String>)> {
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
@@ -2321,9 +2338,10 @@ async fn run_startup_backfill_task_if_due_outcome(
             record_startup_backfill_pressure_error(gate, err);
         })?;
 
+    let observation_task_key = startup_backfill_observation_task_key(observation_parent_task_key);
     let observation = crate::TaskExecutionObservation::begin(
-        "startup_backfill",
-        &crate::maintenance_store::task_title_for_observation("startup_backfill"),
+        observation_task_key,
+        &crate::maintenance_store::task_title_for_observation(observation_task_key),
         "event_or_due",
         crate::maintenance_store::task_execution_class("startup_backfill"),
         "resource_wait",
@@ -2331,7 +2349,8 @@ async fn run_startup_backfill_task_if_due_outcome(
     let child_key = crate::maintenance_store::managed_startup_backfill_suffix(&task_name)
         .map(|suffix| format!("startup_backfill.{suffix}"))
         .unwrap_or_else(|| format!("startup_backfill.{}", task.log_label()));
-    observation.set_child(&child_key, task.log_label());
+    let child_title = crate::maintenance_store::task_title_for_observation(&child_key);
+    observation.set_child(&child_key, &child_title);
 
     let started_at = Instant::now();
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();

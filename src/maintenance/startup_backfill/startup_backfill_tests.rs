@@ -689,3 +689,15 @@ fn historical_rollup_backfill_run_state_backs_off_after_blocked_cycle_across_mul
     assert!(!run.hit_scan_limit);
     assert!(run.force_idle);
 }
+
+#[test]
+fn managed_prompt_cache_observation_keeps_root_task_identity() {
+    assert_eq!(
+        startup_backfill_observation_task_key(Some("prompt_cache_materialization")),
+        "prompt_cache_materialization"
+    );
+    assert_eq!(
+        startup_backfill_observation_task_key(None),
+        "startup_backfill"
+    );
+}
