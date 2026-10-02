@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "version-impact-record",
-  "status": "candidate-implemented-release-unverified",
+  "status": "candidate-implemented-capacity-observed-release-unverified",
   "change": {
     "description": "Bound retention runs, automatic catch-up, independent hourly backlog observations, and compatible task evidence.",
     "release_unit_description": "Bounded retention execution, catch-up scheduling, and its task observation contract.",
@@ -24,9 +24,9 @@
     },
     "verified": {
       "impact": null,
-      "reasoning": "The candidate adds a durable catch-up schedule, an idempotent main-database index, and maintenance-database hourly observations. Earlier Prompt-only benchmark and profile records are not current retention capacity evidence; verified release impact remains unset until current-head migration, empirical, visual, and review gates pass.",
+      "reasoning": "The candidate adds a durable catch-up schedule, an idempotent main-database index, and maintenance-database hourly observations. The current retention capacity card observes a fixed cohort reaching zero, while the old baseline fails before producing a comparable latency distribution; verified release impact remains unset until current-head migration, visual, and review gates pass.",
       "verified_at": null,
-      "evidence": ["IMPLEMENTATION.md", "assets/persistent-state-migration-record.json", "assets/shared-testbox-candidate-benchmark-card.md"]
+      "evidence": ["IMPLEMENTATION.md", "assets/persistent-state-migration-record.json", "assets/shared-testbox-retention-capacity-card.md"]
     }
   },
   "compatibility_evidence": {
@@ -41,12 +41,12 @@
       "applicable": true,
       "state_description": "Business correctness cursors, generation-checked staged aggregates and queue entries, retention catch-up schedule, the main-database eligibility index, and nullable operational outcomes/hourly snapshots in the maintenance database.",
       "source_program_compatibility_range": "Existing retention support boundary v2.71.x through the observed v2.80.2 schema, including intervening migration structures; fixtures required before release.",
-      "evidence": ["src/prompt_cache_conversations.rs", "src/maintenance_store.rs", "src/schema.rs", "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs", "Candidate targeted migration/queue regressions; old-version and interruption fixtures remain pending."]
+      "evidence": ["src/prompt_cache_conversations.rs", "src/maintenance_store.rs", "src/schema.rs", "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs", "Candidate targeted migration/queue regressions; current-head shared profile, old-version and interruption evidence remain pending."]
     }
   },
   "release_unit": {
     "member_change_records": ["bounded-retention-runs"],
     "maximum_verified_impact": null,
-    "calculation_evidence": ["Candidate classification remains public_api=patch and persistent_state=minor; verified maximum is intentionally unset until the shared validation gates pass."]
+    "calculation_evidence": ["Candidate classification remains public_api=patch and persistent_state=minor; capacity observation does not close the migration, visual, review, or baseline-comparison gates, so the verified maximum remains intentionally unset."]
   }
 }

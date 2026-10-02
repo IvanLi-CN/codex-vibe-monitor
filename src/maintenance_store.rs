@@ -2116,6 +2116,13 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
+        self.enqueue_due_runs_with_retention_enabled(true).await
+    }
+
+    pub(crate) async fn enqueue_due_runs_with_retention_enabled(
+        &self,
+        retention_enabled: bool,
+    ) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
         let mut transaction = self.pool.begin().await?;
@@ -2133,10 +2140,12 @@ impl MaintenanceStore {
                     ,next_trigger_at,next_catchup_at
              FROM managed_tasks
              WHERE enabled=1 AND is_manual=0
+               AND (? = 1 OR task_key != 'retention_archive')
                AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
                  OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
              ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key",
         )
+        .bind(retention_enabled)
         .bind(&now_text)
         .bind(&now_text)
         .fetch_all(&mut *transaction)
@@ -2422,7 +2431,7 @@ impl MaintenanceStore {
         };
         let completed = completed.min(i64::MAX as usize) as i64;
         let pending = backlog_total.saturating_sub(completed);
-        if pending <= 0 || completion == Some("completed") {
+        if pending <= 0 {
             sqlx::query(
                 "UPDATE managed_tasks
                  SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
@@ -4098,6 +4107,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retention_completed_run_keeps_catchup_when_backlog_remains() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention completed catch-up fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        let run_id = store
+            .begin_run(
+                "retention_archive",
+                "2026-10-01T00:00:00.000Z",
+                "catchup",
+                None,
+            )
+            .await
+            .expect("begin retention run");
+        store
+            .finish_run_with_observation(
+                run_id,
+                "success",
+                "2026-10-01T00:00:01.000Z",
+                1_000,
+                None,
+                None,
+                Some("completed"),
+                Some("completed"),
+                Some(&serde_json::json!({
+                    "total": 10,
+                    "invocationRowsArchived": 2,
+                    "waitReason": null
+                })),
+            )
+            .await
+            .expect("finish retention run");
+        let scheduled = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read retained catch-up schedule");
+        assert!(scheduled.0.is_some());
+        assert_eq!(scheduled.1.as_deref(), Some("backlog_remaining"));
+    }
+
+    #[tokio::test]
     async fn due_retention_catchup_is_enqueued_once_and_keeps_inspection_schedule() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
@@ -4147,6 +4203,42 @@ mod tests {
                 .expect("avoid duplicate catch-up"),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn disabled_runtime_retention_config_does_not_enqueue_automatic_runs() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention config gate fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET next_trigger_at='2000-01-01T00:00:00.000Z',
+                 next_catchup_at='2000-01-01T00:00:00.000Z'
+             WHERE task_key='retention_archive'",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed due retention schedule");
+
+        assert_eq!(
+            store
+                .enqueue_due_runs_with_retention_enabled(false)
+                .await
+                .expect("skip retention when runtime config is disabled"),
+            0
+        );
+        let runs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM managed_task_runs WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("count skipped retention runs");
+        assert_eq!(runs, 0);
     }
 
     #[tokio::test]

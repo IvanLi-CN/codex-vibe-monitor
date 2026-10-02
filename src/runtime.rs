@@ -1135,7 +1135,10 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 );
                 pending_finishes.push_back(finish);
             }
-            if let Err(error) = store.enqueue_due_runs().await {
+            if let Err(error) = store
+                .enqueue_due_runs_with_retention_enabled(state.config.retention_enabled)
+                .await
+            {
                 warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
             }
             if let Err(error) = store.cleanup_expired_history_if_due().await {

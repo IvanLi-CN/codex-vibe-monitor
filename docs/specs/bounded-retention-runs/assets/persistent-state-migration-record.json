@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "candidate-implemented-validation-pending",
+  "status": "candidate-implemented-empirical-capacity-pending-migration-gate",
   "migration": {
     "description": "Add bounded conversation scan continuation, generation-safe staged statistics, automatic retention catch-up and exact hourly backlog observations.",
     "release_unit_description": "Bounded retention execution, automatic catch-up and its task observation contract.",
@@ -12,7 +12,7 @@
     "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
     "source_compatibility_range": {
       "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; v2.71.45 and v2.80.2 are the declared reproducible fixtures, and unobserved intervening snapshots are not claimed as covered.",
-      "to_program_version": "Candidate branch th/retention-catchup-observability from origin/main b6829559; delivery commit is recorded at release readiness.",
+      "to_program_version": "Candidate branch th/retention-catchup-observability from origin/main 9b7967f2; measured source 9f6ab720; delivery commit is recorded at release readiness.",
       "direct_major_skips_supported": false
     }
   },
@@ -110,7 +110,7 @@
         "Catch-up scheduling regression preserves the inspection schedule, applies reason-specific backoff, and clears future work when disabled.",
         "Hourly observer fixtures prove same-snapshot count/max-overdue pairs, idempotent last-success wins, explicit missing buckets and no historical backfill.",
         "Task API and Web chart regressions prove optional-field compatibility, shared hourly axes, readable observedAt/retention policy, and missing versus exact-zero semantics.",
-        "The 24-hour fixed-cohort retention capacity card and online-latency comparison remain required before delivery readiness; no empirical pass is claimed yet."
+        "The current-head fixed-cohort harness card records one observed zero-remaining run and bounded online-probe latency; it is not a merge-base three-run or raw-file Verified Archive test. The old baseline failed with SQLite extended error 517 before producing a comparable p95/p99, so A7 and the numeric three-run comparison remain open before delivery readiness."
       ]
     },
     "major": {"required_test_evidence": []},
@@ -118,9 +118,9 @@
       "cargo check and clippy pass on the Candidate; targeted maintenance-store, prompt-cache generation/paging, orphan-retention and retention regressions pass locally.",
       "Web unit tests, typecheck, lint and production build pass locally; Demo task page shows completed/partial, default schedule, stage progress, stale/unknown-compatible fields and unavailable Prompt statistics.",
       "Repeated trigger installation is transactional and idempotent; the generation-clock regression proves queue drain followed by re-enqueue uses a higher generation.",
-      "shared-testbox lightweight (1,246/1,246), stateful-sqlite (1,375/1,375), and archive-file-io (299/299) profiles pass.",
+      "Current-head shared-testbox lightweight (1,275/1,275) and archive-file-io (300/300) profiles pass. Stateful-sqlite completed 1,384/1,385 in the main run; its one pre-existing routing timeout assertion returned 502 instead of 503 under concurrent testbox load and passed in an isolated 1/1 rerun. Retention and migration cases passed.",
       "The earlier same-seed 1,300,000-row result is retained only as Prompt-statistics evidence; it does not exercise retention archive submission and is excluded from the A7 capacity gate.",
-      "Current candidate migration, capacity, and visual evidence remain pending until the new main-database index, observer, and catch-up implementation are revalidated together.",
+      "The current candidate single-run capacity harness observation is recorded in assets/shared-testbox-retention-capacity-card.md; A7 baseline/three-run/raw-file evidence, current-head migration, visual confirmation, and Tier 4 review remain pending. Storybook and the bound demo/runtime E2E subset passed, while the full delivery evidence bundle still requires revalidation together.",
       "Local targeted checks are refreshed incrementally; the final profile, migration, Storybook/E2E, empirical, and review results must be recorded against the delivery commit."
     ]
   }
