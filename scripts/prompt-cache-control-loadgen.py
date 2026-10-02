@@ -384,6 +384,16 @@ def candidate_input(round_index, duration_seconds, request_rate):
     if not enabled_state['maintenance_enabled'] or enabled_state['business_legacy_enabled']:
         raise SystemExit(f'dual-database control fixture is inconsistent: {enabled_state}')
 
+    def record_result(result):
+        results.append(result)
+        print(json.dumps({
+            'phase': 'proxy-call-sample',
+            'round': round_index,
+            'sample_index': len(results),
+            'elapsed_seconds': round(time.monotonic() - start, 3),
+            **result,
+        }, ensure_ascii=False), flush=True)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         while time.monotonic() < deadline:
             now = time.monotonic()
@@ -402,7 +412,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
                 print(json.dumps({'phase': 'control-repeat-same-value', 'round': round_index}), flush=True)
             done = [future for future in pending if future.done()]
             for future in done:
-                results.append(future.result())
+                record_result(future.result())
                 pending.remove(future)
             if sequence < (duration_seconds * request_rate) and len(pending) < 2:
                 if now >= next_request_at:
@@ -442,7 +452,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
                     unexpected_disabled_after_resume = True
             time.sleep(0.01)
         for future in concurrent.futures.as_completed(pending, timeout=20):
-            results.append(future.result())
+            record_result(future.result())
 
     bad = [item for item in results if item['status'] != 200 or item['terminal'] is None]
     parse_values = [
