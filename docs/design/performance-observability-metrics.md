@@ -1,6 +1,6 @@
 # 性能指标迁移映射
 
-本文件是 [锁定设计](performance-observability.md) 的逐项迁移合同。源清单为切换前 [77 个指标 ID](../specs/performance-telemetry/METRICS.md)；源代码仍实现旧方案，本表不宣称新指标已经导出。每个旧 ID 必须有一行动作，不能只删除旧模块而丢失其观测能力。
+本文件是 [锁定设计](performance-observability.md) 的逐项迁移合同。源清单为切换前 [77 个指标 ID](../specs/performance-telemetry/METRICS.md)；该清单描述切换前信号；当前实现与验证进度见[实现记录](../specs/performance-telemetry/IMPLEMENTATION.md)。每个旧 ID 必须有一行动作，不能只删除旧模块而丢失其观测能力。
 
 新指标用秒、字节和累计 Counter；固定标签遵循设计白名单。表中的标签只说明分类，不要求把全部基础标签写在每行。Histogram 的 `_count` 是实际记录的耗时样本数，Counter 的 `_total` 是被计数的事件；抽样时两者分母不同。新指标由事件来源更新，不从旧库或旧时间桶转换。
 

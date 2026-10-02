@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -153,11 +153,33 @@ impl CoordinatorState {
 #[derive(Debug)]
 pub(crate) struct ProxySqliteWriteCoordinator {
     coordinated: bool,
-    state: Mutex<CoordinatorState>,
+    state: crate::observability::DiagnosticMutex<CoordinatorState>,
     notify: Notify,
+    observability: crate::observability::MetricsSink,
 }
 
 impl ProxySqliteWriteCoordinator {
+    pub(crate) fn bind_observability(&self, metrics: Arc<crate::ObservabilityRuntime>) {
+        self.observability.bind(metrics);
+    }
+    fn observe_admission(
+        &self,
+        class: ProxySqliteWriteClass,
+        wait: Duration,
+        coordinated: bool,
+    ) -> Instant {
+        if let Some(metrics) = self.observability.get() {
+            metrics.duration(
+                "cvm_sqlite_coordinator_wait_duration_seconds",
+                &[("class", class.as_str())],
+                wait,
+            );
+            if !coordinated {
+                metrics.counter("cvm_sqlite_coordinator_bypasses_total", &[], 1);
+            }
+        }
+        Instant::now()
+    }
     fn from_env() -> Self {
         let coordinated = !matches!(
             std::env::var(PROXY_SQLITE_WRITE_COORDINATOR_MODE_ENV),
@@ -165,8 +187,9 @@ impl ProxySqliteWriteCoordinator {
         );
         Self {
             coordinated,
-            state: Mutex::new(CoordinatorState::default()),
+            state: crate::observability::DiagnosticMutex::new(CoordinatorState::default()),
             notify: Notify::new(),
+            observability: Default::default(),
         }
     }
 
@@ -183,6 +206,7 @@ impl ProxySqliteWriteCoordinator {
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
+                observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
             };
@@ -220,6 +244,7 @@ impl ProxySqliteWriteCoordinator {
                         class,
                         coordinated: true,
                         lock_wait,
+                        observed_at: self.observe_admission(class, lock_wait, true),
                         notify_background_eligibility: true,
                         fairness_admission: false,
                     };
@@ -242,6 +267,7 @@ impl ProxySqliteWriteCoordinator {
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
+                observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
             });
@@ -258,6 +284,7 @@ impl ProxySqliteWriteCoordinator {
             class,
             coordinated: true,
             lock_wait,
+            observed_at: self.observe_admission(class, lock_wait, true),
             notify_background_eligibility: true,
             fairness_admission: false,
         })
@@ -277,6 +304,7 @@ impl ProxySqliteWriteCoordinator {
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
+                observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
             };
@@ -317,6 +345,7 @@ impl ProxySqliteWriteCoordinator {
                         class,
                         coordinated: true,
                         lock_wait,
+                        observed_at: self.observe_admission(class, lock_wait, true),
                         notify_background_eligibility: true,
                         fairness_admission,
                     };
@@ -392,6 +421,7 @@ pub(crate) struct ProxySqliteWritePermit {
     class: ProxySqliteWriteClass,
     coordinated: bool,
     lock_wait: Duration,
+    observed_at: Instant,
     notify_background_eligibility: bool,
     fairness_admission: bool,
 }
@@ -456,6 +486,16 @@ impl Drop for ProxySqliteWriteWaiter {
 
 impl Drop for ProxySqliteWritePermit {
     fn drop(&mut self) {
+        if let Some(metrics) = self.coordinator.observability.get() {
+            metrics.duration(
+                "cvm_sqlite_coordinator_hold_duration_seconds",
+                &[("class", self.class.as_str())],
+                self.observed_at.elapsed(),
+            );
+            if self.fairness_admission {
+                metrics.counter("cvm_sqlite_maintenance_fairness_total", &[], 1);
+            }
+        }
         if !self.coordinated {
             return;
         }
@@ -485,8 +525,9 @@ pub(crate) fn proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoordinato
 pub(crate) fn test_proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoordinator> {
     Arc::new(ProxySqliteWriteCoordinator {
         coordinated: true,
-        state: Mutex::new(CoordinatorState::default()),
+        state: crate::observability::DiagnosticMutex::new(CoordinatorState::default()),
         notify: Notify::new(),
+        observability: Default::default(),
     })
 }
 

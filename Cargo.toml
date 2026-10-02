@@ -51,6 +51,20 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 rustls-pki-types = "1"
 webpki-roots = "1"
 
+metrics = "=0.24.6"
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
+hotpath = { version = "=0.28.0", features = ["axum-0-8", "sqlx", "tokio"] }
+http-body = "1"
+pin-project-lite = "0.2"
+
+[features]
+default = ["hotpath"]
+hotpath = ["hotpath/hotpath", "hotpath/hotpath-prometheus"]
+
+[profile.release]
+debug = "line-tables-only"
+strip = false
+
 [dev-dependencies]
 filetime = "0.2"
 libsqlite3-sys = "=0.30.1"

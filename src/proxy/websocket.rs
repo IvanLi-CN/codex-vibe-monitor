@@ -10,63 +10,8 @@ pub(crate) type UpstreamWsStream = WebSocketStream<MaybeTlsStream<BoxedWsIo>>;
 pub(crate) const WS_UPSTREAM_DRAIN_AFTER_DOWNSTREAM_CLOSE_TIMEOUT: Duration =
     Duration::from_millis(1500);
 
-pub(crate) struct PrefixedIo {
-    prefix: std::io::Cursor<Vec<u8>>,
-    inner: BoxedWsIo,
-}
-
-impl PrefixedIo {
-    fn new(prefix: Vec<u8>, inner: BoxedWsIo) -> Self {
-        Self {
-            prefix: std::io::Cursor::new(prefix),
-            inner,
-        }
-    }
-}
-
-impl AsyncRead for PrefixedIo {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        let remaining = self.prefix.get_ref().len() as u64 - self.prefix.position();
-        if remaining > 0 {
-            let available = self.prefix.get_ref().len() - self.prefix.position() as usize;
-            let to_copy = available.min(buf.remaining());
-            let start = self.prefix.position() as usize;
-            let end = start + to_copy;
-            buf.put_slice(&self.prefix.get_ref()[start..end]);
-            self.prefix.set_position(end as u64);
-            return std::task::Poll::Ready(Ok(()));
-        }
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for PrefixedIo {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
+mod prefixed_io;
+use prefixed_io::PrefixedIo;
 
 pub(crate) fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
     headers
@@ -223,6 +168,10 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     ws.on_upgrade(move |downstream| {
         let mut prompt_cache_lease_guard = prompt_cache_lease_guard;
         async move {
+            let mut websocket_lifetime = crate::observability::WebsocketLifetime::new(
+                state.observability.clone(),
+                original_uri.path(),
+            );
             prompt_cache_lease_guard.disarm();
             if requires_response_create_first_frame {
                 proxy_websocket_tunnel_deferred_prepare(
@@ -258,6 +207,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                 )
                 .await;
             }
+            websocket_lifetime.finish("unknown");
         }
     })
 }
@@ -996,10 +946,13 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         trace.occurred_at.clone(),
         Some(account.account_id),
         upstream_url.host_str(),
+        trace.endpoint.as_str(),
     );
     let connect_started_at_utc = Utc::now();
     let connect_started = Instant::now();
     let connect_timeout = runtime_timeouts.default_send_timeout;
+    let mut observed_attempt =
+        crate::observability::UpstreamAttempt::new(state.observability.clone(), &trace.endpoint);
     let connect_result = timeout(
         connect_timeout,
         connect_upstream_websocket(
@@ -1010,6 +963,12 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ),
     )
     .await;
+    observed_attempt.outcome = match &connect_result {
+        Ok(Ok(_)) => "success",
+        Err(_) => "timeout",
+        Ok(Err(_)) => "error",
+    };
+    drop(observed_attempt);
     let (upstream, selected_subprotocol, transport_flush_task) = match connect_result {
         Ok(Ok((stream, response))) => {
             traffic_reporter.record_delta(socket_meter.snapshot(), Utc::now());

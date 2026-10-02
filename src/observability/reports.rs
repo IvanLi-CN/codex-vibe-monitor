@@ -1,0 +1,261 @@
+use crate::*;
+
+#[derive(Debug)]
+pub(super) struct ReportLimiter {
+    started: Instant,
+    count: u32,
+}
+impl Default for ReportLimiter {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            count: 0,
+        }
+    }
+}
+impl ReportLimiter {
+    fn allow(&mut self) -> bool {
+        if self.started.elapsed() >= Duration::from_secs(60) {
+            self.started = Instant::now();
+            self.count = 0;
+        }
+        if self.count >= 30 {
+            return false;
+        }
+        self.count += 1;
+        true
+    }
+}
+pub(crate) async fn observability_capabilities(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    Json(
+        json!({"enabled":state.observability.enabled,"state":if !state.observability.enabled {"disabled"} else if state.observability.degraded.load(Ordering::Relaxed) {"degraded"} else {"enabled"},"grafanaPublicUrl":state.config.observability.grafana_public_url,"grafanaConnectivity":"unknown","hotpath":cfg!(feature="hotpath"),"dashboards":["cvm-overview","cvm-proxy","cvm-sqlite","cvm-runtime","cvm-web"],"datasourceUid":"cvm-prometheus","variables":["service","environment","instance","task_key"]}),
+    )
+}
+pub(crate) async fn hotpath_report(
+    State(state): State<Arc<AppState>>,
+    AxumPath(report): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !super::config::authorized(&headers, state.config.observability.read_token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let path = match report.as_str() {
+        "server" => "server",
+        "sql" => "sql",
+        "functions" => "functions_timing",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if !state
+        .observability
+        .report_limiter
+        .lock()
+        .map(|mut limiter| limiter.allow())
+        .unwrap_or(false)
+    {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    if !state.observability.enabled || !cfg!(feature = "hotpath") {
+        return unavailable();
+    }
+    match tokio::time::timeout(Duration::from_secs(2), read_report(path)).await {
+        Ok(Ok(rows)) => {
+            let response = json!({"report":report,"collectedAt":format_utc_iso_millis(Utc::now()),"processStartedAt":format_utc_iso_millis(state.observability.started_at),"revision":option_env!("APP_GIT_REVISION").unwrap_or("unknown"),"functionSamplingRate":0.1,"rows":rows});
+            match serde_json::to_vec(&response) {
+                Ok(bytes) if bytes.len() <= 1024 * 1024 => {
+                    ([(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+                }
+                _ => unavailable(),
+            }
+        }
+        _ => unavailable(),
+    }
+}
+fn unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({"code":"profiler_unavailable"})),
+    )
+        .into_response()
+}
+async fn read_report(path: &str) -> Result<Vec<serde_json::Value>> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    let mut request = client.get(format!("http://127.0.0.1:6770/{path}"));
+    if let Ok(token) = env::var("HOTPATH_METRICS_AUTH_TOKEN") {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await?.error_for_status()?;
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len() + chunk.len() > 1024 * 1024 {
+            bail!("profiler response exceeds limit");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    sanitize_report(path, &value)
+}
+
+fn sanitize_report(path: &str, value: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
+    let (fields, required): (&[&str], &[&str]) = match path {
+        "functions_timing" => (
+            &[
+                "name",
+                "calls",
+                "sampled_calls",
+                "avg",
+                "total",
+                "percentiles",
+            ],
+            &[
+                "name",
+                "calls",
+                "sampled_calls",
+                "avg",
+                "total",
+                "percentiles",
+            ],
+        ),
+        "sql" => (
+            &[
+                "query",
+                "source",
+                "route",
+                "count",
+                "avg",
+                "total",
+                "percentiles",
+            ],
+            &["query", "count", "avg", "total", "percentiles"],
+        ),
+        "server" => (
+            &[
+                "route",
+                "count",
+                "status_4xx",
+                "status_5xx",
+                "avg",
+                "total",
+                "percentiles",
+                "sql_per_request",
+            ],
+            &[
+                "route",
+                "count",
+                "status_4xx",
+                "status_5xx",
+                "avg",
+                "total",
+                "percentiles",
+            ],
+        ),
+        _ => bail!("unsupported profiler report"),
+    };
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .context("invalid profiler report")?;
+    let mut rows = Vec::new();
+    for row in data.iter().take(100) {
+        let object = row.as_object().context("invalid profiler row")?;
+        if required.iter().any(|field| !object.contains_key(*field)) {
+            bail!("missing required profiler field");
+        }
+        let mut safe = serde_json::Map::new();
+        for &field in fields {
+            let Some(v) = object.get(field) else { continue };
+            match field {
+                "percentiles" => {
+                    let object = v.as_object().context("invalid profiler percentiles")?;
+                    let mut percentiles = serde_json::Map::new();
+                    for key in ["p50", "p95", "p99", "p99.9"] {
+                        if let Some(value) = object.get(key) {
+                            let text = value
+                                .as_str()
+                                .filter(|text| text.len() <= 64)
+                                .context("invalid profiler percentile")?;
+                            percentiles.insert(key.into(), json!(text));
+                        }
+                    }
+                    safe.insert(field.into(), json!(percentiles));
+                }
+                "count" | "calls" | "sampled_calls" | "status_4xx" | "status_5xx" => {
+                    let count = v.as_u64().context("invalid profiler count")?;
+                    safe.insert(field.into(), json!(count));
+                }
+                "sql_per_request" => {
+                    if !v.is_null()
+                        && !v
+                            .as_f64()
+                            .is_some_and(|number| number.is_finite() && number >= 0.0)
+                    {
+                        bail!("invalid profiler per-request count");
+                    }
+                    safe.insert(field.into(), v.clone());
+                }
+                "source" | "route" if v.is_null() && path == "sql" => {
+                    safe.insert(field.into(), serde_json::Value::Null);
+                }
+                _ => {
+                    let limit = if matches!(field, "avg" | "total") {
+                        64
+                    } else {
+                        4096
+                    };
+                    let text = v
+                        .as_str()
+                        .filter(|text| text.len() <= limit)
+                        .context("invalid profiler text field")?;
+                    safe.insert(field.into(), json!(text));
+                }
+            }
+        }
+        rows.push(json!(safe));
+    }
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_contract_preserves_sample_counts_and_unknown_timing() {
+        let row = json!({"name":"batch_flush","calls":40,"sampled_calls":0,"avg":"-","total":"-","percentiles":{"p95":"-","arbitrary":"secret"},"location":"private path","raw":"secret"});
+        let rows = sanitize_report("functions_timing", &json!({"data":vec![row;101]})).unwrap();
+        assert_eq!(rows.len(), 100);
+        assert_eq!(rows[0]["calls"], 40);
+        assert_eq!(rows[0]["sampled_calls"], 0);
+        assert_eq!(rows[0]["percentiles"], json!({"p95":"-"}));
+        assert!(rows[0].get("location").is_none());
+        assert!(rows[0].get("raw").is_none());
+    }
+
+    #[test]
+    fn reports_reject_malformed_or_unbounded_fields() {
+        let row = json!({"query":"SELECT ?","source":null,"route":null,"count":1,"avg":"1ms","total":"1ms","percentiles":{"p95":"1ms"}});
+        assert!(sanitize_report("sql", &json!({"data":[row.clone()]})).is_ok());
+        for (field, value) in [
+            ("count", json!("1")),
+            ("avg", json!(2)),
+            ("query", json!("x".repeat(4097))),
+            ("percentiles", json!({"p95":{"secret":1}})),
+        ] {
+            let mut invalid = row.clone();
+            invalid[field] = value;
+            assert!(
+                sanitize_report("sql", &json!({"data":[invalid]})).is_err(),
+                "{field}"
+            );
+        }
+        assert!(sanitize_report("sql", &json!({"data":[{}]})).is_err());
+        assert!(sanitize_report("arbitrary", &json!({"data":[]})).is_err());
+    }
+}

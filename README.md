@@ -259,14 +259,21 @@ bun run worktree:setup -- --force
 
 ## 第一次部署最该先确认的配置
 
+性能指标由 Prometheus 存储、Grafana 展示；应用不再写性能 SQLite。
+升级须去除 `PERFORMANCE_DATABASE_PATH` / `PERFORMANCE_TELEMETRY_ENABLED`，
+停旧 writer 后按[观测运维合同](ops/observability/README.md)归档旧库。
+
 | 变量                                                   | 作用                                                                                                                                |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `HTTP_BIND`                                            | 服务监听地址                                                                                                                        |
 | `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`                  | 公共项目指标 API 的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                                            |
 | `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                                     |
-| `PERFORMANCE_DATABASE_PATH`                            | 独立性能指标 SQLite 路径；未配置时使用主库同目录的 `<主库名>.performance.sqlite`                                                    |
 | `MAINTENANCE_DATABASE_PATH`                            | 独立维护状态 SQLite 路径；未配置时使用主库同目录的 `<主库名>.maintenance.sqlite`                                                    |
-| `PERFORMANCE_TELEMETRY_ENABLED`                        | 是否启用性能指标采集，默认 `true`；设为 `false` 只关闭观测，不影响业务请求                                                          |
+| `OBSERVABILITY_ENABLED` | 外部性能观测开关，默认 `true`；关闭不影响业务请求 |
+| `METRICS_BIND` | 应用 exporter 地址，默认 `127.0.0.1:9091`；容器私网用 `0.0.0.0:9091` |
+| `METRICS_TOKEN_FILE` | 两个私网 exporter 的 scrape Token 文件；非 loopback 必须配置 |
+| `OBSERVABILITY_READ_TOKEN_FILE` | 三个 hotpath 只读报告的独立 Token 文件，与 scrape Token 不同 |
+| `GRAFANA_PUBLIC_URL` | Grafana 公网 HTTPS 基址；未配置时应用显示配置缺失 |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                                 |
 | `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
 | `OPENAI_PROXY_WEBSOCKET_ENABLED`                       | 是否允许下游连接 `/v1/*` WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准                                           |

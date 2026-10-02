@@ -1,0 +1,49 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-8GB}
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    group_add: ["${OBSERVABILITY_SECRET_GID:?set secret file read group}"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./recording-rules.yml:/etc/prometheus/recording-rules.yml:ro
+      - prometheus-data:/prometheus
+      - ${METRICS_TOKEN_FILE:?set METRICS_TOKEN_FILE}:/run/secrets/metrics-token:ro
+    networks: [monitoring]
+  grafana:
+    image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    group_add: ["${OBSERVABILITY_SECRET_GID:?set secret file read group}"]
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+    environment:
+      GF_SERVER_ROOT_URL: ${GRAFANA_PUBLIC_URL:?set HTTPS GRAFANA_PUBLIC_URL}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin-password
+      GF_SECURITY_COOKIE_SECURE: "true"
+      GF_SECURITY_COOKIE_SAMESITE: lax
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ALERTING_ENABLED: "false"
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - ${GRAFANA_ADMIN_PASSWORD_FILE:?set GRAFANA_ADMIN_PASSWORD_FILE}:/run/secrets/grafana-admin-password:ro
+    networks: [monitoring]
+networks:
+  monitoring:
+    external: true
+    name: ${OBSERVABILITY_NETWORK:-cvm-monitoring}
+volumes:
+  prometheus-data:
+  grafana-data:

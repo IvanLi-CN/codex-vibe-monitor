@@ -133,7 +133,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
-        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
+        observability: ObservabilityRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),
@@ -243,7 +243,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
         dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
         process_started_at_utc: chrono::Utc::now(),
-        performance_telemetry: PerformanceTelemetryRuntime::disabled_for_tests(),
+        observability: ObservabilityRuntime::disabled_for_tests(),
         dashboard_network_speed_cache: Arc::new(
             crate::dashboard_network_speed::DashboardNetworkSpeedCache::new(chrono::Utc::now()),
         ),

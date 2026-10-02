@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Read bounded project metrics through Grafana HTTPS or fixed hotpath reports."""
+import argparse
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+QUERIES = {
+    "health": 'up{job=~"cvm-app|cvm-hotpath"}',
+    "cpu": '100 * sum by (service, environment, instance) (rate(cvm_process_cpu_seconds_total[5m]))',
+    "latency": 'histogram_quantile(0.95, sum by (le, route, service, environment, instance) (rate(cvm_http_body_duration_seconds_bucket[5m])))',
+    "samples": 'sum by (route, service, environment, instance) (increase(cvm_http_body_duration_seconds_count[30m]))',
+    "sqlite": 'histogram_quantile(0.95, sum by (le, class, service, environment, instance) (rate(cvm_sqlite_coordinator_wait_duration_seconds_bucket[5m])))',
+    "pool": 'histogram_quantile(0.95, sum by (le, service, environment, instance) (rate(cvm_sqlite_pool_acquire_duration_seconds_bucket[5m])))',
+    "queue": 'cvm_sqlite_pending_items',
+    "errors": 'sum by (kind, service, environment, instance) (rate(cvm_sqlite_errors_total[5m]))',
+    "proxy": 'histogram_quantile(0.95, sum by (le, endpoint, service, environment, instance) (rate(cvm_proxy_ttfb_seconds_bucket[5m])))',
+    "tasks": 'sum by (task_key, outcome, service, environment, instance) (increase(cvm_task_runs_total[30m]))',
+    "freshness": 'time() - cvm_observability_sampler_last_success_timestamp_seconds',
+}
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+def base_url(value):
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("a credential-free HTTPS base URL is required")
+    return value.rstrip("/")
+
+def token_file(name):
+    path = os.environ.get(name)
+    if not path:
+        raise ValueError(f"set {name} to a private token file")
+    token = Path(path).read_text().strip()
+    if not 16 <= len(token) <= 4096 or any(c.isspace() for c in token):
+        raise ValueError("invalid token file")
+    return token
+
+def read_json(url, token, org=None):
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    if org:
+        if not org.isdecimal():
+            raise ValueError("GRAFANA_ORG_ID must be numeric")
+        headers["X-Grafana-Org-Id"] = org
+    request = urllib.request.Request(url, headers=headers)
+    # Redirects can expose credentials or turn machine requests into a login page.
+    opener = urllib.request.build_opener(NoRedirect())
+    with opener.open(request, timeout=10) as response:
+        if "application/json" not in response.headers.get("Content-Type", ""):
+            raise ValueError("entrypoint returned non-JSON; check machine authentication")
+        body = response.read(1024 * 1024 + 1)
+        if len(body) > 1024 * 1024:
+            raise ValueError("query response exceeds 1 MiB; narrow the window")
+        return json.loads(body)
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("signal", choices=[*QUERIES, "server", "sql", "functions"])
+    parser.add_argument("--minutes", type=int, default=30)
+    args = parser.parse_args()
+    if not 1 <= args.minutes <= 30 * 24 * 60:
+        parser.error("window must be between 1 minute and 30 days")
+    if args.signal in {"server", "sql", "functions"}:
+        url = base_url(os.environ.get("CVM_URL", "")) + "/api/system/observability/hotpath/" + args.signal
+        result = read_json(url, token_file("CVM_READ_TOKEN_FILE"))
+    else:
+        now = dt.datetime.now(dt.timezone.utc)
+        query = urllib.parse.urlencode({"query": QUERIES[args.signal], "start": int(now.timestamp()) - args.minutes * 60, "end": int(now.timestamp()), "step": max(15, args.minutes * 60 // 120)})
+        url = base_url(os.environ.get("GRAFANA_URL", "")) + "/api/datasources/proxy/uid/cvm-prometheus/api/v1/query_range?" + query
+        result = read_json(url, token_file("GRAFANA_TOKEN_FILE"), os.environ.get("GRAFANA_ORG_ID"))
+        if result.get("status") != "success":
+            raise ValueError("datasource query failed")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except urllib.error.HTTPError as error:
+        print(f"request rejected (HTTP {error.code})", file=sys.stderr)
+        sys.exit(1)
+    except (ValueError, OSError, urllib.error.URLError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

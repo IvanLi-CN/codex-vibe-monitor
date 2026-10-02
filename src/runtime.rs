@@ -347,8 +347,9 @@ pub(crate) async fn run() -> Result<()> {
     let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
     let process_started_at_utc = Utc::now();
-    let performance_telemetry =
-        PerformanceTelemetryRuntime::start(&config, process_started_at_utc, shutdown.clone());
+    let observability = ObservabilityRuntime::new(config.observability.enabled);
+
+    observability.start_exporter(&config.observability, shutdown.clone());
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
@@ -370,6 +371,9 @@ pub(crate) async fn run() -> Result<()> {
         pricing_catalog.clone(),
         &config.database_path,
     );
+    sqlite_batch_writer.bind_observability(observability.clone());
+    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .bind_observability(observability.clone());
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
     sqlite_batch_writer
         .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());
@@ -384,7 +388,7 @@ pub(crate) async fn run() -> Result<()> {
         config: config.clone(),
         pool,
         process_started_at_utc,
-        performance_telemetry,
+        observability,
         sqlite_batch_writer,
         pool_account_selection_runtime,
         proxy_runtime_invocations,
@@ -461,7 +465,7 @@ pub(crate) async fn run() -> Result<()> {
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
-    spawn_performance_telemetry_sampler(state.clone());
+    spawn_observability_sampler(state.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     run_runtime_until_shutdown(
@@ -1290,29 +1294,17 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             });
             let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
             let task_dimension = managed_task_metric_dimension(&task_key);
-            state.performance_telemetry.record_duration_ms(
-                "maintenance.task_run_duration_ms",
+            state.observability.task_completed(
                 task_dimension,
-                duration_ms as f64,
+                if status == SystemTaskStatus::Success {
+                    "success"
+                } else if status == SystemTaskStatus::Failed {
+                    "error"
+                } else {
+                    "deferred"
+                },
+                Duration::from_millis(duration_ms.max(0) as u64),
             );
-            state.performance_telemetry.record_counter(
-                "maintenance.task_run_count",
-                task_dimension,
-                1,
-            );
-            if status == SystemTaskStatus::Success {
-                state.performance_telemetry.record_counter(
-                    "maintenance.task_run_success_count",
-                    task_dimension,
-                    1,
-                );
-            } else if status == SystemTaskStatus::Failed {
-                state.performance_telemetry.record_counter(
-                    "maintenance.task_run_failure_count",
-                    task_dimension,
-                    1,
-                );
-            }
             let finish = ManagedTaskFinish {
                 run_id,
                 task_key,
@@ -2020,7 +2012,6 @@ pub(crate) async fn drain_runtime_after_shutdown(
         info!("summary/quota broadcast worker drained");
     }
 
-    state.performance_telemetry.shutdown_and_drain().await;
     state.xray_supervisor.lock().await.shutdown_all().await;
     crate::task_timeline::drain_after_shutdown().await;
     info!("shutdown complete");
@@ -2029,13 +2020,18 @@ pub(crate) async fn drain_runtime_after_shutdown(
 }
 
 pub(crate) fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+    let log = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,tower_http=info".into()),
-        )
-        .with_target(false)
-        .init();
+        );
+    let sql = ObservabilityConfig::from_env()
+        .ok()
+        .filter(|config| config.enabled)
+        .map(|_| hotpath::sqlx_tracing_layer());
+    tracing_subscriber::registry().with(sql).with(log).init();
 }
 
 pub(crate) fn log_startup_phase(phase: &'static str, started_at: Instant) {
@@ -2480,6 +2476,7 @@ pub(crate) async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
                     trigger_kind,
                     started_at: Instant::now(),
                     observation: None,
+                    observed_terminal: Arc::new(AtomicBool::new(false)),
                 };
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state,

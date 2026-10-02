@@ -9,64 +9,8 @@ fn broadcast_test_record_payload(state: &AppState, record: &ApiInvocation) {
     }
 }
 
-pub(crate) fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
-    let payload = payload?;
-    let value = serde_json::from_str::<Value>(payload).ok()?;
-    value
-        .get("upstreamAccountName")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-pub(crate) fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<String> {
-    let payload = payload?;
-    let value = serde_json::from_str::<Value>(payload).ok()?;
-    value
-        .get("promptCacheKey")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct TerminalPayloadMetadata {
-    pub(crate) prompt_cache_key: Option<String>,
-    pub(crate) upstream_account_id: Option<i64>,
-    pub(crate) request_model: Option<String>,
-}
-
-pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloadMetadata {
-    let Some(payload) = payload else {
-        return TerminalPayloadMetadata::default();
-    };
-    let Ok(value) = serde_json::from_str::<Value>(payload) else {
-        return TerminalPayloadMetadata::default();
-    };
-    let prompt_cache_key = value
-        .get("promptCacheKey")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let upstream_account_id = value.get("upstreamAccountId").and_then(|value| {
-        value
-            .as_i64()
-            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-            .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
-    });
-    let request_model = value
-        .get("requestModel")
-        .and_then(Value::as_str)
-        .map(|value| value.trim().to_string());
-    TerminalPayloadMetadata {
-        prompt_cache_key,
-        upstream_account_id,
-        request_model,
-    }
-}
+mod terminal_metadata;
+pub(crate) use terminal_metadata::*;
 
 pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
@@ -4145,117 +4089,135 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     record: ProxyCaptureRecord,
     allow_websocket_terminal_usage_refresh: bool,
 ) -> Result<()> {
-    let enqueue_started = Instant::now();
-    let persisted_record = api_invocation_from_runtime_record(&record);
-    let invoke_id = persisted_record.invoke_id.clone();
-    let duplicate_terminal = remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
-    if duplicate_terminal {
-        if allow_websocket_terminal_usage_refresh
-            && websocket_terminal_payload(record.payload.as_deref())
-        {
-            if !enqueue_websocket_terminal_usage_refresh(state, record).await? {
+    crate::observability::observed_future(
+        state.observability.enabled,
+        "persist_and_broadcast_proxy_capture_terminal_record",
+        async move {
+            let enqueue_started = Instant::now();
+            let persisted_record = api_invocation_from_runtime_record(&record);
+            let invoke_id = persisted_record.invoke_id.clone();
+            let duplicate_terminal =
+                remove_proxy_runtime_snapshot_for_terminal(state, &persisted_record);
+            if duplicate_terminal {
+                if allow_websocket_terminal_usage_refresh
+                    && websocket_terminal_payload(record.payload.as_deref())
+                {
+                    if !enqueue_websocket_terminal_usage_refresh(state, record).await? {
+                        warn!(
+                            invoke_id = %invoke_id,
+                            occurred_at = %persisted_record.occurred_at,
+                            "websocket terminal usage refresh dropped by sqlite write controller"
+                        );
+                    }
+                    return Ok(());
+                }
+                debug!(
+                    invoke_id = %invoke_id,
+                    occurred_at = %persisted_record.occurred_at,
+                    business_unblocked_record_write = true,
+                    "duplicate terminal proxy capture record skipped before sqlite enqueue"
+                );
+                schedule_proxy_capture_follow_up_after_terminal_enqueue(
+                    state,
+                    &invoke_id,
+                    "duplicate_runtime_terminal",
+                );
+                return Ok(());
+            }
+            observe_successful_proxy_capture_model_route_cache(state, &record).await;
+            let projection =
+                register_terminal_projection_before_enqueue(state, &persisted_record).await;
+            let delta = &projection.dashboard;
+            if !delta.duplicate {
+                state
+                    .observability
+                    .proxy_terminal(&record, persisted_record.endpoint.as_deref());
+            }
+            let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);
+            debug!(
+                invoke_id = %invoke_id,
+                terminal_delta_applied_selection_count = delta.applied_selection_count,
+                terminal_delta_duplicate = delta.duplicate,
+                terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
+                response_source = "memory",
+                "registered terminal record in dashboard activity read model before sqlite enqueue"
+            );
+            let terminal_enqueue =
+                state
+                    .sqlite_batch_writer
+                    .enqueue_terminal(BatchedTerminalInvocationWrite {
+                        enqueued_at: None,
+                        record,
+                        capture_started: None,
+                        raw_capture: false,
+                        dashboard_terminal_sequence: delta.terminal_sequence,
+                        terminal_projection_event_ids: projection.event_id.into_iter().collect(),
+                        startup_backfill_tasks,
+                    });
+            let terminal_enqueued = terminal_enqueue.enqueued;
+            if !terminal_enqueued {
+                rollback_terminal_projection_before_enqueue(state, &persisted_record, &projection)
+                    .await;
+                let terminal_tombstone_cleared =
+                    state.proxy_runtime_invocations.clear_terminal_tombstone(
+                        &persisted_record.invoke_id,
+                        &persisted_record.occurred_at,
+                    );
                 warn!(
                     invoke_id = %invoke_id,
                     occurred_at = %persisted_record.occurred_at,
-                    "websocket terminal usage refresh dropped by sqlite write controller"
+                    enqueue_failed_by_class = "terminal_invocation",
+                    terminal_tombstone_cleared,
+                    durability_mode = terminal_enqueue.durability_mode.as_str(),
+                    journal_sequence = ?terminal_enqueue.journal_sequence,
+                    business_unblocked_record_write = true,
+                    record_flush_deferred_or_failed = "terminal_invocation_enqueue_failed",
+                    "terminal proxy capture record dropped by sqlite write controller"
+                );
+                return Err(anyhow!("proxy capture terminal record could not be queued"));
+            } else {
+                debug!(
+                    invoke_id = %invoke_id,
+                    terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
+                    durability_mode = terminal_enqueue.durability_mode.as_str(),
+                    journal_sequence = ?terminal_enqueue.journal_sequence,
+                    journal_pending_records = terminal_enqueue.journal_pending_records,
+                    journal_pending_bytes = terminal_enqueue.journal_pending_bytes,
+                    business_unblocked_record_write = true,
+                    record_flush_deferred_or_failed = "terminal_invocation_enqueued_async",
+                    "terminal proxy capture record queued for sqlite write controller"
                 );
             }
-            return Ok(());
-        }
-        debug!(
-            invoke_id = %invoke_id,
-            occurred_at = %persisted_record.occurred_at,
-            business_unblocked_record_write = true,
-            "duplicate terminal proxy capture record skipped before sqlite enqueue"
-        );
-        schedule_proxy_capture_follow_up_after_terminal_enqueue(
-            state,
-            &invoke_id,
-            "duplicate_runtime_terminal",
-        );
-        return Ok(());
-    }
-    observe_successful_proxy_capture_model_route_cache(state, &record).await;
-    let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;
-    let delta = &projection.dashboard;
-    let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);
-    debug!(
-        invoke_id = %invoke_id,
-        terminal_delta_applied_selection_count = delta.applied_selection_count,
-        terminal_delta_duplicate = delta.duplicate,
-        terminal_delta_skipped_out_of_range_count = delta.skipped_out_of_range_count,
-        response_source = "memory",
-        "registered terminal record in dashboard activity read model before sqlite enqueue"
-    );
-    let terminal_enqueue =
-        state
-            .sqlite_batch_writer
-            .enqueue_terminal(BatchedTerminalInvocationWrite {
-                record,
-                capture_started: None,
-                raw_capture: false,
-                dashboard_terminal_sequence: delta.terminal_sequence,
-                terminal_projection_event_ids: projection.event_id.into_iter().collect(),
-                startup_backfill_tasks,
-            });
-    let terminal_enqueued = terminal_enqueue.enqueued;
-    if !terminal_enqueued {
-        rollback_terminal_projection_before_enqueue(state, &persisted_record, &projection).await;
-        let terminal_tombstone_cleared = state
-            .proxy_runtime_invocations
-            .clear_terminal_tombstone(&persisted_record.invoke_id, &persisted_record.occurred_at);
-        warn!(
-            invoke_id = %invoke_id,
-            occurred_at = %persisted_record.occurred_at,
-            enqueue_failed_by_class = "terminal_invocation",
-            terminal_tombstone_cleared,
-            durability_mode = terminal_enqueue.durability_mode.as_str(),
-            journal_sequence = ?terminal_enqueue.journal_sequence,
-            business_unblocked_record_write = true,
-            record_flush_deferred_or_failed = "terminal_invocation_enqueue_failed",
-            "terminal proxy capture record dropped by sqlite write controller"
-        );
-        return Err(anyhow!("proxy capture terminal record could not be queued"));
-    } else {
-        debug!(
-            invoke_id = %invoke_id,
-            terminal_record_enqueue_elapsed = enqueue_started.elapsed().as_millis() as u64,
-            durability_mode = terminal_enqueue.durability_mode.as_str(),
-            journal_sequence = ?terminal_enqueue.journal_sequence,
-            journal_pending_records = terminal_enqueue.journal_pending_records,
-            journal_pending_bytes = terminal_enqueue.journal_pending_bytes,
-            business_unblocked_record_write = true,
-            record_flush_deferred_or_failed = "terminal_invocation_enqueued_async",
-            "terminal proxy capture record queued for sqlite write controller"
-        );
-    }
-    #[cfg(test)]
-    if terminal_enqueued && state.sqlite_batch_writer.auto_flush_terminal_for_test() {
-        state
-            .sqlite_batch_writer
-            .flush_buffered_for_test(&state.pool)
-            .await;
-    }
-    if terminal_enqueued {
-        state
-            .subscription_hub
-            .publish_runtime_mutation(RuntimeMutation::invocation(
-                &persisted_record,
-                RuntimeMutationKind::TerminalCommitted,
-            ));
-        #[cfg(test)]
-        broadcast_test_record_payload(state, &persisted_record);
-    }
-    if terminal_enqueued {
-        schedule_dashboard_activity_live_snapshot(state);
-        schedule_proxy_capture_follow_up_after_terminal_enqueue(
-            state,
-            &invoke_id,
-            "runtime_terminal",
-        );
-    }
+            #[cfg(test)]
+            if terminal_enqueued && state.sqlite_batch_writer.auto_flush_terminal_for_test() {
+                state
+                    .sqlite_batch_writer
+                    .flush_buffered_for_test(&state.pool)
+                    .await;
+            }
+            if terminal_enqueued {
+                state
+                    .subscription_hub
+                    .publish_runtime_mutation(RuntimeMutation::invocation(
+                        &persisted_record,
+                        RuntimeMutationKind::TerminalCommitted,
+                    ));
+                #[cfg(test)]
+                broadcast_test_record_payload(state, &persisted_record);
+            }
+            if terminal_enqueued {
+                schedule_dashboard_activity_live_snapshot(state);
+                schedule_proxy_capture_follow_up_after_terminal_enqueue(
+                    state,
+                    &invoke_id,
+                    "runtime_terminal",
+                );
+            }
 
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub(crate) async fn persist_proxy_capture_runtime_record(

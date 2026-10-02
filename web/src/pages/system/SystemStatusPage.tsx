@@ -9,6 +9,7 @@ import {
   type SystemStorageResponse,
 } from "../../lib/api";
 import ProjectStorageSummary from "./ProjectStorageSummary";
+import { usePageObservation } from "../../lib/browserObservability";
 
 const REFRESH_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -1074,6 +1075,7 @@ export default function SystemStatusPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
   const [storage, setStorage] = useState<SystemStorageResponse | null>(null);
+  usePageObservation("system", status);
   const [error, setError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);

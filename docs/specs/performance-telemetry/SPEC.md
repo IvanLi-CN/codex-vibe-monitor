@@ -56,3 +56,12 @@
 ## Related ADRs
 
 - [ADR 0025: External Performance Observability](../../adr/0025-external-performance-observability.md)
+
+## Visual Evidence
+
+Mock-only `ui_demo` evidence uses the current implementation. The owner confirmed these four images; the desktop viewport is 1280×900 and the source-managed mobile viewport is 393×852. New evidence paths are current-only against the implementation baseline. Page whitespace normalization kept all images unchanged.
+
+![Grafana entry](assets/observability-entry-desktop.png)
+![Mobile Grafana entry](assets/observability-entry-mobile.png)
+![Unconfigured Grafana](assets/observability-unconfigured.png)
+![Task deep link](assets/observability-task.png)

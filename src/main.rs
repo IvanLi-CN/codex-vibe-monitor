@@ -118,7 +118,7 @@ mod models_dev_sync_memory;
     reason = "OAuth bridge adapters preserve upstream request contracts."
 )]
 mod oauth_bridge;
-mod performance_telemetry;
+mod observability;
 mod pricing;
 mod prompt_cache_conversations;
 mod proxy;
@@ -161,7 +161,7 @@ use http_stream_tracking::*;
 pub(crate) use long_term_stats::*;
 pub(crate) use maintenance::*;
 pub(crate) use memory_diagnostics::*;
-pub(crate) use performance_telemetry::*;
+pub(crate) use observability::*;
 pub(crate) use pricing::*;
 pub(crate) use prompt_cache_conversations::*;
 use proxy::*;
@@ -253,10 +253,7 @@ const RAW_CODEC_GZIP: &str = "gzip";
 const RAW_CODEC_ZSTD: &str = "zstd";
 const POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES: usize = 1024 * 1024;
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
-const ENV_PERFORMANCE_DATABASE_PATH: &str = "PERFORMANCE_DATABASE_PATH";
 const ENV_MAINTENANCE_DATABASE_PATH: &str = "MAINTENANCE_DATABASE_PATH";
-const ENV_PERFORMANCE_TELEMETRY_ENABLED: &str = "PERFORMANCE_TELEMETRY_ENABLED";
-const DEFAULT_PERFORMANCE_TELEMETRY_ENABLED: bool = true;
 const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
 const ENV_POLL_INTERVAL_SECS: &str = "POLL_INTERVAL_SECS";
 const LEGACY_ENV_POLL_INTERVAL_SECS: &str = "XY_POLL_INTERVAL_SECS";
@@ -627,7 +624,21 @@ const LEGACY_ENV_RENAMES: &[(&str, &str)] = &[
 ];
 static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    runtime::run().await
+fn main() -> Result<()> {
+    dotenv().ok();
+    let config = ObservabilityConfig::from_env()?;
+    prepare_hotpath(&config);
+    let _profiler = config.enabled.then(|| {
+        hotpath::HotpathGuardBuilder::new("codex-vibe-monitor")
+            .functions_time_sampling_rate(0.1)
+            .mutexes_time_sampling_rate(1.0)
+            .rw_locks_time_sampling_rate(1.0)
+            .limit(100)
+            .percentiles(&[50.0, 95.0, 99.0])
+            .build()
+    });
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(runtime::run())
 }

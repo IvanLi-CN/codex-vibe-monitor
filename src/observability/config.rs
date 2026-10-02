@@ -1,0 +1,186 @@
+use crate::*;
+
+#[derive(Clone, Serialize)]
+pub(crate) struct ObservabilityConfig {
+    pub(crate) enabled: bool,
+    pub(crate) metrics_bind: SocketAddr,
+    pub(crate) grafana_public_url: Option<Url>,
+    #[serde(skip)]
+    pub(crate) scrape_token: Option<Arc<str>>,
+    #[serde(skip)]
+    pub(crate) read_token: Option<Arc<str>>,
+}
+
+impl std::fmt::Debug for ObservabilityConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObservabilityConfig")
+            .field("enabled", &self.enabled)
+            .field("metrics_bind", &self.metrics_bind)
+            .field("grafana_public_url", &self.grafana_public_url)
+            .finish_non_exhaustive()
+    }
+}
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            metrics_bind: "127.0.0.1:9091".parse().expect("static bind"),
+            grafana_public_url: None,
+            scrape_token: None,
+            read_token: None,
+        }
+    }
+}
+fn read_token(name: &str) -> Result<Option<Arc<str>>> {
+    let Some(path) = env::var_os(name) else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path).with_context(|| format!("cannot read {name}"))?;
+    if bytes.len() > 4096 {
+        bail!("{name} exceeds token limit");
+    }
+    let value = std::str::from_utf8(&bytes)
+        .context("token file is not UTF-8")?
+        .trim();
+    if value.len() < 16 || value.chars().any(char::is_whitespace) {
+        bail!("{name} must contain a nonempty token of at least 16 characters");
+    }
+    Ok(Some(Arc::from(value)))
+}
+impl ObservabilityConfig {
+    pub(crate) fn from_env() -> Result<Self> {
+        for removed in ["PERFORMANCE_DATABASE_PATH", "PERFORMANCE_TELEMETRY_ENABLED"] {
+            if env::var_os(removed).is_some() {
+                bail!("{removed} was removed; migrate to external observability");
+            }
+        }
+        let enabled = parse_bool_env_var("OBSERVABILITY_ENABLED", true)?;
+        let metrics_bind: SocketAddr = env::var("METRICS_BIND")
+            .unwrap_or_else(|_| "127.0.0.1:9091".into())
+            .parse()
+            .context("invalid METRICS_BIND")?;
+        let grafana_public_url = env::var("GRAFANA_PUBLIC_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(|v| Url::parse(&v))
+            .transpose()
+            .context("invalid GRAFANA_PUBLIC_URL")?;
+        if let Some(url) = &grafana_public_url
+            && (url.scheme() != "https"
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some())
+        {
+            bail!("GRAFANA_PUBLIC_URL must be a credential-free HTTPS URL");
+        }
+        let scrape_token = read_token("METRICS_TOKEN_FILE")?;
+        let read_token = read_token("OBSERVABILITY_READ_TOKEN_FILE")?;
+        let result = Self {
+            enabled,
+            metrics_bind,
+            grafana_public_url,
+            scrape_token,
+            read_token,
+        };
+        if result.enabled
+            && !result.metrics_bind.ip().is_loopback()
+            && result.scrape_token.is_none()
+        {
+            bail!("non-loopback METRICS_BIND requires METRICS_TOKEN_FILE");
+        }
+        if result.scrape_token.as_deref().is_some() && result.scrape_token == result.read_token {
+            bail!("scrape and read tokens must differ");
+        }
+        Ok(result)
+    }
+}
+pub(super) fn authorized(headers: &HeaderMap, expected: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return false;
+    };
+    let Some(provided) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return false;
+    };
+    // HMAC verify avoids a token-prefix timing oracle without printing credentials.
+    use hmac::{Hmac, Mac};
+    let Ok(mut signer) = Hmac::<Sha256>::new_from_slice(expected.as_bytes()) else {
+        return false;
+    };
+    signer.update(b"cvm-observability-token");
+    let signature = signer.finalize().into_bytes();
+    let Ok(mut verifier) = Hmac::<Sha256>::new_from_slice(provided.as_bytes()) else {
+        return false;
+    };
+    verifier.update(b"cvm-observability-token");
+    verifier.verify_slice(&signature).is_ok()
+}
+
+/// Called only by the synchronous executable entrypoint, before any worker is started.
+/// hotpath reads startup settings lazily; preparing them after Tokio starts is unsound.
+pub(crate) fn prepare_hotpath(config: &ObservabilityConfig) {
+    super::PROFILER_ENABLED.store(
+        config.enabled && cfg!(feature = "hotpath"),
+        Ordering::Relaxed,
+    );
+    let settings = [
+        ("HOTPATH_ENTRIES_LIMIT", "100".to_string()),
+        ("HOTPATH_LOGS_LIMIT", "1".to_string()),
+        ("HOTPATH_SQL_RAW_LOGS", "false".to_string()),
+        ("HOTPATH_METRICS_PORT", "6770".to_string()),
+        ("HOTPATH_METRICS_SERVER_OFF", (!config.enabled).to_string()),
+        (
+            "HOTPATH_PROMETHEUS_HOST",
+            config.metrics_bind.ip().to_string(),
+        ),
+        ("HOTPATH_PROMETHEUS_PORT", "6772".to_string()),
+        ("HOTPATH_FUNCTIONS_TIME_SAMPLING_RATE", "0.1".to_string()),
+        ("HOTPATH_MUTEXES_TIME_SAMPLING_RATE", "1.0".to_string()),
+        ("HOTPATH_RW_LOCKS_TIME_SAMPLING_RATE", "1.0".to_string()),
+        ("HOTPATH_METRICS_AUTH_TOKEN", nanoid::nanoid!(48)),
+        (
+            "HOTPATH_PROMETHEUS_AUTH_TOKEN",
+            config.scrape_token.as_deref().unwrap_or("").to_string(),
+        ),
+    ];
+    for (name, value) in settings {
+        // SAFETY: the executable calls this before constructing Tokio or a profiler guard.
+        unsafe {
+            env::set_var(name, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credentials_are_separate_and_never_serialized() {
+        let config = ObservabilityConfig {
+            scrape_token: Some(Arc::from("scrape-private-secret")),
+            read_token: Some(Arc::from("read-private-secret")),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("secret"));
+        assert!(!format!("{config:?}").contains("secret"));
+        let mut headers = HeaderMap::new();
+        assert!(!authorized(&headers, config.read_token.as_deref()));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer scrape-private-secret"),
+        );
+        assert!(!authorized(&headers, config.read_token.as_deref()));
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer read-private-secret"),
+        );
+        assert!(authorized(&headers, config.read_token.as_deref()));
+        assert!(!authorized(&headers, None));
+    }
+}

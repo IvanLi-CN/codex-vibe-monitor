@@ -288,8 +288,7 @@ pub(crate) struct MaintenanceDryRunArgs {
 pub(crate) struct AppConfig {
     pub(crate) openai_upstream_base_url: Url,
     pub(crate) database_path: PathBuf,
-    pub(crate) performance_database_path: PathBuf,
-    pub(crate) performance_telemetry_enabled: bool,
+    pub(crate) observability: ObservabilityConfig,
     pub(crate) poll_interval: Duration,
     pub(crate) request_timeout: Duration,
     pub(crate) pool_upstream_responses_attempt_timeout: Duration,
@@ -398,29 +397,13 @@ impl AppConfig {
             .clone()
             .or_else(|| env::var(ENV_DATABASE_PATH).ok().map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("codex_vibe_monitor.db"));
-        let performance_database_path = env::var(ENV_PERFORMANCE_DATABASE_PATH)
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let stem = database_path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("codex_vibe_monitor");
-                database_path.with_file_name(format!("{stem}.performance.sqlite"))
-            });
         let maintenance_database_path = Self::derive_maintenance_database_path(&database_path);
-        let maintenance_identity = Self::normalized_path_identity(&maintenance_database_path);
-        if maintenance_identity == Self::normalized_path_identity(&database_path)
-            || maintenance_identity == Self::normalized_path_identity(&performance_database_path)
+        if Self::normalized_path_identity(&maintenance_database_path)
+            == Self::normalized_path_identity(&database_path)
         {
-            bail!(
-                "{ENV_MAINTENANCE_DATABASE_PATH} must differ from DATABASE_PATH and PERFORMANCE_DATABASE_PATH"
-            );
+            bail!("maintenance database must differ from DATABASE_PATH");
         }
-        let performance_telemetry_enabled = parse_bool_env_var(
-            ENV_PERFORMANCE_TELEMETRY_ENABLED,
-            DEFAULT_PERFORMANCE_TELEMETRY_ENABLED,
-        )?;
+        let observability = ObservabilityConfig::from_env()?;
         let poll_interval = overrides
             .poll_interval_secs
             .or_else(|| {
@@ -763,8 +746,7 @@ impl AppConfig {
             openai_upstream_base_url: Url::parse(&openai_upstream_base_url)
                 .context("invalid OPENAI_UPSTREAM_BASE_URL")?,
             database_path,
-            performance_database_path,
-            performance_telemetry_enabled,
+            observability,
             poll_interval,
             request_timeout,
             pool_upstream_responses_attempt_timeout,

@@ -2,12 +2,40 @@
 
 ## Current coverage
 
-锁定设计正在替换旧性能 SQLite 实现。旧实现事实及其验收卡保留为历史输入，不能证明新方案已完成或上线。所属架构为 ADR 0025，完整边界见设计与 METRICS。
+`src/observability/` 提供每实例 recorder、显式 classic buckets、5 秒 CPU 与
+30 秒文件/内存采样、完整 HTTP/body 生命周期、只读报告与有界浏览器接入。
+自有 Hyper/WS 传输、终态去重、SQLite coordinator/pool/queue/execute/ACK、
+任务和投影使用实际事件。hotpath 在启动线程之前配置，最终 router 只安装一次
+layer，SQLx tracing 独立于日志过滤；函数默认 10% 抽样，SQL/选定锁完整记录。
+layer 只观测已匹配的 route template，排除任意 SPA fallback 路径与浏览器上报端点；
+浏览器上报不计入应用请求或 hotpath server 指标。
+
+旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
+任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
+ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任务深链接。
+
+`ops/observability/` 提供五个固定 UID dashboard、recording rules、Grafana 告警、
+私网 Compose 与凭据读取组合同。项目 Skill 和 CLI 使用公网 Grafana Viewer Token；
+受限 SSH 命令只 attach 绑定容器，按截止时间向 profiler 发送 SIGINT，并要求精确
+build ID/hash 符号。镜像符号由 CI 从实际镜像提取，不重新编译采样二进制。
+
+退役工具识别 schema-v1、精确文件族和路径身份，备份包含 WAL，再校验移出；
+归档/恢复可重入，未知状态不移动源。CLI 还核验紧邻 v2 镜像与停止的 writer。
 
 ## Deployment boundary
 
-应用 PR 交付埋点、入口、provisioning、Agent 工具、归档和恢复合同。独立运维任务拥有 101 外部平台部署与生产切换；真实 public URL、权限、容量和 perf 条件需在上线时验证。
+独立运维任务拥有 101 外部平台部署与生产切换；真实 public URL、镜像 digest、
+权限、容量、Authelia bypass 和 perf 条件需在上线时验证。本 PR 不合并、不发布、
+不迁移生产数据。旧 SQLite 经验性卡只保留历史，不用于新候选验收。
 
 ## Validation
 
-新候选版本必须通过仓库 Rust/Web 检查、受控 Linux Compose、迁移、HTTPS 鉴权、CPU attach 和默认观测 A/B。证据绑定当前 Candidate，旧经验性验收卡不再适用于当前实现。
+已通过的迭代验证：Rust all-targets/all-features check/clippy、三分桶共 2920 项后端
+回归（模块拆分之前）；Web 全量单测 1702 项与新增浏览器时序 4 项回归；
+Web 类型/lint/build；13 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
+模块拆分后的当前源码验证仍在进行。四张 mock UI 证据已展示、确认并落盘；
+Storybook 与相关 E2E 尚待完成。
+
+新候选仍须完成当前 SHA 绑定的受控 Linux Compose、HTTPS 鉴权、原实例 CPU attach
+与默认观测 A/B。采样权限探针能保存 profile，不等于真实应用符号验收通过。
+尚无 passed 经验性证据卡，也未进入正式 review 或 PR Ready。
