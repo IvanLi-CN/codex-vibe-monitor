@@ -965,6 +965,22 @@ _Avoid_: Prompt token 缓存失效, 调用归档, 在线请求阻塞步骤
 The observed expired invocation population associated with a retention run, with its observation time and scope. It is a denominator in invocation rows, not a sum of conversation keys, archive batches, or raw files.
 _Avoid_: 永久总量, 全局完成率, 混合单位总数
 
+**待归档调用积压（Invocation Archive Backlog）**:
+Invocations still in the live store that are eligible for archival under the applicable retention policy at an observation point. Its quantity is measured in invocation rows; other retention stages retain their own units and are not added to this count.
+_Avoid_: 全部维护待办, Prompt 会话积压, 文件与调用混合总数
+
+**最长归档逾期时长（Maximum Archive Overdue Duration）**:
+The longest time an invocation still awaiting archival has remained eligible for archival under its retention policy, measured at an observation point. It is the delay beyond the policy deadline, not the age of the invocation since it occurred.
+_Avoid_: 最老请求年龄, 请求耗时, 未知即零
+
+**自动归档追赶（Automatic Archive Catch-up）**:
+Continuation of bounded retention rounds while eligible archival backlog remains, with one execution owner, between-round yielding, and pressure-aware retry. An inspection schedule discovers work; it does not restrict catch-up to scheduled occurrences. Disabling retention stops admission of subsequent catch-up work at a safe committed boundary.
+_Avoid_: 错过计划补跑, 第二套归档调度器, 绕过压力保护
+
+**小时积压观测（Hourly Backlog Observation）**:
+The last successful exact observation in a UTC hour of Invocation Archive Backlog and Maximum Archive Overdue Duration, measured together under the recorded retention policy. Its actual observation time is retained; absent observations are gaps rather than zero backlog or reconstructed history.
+_Avoid_: 小时归档成果, 小时平均积压, 最近运行结果代替历史观测
+
 **运行完成度（Run Completion Outcome）**:
 The extent of work completed within a retention run's captured scope: completed, partial, or deferred, alongside its execution status. It does not rewrite an earlier run when background maintenance later finishes.
 _Avoid_: 成功即全部完成, 延迟即失败, 后台完成后改写历史

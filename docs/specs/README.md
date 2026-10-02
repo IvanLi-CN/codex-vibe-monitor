@@ -99,7 +99,7 @@
 | -     | 独立性能遥测                                                              | active    | `performance-telemetry/SPEC.md`                            | `performance-telemetry/IMPLEMENTATION.md`                            | topic anchor: performance / telemetry / bounded SQLite          |
 | -     | Proxy invocation identity and prompt-cache conversation master            | active    | `proxy-invocation-identity/SPEC.md`                        | `proxy-invocation-identity/IMPLEMENTATION.md`                        | topic anchor: proxy / conversation identity / SQLite            |
 | -     | Public Project Metrics API                                                | active    | `public-blog-runtime-api/SPEC.md`                          | `public-blog-runtime-api/IMPLEMENTATION.md`                          | topic anchor: public API / project metrics / cache              |
-| -     | 有预算、可恢复的 Retention 运行与任务观测                                 | active    | `bounded-retention-runs/SPEC.md`                           | `bounded-retention-runs/IMPLEMENTATION.md`                           | topic anchor: retention / bounded runs / task observation       |
+| -     | 有预算、可恢复的 Retention 运行与任务观测                                 | active    | `bounded-retention-runs/SPEC.md`                           | `bounded-retention-runs/IMPLEMENTATION.md`                           | 有界基础已发布；自动追赶与小时积压趋势待实现                    |
 
 ## Archived Sources
 
