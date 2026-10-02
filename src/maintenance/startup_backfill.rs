@@ -3793,6 +3793,7 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut startup_prep_pending = prep_pending;
         let mut startup_prep_retry_at = startup_prep_pending
             .then(|| Instant::now() + Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
+        let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
         run_background_startup_backfill_pass_with_gate(
             state.clone(),
             &cancel,
@@ -3820,8 +3821,6 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 spawn_timeseries_minute_projection_supervisor(state.clone(), cancel.clone()),
             );
         }
-
-        let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
 
         loop {
             let gate = crate::db_pressure::global_db_pressure_gate();

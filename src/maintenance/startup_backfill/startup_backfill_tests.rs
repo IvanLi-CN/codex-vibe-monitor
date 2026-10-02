@@ -219,6 +219,23 @@ fn scheduler_health_tracks_wakes_due_work_and_active_outcomes() {
     assert_eq!(recovered.failed_task_count, 0);
 }
 
+#[tokio::test]
+async fn startup_pass_does_not_swallow_a_wake_before_the_wait_loop() {
+    let scheduler = StartupBackfillScheduler::default();
+    let observed_generation = scheduler.generation();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+
+    scheduler.wake(task);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        scheduler.wait_for_wake(observed_generation),
+    )
+    .await
+    .expect("wake recorded during the startup pass must be observed afterward");
+
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+}
+
 #[test]
 fn pressure_defer_uses_the_gate_absolute_deadline() {
     let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
