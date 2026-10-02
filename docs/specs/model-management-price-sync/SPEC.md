@@ -287,9 +287,24 @@
   submission_gate: approved
   story_id_or_title: System/SystemWorkspace/ModelsSyncReview
   state: desktop provider price review
-  evidence_note: verifies provider search and groups, current-versus-source prices, conflict selection, default checkboxes, unsupported dimensions, and apply controls
+  evidence_note: verifies the single-row batch toolbar, provider search and groups, current-versus-source prices, conflict selection, default checkboxes, unsupported dimensions, and apply controls in the light theme
   image:
   ![桌面同步审核弹窗](./assets/models-sync-review-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x960
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncReviewDark
+  state: dark desktop provider price review
+  evidence_note: verifies the single-row batch toolbar and price review hierarchy in the dark theme
+  image:
+  ![桌面同步审核弹窗深色](./assets/models-sync-review-desktop-dark.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -302,9 +317,69 @@
   submission_gate: approved
   story_id_or_title: System/SystemWorkspace/ModelsSyncReviewMobile
   state: mobile provider price review
-  evidence_note: verifies the responsive review dialog, independently scrollable candidates, provider selection, and fixed apply footer
+  evidence_note: verifies the compact two-row toolbar, responsive review dialog, independently scrollable candidates, provider selection, and fixed apply footer in the light theme
   image:
   ![手机同步审核弹窗](./assets/models-sync-review-mobile.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncReviewMobileDark
+  state: dark mobile provider price review
+  evidence_note: verifies the compact two-row toolbar and responsive review dialog in the dark theme
+  image:
+  ![手机同步审核弹窗深色](./assets/models-sync-review-mobile-dark.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1280x500
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncReviewShort
+  state: short desktop light provider price review
+  evidence_note: verifies the one-row toolbar and reachable dialog footer under a constrained viewport height
+  image:
+  ![短屏同步审核弹窗浅色](./assets/models-sync-review-short-light.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1280x500
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncReviewShortDark
+  state: short desktop dark provider price review
+  evidence_note: verifies the one-row toolbar and reachable dialog footer under a constrained viewport height in the dark theme
+  image:
+  ![短屏同步审核弹窗深色](./assets/models-sync-review-short-dark.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x960
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncZeroResults
+  state: desktop filtered zero visible results
+  evidence_note: verifies the stable empty candidate region, filter summary, toolbar, and apply footer when no model rows match
+  image:
+  ![同步审核零结果](./assets/models-sync-review-zero-results.png)
 
 ## References
 

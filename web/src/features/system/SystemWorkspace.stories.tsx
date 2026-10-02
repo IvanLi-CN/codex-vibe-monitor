@@ -2188,6 +2188,9 @@ async function playModelsSyncReview(canvasElement: HTMLElement): Promise<void> {
   await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
   const page = within(canvasElement.ownerDocument.body);
   await expect(page.findByRole("dialog")).resolves.toBeVisible();
+  const toolbar = page.getByTestId("models-sync-toolbar");
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.scrollWidth <= toolbar.clientWidth).toBe(true);
   const providerChoice = await page.findByRole("combobox", {
     name: "为 gpt-6-sol 选择一个供应商报价",
   });
@@ -2224,6 +2227,9 @@ export const ModelsSyncReviewMobile: Story = {
   play: async ({ canvasElement }) => {
     await assertCanvasViewport(canvasElement, 393, 852);
     await playModelsSyncReview(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    const toolbar = page.getByTestId("models-sync-toolbar");
+    await expect(toolbar.getBoundingClientRect().height).toBeLessThanOrEqual(70);
   },
 };
 
@@ -2243,6 +2249,9 @@ export const ModelsSyncReviewShort: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
     const dialog = await page.findByRole("dialog");
+    const toolbar = page.getByTestId("models-sync-toolbar");
+    await expect(toolbar).toBeVisible();
+    await expect(toolbar.getBoundingClientRect().height).toBeLessThan(48);
     const footer = dialog.querySelector<HTMLElement>("[data-testid='models-sync-dialog-footer']");
     await expect(footer).toBeTruthy();
     const viewportHeight = canvasElement.ownerDocument.defaultView?.innerHeight ?? 0;

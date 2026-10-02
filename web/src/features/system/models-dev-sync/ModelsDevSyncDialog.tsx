@@ -637,47 +637,92 @@ export function ModelsDevSyncDialog({
                 />
               </div>
 
-              <div className="mt-2 flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-base-content/65">
-                <span>
+              <div
+                data-testid="models-sync-toolbar"
+                className="mt-2 grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-y border-base-300/70 bg-base-200/30 px-2 py-1 text-xs text-base-content/65 desktop:grid-cols-[auto_minmax(0,1fr)_auto] desktop:gap-x-4"
+              >
+                <span className="col-start-1 row-start-1 shrink-0">
                   {t("system.models.fetchSummary", {
                     providers: syncPreview.providerCount,
                     models: syncPreview.candidateCount,
                   })}
                 </span>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <span>
+                <fieldset
+                  className="col-start-1 row-start-2 m-0 flex min-w-0 items-center gap-x-1 border-0 p-0 desktop:col-start-2 desktop:row-start-1 desktop:gap-x-2"
+                  aria-label={t("system.models.bulkScope", { count: visibleGroups.length })}
+                >
+                  <span className="shrink-0 text-base-content/55">
+                    {t("system.models.bulkScopeCompact", { count: visibleGroups.length })}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-1.5 text-xs desktop:h-8 desktop:px-3 desktop:text-sm"
+                      aria-label={t("system.models.selectAll")}
+                      title={t("system.models.selectAll")}
+                      onClick={() => bulkChange(true)}
+                    >
+                      <span className="desktop:hidden">{t("system.models.selectAllCompact")}</span>
+                      <span className="hidden desktop:inline">{t("system.models.selectAll")}</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-1.5 text-xs desktop:h-8 desktop:px-3 desktop:text-sm"
+                      aria-label={t("system.models.invertSelection")}
+                      title={t("system.models.invertSelection")}
+                      onClick={() => bulkChange("invert")}
+                    >
+                      <span className="desktop:hidden">
+                        {t("system.models.invertSelectionCompact")}
+                      </span>
+                      <span className="hidden desktop:inline">
+                        {t("system.models.invertSelection")}
+                      </span>
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-1.5 text-xs desktop:h-8 desktop:px-3 desktop:text-sm"
+                      aria-label={t("system.models.selectNone")}
+                      title={t("system.models.selectNone")}
+                      onClick={() => bulkChange(false)}
+                    >
+                      <span className="desktop:hidden">{t("system.models.selectNoneCompact")}</span>
+                      <span className="hidden desktop:inline">{t("system.models.selectNone")}</span>
+                    </Button>
+                  </div>
+                </fieldset>
+                <div className="contents desktop:col-start-3 desktop:row-start-1 desktop:flex desktop:items-center desktop:justify-end desktop:gap-x-3">
+                  <span className="col-start-2 row-start-2 w-full min-w-0 self-center text-right text-base-content/80 desktop:col-auto desktop:row-auto desktop:w-auto desktop:whitespace-nowrap">
                     {t("system.models.applyCount", { count: applicableEntries.length })}
                     {hiddenApplyCount > 0
                       ? ` · ${t("system.models.searchHiddenApplyCount", { count: hiddenApplyCount })}`
                       : ""}
                   </span>
-                  <Switch
-                    checked={showDeprecated}
-                    onCheckedChange={setShowDeprecated}
-                    aria-label={t("system.models.showDeprecated")}
-                  />
-                  <span>{t("system.models.showDeprecated")}</span>
+                  <div
+                    className="col-start-2 row-start-1 flex shrink-0 items-center justify-self-end gap-x-2 desktop:col-auto desktop:row-auto"
+                    title={t("system.models.showDeprecated")}
+                  >
+                    <Switch
+                      checked={showDeprecated}
+                      onCheckedChange={setShowDeprecated}
+                      aria-label={t("system.models.showDeprecated")}
+                    />
+                    <span aria-hidden="true">
+                      <span className="desktop:hidden">
+                        {t("system.models.showDeprecatedCompact")}
+                      </span>
+                      <span className="hidden desktop:inline">
+                        {t("system.models.showDeprecated")}
+                      </span>
+                    </span>
+                  </div>
                 </div>
-              </div>
-
-              <div className="mt-2 flex shrink-0 flex-wrap items-center gap-1 border-y border-base-300/70 py-1">
-                <span className="mr-2 text-xs text-base-content/55">
-                  {t("system.models.bulkScope", { count: visibleGroups.length })}
-                </span>
-                <Button type="button" size="sm" variant="ghost" onClick={() => bulkChange(true)}>
-                  {t("system.models.selectAll")}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => bulkChange("invert")}
-                >
-                  {t("system.models.invertSelection")}
-                </Button>
-                <Button type="button" size="sm" variant="ghost" onClick={() => bulkChange(false)}>
-                  {t("system.models.selectNone")}
-                </Button>
               </div>
 
               <section
