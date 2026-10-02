@@ -445,12 +445,14 @@ async fn pool_route_non_capture_request_body_read_timeout_applies_to_replay_stre
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx.send(Ok(Bytes::from_static(b"hello"))).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"-pool"))).await;
-    });
+    // Start the delay when the body is polled, after routing/admission. A producer
+    // spawned earlier can enqueue both chunks before the read timeout even starts.
+    let body = stream::once(async { Ok::<_, io::Error>(Bytes::from_static(b"hello")) }).chain(
+        stream::once(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok::<_, io::Error>(Bytes::from_static(b"-pool"))
+        }),
+    );
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -460,7 +462,7 @@ async fn pool_route_non_capture_request_body_read_timeout_applies_to_replay_stre
             http_header::AUTHORIZATION,
             HeaderValue::from_static("Bearer pool-live-key"),
         )]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        Body::from_stream(body),
     )
     .await;
 
