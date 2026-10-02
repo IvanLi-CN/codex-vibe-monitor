@@ -69,7 +69,14 @@ pub(crate) async fn hotpath_report(
                 _ => unavailable(),
             }
         }
-        _ => unavailable(),
+        Ok(Err(error)) => {
+            tracing::warn!(report, error = %error, "hotpath report unavailable");
+            unavailable()
+        }
+        Err(error) => {
+            tracing::warn!(report, error = %error, "hotpath report unavailable");
+            unavailable()
+        }
     }
 }
 fn unavailable() -> Response {
@@ -273,6 +280,27 @@ mod tests {
         assert_eq!(request.headers()[header::AUTHORIZATION], "internal-token");
         let request = report_request(&client, "sql", None).build().unwrap();
         assert!(!request.headers().contains_key(header::AUTHORIZATION));
+    }
+
+    #[test]
+    fn sql_report_contract_uses_hotpath_serializer_shape() {
+        let row = serde_json::to_value(hotpath::json::JsonSqlEntry {
+            id: 1,
+            query: "SELECT 1".into(),
+            source: None,
+            route: None,
+            count: 3,
+            avg: "1ms".into(),
+            total: "3ms".into(),
+            percent_total: "100%".into(),
+            percentiles: HashMap::from([("p95".into(), "1ms".into())]),
+            location: None,
+        })
+        .unwrap();
+        let rows = sanitize_report("sql", &json!({"data": [row]})).unwrap();
+        assert_eq!(rows[0]["query"], "SELECT 1");
+        assert_eq!(rows[0]["count"], 3);
+        assert_eq!(rows[0]["percentiles"]["p95"], "1ms");
     }
 
     #[test]
