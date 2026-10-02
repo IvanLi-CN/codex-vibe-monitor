@@ -164,6 +164,7 @@ function ModelCandidateRow({
               model: group.model,
             })}
             triggerClassName="h-9"
+            disabled={applying}
             onValueChange={(providerId) => onQuoteProviderChange(group.model, providerId)}
           />
         ) : candidate ? (
@@ -277,17 +278,22 @@ function PriceColumn({
 function ProviderPicker({
   providers,
   selected,
+  disabled,
   onToggle,
   onSearchAction,
   t,
 }: {
   providers: ModelsDevSyncProvider[];
   selected: ReadonlySet<string>;
+  disabled: boolean;
   onToggle(providerId: string, checked: boolean): void;
   onSearchAction(providerIds: string[], selected: boolean): void;
   t: Translate;
 }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
   const [search, setSearch] = useState("");
   const visibleProviders = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -300,13 +306,19 @@ function ProviderPicker({
   }, [providers, search]);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open && !disabled}
+      onOpenChange={(nextOpen) => {
+        if (!disabled) setOpen(nextOpen);
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           type="button"
           variant="secondary"
           className="h-10 w-full justify-between font-normal"
           aria-label={t("system.models.providerPicker")}
+          disabled={disabled}
         >
           <span className="truncate">
             {t("system.models.providersSelected", {
@@ -336,6 +348,7 @@ function ProviderPicker({
             type="button"
             size="sm"
             variant="ghost"
+            disabled={disabled}
             onClick={() =>
               onSearchAction(
                 visibleProviders.map((provider) => provider.id),
@@ -349,6 +362,7 @@ function ProviderPicker({
             type="button"
             size="sm"
             variant="ghost"
+            disabled={disabled}
             onClick={() =>
               onSearchAction(
                 visibleProviders.map((provider) => provider.id),
@@ -359,7 +373,10 @@ function ProviderPicker({
             {t("system.models.clearAll")}
           </Button>
         </div>
-        <fieldset className="min-h-0 max-h-[min(22rem,calc(100dvh-8rem))] flex-1 overflow-y-auto">
+        <fieldset
+          disabled={disabled}
+          className="min-h-0 max-h-[min(22rem,calc(100dvh-8rem))] flex-1 overflow-y-auto"
+        >
           <legend className="sr-only">{t("system.models.providerPicker")}</legend>
           {visibleProviders.length ? (
             visibleProviders.map((provider) => (
@@ -677,33 +694,35 @@ export function ModelsDevSyncDialog({
             </div>
           ) : null}
 
+          {memoryError ? (
+            <Alert variant="error" role="alert" className="mt-3 shrink-0 items-center">
+              <AppIcon name="alert-circle-outline" className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 break-words">
+                {t("system.models.memorySaveFailed")}
+              </span>
+              <Button
+                type="button"
+                size="xs"
+                variant="destructive"
+                className="shrink-0"
+                onClick={() => void retryMemorySave()}
+              >
+                <AppIcon name="refresh" className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                {t("system.models.retry")}
+              </Button>
+            </Alert>
+          ) : memorySaving ? (
+            <div className="mt-2 text-xs text-base-content/65" role="status">
+              {t("system.models.memorySaving")}
+            </div>
+          ) : null}
+
           {(dialogState === "ready" || dialogState === "applying") && syncPreview ? (
             <>
               {syncError ? (
                 <Alert variant="error" role="alert" className="mt-3 shrink-0">
                   {syncError}
                 </Alert>
-              ) : null}
-              {memoryError ? (
-                <Alert variant="error" role="alert" className="mt-3 shrink-0">
-                  <span>
-                    {t("system.models.memorySaveFailed", {
-                      error: memoryError,
-                    })}
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => void retryMemorySave()}
-                  >
-                    {t("system.models.retry")}
-                  </Button>
-                </Alert>
-              ) : memorySaving ? (
-                <div className="mt-2 text-xs text-base-content/65" role="status">
-                  {t("system.models.memorySaving")}
-                </div>
               ) : null}
               <div className="mt-4 grid shrink-0 gap-3 desktop:grid-cols-[minmax(0,1fr)_18rem]">
                 <label className="relative block">
@@ -723,6 +742,7 @@ export function ModelsDevSyncDialog({
                 <ProviderPicker
                   providers={providers}
                   selected={selectedProviders}
+                  disabled={dialogState === "applying"}
                   onToggle={(providerId, checked) => updateProviderSelection([providerId], checked)}
                   onSearchAction={updateProviderSelection}
                   t={t}
@@ -758,6 +778,7 @@ export function ModelsDevSyncDialog({
                       className="h-7 px-1.5 text-xs desktop:h-8 desktop:px-3 desktop:text-sm"
                       aria-label={t("system.models.selectAll")}
                       title={t("system.models.selectAll")}
+                      disabled={dialogState === "applying"}
                       onClick={() => bulkChange(true)}
                     >
                       <span className="desktop:hidden">{t("system.models.selectAllCompact")}</span>
@@ -770,6 +791,7 @@ export function ModelsDevSyncDialog({
                       className="h-7 px-1.5 text-xs desktop:h-8 desktop:px-3 desktop:text-sm"
                       aria-label={t("system.models.invertSelection")}
                       title={t("system.models.invertSelection")}
+                      disabled={dialogState === "applying"}
                       onClick={() => bulkChange("invert")}
                     >
                       <span className="desktop:hidden">
@@ -786,6 +808,7 @@ export function ModelsDevSyncDialog({
                       className="h-7 px-1.5 text-xs desktop:h-8 desktop:px-3 desktop:text-sm"
                       aria-label={t("system.models.selectNone")}
                       title={t("system.models.selectNone")}
+                      disabled={dialogState === "applying"}
                       onClick={() => bulkChange(false)}
                     >
                       <span className="desktop:hidden">{t("system.models.selectNoneCompact")}</span>
@@ -810,6 +833,7 @@ export function ModelsDevSyncDialog({
                       checked={showDeprecated}
                       onCheckedChange={setShowDeprecated}
                       aria-label={t("system.models.showDeprecated")}
+                      disabled={dialogState === "applying"}
                     />
                     <span aria-hidden="true">
                       <span className="desktop:hidden">

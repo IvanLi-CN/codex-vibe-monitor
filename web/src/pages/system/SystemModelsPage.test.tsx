@@ -510,6 +510,50 @@ describe("SystemModelsPage", () => {
     ).toBe(true);
   });
 
+  it("keeps the latest preview state when an older memory patch response arrives later", async () => {
+    const savingMemory = deferred<ModelsDevSyncMemoryState>();
+    const latestMemory = makeSyncMemory();
+    latestMemory.providerSelections = [
+      { providerId: "provider-a", selected: false },
+      { providerId: "provider-b", selected: true },
+    ];
+    apiMocks.updateModelsDevSyncMemory.mockReturnValueOnce(savingMemory.promise);
+    apiMocks.previewModelsDevPriceSync
+      .mockResolvedValueOnce(makePreview())
+      .mockResolvedValueOnce(makePreview(latestMemory));
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    act(() => checkbox?.click());
+    await flushEffects();
+    clickButton("取消");
+    await flushEffects();
+
+    clickButton("全部同步");
+    await flushEffects();
+    const providerPicker = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="筛选供应商"]',
+    );
+    expect(providerPicker?.textContent).toContain("1 / 2");
+
+    const olderMemory = makeSyncMemory();
+    olderMemory.modelSelections = [
+      { model: "new-model", providerId: "provider-a", selected: true },
+    ];
+    await act(async () => {
+      savingMemory.resolve(olderMemory);
+      await savingMemory.promise;
+    });
+    await flushEffects();
+
+    expect(providerPicker?.textContent).toContain("1 / 2");
+  });
+
   it("keeps the review open until an in-flight price apply finishes", async () => {
     const applying = deferred<SettingsPayload["pricing"]>();
     apiMocks.applyModelsDevPriceSync.mockReturnValueOnce(applying.promise);
@@ -525,6 +569,24 @@ describe("SystemModelsPage", () => {
     await flushEffects();
     clickButton("同步所选");
     expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledTimes(1);
+
+    const providerPicker = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="筛选供应商"]',
+    );
+    const showDeprecated = document.body.querySelector<HTMLButtonElement>(
+      'button[role="switch"][aria-label="显示已弃用报价"]',
+    );
+    const selectAll = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.getAttribute("aria-label") === "全选",
+    );
+    const quoteProvider = document.body.querySelector<HTMLButtonElement>(
+      'button[role="combobox"][aria-label="为 shared-model 选择一个供应商报价"]',
+    );
+    expect(providerPicker?.disabled).toBe(true);
+    expect(showDeprecated?.disabled).toBe(true);
+    expect(selectAll?.disabled).toBe(true);
+    expect(quoteProvider?.disabled).toBe(true);
+    expect(checkbox?.disabled).toBe(true);
 
     const user = userEvent.setup();
     const cancelButton = Array.from(
@@ -546,6 +608,36 @@ describe("SystemModelsPage", () => {
     await flushEffects();
     expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
     expect(document.body.textContent).toContain("已更新 1 个模型价格");
+  });
+
+  it("keeps failed selection-memory retry available after price apply succeeds", async () => {
+    apiMocks.updateModelsDevSyncMemory.mockRejectedValueOnce(new Error("memory write failed"));
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    act(() => checkbox?.click());
+    await flushEffects();
+    expect(document.body.textContent).toContain("选择记忆未保存");
+    expect(document.body.textContent).not.toContain("memory write failed");
+
+    clickButton("同步所选");
+    await flushEffects();
+    expect(document.body.textContent).toContain("已更新 1 个模型价格");
+    expect(document.body.textContent).toContain("选择记忆未保存");
+    expect(document.body.textContent).not.toContain("memory write failed");
+    clickButton("重试");
+    await flushEffects();
+
+    expect(document.body.textContent).not.toContain("选择记忆未保存");
+    expect(storedSyncMemory.modelSelections).toContainEqual({
+      model: "new-model",
+      providerId: "provider-a",
+      selected: true,
+    });
   });
 
   it("adds a manual price as a custom catalog entry", async () => {
@@ -842,10 +934,16 @@ describe("SystemModelsPage", () => {
     act(() => checkbox?.click());
     await flushEffects();
     expect(checkbox?.checked).toBe(true);
-    expect(document.body.textContent).toContain("memory write failed");
+    expect(document.body.textContent).toContain("选择记忆未保存");
+    expect(document.body.textContent).not.toContain("memory write failed");
+    const alert = document.body.querySelector('[role="alert"]');
+    const retryButton = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent?.includes("重试"));
+    expect(retryButton?.closest('[role="alert"]')).toBe(alert);
     clickButton("重试");
     await flushEffects();
-    expect(document.body.textContent).not.toContain("memory write failed");
+    expect(document.body.textContent).not.toContain("选择记忆未保存");
     expect(storedSyncMemory.modelSelections).toContainEqual({
       model: "new-model",
       providerId: "provider-a",

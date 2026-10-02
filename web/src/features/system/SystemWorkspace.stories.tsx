@@ -2310,6 +2310,19 @@ async function waitForMemorySave(canvasElement: HTMLElement): Promise<void> {
   });
 }
 
+async function waitForViewedModelAcknowledgment(
+  canvasElement: HTMLElement,
+  model: string,
+): Promise<void> {
+  const fetcher = canvasElement.ownerDocument.defaultView?.fetch;
+  await expect(fetcher).toBeDefined();
+  await waitFor(async () => {
+    const response = await fetcher!("/api/settings/models/sync/state");
+    const state = (await response.json()) as ModelsDevSyncMemoryState;
+    expect(state.unviewedModelIds).not.toContain(model);
+  });
+}
+
 async function playModelsSyncReview(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
@@ -2589,7 +2602,7 @@ export const ModelsSyncNewModelViewportAcknowledgment: Story = {
     await expect(page.findByText("zz-model-view-lifecycle")).resolves.toBeVisible();
     const newModelBadge = page.getByRole("img", { name: "新发现的模型" });
     await expect(newModelBadge).toBeVisible();
-    await waitForMemorySave(canvasElement);
+    await waitForViewedModelAcknowledgment(canvasElement, "zz-model-view-lifecycle");
     await expect(newModelBadge).toBeVisible();
 
     await userEvent.click(page.getByRole("button", { name: "取消" }));
@@ -2683,12 +2696,53 @@ export const ModelsSyncSelectionRetry: Story = {
     await userEvent.click(checkbox);
     await expect(page.findByRole("alert")).resolves.toHaveTextContent("选择记忆未保存");
     await expect(checkbox).toBeChecked();
+    await userEvent.click(page.getByRole("button", { name: /同步所选/ }));
+    await expect(page.findByRole("status")).resolves.toHaveTextContent("已更新");
+    await expect(page.findByRole("alert")).resolves.toHaveTextContent("选择记忆未保存");
     await userEvent.click(page.getByRole("button", { name: "重试" }));
     await waitFor(() => {
-      expect(page.queryByText(/选择记忆未保存/)).not.toBeInTheDocument();
+      expect(page.queryByRole("alert")).not.toBeInTheDocument();
     });
-    await expect(checkbox).toBeChecked();
   },
+};
+
+export const ModelsSyncMemorySaveError: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failModelSelectionSave: true,
+    docs: {
+      description: {
+        story: "A failed selection-memory save stays visible and retryable during review.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 claude-sonnet-4 的价格",
+    });
+    await userEvent.click(checkbox);
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("选择记忆未保存");
+    await expect(checkbox).toBeChecked();
+    await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
+  },
+};
+
+export const ModelsSyncMemorySaveErrorMobile: Story = {
+  ...ModelsSyncMemorySaveError,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const ModelsSyncMemorySaveErrorDark: Story = {
+  ...ModelsSyncMemorySaveError,
+  tags: ["test"],
+  globals: { ...Models.globals, themeMode: "dark" },
 };
 
 const STORYBOOK_UNAVAILABLE_QUOTE_MEMORY: ModelsDevSyncMemoryState = {

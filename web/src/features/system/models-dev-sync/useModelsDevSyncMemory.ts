@@ -194,6 +194,7 @@ export function useModelsDevSyncMemory() {
   const inflightRevisionRef = useRef(0);
   const persistedRevisionRef = useRef(0);
   const localRevisionRef = useRef(0);
+  const previewSnapshotRevisionRef = useRef(0);
   const patchJournalRef = useRef(createMemoryPatchJournal());
   const flushPromiseRef = useRef<Promise<void> | null>(null);
   const saveFailedRef = useRef(false);
@@ -217,6 +218,7 @@ export function useModelsDevSyncMemory() {
           pendingRevisionRef.current = 0;
           inflightPatchRef.current = batch;
           inflightRevisionRef.current = batchRevision;
+          const previewSnapshotRevisionAtStart = previewSnapshotRevisionRef.current;
           setIsSaving(true);
           try {
             const serverState = await updateModelsDevSyncMemory(batch);
@@ -226,7 +228,11 @@ export function useModelsDevSyncMemory() {
               inflightRevisionRef.current,
             );
             inflightRevisionRef.current = 0;
-            publishMemory(overlayUnsavedMemory(serverState, emptyPatch(), pendingPatchRef.current));
+            const latestState =
+              previewSnapshotRevisionRef.current === previewSnapshotRevisionAtStart
+                ? serverState
+                : memoryRef.current;
+            publishMemory(overlayUnsavedMemory(latestState, emptyPatch(), pendingPatchRef.current));
             setError(null);
           } catch (saveError) {
             pendingPatchRef.current = mergePatches(batch, pendingPatchRef.current);
@@ -271,6 +277,7 @@ export function useModelsDevSyncMemory() {
 
   const restoreFromServer = useCallback(
     (state: ModelsDevSyncMemoryState, persistedRevisionAtRequestStart: number) => {
+      previewSnapshotRevisionRef.current += 1;
       const localChanges = memoryPatchAfterRevision(
         patchJournalRef.current,
         persistedRevisionAtRequestStart,
