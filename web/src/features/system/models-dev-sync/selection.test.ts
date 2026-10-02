@@ -93,7 +93,9 @@ describe("models.dev price selection", () => {
     expect(selection[modelProviderKey(model, "provider-b")]).toBe(true);
     expect(selection[modelProviderKey("another-model", "provider-b")]).toBeUndefined();
     expect(
-      createApplicablePriceEntries(groups, new Map(), selection, { [model]: "provider-b" }),
+      createApplicablePriceEntries(groups, new Map(), selection, {
+        [model]: "provider-b",
+      }),
     ).toHaveLength(1);
   });
 
@@ -139,5 +141,35 @@ describe("models.dev price selection", () => {
         {},
       ),
     ).toHaveLength(0);
+  });
+
+  it.each([
+    { field: "inputPer1m", localValue: 1, incomingValue: 0.5 },
+    { field: "inputPer1m", localValue: 1, incomingValue: null },
+    { field: "outputPer1m", localValue: 2, incomingValue: 3 },
+    { field: "outputPer1m", localValue: 2, incomingValue: null },
+    { field: "cacheReadPer1m", localValue: null, incomingValue: 0 },
+    { field: "cacheReadPer1m", localValue: 0, incomingValue: null },
+    { field: "cacheWritePer1m", localValue: null, incomingValue: 0.25 },
+    { field: "cacheWritePer1m", localValue: 0.25, incomingValue: null },
+    { field: "reasoningPer1m", localValue: null, incomingValue: 0.4 },
+    { field: "reasoningPer1m", localValue: 0.4, incomingValue: null },
+  ] as const)("reports only a $field difference", ({ field, localValue, incomingValue }) => {
+    const model = "model-a";
+    const local: PricingEntry = {
+      model,
+      inputPer1m: 1,
+      outputPer1m: 2,
+      cacheInputPer1m: null,
+      cacheReadPer1m: null,
+      cacheWritePer1m: null,
+      reasoningPer1m: null,
+      source: "custom",
+      [field]: localValue,
+    };
+
+    expect(
+      priceDifferenceFields(local, candidate(model, "provider-a", { [field]: incomingValue })),
+    ).toEqual(new Set([field]));
   });
 });

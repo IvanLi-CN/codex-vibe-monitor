@@ -3231,7 +3231,13 @@ function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
     const id = typeof value.id === "string" ? value.id.trim() : "";
     const name = typeof value.name === "string" ? value.name.trim() : "";
     if (!id || !name) return [];
-    return [{ id, name, docUrl: typeof value.docUrl === "string" ? value.docUrl : null }];
+    return [
+      {
+        id,
+        name,
+        docUrl: typeof value.docUrl === "string" ? value.docUrl : null,
+      },
+    ];
   });
   const candidates = candidatesRaw.flatMap((item): ModelsDevPriceCandidate[] => {
     const value = (item ?? {}) as Record<string, unknown>;
@@ -3289,7 +3295,13 @@ function normalizeModelsDevSyncMemoryState(raw: unknown): ModelsDevSyncMemorySta
         return typeof entry.model === "string" &&
           typeof entry.providerId === "string" &&
           typeof entry.selected === "boolean"
-          ? [{ model: entry.model, providerId: entry.providerId, selected: entry.selected }]
+          ? [
+              {
+                model: entry.model,
+                providerId: entry.providerId,
+                selected: entry.selected,
+              },
+            ]
           : [];
       })
     : [];
@@ -4400,7 +4412,11 @@ export function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSel
     const phase = typeof admission.phase === "string" ? admission.phase.trim() : "";
     const verificationSuccessCount = normalizeFiniteNumber(admission.verificationSuccessCount);
     if (decision && phase && verificationSuccessCount != null) {
-      normalized.handoffAdmission = { decision, phase, verificationSuccessCount };
+      normalized.handoffAdmission = {
+        decision,
+        phase,
+        verificationSuccessCount,
+      };
       const generation = normalizeFiniteNumber(admission.generation);
       if (generation != null) normalized.handoffAdmission.generation = generation;
       if (typeof admission.trigger === "string" && admission.trigger.trim()) {
@@ -5113,7 +5129,9 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       unattributedAnonBytes: number(process.unattributedAnonBytes),
       pressureLevel: optionalString(process.pressureLevel) ?? "unknown",
     },
-    allocator: { mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown" },
+    allocator: {
+      mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown",
+    },
     writerAccounting: {
       state: optionalString(writer.state) ?? "unknown",
       pendingDepth: number(writer.pendingDepth),
@@ -5825,7 +5843,11 @@ export async function fetchManagedTask(taskKey: string): Promise<ManagedTaskDeta
 
 export async function updateManagedTask(
   taskKey: string,
-  payload: { enabled?: boolean; intervalSecs?: number | null; cronExpr?: string | null },
+  payload: {
+    enabled?: boolean;
+    intervalSecs?: number | null;
+    cronExpr?: string | null;
+  },
 ): Promise<ManagedTaskDetail> {
   const response = await fetchJson<unknown>(
     `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
@@ -5884,10 +5906,13 @@ export async function updatePricingSettings(payload: PricingSettings): Promise<P
   return normalizePricingSettings(response);
 }
 
-export async function previewModelsDevPriceSync(): Promise<ModelsDevSyncPreview> {
+export async function previewModelsDevPriceSync(
+  options: { signal?: AbortSignal } = {},
+): Promise<ModelsDevSyncPreview> {
   const response = await fetchJson<unknown>("/api/settings/models/sync/preview", {
     method: "POST",
     body: JSON.stringify({}),
+    signal: options.signal,
   });
   return normalizeModelsDevSyncPreview(response);
 }

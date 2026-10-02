@@ -490,7 +490,11 @@ function retentionTaskDetailForState(
         coreCompletion: "deferred",
         budgetExhausted: false,
         waitReason: "sqlite_pressure",
-        promptCacheStats: { state: "unavailable", pending: 3, reason: "sqlite_pressure" },
+        promptCacheStats: {
+          state: "unavailable",
+          pending: 3,
+          reason: "sqlite_pressure",
+        },
       },
     });
   } else if (state === "failed") {
@@ -499,7 +503,10 @@ function retentionTaskDetailForState(
       phase: "failed",
       freshness: "fresh",
       waitReason: "fatal_error",
-      stages: detail.progress.stages?.map((stage) => ({ ...stage, status: "failed" })),
+      stages: detail.progress.stages?.map((stage) => ({
+        ...stage,
+        status: "failed",
+      })),
     };
     Object.assign(run, {
       status: "failed",
@@ -513,7 +520,11 @@ function retentionTaskDetailForState(
         budgetExhausted: false,
         waitReason: "fatal_error",
         fatalError: "archive artifact verification failed",
-        promptCacheStats: { state: "unknown", pending: null, reason: "fatal_error" },
+        promptCacheStats: {
+          state: "unknown",
+          pending: null,
+          reason: "fatal_error",
+        },
       },
     });
   } else if (state === "recoverable") {
@@ -676,7 +687,11 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
         penalized: false,
         stats: {
           oneMinute: { attempts: 14, successRate: 0.93, avgLatencyMs: 182 },
-          fifteenMinutes: { attempts: 168, successRate: 0.94, avgLatencyMs: 190 },
+          fifteenMinutes: {
+            attempts: 168,
+            successRate: 0.94,
+            avgLatencyMs: 190,
+          },
           oneHour: { attempts: 672, successRate: 0.94, avgLatencyMs: 204 },
           oneDay: { attempts: 1612, successRate: 0.95, avgLatencyMs: 216 },
           sevenDays: { attempts: 9120, successRate: 0.95, avgLatencyMs: 228 },
@@ -691,7 +706,11 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
         penalized: false,
         stats: {
           oneMinute: { attempts: 10, successRate: 0.88, avgLatencyMs: 236 },
-          fifteenMinutes: { attempts: 134, successRate: 0.9, avgLatencyMs: 242 },
+          fifteenMinutes: {
+            attempts: 134,
+            successRate: 0.9,
+            avgLatencyMs: 242,
+          },
           oneHour: { attempts: 588, successRate: 0.91, avgLatencyMs: 255 },
           oneDay: { attempts: 1450, successRate: 0.91, avgLatencyMs: 269 },
           sevenDays: { attempts: 8220, successRate: 0.92, avgLatencyMs: 278 },
@@ -775,9 +794,21 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
   providerCount: 3,
   candidateCount: 5,
   providers: [
-    { id: "openai", name: "OpenAI", docUrl: "https://platform.openai.com/docs" },
-    { id: "openrouter", name: "OpenRouter", docUrl: "https://openrouter.ai/docs" },
-    { id: "deepseek", name: "DeepSeek", docUrl: "https://api-docs.deepseek.com/" },
+    {
+      id: "openai",
+      name: "OpenAI",
+      docUrl: "https://platform.openai.com/docs",
+    },
+    {
+      id: "openrouter",
+      name: "OpenRouter",
+      docUrl: "https://openrouter.ai/docs",
+    },
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      docUrl: "https://api-docs.deepseek.com/",
+    },
   ],
   candidates: [
     {
@@ -1167,13 +1198,13 @@ function buildSystemWorkspaceRequestHandler(
     if (url.pathname === "/api/settings/models/sync/state" && method === "PATCH") {
       const body = parseBody<ModelsDevSyncMemoryPatch>({});
       if (delayViewedAcknowledgment && (body.viewedModelIds?.length ?? 0) > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
       if (
         delaySelectionMemorySave &&
         ((body.modelSelections?.length ?? 0) > 0 || (body.providerSelections?.length ?? 0) > 0)
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        await new Promise((resolve) => setTimeout(resolve, 250));
       }
       if ((body.modelSelections?.length ?? 0) > 0 && modelSelectionFailuresRemaining > 0) {
         modelSelectionFailuresRemaining -= 1;
@@ -1258,7 +1289,10 @@ function buildSystemWorkspaceRequestHandler(
     }
 
     if (url.pathname === "/api/settings/pricing" && method === "PUT") {
-      const body = parseBody<{ catalogVersion?: string; entries?: PricingEntry[] }>({});
+      const body = parseBody<{
+        catalogVersion?: string;
+        entries?: PricingEntry[];
+      }>({});
       settings.pricing = {
         catalogVersion: body.catalogVersion ?? settings.pricing.catalogVersion,
         entries: body.entries ?? settings.pricing.entries,
@@ -1651,7 +1685,9 @@ export const StatusRuntimePressureDegraded: Story = {
 export const StatusRuntimePressureAccountingError: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: runtimePressureStatus("accounting_error") },
+  parameters: {
+    systemStatusOverride: runtimePressureStatus("accounting_error"),
+  },
   play: runtimePressurePlay("核算异常"),
 };
 
@@ -1965,7 +2001,10 @@ function rawInventoryUnavailableStatus(state: RawInventoryUnavailableState): Sys
     ...STORYBOOK_SYSTEM_STATUS,
     rawBodies: { ...STORYBOOK_SYSTEM_STATUS.rawBodies, bytes: 0 },
     requestRawBodies: { ...STORYBOOK_SYSTEM_STATUS.requestRawBodies, bytes: 0 },
-    responseRawBodies: { ...STORYBOOK_SYSTEM_STATUS.responseRawBodies, bytes: 0 },
+    responseRawBodies: {
+      ...STORYBOOK_SYSTEM_STATUS.responseRawBodies,
+      bytes: 0,
+    },
     rawMetricsHealth: {
       state,
       inventoryCursor: 64_000,
@@ -1989,7 +2028,9 @@ function rawInventoryUnavailablePlay(message: string) {
 export const StatusRawInventoryPreparing: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("preparing") },
+  parameters: {
+    systemStatusOverride: rawInventoryUnavailableStatus("preparing"),
+  },
   play: rawInventoryUnavailablePlay(
     "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
   ),
@@ -1998,7 +2039,9 @@ export const StatusRawInventoryPreparing: Story = {
 export const StatusRawInventoryDeferred: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("deferred") },
+  parameters: {
+    systemStatusOverride: rawInventoryUnavailableStatus("deferred"),
+  },
   play: rawInventoryUnavailablePlay(
     "数据库压力较高，Raw payload 盘点已延后；raw 字节数和项目总量保持未知。",
   ),
@@ -2016,7 +2059,9 @@ export const StatusRawInventoryError: Story = {
 export const StatusRawInventoryUnknown: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("unknown") },
+  parameters: {
+    systemStatusOverride: rawInventoryUnavailableStatus("unknown"),
+  },
   play: rawInventoryUnavailablePlay("Raw payload 盘点覆盖范围未知；raw 字节数和项目总量保持未知。"),
 };
 
@@ -2098,7 +2143,9 @@ export const RetentionTaskDetail: Story = {
 export const TaskDetailCompleted: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("completed") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("completed"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/本轮完成/)).resolves.toBeVisible();
@@ -2109,7 +2156,9 @@ export const TaskDetailCompleted: Story = {
 export const TaskDetailDeferred: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("deferred") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("deferred"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/已延期/)).resolves.toBeVisible();
@@ -2121,7 +2170,9 @@ export const TaskDetailDeferred: Story = {
 export const TaskDetailFailed: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("failed") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("failed"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/本轮失败/)).resolves.toBeVisible();
@@ -2132,7 +2183,9 @@ export const TaskDetailFailed: Story = {
 export const TaskDetailRecoverableFailure: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("recoverable") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("recoverable"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/部分完成/)).resolves.toBeVisible();
@@ -2144,7 +2197,9 @@ export const TaskDetailRecoverableFailure: Story = {
 export const TaskDetailEmptyHistory: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("empty") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("empty"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("暂无运行记录")).resolves.toBeVisible();
@@ -2156,7 +2211,9 @@ export const TaskDetailEmptyHistory: Story = {
 export const TaskDetailUnknownStale: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("unknown") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("unknown"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const unknownItems = await canvas.findAllByText("未知");
@@ -2191,7 +2248,9 @@ export const Models: Story = {
   parameters: {
     settingsOverride: STORYBOOK_MODELS_SETTINGS,
     docs: {
-      description: { story: "Merged model directory with local prices and preset switches." },
+      description: {
+        story: "Merged model directory with local prices and preset switches.",
+      },
     },
   },
   globals: { viewport: { value: "desktop1660", isRotated: false } },
@@ -2256,7 +2315,11 @@ export const ModelsSyncReview: Story = {
   tags: ["test"],
   parameters: {
     ...Models.parameters,
-    docs: { description: { story: "Preview with a resolved cross-provider price conflict." } },
+    docs: {
+      description: {
+        story: "Preview with a resolved cross-provider price conflict.",
+      },
+    },
   },
   play: async ({ canvasElement }) => {
     await assertCanvasViewport(canvasElement, 1660, 960);
@@ -2335,21 +2398,57 @@ export const ModelsSyncControls: Story = {
     const providerPicker = page.getByRole("button", { name: "筛选供应商" });
     providerPicker.focus();
     await userEvent.keyboard("{Enter}");
-    const providerSearch = page.getByRole("textbox", { name: "搜索供应商 ID 或名称" });
+    const providerSearch = page.getByRole("textbox", {
+      name: "搜索供应商 ID 或名称",
+    });
     await userEvent.type(providerSearch, "DeepSeek");
     const deepSeek = page.getByRole("checkbox", { name: /DeepSeek deepseek/ });
     await expect(deepSeek).toBeChecked();
-    deepSeek.focus();
-    await userEvent.keyboard(" ");
+    const pickerContent = providerSearch.closest<HTMLElement>(
+      "[data-radix-popper-content-wrapper]",
+    )!;
+    const picker = within(pickerContent);
+    await userEvent.click(picker.getByRole("button", { name: "清空" }));
     await expect(deepSeek).not.toBeChecked();
-    await userEvent.keyboard(" ");
+    await userEvent.click(picker.getByRole("button", { name: "全选" }));
+    await expect(deepSeek).toBeChecked();
+    await userEvent.clear(providerSearch);
+    await userEvent.type(providerSearch, "OpenAI");
+    const openAi = page.getByRole("checkbox", { name: /OpenAI openai/ });
+    await userEvent.click(picker.getByRole("button", { name: "清空" }));
+    await expect(openAi).not.toBeChecked();
     await expect(deepSeek).toBeChecked();
     await userEvent.keyboard("{Escape}");
     await expect(providerPicker).toHaveFocus();
     await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
     await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
 
-    const modelCheckbox = page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" });
+    await userEvent.click(page.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "筛选供应商" }));
+    const reopenedPicker = page.getByRole("textbox", {
+      name: "搜索供应商 ID 或名称",
+    });
+    const reopenedContent = reopenedPicker.closest<HTMLElement>(
+      "[data-radix-popper-content-wrapper]",
+    )!;
+    const reopenedOptions = within(reopenedContent);
+    await expect(
+      reopenedOptions.getByRole("checkbox", { name: /OpenAI openai/ }),
+    ).not.toBeChecked();
+    await expect(
+      reopenedOptions.getByRole("checkbox", { name: /DeepSeek deepseek/ }),
+    ).toBeChecked();
+    await expect(
+      reopenedOptions.getByRole("checkbox", { name: /OpenRouter openrouter/ }),
+    ).toBeChecked();
+    await userEvent.keyboard("{Escape}");
+
+    const modelCheckbox = page.getByRole("checkbox", {
+      name: "同步 gpt-6-sol 的价格",
+    });
     modelCheckbox.focus();
     await userEvent.keyboard(" ");
     await expect(modelCheckbox).not.toBeChecked();
@@ -2438,7 +2537,10 @@ export const ModelsSyncNewModelViewportAcknowledgment: Story = {
       providerListRect.bottom,
     );
     await expect(providerList!.scrollHeight).toBeGreaterThan(providerList!.clientHeight);
-    providerList!.scrollTo({ top: providerList!.scrollHeight, behavior: "instant" });
+    providerList!.scrollTo({
+      top: providerList!.scrollHeight,
+      behavior: "instant",
+    });
     providerList!.dispatchEvent(new Event("scroll", { bubbles: true }));
     await waitFor(() => expect(providerList!.scrollTop).toBeGreaterThan(0));
     await waitFor(() => {
@@ -2455,7 +2557,9 @@ export const ModelsSyncNewModelViewportAcknowledgment: Story = {
     await userEvent.keyboard("{Escape}");
     await expect(providerPicker).toHaveFocus();
 
-    const modelList = await page.findByRole("region", { name: "模型价格候选列表" });
+    const modelList = await page.findByRole("region", {
+      name: "模型价格候选列表",
+    });
     await expect(page.queryByText("zz-model-view-lifecycle")).not.toBeInTheDocument();
 
     modelList.scrollTop = modelList.scrollHeight;
@@ -2518,7 +2622,11 @@ export const ModelsSyncRetry: Story = {
   parameters: {
     ...Models.parameters,
     failFirstModelsPreview: true,
-    docs: { description: { story: "Retrieval failure and the successful retry path." } },
+    docs: {
+      description: {
+        story: "Retrieval failure and the successful retry path.",
+      },
+    },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -2548,7 +2656,9 @@ export const ModelsSyncSelectionRetry: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
-    const checkbox = await page.findByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" });
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 deepseek-v3.2 的价格",
+    });
     await userEvent.click(checkbox);
     await expect(page.findByRole("alert")).resolves.toHaveTextContent("选择记忆未保存");
     await expect(checkbox).toBeChecked();
@@ -2588,9 +2698,13 @@ export const ModelsSyncUnavailableQuote: Story = {
     await expect(page.findByRole("status")).resolves.toHaveTextContent(
       "已记忆的供应商在当前筛选中不可用",
     );
-    const checkbox = await page.findByRole("checkbox", { name: "同步 gpt-6-sol 的价格" });
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 gpt-6-sol 的价格",
+    });
     await expect(checkbox).toBeDisabled();
-    const providerChoice = page.getByRole("combobox", { name: "为 gpt-6-sol 选择一个供应商报价" });
+    const providerChoice = page.getByRole("combobox", {
+      name: "为 gpt-6-sol 选择一个供应商报价",
+    });
     await userEvent.click(providerChoice);
     await userEvent.click(page.getByRole("option", { name: "OpenAI (openai)" }));
     await expect(checkbox).toBeEnabled();

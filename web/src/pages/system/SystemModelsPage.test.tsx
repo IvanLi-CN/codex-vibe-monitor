@@ -166,14 +166,32 @@ function applyMemoryPatch(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
   return {
     fetchedAt: "2026-09-30T00:00:00Z",
     providerCount: 2,
     candidateCount: 4,
     providers: [
-      { id: "provider-a", name: "Provider A", docUrl: "https://provider-a.example/docs" },
-      { id: "provider-b", name: "Provider B", docUrl: "https://provider-b.example/docs" },
+      {
+        id: "provider-a",
+        name: "Provider A",
+        docUrl: "https://provider-a.example/docs",
+      },
+      {
+        id: "provider-b",
+        name: "Provider B",
+        docUrl: "https://provider-b.example/docs",
+      },
     ],
     syncState,
     candidates: [
@@ -337,7 +355,9 @@ describe("SystemModelsPage", () => {
     }));
     apiMocks.updatePricingSettings.mockResolvedValue(makeSettings().pricing);
     apiMocks.updateManagedModelPreset.mockResolvedValue(makeSettings().proxy);
-    apiMocks.deleteManagedModel.mockResolvedValue({ deletedModel: "preset-without-price" });
+    apiMocks.deleteManagedModel.mockResolvedValue({
+      deletedModel: "preset-without-price",
+    });
   });
 
   afterEach(() => {
@@ -400,6 +420,77 @@ describe("SystemModelsPage", () => {
     expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
     expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
     expect(host?.textContent).toContain("priced-only-model");
+  });
+
+  it("ignores a preview response after its review was closed and reopened", async () => {
+    const stalePreview = deferred<ModelsDevSyncPreview>();
+    const latestMemory = makeSyncMemory();
+    latestMemory.providerSelections = [
+      { providerId: "provider-a", selected: false },
+      { providerId: "provider-b", selected: true },
+    ];
+    apiMocks.previewModelsDevPriceSync
+      .mockReturnValueOnce(stalePreview.promise)
+      .mockResolvedValueOnce(makePreview(latestMemory));
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    expect(apiMocks.previewModelsDevPriceSync).toHaveBeenCalledTimes(1);
+
+    const user = userEvent.setup();
+    await user.keyboard("{Escape}");
+    await flushEffects();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    const previewOptions = apiMocks.previewModelsDevPriceSync.mock.calls[0]?.[0] as
+      | { signal: AbortSignal }
+      | undefined;
+    expect(previewOptions?.signal.aborted).toBe(true);
+
+    clickButton("全部同步");
+    await flushEffects();
+    const providerPicker = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="筛选供应商"]',
+    );
+    expect(providerPicker?.textContent).toContain("1 / 2");
+
+    await act(async () => {
+      stalePreview.resolve(makePreview());
+      await stalePreview.promise;
+    });
+    expect(providerPicker?.textContent).toContain("1 / 2");
+  });
+
+  it("keeps the review open until an in-flight price apply finishes", async () => {
+    const applying = deferred<SettingsPayload["pricing"]>();
+    apiMocks.applyModelsDevPriceSync.mockReturnValueOnce(applying.promise);
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    act(() => checkbox?.click());
+    await flushEffects();
+    clickButton("同步所选");
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledTimes(1);
+
+    const user = userEvent.setup();
+    await user.keyboard("{Escape}");
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.querySelector<HTMLButtonElement>("button[aria-label]")?.disabled).toBe(true);
+
+    await act(async () => {
+      applying.resolve(makeSettings().pricing);
+      await applying.promise;
+    });
+    await flushEffects();
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(document.body.textContent).toContain("已更新 1 个模型价格");
   });
 
   it("adds a manual price as a custom catalog entry", async () => {
@@ -540,17 +631,29 @@ describe("SystemModelsPage", () => {
     clickButton("同步所选");
     await flushEffects();
 
-    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "new-model", source: "models.dev" }),
-        expect.objectContaining({
-          model: "shared-model",
-          inputPer1m: 9,
-          outputPer1m: 10,
-          source: "models.dev",
-        }),
-      ]),
-    );
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledTimes(1);
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith([
+      {
+        model: "new-model",
+        inputPer1m: 1,
+        outputPer1m: 2,
+        cacheInputPer1m: null,
+        cacheReadPer1m: null,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "models.dev",
+      },
+      {
+        model: "shared-model",
+        inputPer1m: 9,
+        outputPer1m: 10,
+        cacheInputPer1m: null,
+        cacheReadPer1m: null,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "models.dev",
+      },
+    ]);
   });
 
   it("keeps remembered provider choices unresolved when provider filters hide them", async () => {
@@ -618,12 +721,29 @@ describe("SystemModelsPage", () => {
 
     clickButton("同步所选");
     await flushEffects();
-    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ model: "new-model", source: "models.dev" }),
-        expect.objectContaining({ model: "shared-model", source: "models.dev" }),
-      ]),
-    );
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledTimes(1);
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith([
+      {
+        model: "new-model",
+        inputPer1m: 1,
+        outputPer1m: 2,
+        cacheInputPer1m: null,
+        cacheReadPer1m: null,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "models.dev",
+      },
+      {
+        model: "shared-model",
+        inputPer1m: 9,
+        outputPer1m: 10,
+        cacheInputPer1m: null,
+        cacheReadPer1m: null,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        source: "models.dev",
+      },
+    ]);
   });
 
   it("saves checkbox changes immediately and restores them after cancel", async () => {

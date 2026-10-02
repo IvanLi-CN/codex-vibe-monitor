@@ -160,7 +160,9 @@ function ModelCandidateRow({
             }))}
             value={candidate?.providerId ?? ""}
             placeholder={t("system.models.chooseProviderPlaceholder")}
-            aria-label={t("system.models.chooseProviderFor", { model: group.model })}
+            aria-label={t("system.models.chooseProviderFor", {
+              model: group.model,
+            })}
             triggerClassName="h-9"
             onValueChange={(providerId) => onQuoteProviderChange(group.model, providerId)}
           />
@@ -414,15 +416,49 @@ export function ModelsDevSyncDialog({
   const [resultCount, setResultCount] = useState(0);
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
   const viewAcknowledgedRef = useRef(new Set<string>());
+  const previewRequestIdRef = useRef(0);
+  const previewAbortControllerRef = useRef<AbortController | null>(null);
+  const applyRequestIdRef = useRef(0);
+  const applyingRef = useRef(false);
+  const mountedRef = useRef(false);
+
+  const invalidatePreviewRequest = useCallback(() => {
+    previewRequestIdRef.current += 1;
+    previewAbortControllerRef.current?.abort();
+    previewAbortControllerRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      invalidatePreviewRequest();
+      applyRequestIdRef.current += 1;
+      applyingRef.current = false;
+    };
+  }, [invalidatePreviewRequest]);
 
   const loadPreview = useCallback(async () => {
+    previewAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    const requestId = ++previewRequestIdRef.current;
+    previewAbortControllerRef.current = abortController;
     setDialogState("loading");
     setSyncError(null);
     setModelSearch("");
     setShowDeprecated(false);
     viewAcknowledgedRef.current.clear();
     try {
-      const result = await previewModelsDevPriceSync();
+      const result = await previewModelsDevPriceSync({
+        signal: abortController.signal,
+      });
+      if (
+        !mountedRef.current ||
+        abortController.signal.aborted ||
+        requestId !== previewRequestIdRef.current
+      ) {
+        return;
+      }
       restoreFromServer(result.syncState);
       setSyncPreview(result);
       setCurrentReviewNewModels(new Set(result.syncState.unviewedModelIds));
@@ -437,15 +473,41 @@ export function ModelsDevSyncDialog({
       );
       setDialogState("ready");
     } catch (error) {
+      if (
+        !mountedRef.current ||
+        abortController.signal.aborted ||
+        requestId !== previewRequestIdRef.current
+      ) {
+        return;
+      }
       setSyncError(error instanceof Error ? error.message : String(error));
       setDialogState("error");
+    } finally {
+      if (requestId === previewRequestIdRef.current) {
+        previewAbortControllerRef.current = null;
+      }
     }
   }, [restoreFromServer]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      invalidatePreviewRequest();
+      return;
+    }
     void loadPreview();
-  }, [loadPreview, open]);
+    return invalidatePreviewRequest;
+  }, [invalidatePreviewRequest, loadPreview, open]);
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        if (applyingRef.current) return;
+        invalidatePreviewRequest();
+      }
+      onOpenChange(nextOpen);
+    },
+    [invalidatePreviewRequest, onOpenChange],
+  );
 
   const selectionByKey = useMemo(() => selectionMemoryByKey(syncMemory), [syncMemory]);
   const quoteChoices = useMemo(() => quoteProviderChoicesByModel(syncMemory), [syncMemory]);
@@ -513,7 +575,10 @@ export function ModelsDevSyncDialog({
       });
       setSelectedProviders(next);
       queueMemoryPatch({
-        providerSelections: providerIds.map((providerId) => ({ providerId, selected })),
+        providerSelections: providerIds.map((providerId) => ({
+          providerId,
+          selected,
+        })),
       });
     },
     [queueMemoryPatch, selectedProviders],
@@ -540,25 +605,31 @@ export function ModelsDevSyncDialog({
   );
 
   const applySelected = useCallback(async () => {
-    if (!applicableEntries.length || dialogState === "applying") return;
+    if (!applicableEntries.length || applyingRef.current) return;
+    applyingRef.current = true;
+    const requestId = ++applyRequestIdRef.current;
     setDialogState("applying");
     setSyncError(null);
     try {
       const pricing = await applyModelsDevPriceSync(applicableEntries);
+      if (!mountedRef.current || requestId !== applyRequestIdRef.current) return;
       setResultCount(applicableEntries.length);
       onPricesApplied(pricing, applicableEntries);
       setDialogState("applied");
     } catch (error) {
+      if (!mountedRef.current || requestId !== applyRequestIdRef.current) return;
       setSyncError(error instanceof Error ? error.message : String(error));
       setDialogState("ready");
+    } finally {
+      if (requestId === applyRequestIdRef.current) applyingRef.current = false;
     }
-  }, [applicableEntries, dialogState, onPricesApplied]);
+  }, [applicableEntries, onPricesApplied]);
 
   const providers = syncPreview?.providers ?? [];
   const virtualRows = virtualizer.getVirtualItems();
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden desktop:min-h-[min(35rem,calc(100dvh-1.25rem))] desktop:w-[min(78rem,calc(100vw-2rem))]"
         onCloseAutoFocus={(event) => {
@@ -573,7 +644,10 @@ export function ModelsDevSyncDialog({
               <DialogTitle>{t("system.models.syncTitle")}</DialogTitle>
               <DialogDescription>{t("system.models.syncDescription")}</DialogDescription>
             </DialogHeader>
-            <DialogCloseIcon aria-label={t("system.models.close")} />
+            <DialogCloseIcon
+              aria-label={t("system.models.close")}
+              disabled={dialogState === "applying"}
+            />
           </div>
 
           {dialogState === "loading" ? (
@@ -607,7 +681,11 @@ export function ModelsDevSyncDialog({
               ) : null}
               {memoryError ? (
                 <Alert variant="error" role="alert" className="mt-3 shrink-0">
-                  <span>{t("system.models.memorySaveFailed", { error: memoryError })}</span>
+                  <span>
+                    {t("system.models.memorySaveFailed", {
+                      error: memoryError,
+                    })}
+                  </span>
                   <Button
                     type="button"
                     size="sm"
@@ -658,10 +736,14 @@ export function ModelsDevSyncDialog({
                 </span>
                 <fieldset
                   className="col-start-1 row-start-2 m-0 flex min-w-0 items-center gap-x-1 border-0 p-0 desktop:col-start-2 desktop:row-start-1 desktop:gap-x-2"
-                  aria-label={t("system.models.bulkScope", { count: visibleGroups.length })}
+                  aria-label={t("system.models.bulkScope", {
+                    count: visibleGroups.length,
+                  })}
                 >
                   <span className="shrink-0 text-base-content/55">
-                    {t("system.models.bulkScopeCompact", { count: visibleGroups.length })}
+                    {t("system.models.bulkScopeCompact", {
+                      count: visibleGroups.length,
+                    })}
                   </span>
                   <div className="flex shrink-0 items-center gap-0.5">
                     <Button
@@ -708,7 +790,9 @@ export function ModelsDevSyncDialog({
                 </fieldset>
                 <div className="contents desktop:col-start-3 desktop:row-start-1 desktop:flex desktop:items-center desktop:justify-end desktop:gap-x-3">
                   <span className="col-start-2 row-start-2 w-full min-w-0 self-center text-right text-base-content/80 desktop:col-auto desktop:row-auto desktop:w-auto desktop:whitespace-nowrap">
-                    {t("system.models.applyCount", { count: applicableEntries.length })}
+                    {t("system.models.applyCount", {
+                      count: applicableEntries.length,
+                    })}
                     {hiddenApplyCount > 0
                       ? ` · ${t("system.models.searchHiddenApplyCount", { count: hiddenApplyCount })}`
                       : ""}
@@ -759,7 +843,9 @@ export function ModelsDevSyncDialog({
                           data-index={virtualRow.index}
                           ref={virtualizer.measureElement}
                           className="absolute left-0 top-0 w-full"
-                          style={{ transform: `translateY(${virtualRow.start}px)` }}
+                          style={{
+                            transform: `translateY(${virtualRow.start}px)`,
+                          }}
                         >
                           <ModelCandidateRow
                             group={group}
@@ -805,7 +891,9 @@ export function ModelsDevSyncDialog({
                   >
                     {dialogState === "applying"
                       ? t("system.models.syncing")
-                      : t("system.models.syncSelected", { count: applicableEntries.length })}
+                      : t("system.models.syncSelected", {
+                          count: applicableEntries.length,
+                        })}
                   </Button>
                 </div>
               </DialogFooter>
