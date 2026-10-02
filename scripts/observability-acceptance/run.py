@@ -87,10 +87,11 @@ class Run:
         self.client("seed")
         deadline=time.monotonic()+120
         while True:
-            try: self.client("viewer");break
+            try: self.client("ready");break
             except subprocess.SubprocessError:
                 if time.monotonic()>deadline: raise
                 time.sleep(2)
+        self.client("viewer")
         self.client("load","--seconds","40","--rate",str(self.args.rate))
     def isolation(self):
         self.compose("stop","prometheus","grafana")

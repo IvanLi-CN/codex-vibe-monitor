@@ -32,7 +32,7 @@ def request(base,path,method="GET",payload=None,token=None,basic=None):
 
 def ok(base,path,**kwargs):
     status,body=request(base,path,**kwargs)
-    assert status==200,(path,status)
+    assert status in (200,201),(path,status)
     return json.loads(body)
 
 def seed():
@@ -46,6 +46,10 @@ def viewer():
     token=ok("http://grafana:3000",f'/api/serviceaccounts/{account["id"]}/tokens',method="POST",payload={"name":"acceptance"},basic=basic)["key"]
     (ROOT/"grafana-viewer-token").write_text(token); (ROOT/"grafana-viewer-token").chmod(0o600)
     return {"viewer":"created"}
+
+def ready():
+    assert ok("http://grafana:3000", "/api/health")["database"] == "ok"
+    return {"grafana":"ready"}
 
 def functional():
     scrape=(ROOT/"metrics-token").read_text().strip()
@@ -134,7 +138,7 @@ def load(seconds,rate):
     assert all(item[0]==200 for item in results),{"statuses":{str(status):sum(item[0]==status for item in results) for status,_ in results}}
     return {"offered":seconds*rate,"completed":len(results),"dashboardSubscriptions":1,"durationSeconds":time.perf_counter()-started,"p95Seconds":durations[math.ceil(len(durations)*0.95)-1]}
 
-parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","viewer","functional","load"])
+parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","functional","load"])
 parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=20)
 args=parser.parse_args()
 result=load(args.seconds,args.rate) if args.mode=="load" else globals()[args.mode]()

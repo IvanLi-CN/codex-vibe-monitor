@@ -464,6 +464,53 @@ mod contract_tests {
     use super::*;
 
     #[test]
+    fn all_77_source_signals_have_their_locked_retirement_or_metric_action() {
+        let contract = include_str!("../../docs/design/performance-observability-metrics.md");
+        let mut sources = std::collections::HashSet::new();
+        let mut retired = 0;
+        let mut merged = 0;
+        for line in contract.lines() {
+            let columns: Vec<_> = line.split('|').map(str::trim).collect();
+            let Some(source) = columns.get(1).and_then(|value| value.strip_prefix('`')) else {
+                continue;
+            };
+            let Some(id) = source.strip_suffix('`').filter(|value| value.contains('.')) else {
+                continue;
+            };
+            assert!(sources.insert(id), "duplicate source action: {id}");
+            let action = columns[2];
+            let dimension = registry::metric_dimensions(id)
+                .first()
+                .copied()
+                .unwrap_or("");
+            let mapping = registry::mapped_metric(id, dimension);
+            if action == "退役" {
+                retired += 1;
+                assert!(mapping.is_none(), "retired source still exports: {id}");
+            } else if action.starts_with("合并到") {
+                merged += 1;
+                assert_eq!(id, "sse.publish_duration_ms");
+                assert!(mapping.is_none(), "duplicate publish window still exports");
+            } else {
+                let expected = action
+                    .split('`')
+                    .nth(1)
+                    .expect("metric action")
+                    .split('{')
+                    .next()
+                    .expect("metric name");
+                let (name, _, scale) = mapping.unwrap_or_else(|| panic!("missing mapping: {id}"));
+                assert_eq!(name, expected, "metric contract differs: {id}");
+                assert_eq!(scale, if id.ends_with("_ms") { 0.001 } else { 1.0 });
+                assert!(registry::mapped_metric(id, "sensitive-dynamic-value").is_none());
+            }
+        }
+        assert_eq!(sources.len(), 77);
+        assert_eq!(retired, 9);
+        assert_eq!(merged, 1);
+    }
+
+    #[test]
     fn classic_buckets_units_and_recorders_are_independent() {
         let first = ObservabilityRuntime::new(true);
         let second = ObservabilityRuntime::new(true);

@@ -172,6 +172,7 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY docs/design/performance-observability-metrics.md ./docs/design/performance-observability-metrics.md
 COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
 RUN mkdir -p target \
