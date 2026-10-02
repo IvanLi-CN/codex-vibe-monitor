@@ -29,7 +29,7 @@ class Run:
             raise ValueError("acceptance run must be inside the exact Agent Directory")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*",args.agent) or not re.fullmatch(r"[a-f0-9]{40}",args.candidate):
             raise ValueError("invalid agent or candidate identity")
-        self.project="testbox-"+args.agent+"-"+self.root.name
+        self.project="testbox-"+args.agent+"-"+hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)

@@ -33,8 +33,8 @@ build ID/hash 符号。镜像符号由 CI 从实际镜像提取，不重新编�
 已通过的迭代验证：Rust all-targets/all-features check/clippy、三分桶共 2920 项后端
 回归（模块拆分之前）；Web 全量单测 1702 项与新增浏览器时序 4 项回归；
 Web 类型/lint/build；13 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
-模块拆分后的当前源码验证仍在进行。四张 mock UI 证据已展示、确认并落盘；
-Storybook 与相关 E2E 尚待完成。
+已对齐包含任务执行模块拆分的新主线，当前源码验证仍在进行。四张 mock UI 证据已展示、确认并落盘；
+两个 Storybook 文件的 36 项用例通过，相关 E2E 正在补齐测试容器字体后重跑。
 
 新候选仍须完成当前 SHA 绑定的受控 Linux Compose、HTTPS 鉴权、原实例 CPU attach
 与默认观测 A/B。采样权限探针能保存 profile，不等于真实应用符号验收通过。
