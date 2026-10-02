@@ -1,33 +1,83 @@
 {
-  "state": "performance telemetry SQLite database",
-  "owner": "codex-vibe-monitor runtime",
-  "source_compatibility": {
-    "introduced": "current release",
-    "earlier_state": "absent or the current final schema version"
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Retire isolated performance SQLite into a verified offline archive without changing business state",
+    "release_unit_description": "External observability replacement",
+    "version_impact": "major"
   },
-  "ordered_operations": [
-    "resolve and validate an isolated database path",
-    "open with WAL and create the complete final schema once",
-    "reject an unrecognized schema marker without modifying the file and expose telemetry as unavailable",
-    "start bounded collector and writer after main database readiness",
-    "roll up finer buckets before deleting covered source buckets",
-    "prune data older than thirteen months and checkpoint WAL"
-  ],
-  "rollout_signals": [
-    "collector health state",
-    "last successful flush timestamp",
-    "dropped sample count",
-    "schema mismatch, rollup, and write error counters"
-  ],
+  "durable_state": {
+    "description": "Schema-v1 performance SQLite family, WAL/SHM, cutover manifest and offline backup",
+    "storage_implementation": "SQLite consistent backup and exact file-family archive",
+    "source_compatibility_range": {
+      "from_program_versions": "immediately preceding major v2 with performance_meta schema_version=1; absent state accepted",
+      "to_program_version": "next major external-observability candidate",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "identify",
+        "description": "Resolve physical identity, validate schema-v1 and exclusion of business/task files; no DDL",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "archive",
+        "description": "After old writer stops, consistent backup including committed WAL; integrity/hash verification; move only verified exact family outside mounts",
+        "order": 2,
+        "depends_on": [
+          "identify"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": []
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "identify",
+      "archive",
+      "cutover"
+    ],
+    "progress_signals": [
+      "resolved source identity and schema",
+      "backup checksum/integrity",
+      "source-family retirement and cutover manifest",
+      "new app has no old-file access"
+    ],
+    "pause_points": [
+      "after identification",
+      "after verified backup",
+      "before cutover"
+    ]
+  },
   "recovery": {
-    "business_path": "continues without telemetry",
-    "repair": "recreate the disposable telemetry file; no in-place schema conversion is attempted",
-    "backup_restore": "separate operator disaster recovery action"
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version using immutable phase manifest",
+    "backup_restore_role": "separate-disaster-recovery; verify old image/config and business/task schema before restoring a compatible backup"
   },
-  "validation": [
-    "absent database starts cleanly",
-    "same schema startup is idempotent",
-    "stopped rollup re-enters without double counting",
-    "unwritable or corrupt telemetry storage does not block proxy or health"
-  ]
+  "validation": {
+    "major": {
+      "required_test_evidence": [
+        "schema-v1 and absent source states",
+        "custom path and symlink identity",
+        "WAL consistency",
+        "unknown or conflicting identity refused",
+        "corrupt known family preserved and marked failed",
+        "interruption and safe re-entry",
+        "forward repair of stopped release",
+        "compatible old-version backup restore without business modification",
+        "direct multi-major jumps refused"
+      ]
+    }
+  }
 }
