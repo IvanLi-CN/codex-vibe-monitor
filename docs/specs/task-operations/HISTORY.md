@@ -14,6 +14,8 @@
 - The diagnostic solution records the root cause: worker defaults were not present in the database projection, while the detail page rendered an empty override as a fixed interval.
 - The task-overview requirements extend this boundary with separately labelled queued requests and admission-deferred tasks, stable identity colors, and a compact execution timeline whose lanes follow overlap rather than task identity. The deferral row concerns task admission rather than general runtime health; independent worker policies remain independent.
 - ADR 0026 records the accepted persistent observation boundary: background collection continues without an open page, recent intervals survive service restart, and missing coverage remains explicit rather than reconstructed from request times or aggregate metrics.
+- The task execution chart's visible rolling window is 12 hours. The timeline API continues to support windows up to 24 hours, and shortening the presentation window does not reduce persisted history retention.
+- Live runtime and timeline data use dedicated SSE topics: snapshots seed the page and task-observation changes publish bounded runtime updates and revision deltas. The browser advances the visible clock between events and presents connecting, reconnecting, and disabled states; after the observation grace period it freezes open state and labels it unknown.
 
 ## Current Delivery Facts
 

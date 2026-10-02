@@ -14,11 +14,30 @@ const apiMocks = vi.hoisted(() => ({
   fetchManagedTaskRuntime: vi.fn(),
   fetchManagedTaskTimeline: vi.fn(),
 }));
+const streamMocks = vi.hoisted(() => ({
+  useSubscriptionTopic: vi.fn(),
+  useSseStatus: vi.fn(),
+  requestImmediateReconnect: vi.fn(),
+  runtimeLastReceivedAt: 0,
+  timelineLastReceivedAt: 0,
+  runtimeData: null as unknown,
+  timelineData: null as unknown,
+  runtimeRefresh: vi.fn(),
+  timelineRefresh: vi.fn(),
+}));
 vi.mock("../../lib/api", async () => ({
   ...(await vi.importActual<typeof import("../../lib/api")>("../../lib/api")),
   fetchManagedTasks: apiMocks.fetchManagedTasks,
   fetchManagedTaskRuntime: apiMocks.fetchManagedTaskRuntime,
   fetchManagedTaskTimeline: apiMocks.fetchManagedTaskTimeline,
+}));
+vi.mock("../../hooks/useSubscriptionTopic", () => ({
+  useSubscriptionTopic: streamMocks.useSubscriptionTopic,
+}));
+vi.mock("../../hooks/useSseStatus", () => ({ default: streamMocks.useSseStatus }));
+vi.mock("../../lib/sse", async () => ({
+  ...(await vi.importActual<typeof import("../../lib/sse")>("../../lib/sse")),
+  requestImmediateReconnect: streamMocks.requestImmediateReconnect,
 }));
 
 let host: HTMLDivElement | null = null;
@@ -51,7 +70,7 @@ describe("SystemTasksPage", () => {
     HTMLElement.prototype.hasPointerCapture = () => false;
     HTMLElement.prototype.setPointerCapture = () => undefined;
     HTMLElement.prototype.releasePointerCapture = () => undefined;
-    apiMocks.fetchManagedTaskRuntime.mockResolvedValue({
+    const runtimeFixture = {
       observedAt: "2026-10-01T00:00:00.000Z",
       activeRuns: [
         {
@@ -92,8 +111,10 @@ describe("SystemTasksPage", () => {
         },
       ],
       admissionWaitsAvailable: true,
-    });
-    apiMocks.fetchManagedTaskTimeline.mockResolvedValue({
+    };
+    apiMocks.fetchManagedTaskRuntime.mockResolvedValue(runtimeFixture);
+    streamMocks.runtimeData = runtimeFixture;
+    const timelineFixture = {
       observedAt: "2026-10-01T00:00:02.000Z",
       windowStart: "2026-09-30T00:00:02.000Z",
       windowEnd: "2026-10-01T00:00:02.000Z",
@@ -102,6 +123,37 @@ describe("SystemTasksPage", () => {
       coverage: [],
       nextCursor: null,
       resetRequired: false,
+    };
+    apiMocks.fetchManagedTaskTimeline.mockResolvedValue(timelineFixture);
+    streamMocks.timelineData = timelineFixture;
+    streamMocks.useSseStatus.mockReturnValue({
+      phase: "connected",
+      downtimeMs: 0,
+      nextRetryAt: null,
+      autoReconnect: true,
+    });
+    streamMocks.runtimeLastReceivedAt = Date.now();
+    streamMocks.timelineLastReceivedAt = Date.now();
+    streamMocks.useSubscriptionTopic.mockImplementation((descriptor: { topic: string } | null) => {
+      if (descriptor?.topic === "system.managed-tasks.runtime") {
+        return {
+          data: streamMocks.runtimeData,
+          lastReceivedAt: streamMocks.runtimeLastReceivedAt,
+          error: null,
+          isLoading: false,
+          refresh: streamMocks.runtimeRefresh,
+        };
+      }
+      if (descriptor?.topic === "system.managed-tasks.timeline") {
+        return {
+          data: streamMocks.timelineData,
+          lastReceivedAt: streamMocks.timelineLastReceivedAt,
+          error: null,
+          isLoading: false,
+          refresh: streamMocks.timelineRefresh,
+        };
+      }
+      return { data: null, lastReceivedAt: null, error: null, isLoading: true, refresh: vi.fn() };
     });
     apiMocks.fetchManagedTasks.mockResolvedValue([
       {
@@ -135,16 +187,27 @@ describe("SystemTasksPage", () => {
     host?.remove();
     host = null;
     root = null;
+    vi.useRealTimers();
     apiMocks.fetchManagedTasks.mockReset();
     apiMocks.fetchManagedTaskRuntime.mockReset();
     apiMocks.fetchManagedTaskTimeline.mockReset();
+    streamMocks.useSubscriptionTopic.mockReset();
+    streamMocks.useSseStatus.mockReset();
+    streamMocks.requestImmediateReconnect.mockReset();
   });
 
   it("loads the managed task directory", async () => {
     renderPage();
     await flushEffects();
     expect(apiMocks.fetchManagedTasks).toHaveBeenCalledTimes(1);
-    expect(apiMocks.fetchManagedTaskRuntime).toHaveBeenCalledTimes(1);
+    expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
+      topic: "system.managed-tasks.runtime",
+    });
+    expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
+      topic: "system.managed-tasks.timeline",
+    });
+    expect(apiMocks.fetchManagedTaskRuntime).not.toHaveBeenCalled();
+    expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();
     expect(host?.textContent).toContain("数据保留与归档");
     expect(host?.textContent).toContain("正在执行");
     expect(host?.textContent).toContain("已入队");
@@ -154,7 +217,7 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("等待开始");
     expect(host?.textContent).toContain("08:00:01");
     expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
-    expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();
     expect(host?.textContent).toContain("raw_compression");
   });
 
@@ -194,11 +257,76 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("原始载荷压缩");
   });
 
-  it("renders an explicit unknown state when runtime observation fails", async () => {
-    apiMocks.fetchManagedTaskRuntime.mockRejectedValueOnce(new Error("runtime unavailable"));
+  it("shows an explicit SSE disconnect state and marks runtime observations unknown", async () => {
+    streamMocks.useSseStatus.mockReturnValue({
+      phase: "reconnecting",
+      downtimeMs: 10_000,
+      nextRetryAt: Date.now() + 2_000,
+      autoReconnect: true,
+    });
+    streamMocks.runtimeLastReceivedAt = Date.now();
+    streamMocks.timelineLastReceivedAt = Date.now();
+    streamMocks.useSubscriptionTopic.mockImplementation((descriptor: { topic: string } | null) => ({
+      data: null,
+      lastReceivedAt: null,
+      error: descriptor?.topic === "system.managed-tasks.runtime" ? "unavailable" : null,
+      isLoading: false,
+      refresh: vi.fn(),
+    }));
     renderPage();
-    await waitFor(() => expect(host?.textContent).toContain("实时运行观测未知"));
+    await waitFor(() => expect(host?.textContent).toContain("实时数据断开，正在重连"));
     expect(host?.textContent).toContain("当前是否有任务正在工作未知");
     expect(host?.textContent).toContain("观测未知");
+  });
+
+  it("shows the connecting state while waiting for the first SSE snapshots", async () => {
+    streamMocks.useSseStatus.mockReturnValue({
+      phase: "connecting",
+      downtimeMs: 0,
+      nextRetryAt: null,
+      autoReconnect: true,
+    });
+    renderPage();
+    await flushEffects();
+    expect(within(host as HTMLElement).getByRole("status").textContent).toContain(
+      "实时数据连接中，正在等待服务端快照",
+    );
+  });
+
+  it("offers manual reconnection when SSE updates are disabled", async () => {
+    streamMocks.useSseStatus.mockReturnValue({
+      phase: "disabled",
+      downtimeMs: 0,
+      nextRetryAt: null,
+      autoReconnect: false,
+    });
+    renderPage();
+    await flushEffects();
+    await userEvent.click(within(host as HTMLElement).getByRole("button", { name: "重新连接" }));
+    expect(streamMocks.requestImmediateReconnect).toHaveBeenCalledTimes(1);
+    expect(host?.textContent).toContain("实时数据连接已停止，当前状态未知");
+  });
+
+  it("advances visible time and execution duration between SSE events", async () => {
+    vi.useFakeTimers();
+    const start = new Date("2026-10-01T00:00:00.000Z");
+    vi.setSystemTime(start);
+    streamMocks.runtimeLastReceivedAt = Date.now();
+    streamMocks.timelineLastReceivedAt = Date.now();
+    renderPage();
+    await flushEffects();
+    const before = host?.querySelector('[data-testid="task-timeline-now"]')?.textContent;
+    expect(host?.textContent).toContain("0 分 12 秒");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    const after = host?.querySelector('[data-testid="task-timeline-now"]')?.textContent;
+    expect(after).not.toBe(before);
+    expect(host?.textContent).toContain("0 分 13 秒");
+    expect(apiMocks.fetchManagedTaskRuntime).not.toHaveBeenCalled();
+    expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

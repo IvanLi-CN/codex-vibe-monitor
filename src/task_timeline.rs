@@ -12,13 +12,40 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{sync::mpsc, task::JoinHandle, time::MissedTickBehavior};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+    time::MissedTickBehavior,
+};
 use tokio_util::sync::CancellationToken;
 
 const EVENT_CAPACITY: usize = 4096;
 const BATCH_SIZE: usize = 256;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskObservationChange {
+    Runtime,
+    Timeline,
+}
+
+fn change_sender() -> &'static broadcast::Sender<TaskObservationChange> {
+    static SENDER: OnceLock<broadcast::Sender<TaskObservationChange>> = OnceLock::new();
+    SENDER.get_or_init(|| broadcast::channel(EVENT_CAPACITY).0)
+}
+
+pub(crate) fn subscribe_changes() -> broadcast::Receiver<TaskObservationChange> {
+    change_sender().subscribe()
+}
+
+pub(crate) fn notify_runtime_changed() {
+    let _ = change_sender().send(TaskObservationChange::Runtime);
+}
+
+fn notify_timeline_changed() {
+    let _ = change_sender().send(TaskObservationChange::Timeline);
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum TimelineEvent {
@@ -118,6 +145,7 @@ pub(crate) fn execution_started(
         started_at,
         managed_run_id,
     });
+    notify_runtime_changed();
 }
 
 pub(crate) fn execution_finished(id: String, finished_at: String, duration_ms: u64, status: &str) {
@@ -127,6 +155,7 @@ pub(crate) fn execution_finished(id: String, finished_at: String, duration_ms: u
         duration_ms,
         status: status.to_string(),
     });
+    notify_runtime_changed();
 }
 
 pub(crate) fn execution_child_changed(id: String, task_key: Option<String>, title: Option<String>) {
@@ -135,6 +164,7 @@ pub(crate) fn execution_child_changed(id: String, task_key: Option<String>, titl
         task_key,
         title,
     });
+    notify_runtime_changed();
 }
 
 pub(crate) fn execution_unknown(id: String, last_observed_at: String) {
@@ -142,6 +172,7 @@ pub(crate) fn execution_unknown(id: String, last_observed_at: String) {
         id,
         last_observed_at,
     });
+    notify_runtime_changed();
 }
 
 pub(crate) fn note_background_denial(
@@ -313,6 +344,7 @@ async fn run_recorder(
             }
         }
     };
+    notify_timeline_changed();
     let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_heartbeat = tokio::time::Instant::now();
@@ -356,6 +388,14 @@ async fn run_recorder(
                         heartbeat,
                     ).await {
                         Ok(()) => {
+                            notify_timeline_changed();
+                            if events.iter().any(|event| matches!(
+                                event,
+                                TimelineEvent::DeferralStarted { .. }
+                                    | TimelineEvent::DeferralFinished { .. }
+                            )) {
+                                notify_runtime_changed();
+                            }
                             pending.clear();
                             last_success_at = now;
                             coverage_gap = None;
@@ -397,6 +437,17 @@ async fn run_recorder(
         .write_timeline_batch(&session_id, &events, dropped_total, &now, true)
         .await
         .is_ok();
+    if persisted {
+        notify_timeline_changed();
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                TimelineEvent::DeferralStarted { .. } | TimelineEvent::DeferralFinished { .. }
+            )
+        }) {
+            notify_runtime_changed();
+        }
+    }
     if persisted && let Err(error) = store.finish_timeline_session(&session_id, &now).await {
         tracing::warn!(%error, "task timeline session close could not be persisted");
     }

@@ -2720,6 +2720,7 @@ export interface TaskTimelinePage {
   coverage: TaskTimelineCoverage[];
   nextCursor?: string | null;
   resetRequired: boolean;
+  replace?: boolean;
 }
 
 export interface ManagedTaskProgress {

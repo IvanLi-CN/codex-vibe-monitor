@@ -183,6 +183,7 @@ impl TaskExecutionObservation {
         {
             execution.phase = phase.to_string();
         }
+        crate::task_timeline::notify_runtime_changed();
     }
 
     pub(crate) fn set_child(&self, task_key: &str, title: &str) {

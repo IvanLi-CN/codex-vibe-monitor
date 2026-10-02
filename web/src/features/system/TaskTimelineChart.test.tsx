@@ -36,15 +36,65 @@ const segment = (id: string, startMs: number, endMs: number): TaskTimelineSegmen
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
-let scrollWidthDescriptor: PropertyDescriptor | undefined;
-let clientWidthDescriptor: PropertyDescriptor | undefined;
+let resizeObserverDescriptor: PropertyDescriptor | undefined;
+let observedChartWidth = 1_200;
+
+class ChartResizeObserverMock {
+  static readonly instances = new Set<ChartResizeObserverMock>();
+
+  private readonly callback: ResizeObserverCallback;
+  private readonly targets = new Set<Element>();
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ChartResizeObserverMock.instances.add(this);
+  }
+
+  observe(target: Element) {
+    this.targets.add(target);
+    this.notify(target, observedChartWidth);
+  }
+
+  disconnect() {
+    this.targets.clear();
+    ChartResizeObserverMock.instances.delete(this);
+  }
+
+  private notify(target: Element, width: number) {
+    this.callback(
+      [
+        {
+          target,
+          contentRect: { width } as DOMRectReadOnly,
+        } as ResizeObserverEntry,
+      ],
+      this as unknown as ResizeObserver,
+    );
+  }
+
+  static resize(width: number) {
+    observedChartWidth = width;
+    for (const observer of ChartResizeObserverMock.instances) {
+      for (const target of observer.targets) observer.notify(target, width);
+    }
+  }
+}
 
 function renderChart(props: {
   nowMs: number;
   executions?: TaskTimelineSegment[];
   activeRuns?: CurrentTaskExecution[];
-  runtimeReceivedAt?: number;
+  runtimeFresh?: boolean;
+  runtimeBoundaryMs?: number;
+  chartWidth?: number;
 }) {
+  observedChartWidth = props.chartWidth ?? 1_200;
+  resizeObserverDescriptor ??= Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: ChartResizeObserverMock,
+  });
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -58,8 +108,9 @@ function renderChart(props: {
             activeRuns={props.activeRuns ?? []}
             coverage={[]}
             nowMs={nowMs}
+            runtimeFresh={props.runtimeFresh ?? true}
+            runtimeBoundaryMs={props.runtimeBoundaryMs ?? nowMs}
             runtimeObservedAt={new Date(nowMs).toISOString()}
-            runtimeReceivedAt={props.runtimeReceivedAt ?? performance.now()}
           />
         </MemoryRouter>,
       ),
@@ -71,40 +122,83 @@ function renderChart(props: {
 afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
-  if (scrollWidthDescriptor) {
-    Object.defineProperty(HTMLElement.prototype, "scrollWidth", scrollWidthDescriptor);
+  if (resizeObserverDescriptor) {
+    Object.defineProperty(globalThis, "ResizeObserver", resizeObserverDescriptor);
   } else {
-    Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+    Reflect.deleteProperty(globalThis, "ResizeObserver");
   }
-  if (clientWidthDescriptor) {
-    Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidthDescriptor);
-  } else {
-    Reflect.deleteProperty(HTMLElement.prototype, "clientWidth");
-  }
-  scrollWidthDescriptor = undefined;
-  clientWidthDescriptor = undefined;
+  resizeObserverDescriptor = undefined;
+  observedChartWidth = 1_200;
   host = null;
   root = null;
 });
 
 describe("TaskTimelineChart", () => {
-  it("opens the timeline at the newest end on narrow screens", () => {
-    scrollWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth");
-    clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
-    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
-      configurable: true,
-      get: () => 1_200,
-    });
-    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
-      configurable: true,
-      get: () => 393,
+  it("fits the timeline into a narrow container without a horizontal scroller", () => {
+    renderChart({ nowMs: Date.parse("2026-10-02T00:00:00.000Z"), chartWidth: 249 });
+    const container = host?.querySelector<HTMLDivElement>("[data-testid='task-timeline-viewport']");
+    const grid = container?.parentElement;
+    const rowLabels = host?.querySelector<HTMLDivElement>(
+      "[data-testid='task-timeline-row-labels']",
+    );
+    const svg = container?.querySelector("svg");
+    const ticks = Array.from(svg?.querySelectorAll(":scope > g > text") ?? []);
+
+    expect(container?.className).not.toContain("overflow-x-auto");
+    expect(grid?.className).toContain("grid-cols-1");
+    expect(rowLabels?.className).toContain("sr-only");
+    expect(svg?.getAttribute("width")).toBe("249");
+    expect(svg?.getAttribute("viewBox")?.startsWith("0 0 249 ")).toBe(true);
+    expect(ticks).toHaveLength(3);
+    const labelStarts = ticks.map((tick) => Number(tick.getAttribute("x")));
+    expect(labelStarts[0]).toBeGreaterThanOrEqual(0);
+    expect(labelStarts[1] - labelStarts[0]).toBeGreaterThanOrEqual(70);
+    expect(labelStarts[2] - labelStarts[1]).toBeGreaterThanOrEqual(70);
+    expect(labelStarts[2] + 70).toBeLessThanOrEqual(249);
+
+    act(() => ChartResizeObserverMock.resize(190));
+    expect(svg?.getAttribute("width")).toBe("190");
+    expect(svg?.querySelectorAll(":scope > g > text")).toHaveLength(2);
+    expect(
+      Array.from(svg?.querySelectorAll(":scope > g > text") ?? []).map((tick) =>
+        Number(tick.getAttribute("x")),
+      ),
+    ).toEqual([4, 120]);
+  });
+
+  it("shows a rolling 12-hour window with three-hour axis ticks", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    renderChart({
+      nowMs,
+      executions: [
+        segment("outside-window", nowMs - 13 * 3_600_000, nowMs - 12.5 * 3_600_000),
+        segment("inside-window", nowMs - 11 * 3_600_000, nowMs - 10 * 3_600_000),
+      ],
     });
 
-    renderChart({ nowMs: Date.parse("2026-10-02T00:00:00.000Z") });
-    const scroller = host?.querySelector<HTMLDivElement>(
-      "[data-testid='task-timeline-scroll-container']",
+    const svg = host?.querySelector("svg");
+    const ticks = Array.from(svg?.querySelectorAll(":scope > g > text") ?? []);
+    const tickPositions = ticks.map((tick) =>
+      Number(tick.parentElement?.querySelector("line")?.getAttribute("x1")),
     );
-    expect(scroller?.scrollLeft).toBe(807);
+    const bars = Array.from(host?.querySelectorAll<SVGGElement>('g[role="button"]') ?? []);
+
+    expect(tickPositions).toEqual([0, 300, 600, 900, 1200]);
+    expect(bars).toHaveLength(1);
+    expect(bars[0].getAttribute("aria-label")).toContain("数据保留与归档");
+    expect(Number(bars[0].querySelector("rect")?.getAttribute("x"))).toBeCloseTo(100);
+  });
+
+  it("renders the advancing local clock as a visible chart value", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const { render } = renderChart({ nowMs });
+    expect(host?.querySelector('[data-testid="task-timeline-now"]')?.textContent).toContain(
+      "10/02 08:00:00",
+    );
+    render(nowMs + 1_000);
+    expect(host?.querySelector('[data-testid="task-timeline-now"]')?.textContent).toContain(
+      "10/02 08:00:01",
+    );
   });
 
   it("allocates separate lanes to overlapping executions and uses the saved task color", () => {
@@ -187,7 +281,8 @@ describe("TaskTimelineChart", () => {
     renderChart({
       nowMs,
       activeRuns: [activeRun],
-      runtimeReceivedAt: performance.now() - 7_000,
+      runtimeFresh: false,
+      runtimeBoundaryMs: nowMs - 1_000,
     });
     const bar = host?.querySelector<SVGGElement>('g[role="button"]');
     expect(bar?.getAttribute("aria-label")).toContain("结果：未知");
@@ -210,7 +305,7 @@ describe("TaskTimelineChart", () => {
       revision: 2,
     };
     renderChart({ nowMs, executions: [gap] });
-    expect(host?.querySelector("svg title")?.textContent).toContain("最近 24 小时");
+    expect(host?.querySelector("svg title")?.textContent).toContain("最近 12 小时");
     expect(
       Array.from(host?.querySelectorAll("svg rect title") ?? []).map((item) => item.textContent),
     ).toContain("maintenance_store_write_unavailable");

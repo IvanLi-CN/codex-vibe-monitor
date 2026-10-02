@@ -1149,6 +1149,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             let Some((run_id, task_key, requested_at, trigger_kind)) = claim else {
                 continue;
             };
+            crate::task_timeline::notify_runtime_changed();
             let Some(_execution_lease) =
                 crate::maintenance_store::try_acquire_task_execution(&task_key)
             else {

@@ -135,8 +135,9 @@ const baseArgs = {
   activeRuns: [activeRun],
   coverage,
   nowMs: NOW,
+  runtimeFresh: true,
+  runtimeBoundaryMs: NOW,
   runtimeObservedAt: new Date(NOW).toISOString(),
-  runtimeReceivedAt: performance.now(),
 };
 
 function withTheme(theme: "vibe-light" | "vibe-dark") {
@@ -223,7 +224,8 @@ export const ObservationGap: Story = {
     executions: [],
     activeRuns: [],
     coverage: [],
-    runtimeReceivedAt: null,
+    runtimeFresh: false,
+    runtimeBoundaryMs: NOW,
   },
 };
 

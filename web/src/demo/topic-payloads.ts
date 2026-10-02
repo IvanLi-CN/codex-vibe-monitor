@@ -1,3 +1,4 @@
+import type { TaskRuntimeSnapshot, TaskTimelinePage } from "../lib/api";
 import type { SubscriptionTopicDescriptor } from "../lib/sse";
 import { handleDemoRequest } from "./handlers";
 
@@ -63,6 +64,16 @@ export async function resolveDemoTopicPayload(
     return search;
   };
   switch (descriptor.topic) {
+    case "system.managed-tasks.runtime":
+      return requestTopicPayload(
+        requestUrl,
+        "/api/system/managed-tasks/runtime",
+      ) as Promise<TaskRuntimeSnapshot>;
+    case "system.managed-tasks.timeline":
+      return requestTopicPayload(
+        requestUrl,
+        "/api/system/managed-tasks/timeline",
+      ) as Promise<TaskTimelinePage>;
     case "stats.summary.current": {
       const search = topicSearchParams(descriptor);
       return requestTopicPayload(requestUrl, `/api/stats?${search.toString()}`);

@@ -1,26 +1,27 @@
-import { type JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type JSX, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { SelectField } from "../../components/ui/select-field";
 import { ListBodyState } from "../../features/shared/ListBodyState";
 import { managedTaskColor } from "../../features/system/managedTaskColor";
 import { TaskTimelineChart } from "../../features/system/TaskTimelineChart";
+import useSseStatus from "../../hooks/useSseStatus";
+import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
   type CurrentTaskExecution,
-  fetchManagedTaskRuntime,
   fetchManagedTasks,
-  fetchManagedTaskTimeline,
   type ManagedTask,
   type TaskAdmissionWait,
   type TaskRuntimeSnapshot,
   type TaskTimelineCoverage,
+  type TaskTimelinePage,
   type TaskTimelineSegment,
 } from "../../lib/api";
+import { requestImmediateReconnect } from "../../lib/sse";
 import { managedTaskExecutionClassLabel, managedTaskTriggerLabel } from "./taskLabels";
 
 type EnabledFilter = "all" | "enabled" | "disabled";
 const triggerOptions = ["manual", "interval", "cron", "event", "startup", "adaptive"] as const;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const FRESHNESS_LIMIT_MS = 6_000;
 
 function formatElapsed(ms: number): string {
@@ -60,9 +61,9 @@ function useDarkColorMode(): boolean {
   );
 }
 
-function getElapsed(baseMs: number, receivedAt: number | null): number {
-  if (receivedAt == null || performance.now() - receivedAt > FRESHNESS_LIMIT_MS) return baseMs;
-  return baseMs + Math.max(0, performance.now() - receivedAt);
+function getElapsed(baseMs: number, receivedAt: number | null, advancesUntil: number): number {
+  if (receivedAt == null) return baseMs;
+  return baseMs + Math.max(0, Math.min(performance.now(), advancesUntil) - receivedAt);
 }
 
 function TaskDot({ task, dark }: { task: ManagedTask | undefined; dark: boolean }): JSX.Element {
@@ -140,8 +141,7 @@ function WaitingTask({
   dark,
   kind,
   waitingStartedAt,
-  waitingMs,
-  receivedAt,
+  elapsed,
   detail,
 }: {
   title: string;
@@ -150,8 +150,7 @@ function WaitingTask({
   dark: boolean;
   kind: "queue" | "admission";
   waitingStartedAt: string | null | undefined;
-  waitingMs: number;
-  receivedAt: number | null;
+  elapsed: number;
   detail: string;
 }): JSX.Element {
   return (
@@ -178,9 +177,7 @@ function WaitingTask({
       </div>
       <div className="text-sm sm:flex sm:items-center sm:justify-end sm:gap-2">
         <div className="text-xs text-base-content/55">等待时长</div>
-        <div className="mt-1 font-mono tabular-nums sm:mt-0">
-          {formatElapsed(getElapsed(waitingMs, receivedAt))}
-        </div>
+        <div className="mt-1 font-mono tabular-nums sm:mt-0">{formatElapsed(elapsed)}</div>
       </div>
     </div>
   );
@@ -198,130 +195,110 @@ function admissionReason(wait: TaskAdmissionWait): string {
 
 export default function SystemTasksPage(): JSX.Element {
   const [tasks, setTasks] = useState<ManagedTask[]>([]);
-  const [runtime, setRuntime] = useState<TaskRuntimeSnapshot | null>(null);
-  const [runtimeReceivedAt, setRuntimeReceivedAt] = useState<number | null>(null);
-  const [lastRuntimeObservedAt, setLastRuntimeObservedAt] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<TaskTimelineSegment[]>([]);
   const [coverage, setCoverage] = useState<TaskTimelineCoverage[]>([]);
-  const [timelineReceivedAt, setTimelineReceivedAt] = useState<number | null>(null);
-  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const [runtimeReceivedAt, setRuntimeReceivedAt] = useState<number | null>(null);
+  const [lastRuntimeObservedAt, setLastRuntimeObservedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
   const [selectedTriggers, setSelectedTriggers] = useState<Set<string>>(
     () => new Set(triggerOptions),
   );
-  const inFlight = useRef(false);
-  const timelineRevision = useRef<number | null>(null);
-
-  const loadTimeline = useCallback(async () => {
-    let firstPage = await fetchManagedTaskTimeline(
-      timelineRevision.current == null ? {} : { afterRevision: timelineRevision.current },
-    );
-    let replace = timelineRevision.current == null;
-    if (firstPage.resetRequired) {
-      firstPage = await fetchManagedTaskTimeline();
-      replace = true;
-    }
-    const pages = [firstPage];
-    let cursor = firstPage.nextCursor;
-    while (cursor) {
-      const page = await fetchManagedTaskTimeline({ cursor });
-      pages.push(page);
-      cursor = page.nextCursor;
-    }
-    timelineRevision.current = firstPage.watermark;
-    return { pages, replace };
-  }, []);
-
-  const refresh = useCallback(
-    async (includeCatalog = false) => {
-      if (inFlight.current) return;
-      inFlight.current = true;
-      const catalogPromise = includeCatalog ? fetchManagedTasks() : Promise.resolve(undefined);
-      try {
-        const [catalogResult, runtimeResult, timelineResult] = await Promise.allSettled([
-          catalogPromise,
-          fetchManagedTaskRuntime(),
-          loadTimeline(),
-        ]);
-        if (catalogResult.status === "fulfilled" && catalogResult.value) {
-          setTasks(catalogResult.value);
-          setError(null);
-        } else if (catalogResult.status === "rejected") {
-          const message =
-            catalogResult.reason instanceof Error
-              ? catalogResult.reason.message
-              : String(catalogResult.reason);
-          setError(message);
-        }
-        if (runtimeResult.status === "fulfilled") {
-          setRuntime(runtimeResult.value);
-          setLastRuntimeObservedAt(runtimeResult.value.observedAt);
-          setRuntimeReceivedAt(performance.now());
-          setRuntimeError(null);
-        } else {
-          const message =
-            runtimeResult.reason instanceof Error
-              ? runtimeResult.reason.message
-              : String(runtimeResult.reason);
-          setRuntimeError(message);
-        }
-        if (timelineResult.status === "fulfilled") {
-          const { pages, replace } = timelineResult.value;
-          const received = pages.at(-1);
-          const incoming = pages.flatMap((page) => page.segments);
-          const retainFrom = Date.now() - DAY_MS;
-          setTimeline((current) => {
-            const merged = new Map<string, TaskTimelineSegment>();
-            if (!replace) {
-              for (const segment of current) {
-                const end = Date.parse(segment.finishedAt ?? segment.lastObservedAt);
-                if (!Number.isFinite(end) || end >= retainFrom)
-                  merged.set(segment.segmentId, segment);
-              }
-            }
-            for (const segment of incoming) merged.set(segment.segmentId, segment);
-            return [...merged.values()];
-          });
-          if (received) {
-            setCoverage(received.coverage);
-            setTimelineReceivedAt(performance.now());
-            setTimelineError(null);
-          }
-        } else {
-          const message =
-            timelineResult.reason instanceof Error
-              ? timelineResult.reason.message
-              : String(timelineResult.reason);
-          setTimelineError(message);
-        }
-      } finally {
-        setLoading(false);
-        inFlight.current = false;
-      }
-    },
-    [loadTimeline],
-  );
+  const runtimeTopic = useSubscriptionTopic<TaskRuntimeSnapshot>({
+    topic: "system.managed-tasks.runtime",
+  });
+  const timelineTopic = useSubscriptionTopic<TaskTimelinePage>({
+    topic: "system.managed-tasks.timeline",
+  });
+  const runtime = runtimeTopic.data;
+  const sseStatus = useSseStatus();
+  const connectionLostAt = useRef<number | null>(null);
+  const timelineWatermark = useRef<number | null>(null);
 
   useEffect(() => {
-    void refresh(true);
+    if (runtime) {
+      setRuntimeReceivedAt(performance.now());
+      setLastRuntimeObservedAt(runtime.observedAt);
+    }
+  }, [runtime]);
+
+  useEffect(() => {
+    const page = timelineTopic.data;
+    if (!page) return;
+    if (page.replace === false && timelineWatermark.current == null) {
+      timelineTopic.refresh();
+      return;
+    }
+    const currentWatermark = timelineWatermark.current;
+    if (currentWatermark != null && page.watermark < currentWatermark) return;
+    const replace = page.replace !== false || currentWatermark == null;
+    timelineWatermark.current = page.watermark;
+    setCoverage(page.coverage);
+    setTimeline((current) => {
+      const merged = new Map<string, TaskTimelineSegment>();
+      if (!replace) {
+        for (const segment of current) {
+          const end = Date.parse(segment.finishedAt ?? segment.lastObservedAt);
+          if (!Number.isFinite(end) || end >= Date.parse(page.windowStart)) {
+            merged.set(segment.segmentId, segment);
+          }
+        }
+      }
+      for (const segment of page.segments) {
+        const existing = merged.get(segment.segmentId);
+        if (!existing || segment.revision >= existing.revision) {
+          merged.set(segment.segmentId, segment);
+        }
+      }
+      return [...merged.values()];
+    });
+  }, [timelineTopic.data, timelineTopic.refresh]);
+
+  useEffect(() => {
+    if (sseStatus.phase === "connected") {
+      connectionLostAt.current = null;
+    } else if (sseStatus.phase !== "idle" && connectionLostAt.current == null) {
+      connectionLostAt.current = performance.now() - sseStatus.downtimeMs;
+    }
+  }, [sseStatus.phase, sseStatus.downtimeMs]);
+
+  useEffect(() => {
+    let active = true;
+    void fetchManagedTasks()
+      .then((catalog) => {
+        if (active) {
+          setTasks(catalog);
+          setError(null);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void refresh(true);
+      if (document.visibilityState === "visible") {
+        void fetchManagedTasks()
+          .then(setTasks)
+          .catch((reason: unknown) =>
+            setError(reason instanceof Error ? reason.message : String(reason)),
+          );
+        runtimeTopic.refresh();
+        timelineTopic.refresh();
+      }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    const refreshTimer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh(false);
-    }, 2000);
     const clockTimer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => {
+      active = false;
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.clearInterval(refreshTimer);
       window.clearInterval(clockTimer);
     };
-  }, [refresh]);
+  }, [runtimeTopic.refresh, timelineTopic.refresh]);
 
   const taskByKey = useMemo(() => new Map(tasks.map((task) => [task.taskKey, task])), [tasks]);
   const filteredTasks = useMemo(
@@ -337,9 +314,21 @@ export default function SystemTasksPage(): JSX.Element {
     [enabledFilter, selectedTriggers, tasks],
   );
   const dark = useDarkColorMode();
-  const runtimeAge =
-    runtimeReceivedAt == null ? Number.POSITIVE_INFINITY : performance.now() - runtimeReceivedAt;
-  const runtimeFresh = runtimeAge <= FRESHNESS_LIMIT_MS;
+  const disconnectedAt =
+    sseStatus.phase === "connected"
+      ? null
+      : (connectionLostAt.current ?? performance.now() - sseStatus.downtimeMs);
+  const runtimeAdvanceUntil =
+    disconnectedAt == null ? Number.POSITIVE_INFINITY : disconnectedAt + FRESHNESS_LIMIT_MS;
+  const runtimeFresh =
+    runtime != null &&
+    runtimeReceivedAt != null &&
+    sseStatus.phase !== "idle" &&
+    performance.now() <= runtimeAdvanceUntil;
+  const runtimeBoundaryMs =
+    disconnectedAt == null
+      ? now
+      : Math.min(now, now - Math.max(0, performance.now() - runtimeAdvanceUntil));
   const visibleRuns = runtime?.activeRuns ?? [];
   const queue = runtime?.queuedRuns ?? [];
   const admissionWaits = runtime?.admissionWaits ?? [];
@@ -385,7 +374,45 @@ export default function SystemTasksPage(): JSX.Element {
                   : "观测未知"}
             </span>
           </div>
-          {runtimeError ? <Alert variant="warning">实时运行观测未知：{runtimeError}</Alert> : null}
+          {sseStatus.phase === "connecting" ? (
+            <div
+              className="border-b border-info/25 bg-info/10 px-3 py-2 text-sm text-info"
+              role="status"
+            >
+              实时数据连接中，正在等待服务端快照。
+            </div>
+          ) : null}
+          {sseStatus.phase === "reconnecting" ? (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 border-b border-warning/30 bg-warning/10 px-3 py-2 text-sm"
+              role="alert"
+            >
+              <span>实时数据断开，正在重连 · 已中断 {formatElapsed(sseStatus.downtimeMs)}</span>
+              {sseStatus.nextRetryAt != null ? (
+                <span className="text-xs text-base-content/65">
+                  下次尝试 {formatUtc(new Date(sseStatus.nextRetryAt).toISOString())}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          {sseStatus.phase === "disabled" ? (
+            <div
+              className="flex flex-wrap items-center justify-between gap-2 border-b border-error/30 bg-error/10 px-3 py-2 text-sm"
+              role="alert"
+            >
+              <span>实时数据连接已停止，当前状态未知。</span>
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={requestImmediateReconnect}
+                type="button"
+              >
+                重新连接
+              </button>
+            </div>
+          ) : null}
+          {runtimeTopic.error ? (
+            <Alert variant="warning">实时运行观测未知：{runtimeTopic.error}</Alert>
+          ) : null}
           <section aria-labelledby="running-tasks-heading">
             <h4
               id="running-tasks-heading"
@@ -403,7 +430,7 @@ export default function SystemTasksPage(): JSX.Element {
                   run={run}
                   task={taskByKey.get(run.taskKey)}
                   dark={dark}
-                  elapsed={getElapsed(run.elapsedMs, runtimeReceivedAt)}
+                  elapsed={getElapsed(run.elapsedMs, runtimeReceivedAt, runtimeAdvanceUntil)}
                   stale={!runtimeFresh}
                 />
               ))
@@ -443,8 +470,7 @@ export default function SystemTasksPage(): JSX.Element {
                   dark={dark}
                   kind="queue"
                   waitingStartedAt={run.requestedAt}
-                  waitingMs={run.waitingMs}
-                  receivedAt={runtimeReceivedAt}
+                  elapsed={getElapsed(run.waitingMs, runtimeReceivedAt, runtimeAdvanceUntil)}
                   detail={`第 ${run.position} 位 · ${managedTaskTriggerLabel({ triggerMode: run.triggerKind, isManual: run.triggerKind === "manual", cronExpr: null })}`}
                 />
               ))
@@ -480,8 +506,7 @@ export default function SystemTasksPage(): JSX.Element {
                   dark={dark}
                   kind="admission"
                   waitingStartedAt={wait.startedAt}
-                  waitingMs={wait.waitingMs}
-                  receivedAt={runtimeReceivedAt}
+                  elapsed={getElapsed(wait.waitingMs, runtimeReceivedAt, runtimeAdvanceUntil)}
                   detail={admissionReason(wait)}
                 />
               ))
@@ -499,14 +524,15 @@ export default function SystemTasksPage(): JSX.Element {
           activeRuns={visibleRuns}
           coverage={coverage}
           nowMs={now}
+          runtimeFresh={runtimeFresh}
+          runtimeBoundaryMs={runtimeBoundaryMs}
           runtimeObservedAt={runtime?.observedAt ?? lastRuntimeObservedAt}
-          runtimeReceivedAt={runtimeReceivedAt}
         />
-        {timelineError ? (
+        {timelineTopic.error ? (
           <Alert variant="warning">
-            时间线增量暂不可用，显示最后一次确认的区间：{timelineError}
+            时间线实时数据暂不可用，显示最后一次确认的区间：{timelineTopic.error}
           </Alert>
-        ) : timelineReceivedAt == null && !loading ? (
+        ) : timelineTopic.lastReceivedAt == null && !loading && !timelineTopic.isLoading ? (
           <Alert variant="warning">尚无可用的时间线记录，当前区间会以观测缺口呈现。</Alert>
         ) : null}
 

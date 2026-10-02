@@ -8,12 +8,14 @@ import type {
 } from "../../lib/api";
 import { managedTaskColor } from "./managedTaskColor";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const CHART_WIDTH = 1200;
+const HOUR_MS = 60 * 60 * 1000;
+const TIMELINE_WINDOW_MS = 12 * HOUR_MS;
+const TIME_AXIS_HOURS = [0, 3, 6, 9, 12];
+const DEFAULT_CHART_WIDTH = 1200;
+const AXIS_LABEL_WIDTH = 70;
 const AXIS_HEIGHT = 34;
 const LANE_HEIGHT = 17;
 const MIN_BAR_WIDTH = 3;
-const ACTIVE_MAX_AGE_MS = 6_000;
 const COVERAGE_HEARTBEAT_MAX_AGE_MS = 60_000;
 
 type ExecutionBar = {
@@ -224,35 +226,51 @@ export function TaskTimelineChart({
   activeRuns,
   coverage,
   nowMs,
+  runtimeFresh,
+  runtimeBoundaryMs,
   runtimeObservedAt,
-  runtimeReceivedAt,
 }: {
   tasks: ManagedTask[];
   executions: TaskTimelineSegment[];
   activeRuns: CurrentTaskExecution[];
   coverage: TaskTimelineCoverage[];
   nowMs: number;
+  runtimeFresh: boolean;
+  runtimeBoundaryMs: number;
   runtimeObservedAt: string | null;
-  runtimeReceivedAt: number | null;
 }): JSX.Element {
   const [selectedExecutions, setSelectedExecutions] = useState<ExecutionBar[] | null>(null);
   const [selectedDeferral, setSelectedDeferral] = useState<TaskTimelineSegment | null>(null);
-  const timelineScrollerRef = useRef<HTMLDivElement>(null);
+  const timelineContainerRef = useRef<HTMLDivElement>(null);
+  const [chartWidth, setChartWidth] = useState(DEFAULT_CHART_WIDTH);
   const dark =
     typeof document !== "undefined" &&
     (document.documentElement.getAttribute("data-color-mode") === "dark" ||
       document.documentElement.getAttribute("data-theme") === "vibe-dark");
-  const windowStart = nowMs - DAY_MS;
-  const runtimeAgeMs =
-    runtimeReceivedAt == null
-      ? Number.POSITIVE_INFINITY
-      : Math.max(0, performance.now() - runtimeReceivedAt);
-  const runtimeFresh = runtimeAgeMs <= ACTIVE_MAX_AGE_MS;
+  const windowStart = nowMs - TIMELINE_WINDOW_MS;
   const taskByKey = useMemo(() => new Map(tasks.map((task) => [task.taskKey, task])), [tasks]);
 
   useEffect(() => {
-    const scroller = timelineScrollerRef.current;
-    if (scroller) scroller.scrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    const container = timelineContainerRef.current;
+    if (!container) return;
+
+    const updateWidth = (width: number) => {
+      if (width > 0) setChartWidth(Math.max(1, Math.floor(width)));
+    };
+    updateWidth(container.getBoundingClientRect().width);
+
+    if (typeof ResizeObserver === "undefined") {
+      const handleResize = () => updateWidth(container.getBoundingClientRect().width);
+      window.addEventListener("resize", handleResize);
+      return () => window.removeEventListener("resize", handleResize);
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries.at(-1);
+      if (entry) updateWidth(entry.contentRect.width);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
   }, []);
 
   const executionBars = useMemo(() => {
@@ -289,6 +307,7 @@ export function TaskTimelineChart({
       });
     }
 
+    const currentUids = new Set(activeRuns.map((run) => run.executionUid));
     const activeUids = new Set(runtimeFresh ? activeRuns.map((run) => run.executionUid) : []);
     const packed = packLanes(
       [...byUid.values()]
@@ -303,7 +322,9 @@ export function TaskTimelineChart({
             ? timestamp(segment.finishedAt, nowMs)
             : isActive
               ? nowMs
-              : timestamp(segment.lastObservedAt, startMs);
+              : currentUids.has(segment.segmentId)
+                ? Math.min(nowMs, runtimeBoundaryMs)
+                : timestamp(segment.lastObservedAt, startMs);
           return {
             segment: displaySegment,
             active: isActive,
@@ -316,7 +337,15 @@ export function TaskTimelineChart({
         .map(({ realStartMs: _realStartMs, ...item }) => item),
     );
     return packed.map((item) => ({ ...item, startMs: Math.max(windowStart, item.startMs) }));
-  }, [activeRuns, executions, nowMs, runtimeFresh, runtimeObservedAt, windowStart]);
+  }, [
+    activeRuns,
+    executions,
+    nowMs,
+    runtimeBoundaryMs,
+    runtimeFresh,
+    runtimeObservedAt,
+    windowStart,
+  ]);
 
   const deferrals = useMemo(
     () => executions.filter((segment) => segment.kind === "deferral"),
@@ -348,7 +377,9 @@ export function TaskTimelineChart({
           ? timestamp(segment.finishedAt, nowMs)
           : active && runtimeFresh
             ? nowMs
-            : timestamp(segment.lastObservedAt, startMs);
+            : active
+              ? Math.min(nowMs, runtimeBoundaryMs)
+              : timestamp(segment.lastObservedAt, startMs);
         return { segment, startMs: Math.max(windowStart, startMs), endMs: Math.min(nowMs, endMs) };
       })
       .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs),
@@ -395,7 +426,9 @@ export function TaskTimelineChart({
   const pressureLaneCount = Math.max(1, ...packedDeferrals.map((item) => item.lane + 1));
   const pressureTop = AXIS_HEIGHT + laneCount * LANE_HEIGHT + 18;
   const chartHeight = pressureTop + pressureLaneCount * 12 + 12;
-  const x = (time: number) => ((time - windowStart) / DAY_MS) * CHART_WIDTH;
+  const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
+  const timeAxisHours =
+    chartWidth < 220 ? [0, 12] : chartWidth < 520 ? [0, 6, 12] : TIME_AXIS_HOURS;
   const executionDensityGroups = new Map<string, DensityGroup>();
   const singleExecutionBars: ExecutionBar[] = [];
   for (const bar of executionBars) {
@@ -443,10 +476,17 @@ export function TaskTimelineChart({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 id="task-timeline-heading" className="text-lg font-semibold">
-            最近 24 小时
+            最近 12 小时
           </h3>
           <p className="text-sm text-base-content/60">执行结果与任务让行记录</p>
         </div>
+        <time
+          className="font-mono text-xs tabular-nums text-base-content/60"
+          data-testid="task-timeline-now"
+          dateTime={new Date(nowMs).toISOString()}
+        >
+          当前时间 {exactTime(nowMs)}
+        </time>
         <ul
           className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/65"
           aria-label="时间图图例"
@@ -503,33 +543,40 @@ export function TaskTimelineChart({
           </li>
         </ul>
       </div>
-      <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-start border-y border-base-300/70">
-        <div className="pt-9 text-xs text-base-content/65">
+      <div className="grid grid-cols-1 items-start border-y border-base-300/70 sm:grid-cols-[6.5rem_minmax(0,1fr)]">
+        <div
+          className="sr-only pt-9 text-xs text-base-content/65 sm:not-sr-only"
+          data-testid="task-timeline-row-labels"
+        >
           <div className="flex h-[var(--task-chart-execution-height)] items-start pt-1">
             任务执行
           </div>
           <div className="mt-[18px] pr-1 leading-tight">准入 / 压力</div>
         </div>
-        <div
-          ref={timelineScrollerRef}
-          className="overflow-x-auto overscroll-x-contain"
-          data-testid="task-timeline-scroll-container"
-        >
+        <div ref={timelineContainerRef} className="min-w-0" data-testid="task-timeline-viewport">
           <svg
-            aria-label="任务执行和任务让行的最近 24 小时时间图"
-            className="block w-full min-w-[760px] text-base-content/55"
+            aria-label="任务执行和任务让行的最近 12 小时时间图"
+            className="block w-full text-base-content/55"
             height={chartHeight}
             role="group"
-            viewBox={`0 0 ${CHART_WIDTH} ${chartHeight}`}
-            width={CHART_WIDTH}
+            viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+            width={chartWidth}
             style={
               { "--task-chart-execution-height": `${laneCount * LANE_HEIGHT}px` } as CSSProperties
             }
           >
-            <title>最近 24 小时任务执行时间图</title>
-            {[0, 6, 12, 18, 24].map((hour) => {
-              const lineX = (hour / 24) * CHART_WIDTH;
-              const labelTime = windowStart + hour * 60 * 60 * 1000;
+            <title>最近 12 小时任务执行时间图</title>
+            {timeAxisHours.map((hour) => {
+              const lineX = (hour / 12) * chartWidth;
+              const labelX =
+                chartWidth < 520
+                  ? hour === 0
+                    ? 4
+                    : hour === 12
+                      ? chartWidth - AXIS_LABEL_WIDTH
+                      : lineX - AXIS_LABEL_WIDTH / 2
+                  : Math.max(4, Math.min(lineX + 4, chartWidth - AXIS_LABEL_WIDTH));
+              const labelTime = windowStart + hour * HOUR_MS;
               return (
                 <g key={hour}>
                   <line
@@ -540,12 +587,7 @@ export function TaskTimelineChart({
                     stroke="currentColor"
                     strokeOpacity="0.14"
                   />
-                  <text
-                    x={Math.min(lineX + 4, CHART_WIDTH - 70)}
-                    y={20}
-                    fill="currentColor"
-                    fontSize="11"
-                  >
+                  <text x={labelX} y={20} fill="currentColor" fontSize="11">
                     {compactTime(labelTime)}
                   </text>
                 </g>
@@ -558,7 +600,7 @@ export function TaskTimelineChart({
               <line
                 key={`lane-${lineY}`}
                 x1={0}
-                x2={CHART_WIDTH}
+                x2={chartWidth}
                 y1={lineY}
                 y2={lineY}
                 stroke="currentColor"
@@ -699,8 +741,8 @@ export function TaskTimelineChart({
               );
             })}
             <line
-              x1={CHART_WIDTH}
-              x2={CHART_WIDTH}
+              x1={chartWidth}
+              x2={chartWidth}
               y1={AXIS_HEIGHT}
               y2={chartHeight - 4}
               stroke="#dc3545"

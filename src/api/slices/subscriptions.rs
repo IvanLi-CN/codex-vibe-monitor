@@ -26,6 +26,7 @@ const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
 const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
 const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
 const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
+const MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT: usize = 10_000;
 const UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -3389,13 +3390,17 @@ impl Serialize for DashboardNetworkRecentPayload<'_> {
 #[derive(Debug, Clone)]
 enum BuiltSubscriptionTopicPayload {
     Json(Value),
+    JsonDelta {
+        event_payload: Value,
+        snapshot_payload: Value,
+    },
     Dashboard(DashboardTopicMaterializer),
 }
 
 impl BuiltSubscriptionTopicPayload {
     fn dashboard_materializer(&self) -> Option<DashboardTopicMaterializer> {
         match self {
-            Self::Json(_) => None,
+            Self::Json(_) | Self::JsonDelta { .. } => None,
             Self::Dashboard(materializer) => Some(materializer.clone()),
         }
     }
@@ -3408,13 +3413,33 @@ impl BuiltSubscriptionTopicPayload {
     ) -> Result<Vec<u8>, ApiError> {
         match self {
             Self::Json(payload) => serde_json::to_vec(payload).map_err(ApiError::from),
+            Self::JsonDelta { event_payload, .. } => {
+                serde_json::to_vec(event_payload).map_err(ApiError::from)
+            }
             Self::Dashboard(materializer) => materializer.serialize(current, network, terminal),
+        }
+    }
+
+    fn serialize_snapshot(
+        &self,
+        current: Option<&DashboardCurrentProjectionSlice>,
+        network: Option<&DashboardNetworkProjectionSlice>,
+        terminal: Option<&DashboardTerminalProjectionSlice>,
+    ) -> Result<Vec<u8>, ApiError> {
+        match self {
+            Self::JsonDelta {
+                snapshot_payload, ..
+            } => serde_json::to_vec(snapshot_payload).map_err(ApiError::from),
+            _ => self.serialize(current, network, terminal),
         }
     }
 
     fn snapshot_payload(&self) -> Value {
         match self {
             Self::Json(payload) => payload.clone(),
+            Self::JsonDelta {
+                snapshot_payload, ..
+            } => snapshot_payload.clone(),
             Self::Dashboard(_) => Value::Null,
         }
     }
@@ -3540,6 +3565,8 @@ pub(crate) struct PreparedTopicFrame {
 enum SubscriptionTopic {
     AppVersion,
     QuotaCurrent,
+    ManagedTaskRuntime,
+    ManagedTaskTimeline,
     DashboardActivityCurrent {
         range: String,
         time_zone: String,
@@ -6133,6 +6160,24 @@ impl SubscriptionHub {
         } else {
             (None, false)
         };
+        let timeline_baseline =
+            if emit_live && matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
+                self.state
+                    .lock()
+                    .await
+                    .topics
+                    .get(&topic_key)
+                    .filter(|cached| !cached.dirty)
+                    .and_then(|cached| {
+                        cached
+                            .snapshot_payload
+                            .get("watermark")
+                            .and_then(Value::as_i64)
+                            .map(|revision| (cached.snapshot_payload.clone(), revision))
+                    })
+            } else {
+                None
+            };
         let (mut built_payload, prompt_cache_build, parallel_work_build) = if is_prompt_cache_topic
         {
             let (payload, build) = self
@@ -6144,6 +6189,21 @@ impl SubscriptionHub {
                 .build_parallel_work_consistent_baseline(state.clone(), &topic)
                 .await?;
             (payload, None, Some(build))
+        } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
+            let after_revision = timeline_baseline.as_ref().map(|(_, revision)| *revision);
+            let event_payload = build_managed_task_timeline_topic_payload(after_revision).await?;
+            let payload = if let Some((previous, _)) = &timeline_baseline {
+                BuiltSubscriptionTopicPayload::JsonDelta {
+                    snapshot_payload: merge_managed_task_timeline_payload(
+                        previous,
+                        &event_payload,
+                    )?,
+                    event_payload,
+                }
+            } else {
+                BuiltSubscriptionTopicPayload::Json(event_payload)
+            };
+            (payload, None, None)
         } else {
             (topic.build_cached_payload(state.clone()).await?, None, None)
         };
@@ -6324,10 +6384,16 @@ impl SubscriptionHub {
                             | WorkingConversationsProjectionUpdate::Unchanged => {}
                         }
                     }
-                    BuiltSubscriptionTopicPayload::Dashboard(_) => {}
+                    BuiltSubscriptionTopicPayload::JsonDelta { .. }
+                    | BuiltSubscriptionTopicPayload::Dashboard(_) => {}
                 }
             }
             let serialized_payload = built_payload.serialize(
+                guard.dashboard_current_slice.as_deref(),
+                guard.dashboard_network_slice.as_deref(),
+                guard.dashboard_terminal_slice.as_deref(),
+            )?;
+            let snapshot_serialized_payload = built_payload.serialize_snapshot(
                 guard.dashboard_current_slice.as_deref(),
                 guard.dashboard_network_slice.as_deref(),
                 guard.dashboard_terminal_slice.as_deref(),
@@ -6336,7 +6402,10 @@ impl SubscriptionHub {
             let current_slice = guard.dashboard_current_slice.clone();
             let network_slice = guard.dashboard_network_slice.clone();
             let terminal_slice = guard.dashboard_terminal_slice.clone();
-            if deferred_working_replay.is_empty()
+            if !matches!(
+                &built_payload,
+                BuiltSubscriptionTopicPayload::JsonDelta { .. }
+            ) && deferred_working_replay.is_empty()
                 && let Some(existing) = guard.topics.get_mut(&topic_key)
             {
                 if existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice()
@@ -6399,7 +6468,19 @@ impl SubscriptionHub {
                 next_cursor,
                 serialized_payload,
             )?);
-            let payload_bytes = frame.payload_bytes.len();
+            let snapshot_frame =
+                if snapshot_serialized_payload.as_slice() == frame.payload_bytes.as_ref() {
+                    frame.clone()
+                } else {
+                    Arc::new(self.serialize_frame(
+                        descriptor.clone(),
+                        topic_key.clone(),
+                        schema_epoch.clone(),
+                        next_cursor,
+                        snapshot_serialized_payload.clone(),
+                    )?)
+                };
+            let payload_bytes = snapshot_serialized_payload.len();
             let dashboard_materializer = refreshed_dashboard_materializer;
             let dashboard_materialized_revision =
                 dashboard_materializer.as_ref().and_then(|materializer| {
@@ -6544,7 +6625,7 @@ impl SubscriptionHub {
                 dashboard_base_revision: next_cursor,
                 dashboard_materialized_revision,
                 snapshot_payload: built_payload.snapshot_payload(),
-                snapshot_frame: frame.clone(),
+                snapshot_frame,
                 snapshot_bytes: payload_bytes,
                 replay_events: guard
                     .topics
@@ -11533,6 +11614,18 @@ pub(crate) async fn topic_sse_stream(
         .iter()
         .map(SubscriptionTopic::from_descriptor)
         .collect::<Result<Vec<_>, _>>()?;
+    let selected_task_topics = selected_topics
+        .iter()
+        .filter(|topic| {
+            matches!(
+                topic,
+                SubscriptionTopic::ManagedTaskRuntime | SubscriptionTopic::ManagedTaskTimeline
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let task_change_receiver =
+        (!selected_task_topics.is_empty()).then(crate::task_timeline::subscribe_changes);
     let selected_topic_keys = selected_topics
         .iter()
         .map(SubscriptionTopic::cache_key)
@@ -11610,12 +11703,39 @@ pub(crate) async fn topic_sse_stream(
     let live_stream = async_stream::stream! {
         let _topic_lease = topic_lease;
         let _server_push_lease = server_push_lease;
+        let mut task_changes = task_change_receiver;
         let mut last_seen = last_seen_by_topic;
         let mut keep_alive = tokio::time::interval(Duration::from_secs(15));
         keep_alive.tick().await;
         loop {
             tokio::select! {
                 _ = keep_alive.tick() => yield Ok::<_, Infallible>(Bytes::from_static(b":\n\n")),
+                changed = next_task_observation_change(&mut task_changes) => match changed {
+                    Ok(change) => {
+                        for topic in selected_task_topics.iter().filter(|topic| {
+                            managed_task_change_matches_topic(change, topic)
+                        }) {
+                            if let Err(error) = dashboard_topology_hub
+                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                                .await
+                            {
+                                warn!(topic = topic.name(), ?error, "managed task SSE topic refresh failed");
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "managed task SSE topic change receiver lagged");
+                        for topic in &selected_task_topics {
+                            if let Err(error) = dashboard_topology_hub
+                                .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                                .await
+                            {
+                                warn!(topic = topic.name(), ?error, "managed task SSE topic recovery failed");
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => task_changes = None,
+                },
                 received = live_receiver.recv() => match received {
                     Ok(dispatch) => {
                         if !selected_topic_keys.contains(&dispatch.frame.topic_key) {
@@ -11690,6 +11810,8 @@ impl SubscriptionTopic {
             }
             Self::AppVersion
             | Self::QuotaCurrent
+            | Self::ManagedTaskRuntime
+            | Self::ManagedTaskTimeline
             | Self::InvocationWindow { .. }
             | Self::InvocationHistoryWindow { .. }
             | Self::InvocationHistoryOverview { .. }
@@ -11781,7 +11903,9 @@ impl SubscriptionTopic {
             | Self::DashboardNetworkRecentCurrent
             | Self::SummaryCurrent { .. }
             | Self::AppVersion
-            | Self::QuotaCurrent => Vec::new(),
+            | Self::QuotaCurrent
+            | Self::ManagedTaskRuntime
+            | Self::ManagedTaskTimeline => Vec::new(),
             Self::PromptCacheWindow { .. } => vec![
                 RuntimeTopicDependency::PromptCacheProjection,
                 RuntimeTopicDependency::PromptCacheWindow,
@@ -11830,6 +11954,8 @@ impl SubscriptionTopic {
         match topic {
             "app.version" => Ok(Self::AppVersion),
             "quota.current" => Ok(Self::QuotaCurrent),
+            "system.managed-tasks.runtime" => Ok(Self::ManagedTaskRuntime),
+            "system.managed-tasks.timeline" => Ok(Self::ManagedTaskTimeline),
             "dashboard.activity.current" => Ok(Self::DashboardActivityCurrent {
                 range: param_or_default(params, "range", "today"),
                 time_zone: param_or_default(params, "timeZone", SUBSCRIPTION_DEFAULT_TIME_ZONE),
@@ -11999,6 +12125,10 @@ impl SubscriptionTopic {
                 params: BTreeMap::new(),
             },
             Self::QuotaCurrent => SubscriptionTopicDescriptor {
+                topic: self.name().to_string(),
+                params: BTreeMap::new(),
+            },
+            Self::ManagedTaskRuntime | Self::ManagedTaskTimeline => SubscriptionTopicDescriptor {
                 topic: self.name().to_string(),
                 params: BTreeMap::new(),
             },
@@ -12264,6 +12394,8 @@ impl SubscriptionTopic {
         match self {
             Self::AppVersion => "app.version",
             Self::QuotaCurrent => "quota.current",
+            Self::ManagedTaskRuntime => "system.managed-tasks.runtime",
+            Self::ManagedTaskTimeline => "system.managed-tasks.timeline",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
             Self::DashboardNetworkTimeseriesWindow { .. } => "dashboard.network-timeseries.window",
             Self::DashboardNetworkRecentCurrent => "dashboard.network-recent.current",
@@ -12295,6 +12427,8 @@ impl SubscriptionTopic {
         match self {
             Self::AppVersion => "app.version/v1".to_string(),
             Self::QuotaCurrent => "quota.current/v1".to_string(),
+            Self::ManagedTaskRuntime => "system.managed-tasks.runtime/v1".to_string(),
+            Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
             Self::DashboardNetworkTimeseriesWindow { .. } => {
                 "dashboard.network-timeseries.window/v1".to_string()
@@ -12362,6 +12496,8 @@ impl SubscriptionTopic {
                     | Self::ForwardProxyLive => true,
                     Self::AppVersion
                     | Self::QuotaCurrent
+                    | Self::ManagedTaskRuntime
+                    | Self::ManagedTaskTimeline
                     | Self::PromptCacheConversationBindingCurrent { .. }
                     | Self::PromptCacheConversationOperationsWindow { .. }
                     | Self::PromptCacheWindow { .. }
@@ -12716,6 +12852,11 @@ impl SubscriptionTopic {
                 let (backend, frontend) = detect_versions(state.config.static_dir.as_deref());
                 Ok(serde_json::to_value(VersionResponse { backend, frontend })?)
             }
+            Self::ManagedTaskRuntime => {
+                let Json(snapshot) = get_managed_task_runtime(State(state)).await?;
+                Ok(serde_json::to_value(snapshot)?)
+            }
+            Self::ManagedTaskTimeline => build_managed_task_timeline_topic_payload(None).await,
             Self::QuotaCurrent => {
                 let Json(snapshot) = latest_quota_snapshot(State(state)).await?;
                 Ok(serde_json::to_value(snapshot)?)
@@ -13030,6 +13171,133 @@ impl SubscriptionTopic {
     }
 }
 
+async fn build_managed_task_timeline_topic_payload(
+    after_revision: Option<i64>,
+) -> Result<Value, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    let window_end = Utc::now();
+    let window_start = window_end - ChronoDuration::hours(12);
+    let from = format_utc_iso_millis(window_start);
+    let to = format_utc_iso_millis(window_end);
+    let mut page = crate::task_timeline::timeline_page(
+        store,
+        None,
+        after_revision,
+        Some(&from),
+        Some(&to),
+        500,
+    )
+    .await
+    .map_err(ApiError::from)?;
+    let mut segments = std::mem::take(&mut page.segments);
+    let mut cursor = page.next_cursor.take();
+    while let Some(next_cursor) = cursor {
+        let next =
+            crate::task_timeline::timeline_page(store, Some(&next_cursor), None, None, None, 500)
+                .await
+                .map_err(ApiError::from)?;
+        if next.reset_required {
+            return Err(ApiError::unavailable(anyhow!(
+                "managed task timeline pagination expired; a fresh snapshot is required"
+            )));
+        }
+        segments.extend(next.segments);
+        cursor = next.next_cursor;
+        if segments.len() > MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT
+            || (segments.len() == MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT && cursor.is_some())
+        {
+            return Err(ApiError::unavailable(anyhow!(
+                "managed task timeline exceeds the bounded SSE snapshot capacity"
+            )));
+        }
+    }
+    page.segments = segments;
+    page.next_cursor = None;
+    let mut payload = serde_json::to_value(page)?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("replace".to_string(), Value::Bool(after_revision.is_none()));
+    }
+    Ok(payload)
+}
+
+fn merge_managed_task_timeline_payload(
+    previous: &Value,
+    update: &Value,
+) -> Result<Value, ApiError> {
+    if update.get("replace").and_then(Value::as_bool) != Some(false) {
+        return Ok(update.clone());
+    }
+    let previous_segments = previous
+        .get("segments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::unavailable(anyhow!("cached task timeline snapshot is invalid"))
+        })?;
+    let update_segments = update
+        .get("segments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::unavailable(anyhow!("task timeline delta is invalid")))?;
+    let window_start = update
+        .get("windowStart")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let window_end = update
+        .get("windowEnd")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let mut by_id = HashMap::<String, Value>::new();
+    for segment in previous_segments.iter().chain(update_segments) {
+        let Some(id) = segment.get("segmentId").and_then(Value::as_str) else {
+            return Err(ApiError::unavailable(anyhow!(
+                "task timeline segment identity is missing"
+            )));
+        };
+        by_id.insert(id.to_string(), segment.clone());
+    }
+    let mut segments = by_id
+        .into_values()
+        .filter(|segment| {
+            let started_at = segment
+                .get("startedAt")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            let ended_at = segment
+                .get("finishedAt")
+                .and_then(Value::as_str)
+                .or_else(|| segment.get("lastObservedAt").and_then(Value::as_str))
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            match (window_start, window_end, started_at, ended_at) {
+                (Some(start), Some(end), Some(segment_start), Some(segment_end)) => {
+                    segment_start <= end && segment_end >= start
+                }
+                _ => true,
+            }
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by(|left, right| {
+        left.get("startedAt")
+            .and_then(Value::as_str)
+            .cmp(&right.get("startedAt").and_then(Value::as_str))
+    });
+    let mut merged = update.clone();
+    let Some(object) = merged.as_object_mut() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "task timeline delta is invalid"
+        )));
+    };
+    object.insert("segments".to_string(), Value::Array(segments));
+    object.insert("replace".to_string(), Value::Bool(true));
+    Ok(merged)
+}
+
 impl RuntimeMutation {
     fn topic_dependencies(&self) -> Vec<RuntimeTopicDependency> {
         match self {
@@ -13099,6 +13367,33 @@ fn decode_resume_query(
             }
         })
         .collect()
+}
+
+async fn next_task_observation_change(
+    receiver: &mut Option<
+        tokio::sync::broadcast::Receiver<crate::task_timeline::TaskObservationChange>,
+    >,
+) -> Result<crate::task_timeline::TaskObservationChange, tokio::sync::broadcast::error::RecvError> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn managed_task_change_matches_topic(
+    change: crate::task_timeline::TaskObservationChange,
+    topic: &SubscriptionTopic,
+) -> bool {
+    matches!(
+        (change, topic),
+        (
+            crate::task_timeline::TaskObservationChange::Runtime,
+            SubscriptionTopic::ManagedTaskRuntime
+        ) | (
+            crate::task_timeline::TaskObservationChange::Timeline,
+            SubscriptionTopic::ManagedTaskTimeline
+        )
+    )
 }
 
 fn decode_query_json<T: DeserializeOwned>(raw: &str, field: &str) -> Result<T, ApiError> {
@@ -20875,6 +21170,121 @@ mod tests {
                     accounts: Vec::new(),
                 }),
             })
+        );
+    }
+
+    #[test]
+    fn managed_task_sse_topics_have_stable_bounded_contracts() {
+        let cases = [
+            (
+                "system.managed-tasks.runtime",
+                "system.managed-tasks.runtime/v1",
+            ),
+            (
+                "system.managed-tasks.timeline",
+                "system.managed-tasks.timeline/v1",
+            ),
+        ];
+        for (name, epoch) in cases {
+            let descriptor = SubscriptionTopicDescriptor {
+                topic: name.to_string(),
+                params: BTreeMap::new(),
+            };
+            let topic = SubscriptionTopic::from_descriptor(&descriptor)
+                .expect("managed task topic should parse");
+            assert_eq!(topic.descriptor(), descriptor);
+            assert_eq!(topic.name(), name);
+            assert_eq!(topic.class(), SubscriptionTopicClass::BoundedColdHydrate);
+            assert_eq!(topic.schema_epoch(), epoch);
+            assert!(topic.runtime_topic_dependencies().is_empty());
+        }
+    }
+
+    #[test]
+    fn managed_task_observation_changes_refresh_only_the_matching_sse_topic() {
+        let runtime = SubscriptionTopic::ManagedTaskRuntime;
+        let timeline = SubscriptionTopic::ManagedTaskTimeline;
+        use crate::task_timeline::TaskObservationChange::{Runtime, Timeline};
+
+        assert!(managed_task_change_matches_topic(Runtime, &runtime));
+        assert!(!managed_task_change_matches_topic(Runtime, &timeline));
+        assert!(!managed_task_change_matches_topic(Timeline, &runtime));
+        assert!(managed_task_change_matches_topic(Timeline, &timeline));
+    }
+
+    #[test]
+    fn managed_task_timeline_sse_delta_preserves_and_replaces_cached_segments() {
+        let previous = json!({
+            "watermark": 2,
+            "windowStart": "2026-10-01T01:00:00.000Z",
+            "windowEnd": "2026-10-01T12:00:00.000Z",
+            "segments": [
+                {
+                    "segmentId": "keep-and-update",
+                    "startedAt": "2026-10-01T02:00:00.000Z",
+                    "finishedAt": "2026-10-01T03:00:00.000Z",
+                    "revision": 1
+                },
+                {
+                    "segmentId": "expired",
+                    "startedAt": "2026-09-30T20:00:00.000Z",
+                    "finishedAt": "2026-09-30T21:00:00.000Z",
+                    "revision": 1
+                }
+            ],
+            "coverage": [{"sessionId": "old-session"}]
+        });
+        let update = json!({
+            "replace": false,
+            "watermark": 4,
+            "windowStart": "2026-10-01T03:00:00.000Z",
+            "windowEnd": "2026-10-01T15:00:00.000Z",
+            "segments": [
+                {
+                    "segmentId": "keep-and-update",
+                    "startedAt": "2026-10-01T02:00:00.000Z",
+                    "finishedAt": "2026-10-01T04:00:00.000Z",
+                    "revision": 3
+                },
+                {
+                    "segmentId": "new-segment",
+                    "startedAt": "2026-10-01T14:00:00.000Z",
+                    "finishedAt": "2026-10-01T14:10:00.000Z",
+                    "revision": 4
+                }
+            ],
+            "coverage": [{"sessionId": "new-session"}]
+        });
+
+        let merged = merge_managed_task_timeline_payload(&previous, &update)
+            .expect("timeline delta should merge into the cached snapshot");
+        let segments = merged
+            .get("segments")
+            .and_then(Value::as_array)
+            .expect("merged segments");
+        assert_eq!(merged.get("replace").and_then(Value::as_bool), Some(true));
+        assert_eq!(merged.get("watermark").and_then(Value::as_i64), Some(4));
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].get("revision").and_then(Value::as_i64), Some(3));
+        assert_eq!(
+            segments[1].get("segmentId").and_then(Value::as_str),
+            Some("new-segment")
+        );
+        assert_eq!(merged["coverage"][0]["sessionId"], "new-session");
+
+        let delta = BuiltSubscriptionTopicPayload::JsonDelta {
+            event_payload: update.clone(),
+            snapshot_payload: merged.clone(),
+        };
+        assert_eq!(
+            delta.serialize(None, None, None).expect("serialize delta"),
+            serde_json::to_vec(&update).expect("encode event delta")
+        );
+        assert_eq!(
+            delta
+                .serialize_snapshot(None, None, None)
+                .expect("serialize full cached snapshot"),
+            serde_json::to_vec(&merged).expect("encode full snapshot")
         );
     }
 

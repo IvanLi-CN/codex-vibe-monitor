@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { expect, userEvent, within } from "storybook/test";
 import { managedTasks as demoManagedTasks } from "../../demo/handlers";
@@ -15,9 +15,11 @@ import type {
   SystemTaskRunsResponse,
   TaskRuntimeSnapshot,
   TaskTimelineCoverage,
+  TaskTimelinePage,
   TaskTimelineSegment,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
+import { getTopicDescriptorKey } from "../../lib/sse";
 import SystemLayout from "../../pages/system/SystemLayout";
 import SystemModelsPage from "../../pages/system/SystemModelsPage";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
@@ -30,6 +32,7 @@ import {
   StorybookPageEnvironment,
   type StorybookRequestHandler,
 } from "../../storybook/storybookPageHelpers";
+import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
 
 function hotTopic(
   state = "healthy",
@@ -788,15 +791,16 @@ const STORYBOOK_TASK_TIMELINE_COVERAGE: TaskTimelineCoverage[] = [
   },
 ];
 
-const STORYBOOK_TASK_TIMELINE = {
+const STORYBOOK_TASK_TIMELINE: TaskTimelinePage = {
   observedAt: new Date(STORYBOOK_TASK_NOW).toISOString(),
-  windowStart: new Date(STORYBOOK_TASK_NOW - 24 * 60 * 60_000).toISOString(),
+  windowStart: new Date(STORYBOOK_TASK_NOW - 12 * 60 * 60_000).toISOString(),
   windowEnd: new Date(STORYBOOK_TASK_NOW).toISOString(),
   watermark: 120,
   segments: STORYBOOK_TASK_TIMELINE_SEGMENTS,
   coverage: STORYBOOK_TASK_TIMELINE_COVERAGE,
   nextCursor: null,
   resetRequired: false,
+  replace: true,
 };
 
 function storybookManagedTaskDetail(
@@ -1399,6 +1403,61 @@ function renderWorkspace(initialEntry: string) {
     <MemoryRouter initialEntries={[initialEntry]}>
       <StorybookSystemWorkspaceRoutes />
     </MemoryRouter>
+  );
+}
+
+function TaskPageSseFixture({
+  children,
+  reconnecting = false,
+}: {
+  children: ReactNode;
+  reconnecting?: boolean;
+}) {
+  useEffect(() => {
+    const snapshotTimer = window.setTimeout(() => {
+      const controller = getStorybookPageSseController();
+      if (!controller) return;
+      for (const [descriptor, schemaEpoch, payload, cursor] of [
+        [
+          { topic: "system.managed-tasks.runtime" },
+          "system.managed-tasks.runtime/v1",
+          STORYBOOK_MANAGED_TASK_RUNTIME,
+          1,
+        ],
+        [
+          { topic: "system.managed-tasks.timeline" },
+          "system.managed-tasks.timeline/v1",
+          STORYBOOK_TASK_TIMELINE,
+          1,
+        ],
+      ] as const) {
+        controller.emit({
+          type: "snapshot",
+          topic: descriptor,
+          topicKey: getTopicDescriptorKey(descriptor),
+          schemaEpoch,
+          payload,
+          cursor,
+        });
+      }
+    }, 100);
+    const disconnectTimer = reconnecting
+      ? window.setTimeout(() => getStorybookPageSseController()?.emitError(), 350)
+      : null;
+    return () => {
+      window.clearTimeout(snapshotTimer);
+      if (disconnectTimer != null) window.clearTimeout(disconnectTimer);
+    };
+  }, [reconnecting]);
+
+  return <>{children}</>;
+}
+
+function renderTaskWorkspace(reconnecting = false) {
+  return (
+    <TaskPageSseFixture reconnecting={reconnecting}>
+      {renderWorkspace("/system/tasks")}
+    </TaskPageSseFixture>
   );
 }
 
@@ -2071,7 +2130,7 @@ export const StatusRawInventoryUnknown: Story = {
 };
 
 export const Tasks: Story = {
-  render: () => renderWorkspace("/system/tasks"),
+  render: () => renderTaskWorkspace(),
   tags: ["test"],
   globals: {
     themeMode: "light",
@@ -2084,12 +2143,12 @@ export const Tasks: Story = {
     await expect(canvas.findByTestId("system-tasks-list")).resolves.toBeVisible();
     await expect(canvas.findByText("正在执行")).resolves.toBeVisible();
     await expect(canvas.findByTestId("task-timeline")).resolves.toBeVisible();
-    await expect(canvas.findByText("最近 24 小时")).resolves.toBeVisible();
+    await expect(canvas.findByText("最近 12 小时")).resolves.toBeVisible();
   },
 };
 
 export const TasksMobile: Story = {
-  render: () => renderWorkspace("/system/tasks"),
+  render: () => renderTaskWorkspace(),
   tags: ["test"],
   globals: {
     themeMode: "light",
@@ -2103,7 +2162,7 @@ export const TasksMobile: Story = {
 };
 
 export const TasksDark: Story = {
-  render: () => renderWorkspace("/system/tasks"),
+  render: () => renderTaskWorkspace(),
   tags: ["test"],
   globals: {
     themeMode: "dark",
@@ -2114,6 +2173,21 @@ export const TasksDark: Story = {
     await expect(canvasElement.ownerDocument.defaultView?.innerWidth).toBe(1440);
     await expect(canvas.findByTestId("task-timeline")).resolves.toBeVisible();
     await expect(canvasElement.ownerDocument.documentElement.dataset.colorMode).toBe("dark");
+  },
+};
+
+export const TasksSseReconnecting: Story = {
+  render: () => renderTaskWorkspace(true),
+  tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "desktop1440", isRotated: false },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText("正在执行")).resolves.toBeVisible();
+    await expect(canvas.findByRole("alert")).resolves.toHaveTextContent("实时数据断开，正在重连");
+    await expect(canvas.findByTestId("task-timeline-now")).resolves.toBeVisible();
   },
 };
 

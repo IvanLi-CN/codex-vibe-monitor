@@ -2260,6 +2260,7 @@ pub(crate) async fn run_managed_task_now(
         .request_run(&task_key)
         .await
         .map_err(ApiError::conflict)?;
+    crate::task_timeline::notify_runtime_changed();
     get_managed_task(State(state), AxumPath(task_key)).await
 }
 

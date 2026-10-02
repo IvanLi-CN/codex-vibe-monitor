@@ -29,6 +29,23 @@ describe("demo topic payloads", () => {
     expect(invocations).toMatchObject({ records: expect.any(Array), total: expect.any(Number) });
   });
 
+  it("provides task runtime and timeline snapshots to the demo SSE topics", async () => {
+    const [runtime, timeline] = await Promise.all([
+      resolveDemoTopicPayload({ topic: "system.managed-tasks.runtime" }, requestUrl),
+      resolveDemoTopicPayload({ topic: "system.managed-tasks.timeline" }, requestUrl),
+    ]);
+
+    expect(runtime).toMatchObject({
+      activeRuns: expect.any(Array),
+      queuedRuns: expect.any(Array),
+      admissionWaits: expect.any(Array),
+    });
+    expect(timeline).toMatchObject({
+      segments: expect.any(Array),
+      coverage: expect.any(Array),
+    });
+  });
+
   it("keeps model routing subscription filters in the demo snapshot", async () => {
     const payload = (await resolveDemoTopicPayload(
       {

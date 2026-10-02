@@ -3,7 +3,7 @@
   "kind": "persistent-state-migration-record",
   "migration": {
     "description": "Add persistent task identity colors and bounded execution, deferral, and observation-coverage intervals to the maintenance SQLite database.",
-    "release_unit_description": "Task operations runtime API, queue and admission snapshots, and the recent-24-hour timeline.",
+    "release_unit_description": "Task operations runtime API, queue and admission snapshots, and the 12-hour timeline view with a 24-hour API query window.",
     "version_impact": "minor"
   },
   "durable_state": {

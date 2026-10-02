@@ -22,6 +22,7 @@ import { DemoTopicEventSource, isDemoTopicEventSourcePath } from "./event-source
 describe("DemoTopicEventSource", () => {
   afterEach(() => {
     vi.useRealTimers();
+    window.history.replaceState({}, "", "/");
     mocks.resolveDemoTopicPayload.mockReset();
     mocks.subscribeToDemoRealtime.mockReset();
   });
@@ -62,6 +63,38 @@ describe("DemoTopicEventSource", () => {
     expect(events).toEqual(["open", "error"]);
     expect(source.readyState).toBe(DemoTopicEventSource.CLOSED);
     expect(mocks.subscribeToDemoRealtime).not.toHaveBeenCalled();
+  });
+
+  it("supports deterministic connecting and post-snapshot disconnect states", async () => {
+    vi.useFakeTimers();
+    mocks.resolveDemoTopicPayload.mockResolvedValue({ backend: "demo" });
+    const encodedTopics = btoa(JSON.stringify([{ topic: "app.version" }]));
+
+    window.history.replaceState({}, "", "/#/system/tasks?demoSse=connecting");
+    const connecting = new DemoTopicEventSource(`/events?attempt=1&topics=${encodedTopics}`);
+    const connectingEvents: string[] = [];
+    connecting.addEventListener("open", () => connectingEvents.push("open"));
+    connecting.addEventListener("error", () => connectingEvents.push("error"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connecting.readyState).toBe(DemoTopicEventSource.CONNECTING);
+    expect(connectingEvents).toEqual([]);
+    connecting.close();
+
+    window.history.replaceState({}, "", "/#/system/tasks?demoSse=disconnect");
+    const disconnected = new DemoTopicEventSource(`/events?attempt=8&topics=${encodedTopics}`);
+    const disconnectedEvents: string[] = [];
+    disconnected.addEventListener("open", () => disconnectedEvents.push("open"));
+    disconnected.addEventListener("message", () => disconnectedEvents.push("snapshot"));
+    disconnected.addEventListener("error", () => disconnectedEvents.push("error"));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(disconnectedEvents).toEqual(["open", "snapshot", "error"]);
+    expect(disconnected.readyState).toBe(DemoTopicEventSource.CLOSED);
+
+    const retry = new DemoTopicEventSource(`/events?attempt=9&topics=${encodedTopics}`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(retry.readyState).toBe(DemoTopicEventSource.CONNECTING);
+    retry.close();
   });
 
   it("limits empty-record revisions to the dashboard activity topic", async () => {

@@ -1,5 +1,6 @@
 import type { SubscriptionTopicDescriptor } from "../lib/sse";
 import { subscribeToDemoRealtime } from "./events";
+import { demoSearchParamsFromLocation } from "./runtime";
 import {
   DEMO_SCHEMA_EPOCH,
   demoTopicDescriptorKey,
@@ -8,6 +9,7 @@ import {
 } from "./topic-payloads";
 
 const DEMO_EVENT_SOURCE_KEY = Symbol.for("codex-vibe-monitor.demo.event-source");
+let demoDisconnectScenarioTriggered = false;
 
 type DemoEventSourceWindow = Window & {
   [DEMO_EVENT_SOURCE_KEY]?: boolean;
@@ -68,6 +70,13 @@ export class DemoTopicEventSource implements EventTarget {
 
   private async connect() {
     if (this.readyState === DemoTopicEventSource.CLOSED) return;
+    const demoSseState = demoSearchParamsFromLocation().get("demoSse");
+    if (
+      demoSseState === "connecting" ||
+      (demoSseState === "disconnect" && demoDisconnectScenarioTriggered)
+    ) {
+      return;
+    }
     const topics = parseDemoRequestedTopics(this.url);
     this.readyState = DemoTopicEventSource.OPEN;
     this.emit("open", new Event("open"));
@@ -87,6 +96,14 @@ export class DemoTopicEventSource implements EventTarget {
           : topics;
       if (changedTopics.length > 0) void this.publish(changedTopics, "live");
     });
+    if (demoSseState === "disconnect") {
+      demoDisconnectScenarioTriggered = true;
+      window.setTimeout(() => {
+        if (this.readyState !== DemoTopicEventSource.OPEN) return;
+        this.close();
+        this.emit("error", new Event("error"));
+      }, 900);
+    }
   }
 
   private async publish(topics: SubscriptionTopicDescriptor[], type: "snapshot" | "live") {
