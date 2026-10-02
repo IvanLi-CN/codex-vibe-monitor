@@ -25,7 +25,8 @@
         "docs/specs/proxy-invocation-identity/IMPLEMENTATION.md",
         "src/maintenance_store.rs",
         "src/maintenance/startup_backfill.rs",
-        "src/prompt_cache_conversations.rs"
+        "src/prompt_cache_conversations.rs",
+        "docs/adr/0027-prompt-cache-materialization-step-boundaries.md"
       ]
     },
     "current": {
@@ -34,7 +35,7 @@
         "detected": false,
         "description": "The candidate remains within prompt-cache materialization control consistency, pause/resume boundaries, and bounded statistics-page continuation. No public request/response fields or SQLite tables/columns are added."
       },
-      "reasoning": "Prompt-cache enablement and its scheduler checkpoint use existing maintenance tables. A one-time origin marker preserves an existing maintenance control; only a newly created managed row may be seeded from the old business-database enable bit. The business value is unchanged, is not read by the run path, and is never synchronized back to the business database. No table or column is added or business row transformed. Existing control and status fields remain stable; unavailable maintenance control is returned through the existing 503 Unavailable error contract. Candidate behavioral verification remains gated on independent-database regressions and Linux service-process replay.",
+      "reasoning": "Prompt-cache enablement and its scheduler checkpoint use existing maintenance tables. A one-time origin marker preserves an existing maintenance control; only a newly created managed row may be seeded from the old business-database enable bit. The business value is unchanged, is not read by the run path, and is never synchronized back to the business database. No table or column is added or business row transformed. Existing control and status fields remain stable; unavailable maintenance control is returned through the existing 503 Unavailable error contract. Independent-database control and paging regressions cover the same injected control core. Linux service-process performance replay remains a separate SHA-bound delivery gate.",
       "reassessed_at": "2026-10-02T00:00:00+08:00",
       "evidence": [
         "src/maintenance_store.rs",
@@ -45,12 +46,14 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "This candidate's control-consistency and Linux service-process acceptance are not recorded as verified until the planned independent-database regressions and current-candidate replay pass.",
-      "verified_at": null,
+      "reasoning": "Both control PATCH routes and status GET retain existing fields and the existing unavailable error contract. Independent-database control, pagination, generation-change/restart, and status regressions passed. An earlier b6829559 service process read a copied partial-materialization database written by 13cb054b, whose table/column structure and record encodings are unchanged by the final step-boundary correction: health and status GET passed, integrity stayed valid, all 4577 invocation rows and 401 conversations remained, and the additive control-origin metadata was preserved. This verifies compatibility; current-candidate performance acceptance is recorded separately in delivery evidence.",
+      "verified_at": "2026-10-03T03:59:03+08:00",
       "evidence": [
-        "Independent business/maintenance database control regressions: pending",
-        "Prompt-cache page continuation and scheduler-generation regressions: pending",
-        "Candidate shared-testbox prompt-cache-control replay: pending"
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/old-reader-http.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/result.json",
+        "src/maintenance_store.rs: existing_maintenance_prompt_cache_control_and_checkpoint_win_over_legacy_state and legacy_only_prompt_cache_control_is_imported_once_into_maintenance",
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs: independent-database control, status, single-traversal paging, and restart regressions",
+        "src/api/slices/system_routes_and_tasks.rs: prompt_cache_control_patch_paths_share_the_injected_maintenance_store"
       ]
     }
   },
@@ -76,8 +79,8 @@
     "member_change_records": [
       "docs/specs/proxy-invocation-identity/assets/version-impact-record.json"
     ],
-      "maximum_verified_impact": "patch",
-      "calculation_evidence": [
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
       "public_api=patch",
       "persistent_state=patch",
       "release unit=max(public_api,persistent_state)=patch"

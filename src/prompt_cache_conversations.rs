@@ -1297,6 +1297,11 @@ async fn prompt_cache_conversation_materialize_key_batch(
     prompt_cache_keys: &[String],
 ) -> Result<PromptCacheMaterializationBatchOutcome> {
     let started_at = Instant::now();
+    let identity_only = matches!(
+        phase,
+        PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL
+            | PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION
+    );
     let mut identities_created = 0;
     let identity_step =
         match prompt_cache_conversation_begin_control_step(control, expected_generation) {
@@ -1332,9 +1337,36 @@ async fn prompt_cache_conversation_materialize_key_batch(
                 }
             }
         }
+        if identity_only && advance_cursor {
+            update_prompt_cache_conversation_migration_progress_on_connection(
+                tx.as_mut(),
+                phase,
+                source_max_invocation_id,
+                prompt_cache_keys.last().map(String::as_str),
+            )
+            .await?;
+            increment_prompt_cache_conversation_completed_keys_on_connection(
+                tx.as_mut(),
+                prompt_cache_keys.len(),
+            )
+            .await?;
+        }
         tx.commit().await?;
     }
     drop(identity_step);
+
+    // Statistics belong to stats_rebuild/queue_drain. Refreshing them during identity
+    // discovery would repeat every bounded page when the statistics phase starts.
+    if identity_only {
+        return Ok(PromptCacheMaterializationBatchOutcome::Complete(
+            PromptCacheMaterializationBatchWork {
+                identities_created,
+                refreshed: 0,
+                scanned: prompt_cache_keys.len(),
+                elapsed: started_at.elapsed(),
+            },
+        ));
+    }
 
     let mut refreshed = 0;
     for prompt_cache_key in prompt_cache_keys {
@@ -2032,7 +2064,7 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
         progress = load_prompt_cache_conversation_migration_progress(pool).await?;
     }
 
-    let remaining_scan_limit = scan_limit as usize;
+    let mut remaining_scan_limit = scan_limit as usize;
     if remaining_scan_limit == 0
         || prompt_cache_conversation_materialization_budget_exhausted(started_at, max_elapsed)
     {
@@ -2055,56 +2087,102 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
         control,
         control_generation,
     };
-    let mut result = match progress.phase.as_str() {
-        PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL => {
-            run_prompt_cache_conversation_adaptive_identity_backfill_page(&mut context, &progress)
-                .await?
-        }
-        PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION => {
-            run_prompt_cache_conversation_adaptive_identity_reconciliation_page(
-                &mut context,
-                &progress,
-            )
-            .await?
-        }
-        PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD => {
-            run_prompt_cache_conversation_adaptive_stats_rebuild_page(&mut context, &progress)
-                .await?
-        }
-        PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN => {
-            run_prompt_cache_conversation_adaptive_queue_drain_page(&mut context, &progress).await?
-        }
-        _ => {
-            if let Err(stop) = update_prompt_cache_conversation_migration_progress_with_control(
-                pool,
-                PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
-                0,
-                None,
-                control,
-                control_generation,
-            )
-            .await?
-            {
-                return Ok(prompt_cache_materialization_control_deferred(
-                    PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
-                    stop,
-                ));
-            }
-            PromptCacheConversationMaterializationRun {
-                phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL.to_string(),
-                updated: 1,
-                hit_scan_limit: true,
-                page_complete: true,
-                ..Default::default()
-            }
-        }
+    let mut result = PromptCacheConversationMaterializationRun {
+        phase: progress.phase.clone(),
+        ..Default::default()
     };
-    if prompt_cache_conversation_materialization_budget_exhausted(started_at, max_elapsed)
-        && !result.complete
-    {
-        result.hit_scan_limit = true;
+    loop {
+        context.page_limit = PROMPT_CACHE_CONVERSATION_BACKFILL_PAGE_SIZE.min(remaining_scan_limit);
+        if prompt_cache_conversation_materialization_budget_exhausted(started_at, max_elapsed) {
+            result.hit_scan_limit = true;
+            result.deferred = true;
+            result.defer_reason = Some("stats_budget_exhausted");
+            return Ok(result);
+        }
+        let chunk = match progress.phase.as_str() {
+            PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL => {
+                run_prompt_cache_conversation_adaptive_identity_backfill_page(
+                    &mut context,
+                    &progress,
+                )
+                .await?
+            }
+            PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_RECONCILIATION => {
+                run_prompt_cache_conversation_adaptive_identity_reconciliation_page(
+                    &mut context,
+                    &progress,
+                )
+                .await?
+            }
+            PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD => {
+                run_prompt_cache_conversation_adaptive_stats_rebuild_page(&mut context, &progress)
+                    .await?
+            }
+            PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN => {
+                run_prompt_cache_conversation_adaptive_queue_drain_page(&mut context, &progress)
+                    .await?
+            }
+            _ => {
+                if let Err(stop) = update_prompt_cache_conversation_migration_progress_with_control(
+                    pool,
+                    PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+                    0,
+                    None,
+                    control,
+                    control_generation,
+                )
+                .await?
+                {
+                    return Ok(prompt_cache_materialization_control_deferred(
+                        PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+                        stop,
+                    ));
+                }
+                PromptCacheConversationMaterializationRun {
+                    phase: PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL.to_string(),
+                    updated: 1,
+                    hit_scan_limit: true,
+                    page_complete: true,
+                    ..Default::default()
+                }
+            }
+        };
+        remaining_scan_limit = remaining_scan_limit
+            .saturating_sub(usize::try_from(chunk.scanned).unwrap_or(usize::MAX));
+        let no_work = chunk.scanned == 0 && chunk.updated == 0;
+        result = PromptCacheConversationMaterializationRun {
+            phase: chunk.phase,
+            scanned: result.scanned.saturating_add(chunk.scanned),
+            updated: result.updated.saturating_add(chunk.updated),
+            hit_scan_limit: chunk.hit_scan_limit,
+            complete: chunk.complete,
+            page_complete: chunk.page_complete,
+            deferred: chunk.deferred,
+            defer_reason: chunk.defer_reason,
+            control_generation_changed: chunk.control_generation_changed,
+            batch_count: result.batch_count.saturating_add(chunk.batch_count),
+            last_batch_size: if chunk.batch_count > 0 {
+                chunk.last_batch_size
+            } else {
+                result.last_batch_size
+            },
+            max_batch_size: result.max_batch_size.max(chunk.max_batch_size),
+            batch_elapsed_ms: result
+                .batch_elapsed_ms
+                .saturating_add(chunk.batch_elapsed_ms),
+        };
+        if result.complete
+            || result.deferred
+            || !result.page_complete
+            || no_work
+            || remaining_scan_limit == 0
+        {
+            return Ok(result);
+        }
+        // Completed pages and empty phase transitions consume the same bounded run
+        // budget. Only unfinished statistics pages need the 15-second follow-up.
+        progress = load_prompt_cache_conversation_migration_progress(pool).await?;
     }
-    Ok(result)
 }
 
 pub(crate) async fn run_prompt_cache_conversations_materialization_with_pressure(

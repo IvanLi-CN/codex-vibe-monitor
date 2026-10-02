@@ -21,7 +21,9 @@
 
 ## Related Changes
 
-- None recorded until delivery creates the signed-off commit and pull request.
+- `8d39f04c`: unified materialization control and typed statistics continuation.
+- `14a3f800`: preserved bounded retry deadlines across same-generation wakeups.
+- [ADR 0027](../../adr/0027-prompt-cache-materialization-step-boundaries.md) records the short identity/statistics steps authorized by the control-consistency repair, including single ownership of large-key statistics scans.
 
 ## References
 

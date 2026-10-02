@@ -195,6 +195,10 @@ def snapshot():
         run_count = business.execute(
             'SELECT COUNT(*) FROM prompt_cache_conversation_materialization_runs'
         ).fetchone()[0]
+        priority_yield_count = business.execute(
+            "SELECT COUNT(*) FROM prompt_cache_conversation_materialization_runs "
+            "WHERE defer_reason='coordinator_priority'"
+        ).fetchone()[0]
         marker = business.execute(
             'SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name=?)',
             (STATS_MARKER,),
@@ -240,6 +244,7 @@ def snapshot():
         'latest_run_scanned': latest[2] if latest else 0,
         'latest_run_updated': latest[3] if latest else 0,
         'materialization_run_count': run_count,
+        'priority_yield_run_count': priority_yield_count,
         'stats_marker': bool(marker),
         'business_legacy_enabled': bool(legacy_enabled),
         'maintenance_enabled': bool(managed_enabled),
@@ -364,7 +369,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
     sampled_seconds = set()
     unexpected_disabled_after_resume = False
     first_state = log_snapshot('input-start', round_index, start)
-    coordinator_priority_observed = first_state.get('latest_defer_reason') == 'coordinator_priority'
+    coordinator_priority_observed = first_state.get('priority_yield_run_count', 0) > 0
     baseline_cursor = (
         first_state.get('phase'),
         first_state.get('outer_cursor'),
@@ -412,7 +417,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
             if second not in sampled_seconds:
                 sampled_seconds.add(second)
                 state = log_snapshot('input', round_index, start)
-                coordinator_priority_observed |= state.get('latest_defer_reason') == 'coordinator_priority'
+                coordinator_priority_observed |= state.get('priority_yield_run_count', 0) > 0
                 cursor = (
                     state.get('phase'),
                     state.get('outer_cursor'),
@@ -715,7 +720,7 @@ def candidate_observe(round_index, duration_seconds):
         'defer_reasons': sorted({state.get('latest_defer_reason') for state in states if state.get('latest_defer_reason')}),
         'coordinator_priority_observed': (
             input_summary.get('coordinator_priority_observed') is True
-            or any(state.get('latest_defer_reason') == 'coordinator_priority' for state in states)
+            or any(state.get('priority_yield_run_count', 0) > 0 for state in states)
         ),
     }
     print(json.dumps(summary, ensure_ascii=False), flush=True)

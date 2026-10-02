@@ -4,6 +4,10 @@
 
 Accepted
 
+The combined identity/statistics transaction and set-based aggregate writeback portions below
+are succeeded by [ADR 0027](0027-prompt-cache-materialization-step-boundaries.md). The adaptive
+identity batch policy, operator control, priority boundaries, and read contract remain active.
+
 ## Context
 
 The background materialization contract from ADR 0021 removed historical scanning from HTTP

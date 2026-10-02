@@ -41,6 +41,7 @@
 - Schema creation and legacy prompt-cache-key backfill MUST be idempotent and separately observable from aggregate statistics refresh.
 - Terminal and derived batch writes MUST persist the invocation, enqueue affected prompt-cache keys, and invalidate aggregate freshness without synchronously scanning retained history. The ordered background materialization task MUST refresh identities and aggregate statistics from the durable queue and advance its cursor only after each committed transaction.
 - A 400-key logical materialization page MAY be split into adaptive 32..400-key micro-batches. Prompt-cache pressure MUST yield only between committed micro-batches; a started micro-batch runs to commit or explicit failure.
+- Identity discovery MUST commit its identity rows, key cursor, and identity-key count together without scanning statistics. Statistics rebuild and queue drain MUST own resumable statistics pages. Completed pages and empty phase transitions MAY continue within the existing run budgets; incomplete statistics retain the bounded follow-up.
 - Aggregate reads MUST use the existing unavailable contract until identity coverage, aggregate freshness, complete migration phase, and an empty durable refresh queue are all satisfied. Retention MUST release masters whose retained invocation rows have been removed without maintaining a permanent released-ID blacklist.
 
 ### REQ-PII-005
@@ -93,6 +94,7 @@
 - [`../../adr/0021-prompt-cache-background-materialization.md`](../../adr/0021-prompt-cache-background-materialization.md)
 - [`../../adr/0022-prompt-cache-adaptive-materialization.md`](../../adr/0022-prompt-cache-adaptive-materialization.md)
 - [`../../adr/0023-task-operations-state-outside-main-database.md`](../../adr/0023-task-operations-state-outside-main-database.md)
+- [`../../adr/0027-prompt-cache-materialization-step-boundaries.md`](../../adr/0027-prompt-cache-materialization-step-boundaries.md)
 
 ## Visual Evidence
 

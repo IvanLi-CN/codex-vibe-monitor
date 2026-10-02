@@ -523,8 +523,9 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
     assert!(status.enabled);
     assert_eq!(status.total_keys, Some(4));
     assert_eq!(status.completed_keys, 4);
-    assert_eq!(status.progress_percent, Some(99.0));
-    assert_eq!(status.estimated_remaining_ms, None);
+    assert!(outcome.complete);
+    assert_eq!(status.progress_percent, Some(100.0));
+    assert_eq!(status.estimated_remaining_ms, Some(0));
     assert_eq!(status.queue_pending, 0);
     assert_eq!(status.recent_runs.len(), 1);
 
@@ -679,6 +680,70 @@ async fn prompt_cache_materialization_uses_maintenance_control_when_legacy_busin
 }
 
 #[tokio::test]
+async fn prompt_cache_materialization_large_key_is_paged_once_across_phases() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory business sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool).await.expect("install schema");
+    let mut transaction = pool.begin().await.expect("begin fixture");
+    for index in 0..1024 {
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,payload,raw_response) \
+             VALUES (?1,'2026-09-01T00:00:00Z',?2,'success',1,?3,'{}')",
+        )
+        .bind(format!("single-scan-{index:04}"))
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": "single-scan-key"}).to_string())
+        .execute(&mut *transaction)
+        .await
+        .expect("insert invocation");
+    }
+    transaction.commit().await.expect("commit fixture");
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = &maintenance.prompt_cache_materialization_control;
+    let generation = control.snapshot().expect("initialized control").generation;
+    let mut pending_pages = 0;
+    let mut complete = false;
+    for _ in 0..20 {
+        let run = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            2000,
+            None,
+            &|| false,
+            control,
+            generation,
+        )
+        .await
+        .expect("run bounded materialization");
+        if run.defer_reason == Some("stats_page_pending") {
+            pending_pages += 1;
+        }
+        if run.complete {
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete, "materialization must converge");
+    assert_eq!(pending_pages, 4, "each 256-row page must be scanned once");
+    let count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations WHERE prompt_cache_key='single-scan-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read complete aggregate");
+    assert_eq!(count, 1024);
+    assert!(
+        prompt_cache_conversation_materialization_is_complete(&pool)
+            .await
+            .expect("check complete markers and queue")
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_materialization_pages_resume_across_generation_change_and_control_restart() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -735,7 +800,9 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
     .await
     .expect("load outer materialization cursor");
     assert_eq!(outer_cursor, None);
-    assert_eq!(completed_keys, 0);
+    // Identity coverage is committed separately; incomplete statistics still leave
+    // the statistics cursor and published aggregate untouched.
+    assert_eq!(completed_keys, 1);
     let staged_cursor: i64 = sqlx::query_scalar(
         "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
          WHERE prompt_cache_key='paged-materialization-key'",
