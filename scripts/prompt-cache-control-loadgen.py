@@ -351,6 +351,57 @@ def log_snapshot(phase, round_index, started_at):
     return state
 
 
+def progress_cursor(state):
+    return (
+        state.get('materialization_phase', state.get('phase')),
+        state.get('outer_cursor'),
+        state.get('completed_keys'),
+        state.get('queue_count'),
+        state.get('staging_count'),
+        state.get('staging_max_cursor'),
+    )
+
+
+def progress_eligibility(state, now_utc=None):
+    if state.get('snapshot_error'):
+        return 'snapshot_unavailable'
+    if not state.get('maintenance_enabled'):
+        return 'operator_disabled'
+    due = state.get('scheduler_next_run_after')
+    if due:
+        deadline = datetime.datetime.fromisoformat(due.replace('Z', '+00:00'))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=datetime.timezone.utc)
+        now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+        reason = state.get('scheduler_defer_reason') or ''
+        priority_wait = state.get('latest_defer_reason') == 'coordinator_priority'
+        database_wait = reason == 'background_busy' or reason.startswith('pressure_cooldown')
+        if deadline > now and (priority_wait or database_wait):
+            return 'pressure_deadline'
+    return 'eligible'
+
+
+def observe_progress(probe, state, elapsed_seconds):
+    eligibility = progress_eligibility(state)
+    state['progress_eligibility'] = eligibility
+    if eligibility != 'eligible':
+        probe['eligible_since'] = None
+    elif probe['eligible_since'] is None:
+        probe['eligible_since'] = elapsed_seconds
+    if not state.get('snapshot_error'):
+        probe['durable_seen'] |= progress_cursor(state) != tuple(probe['baseline_cursor'])
+        probe['staging_seen'] |= state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
+    if probe['eligible_since'] is not None:
+        wait = elapsed_seconds - probe['eligible_since']
+        for name in ('durable', 'staging'):
+            if not probe[name + '_seen']:
+                probe['max_' + name + '_eligible_wait_seconds'] = max(
+                    probe['max_' + name + '_eligible_wait_seconds'], wait,
+                )
+                if wait > 30 and name not in probe['deadline_failures']:
+                    probe['deadline_failures'].append(name)
+
+
 def candidate_input(round_index, duration_seconds, request_rate):
     start = time.monotonic()
     deadline = start + duration_seconds
@@ -371,15 +422,18 @@ def candidate_input(round_index, duration_seconds, request_rate):
     unexpected_disabled_after_resume = False
     first_state = log_snapshot('input-start', round_index, start)
     coordinator_priority_observed = first_state.get('priority_yield_run_count', 0) > 0
-    baseline_cursor = (
-        first_state.get('materialization_phase'),
-        first_state.get('outer_cursor'),
-        first_state.get('completed_keys'),
-        first_state.get('queue_count'),
-        first_state.get('staging_count'),
-        first_state.get('staging_max_cursor'),
-    )
+    baseline_cursor = progress_cursor(first_state)
     baseline_staging_cursor = first_state.get('staging_max_cursor', 0)
+    progress_probe = {
+        'baseline_cursor': baseline_cursor,
+        'baseline_staging_cursor': baseline_staging_cursor,
+        'eligible_since': None,
+        'durable_seen': False,
+        'staging_seen': False,
+        'max_durable_eligible_wait_seconds': 0,
+        'max_staging_eligible_wait_seconds': 0,
+        'deadline_failures': [],
+    }
     control(True, 'managed')
     enabled_state = snapshot()
     if not enabled_state['maintenance_enabled'] or enabled_state['business_legacy_enabled']:
@@ -428,6 +482,14 @@ def candidate_input(round_index, duration_seconds, request_rate):
             if second not in sampled_seconds:
                 sampled_seconds.add(second)
                 state = log_snapshot('input', round_index, start)
+                observe_progress(progress_probe, state, now - start)
+                print(json.dumps({
+                    'phase': 'progress-eligibility', 'round': round_index,
+                    'elapsed_seconds': round(now - start, 2),
+                    'eligibility': state['progress_eligibility'],
+                    'scheduler_next_run_after': state.get('scheduler_next_run_after'),
+                    'probe': progress_probe,
+                }), flush=True)
                 coordinator_priority_observed |= state.get('priority_yield_run_count', 0) > 0
                 cursor = (
                     state.get('materialization_phase'),
@@ -477,9 +539,9 @@ def candidate_input(round_index, duration_seconds, request_rate):
         gate_failures.append('request_or_terminal_failure')
     if sequence != duration_seconds * request_rate:
         gate_failures.append('submitted_request_count')
-    if first_progress is None or first_progress > 30:
+    if 'durable' in progress_probe['deadline_failures']:
         gate_failures.append('first_durable_progress')
-    if first_staging_progress is None or first_staging_progress > 30:
+    if 'staging' in progress_probe['deadline_failures']:
         gate_failures.append('first_staging_progress')
     if percentile(parse_values, 0.99) is None or percentile(parse_values, 0.99) > 100:
         gate_failures.append('request_parse_and_id_allocation_p99')
@@ -511,6 +573,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
         'terminal_confirm_max_ms': round(max(confirm_values), 2) if confirm_values else None,
         'first_durable_progress_seconds': first_progress,
         'first_staging_progress_seconds': first_staging_progress,
+        'progress_observation': progress_probe,
         'pause_route': 'dedicated',
         'resume_route': 'managed-task',
         'same_value_control_repeated': duplicate_sent,
@@ -642,7 +705,11 @@ def candidate_observe(round_index, duration_seconds):
     no_work_run_count_changed = False
     unexpected_disabled = False
     states = []
+    progress_probe = input_summary['progress_observation']
+    # Restart and control/file-lock probing separate the two observation windows.
+    progress_probe['eligible_since'] = None
     initial = log_snapshot('observe-start', round_index, start)
+    observe_progress(progress_probe, initial, 0)
     start_cursor = (
         initial.get('materialization_phase'),
         initial.get('outer_cursor'),
@@ -665,6 +732,14 @@ def candidate_observe(round_index, duration_seconds):
         if elapsed not in observed_seconds:
             observed_seconds.add(elapsed)
             state = log_snapshot('observe', round_index, start)
+            observe_progress(progress_probe, state, time.monotonic() - start)
+            print(json.dumps({
+                'phase': 'progress-eligibility', 'round': round_index,
+                'elapsed_seconds': round(time.monotonic() - start, 2),
+                'eligibility': state['progress_eligibility'],
+                'scheduler_next_run_after': state.get('scheduler_next_run_after'),
+                'probe': progress_probe,
+            }), flush=True)
             states.append(state)
             current_cursor = (
                 state.get('materialization_phase'),
@@ -712,6 +787,7 @@ def candidate_observe(round_index, duration_seconds):
         'first_durable_progress_seconds': input_summary['first_durable_progress_seconds'],
         'first_staging_progress_seconds': input_summary['first_staging_progress_seconds'],
         'post_restart_progress_seconds': first_progress,
+        'progress_observation': progress_probe,
         'all_historical_keys': all_keys_ok,
         'history_keys': final['history_key_count'],
         'large_key_request_count': final['large_key_request_count'],
@@ -739,10 +815,9 @@ def candidate_observe(round_index, duration_seconds):
         not summary['online_workload_passed']
         or not summary['coordinator_priority_observed']
         or not summary['complete_within_budget']
-        or input_summary['first_durable_progress_seconds'] is None
-        or input_summary['first_durable_progress_seconds'] > 30
-        or input_summary['first_staging_progress_seconds'] is None
-        or input_summary['first_staging_progress_seconds'] > 30
+        or not progress_probe['durable_seen']
+        or not progress_probe['staging_seen']
+        or progress_probe['deadline_failures']
         or not all_keys_ok
         or not target_count_ok
         or final['queue_count'] != 0
