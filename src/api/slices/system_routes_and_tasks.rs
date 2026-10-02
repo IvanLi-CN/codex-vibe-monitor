@@ -1899,10 +1899,26 @@ pub(crate) struct PromptCacheMaterializationControlRequest {
 pub(crate) async fn fetch_prompt_cache_materialization_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PromptCacheConversationMaterializationStatus>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    fetch_prompt_cache_materialization_status_with_store(state, store).await
+}
+
+pub(crate) async fn fetch_prompt_cache_materialization_status_with_store(
+    state: Arc<AppState>,
+    store: &crate::maintenance_store::MaintenanceStore,
+) -> Result<Json<PromptCacheConversationMaterializationStatus>, ApiError> {
     Ok(Json(
-        load_prompt_cache_conversation_materialization_status(&state.pool)
-            .await
-            .map_err(ApiError::from)?,
+        load_prompt_cache_conversation_materialization_status(
+            &state.pool,
+            &store.pool,
+            &store.prompt_cache_materialization_control,
+        )
+        .await
+        .map_err(ApiError::unavailable)?,
     ))
 }
 
@@ -1910,14 +1926,28 @@ pub(crate) async fn update_prompt_cache_materialization_control(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PromptCacheMaterializationControlRequest>,
 ) -> Result<Json<PromptCacheConversationMaterializationStatus>, ApiError> {
-    set_startup_backfill_task_enabled(
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    update_prompt_cache_materialization_control_with_store(state, store, payload.enabled).await
+}
+
+pub(crate) async fn update_prompt_cache_materialization_control_with_store(
+    state: Arc<AppState>,
+    store: &crate::maintenance_store::MaintenanceStore,
+    enabled: bool,
+) -> Result<Json<PromptCacheConversationMaterializationStatus>, ApiError> {
+    crate::set_prompt_cache_materialization_enabled_with_store(
         &state.pool,
+        store,
         StartupBackfillTask::PromptCacheConversationsMaterialization,
-        payload.enabled,
+        enabled,
     )
     .await
-    .map_err(ApiError::from)?;
-    fetch_prompt_cache_materialization_status(State(state)).await
+    .map_err(ApiError::unavailable)?;
+    fetch_prompt_cache_materialization_status_with_store(state, store).await
 }
 
 pub(crate) async fn list_system_task_runs(
@@ -2172,6 +2202,14 @@ pub(crate) async fn get_managed_task(
             "maintenance database unavailable"
         )));
     };
+    get_managed_task_with_store(state, task_key, store).await
+}
+
+pub(crate) async fn get_managed_task_with_store(
+    state: Arc<AppState>,
+    task_key: String,
+    store: &crate::maintenance_store::MaintenanceStore,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
     let mut detail = store
         .detail(&task_key)
         .await
@@ -2195,6 +2233,15 @@ pub(crate) async fn update_managed_task(
             "maintenance database unavailable"
         )));
     };
+    update_managed_task_with_store(state, task_key, request, store).await
+}
+
+pub(crate) async fn update_managed_task_with_store(
+    state: Arc<AppState>,
+    task_key: String,
+    request: ManagedTaskControlRequest,
+    store: &crate::maintenance_store::MaintenanceStore,
+) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
     let ManagedTaskControlRequest {
         enabled,
         interval_secs,
@@ -2211,6 +2258,24 @@ pub(crate) async fn update_managed_task(
         crate::OptionalField::Value(value) => Some(Some(value)),
     };
     let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
+    if task_key == "startup_backfill.prompt_cache_conversations_materialization"
+        && let Some(enabled) = enabled
+    {
+        if interval_secs.is_some() || cron_expr.is_some() {
+            return Err(ApiError::bad_request(anyhow!(
+                "task does not support a new interval or cron override"
+            )));
+        }
+        crate::set_prompt_cache_materialization_enabled_with_store(
+            &state.pool,
+            store,
+            crate::StartupBackfillTask::PromptCacheConversationsMaterialization,
+            enabled,
+        )
+        .await
+        .map_err(ApiError::unavailable)?;
+        return get_managed_task_with_store(state, task_key, store).await;
+    }
     let previous_startup_control = if enabled.is_some() && task_key.starts_with("startup_backfill.")
     {
         store
@@ -2244,7 +2309,7 @@ pub(crate) async fn update_managed_task(
             "startup backfill control update failed: {progress_error}"
         )));
     }
-    get_managed_task(State(state), AxumPath(task_key)).await
+    get_managed_task_with_store(state, task_key, store).await
 }
 
 pub(crate) async fn run_managed_task_now(
@@ -2315,7 +2380,7 @@ pub(crate) fn summarize_retention_run_for_system_task(
 
 #[cfg(test)]
 mod managed_task_control_contract_tests {
-    use super::ManagedTaskControlRequest;
+    use super::*;
     use crate::OptionalField;
 
     #[test]
@@ -2338,6 +2403,144 @@ mod managed_task_control_contract_tests {
         assert!(
             matches!(values.cron_expr, OptionalField::Value(ref value) if value == "*/5 * * * *")
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_control_patch_paths_share_the_injected_maintenance_store() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("https://api.openai.com/").expect("valid test URL"),
+        )
+        .await;
+        let maintenance_pool = sqlx::SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect independent maintenance pool");
+        let store = crate::maintenance_store::MaintenanceStore::from_pool(maintenance_pool);
+        store
+            .initialize_schema_for_test()
+            .await
+            .expect("initialize independent maintenance schema");
+        let unavailable_store = crate::maintenance_store::MaintenanceStore::from_pool(
+            sqlx::SqlitePool::connect("sqlite::memory:?cache=shared")
+                .await
+                .expect("connect uninitialized maintenance pool"),
+        );
+        assert!(matches!(
+            fetch_prompt_cache_materialization_status_with_store(state.clone(), &unavailable_store)
+                .await,
+            Err(ApiError::Unavailable(_))
+        ));
+        let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+        let task = crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
+        sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
+            .bind(task_key)
+            .execute(&store.pool)
+            .await
+            .expect("enable initial maintenance task");
+        store
+            .initialize_prompt_cache_materialization_control(task_key, task.name())
+            .await
+            .expect("initialize injected control snapshot");
+
+        let dedicated =
+            update_prompt_cache_materialization_control_with_store(state.clone(), &store, false)
+                .await
+                .expect("disable via dedicated control handler");
+        assert!(!dedicated.0.enabled);
+        assert_eq!(dedicated.0.last_status, "disabled");
+        let disabled_generation = store
+            .prompt_cache_materialization_control
+            .snapshot()
+            .expect("disabled control snapshot")
+            .generation;
+
+        let request: ManagedTaskControlRequest =
+            serde_json::from_str(r#"{"enabled":true}"#).expect("decode task PATCH body");
+        let managed =
+            update_managed_task_with_store(state.clone(), task_key.to_string(), request, &store)
+                .await
+                .expect("enable via managed-task control handler");
+        assert!(managed.0.task.enabled);
+        let enabled_snapshot = store
+            .prompt_cache_materialization_control
+            .snapshot()
+            .expect("enabled control snapshot");
+        assert!(enabled_snapshot.enabled);
+        assert_eq!(enabled_snapshot.generation, disabled_generation + 1);
+
+        let retry_deadline = "2099-01-01T00:00:00.000Z";
+        sqlx::query(
+            "UPDATE startup_backfill_progress SET next_run_after=?,suspension_reason='stats_page_pending' WHERE task_name=?",
+        )
+        .bind(retry_deadline)
+        .bind(task.name())
+        .execute(&store.pool)
+        .await
+        .expect("seed a bounded continuation before an idempotent PATCH");
+        let same_value_status =
+            update_prompt_cache_materialization_control_with_store(state.clone(), &store, true)
+                .await
+                .expect("repeat the same dedicated control value");
+        assert!(same_value_status.0.enabled);
+        assert_eq!(
+            store
+                .prompt_cache_materialization_control
+                .snapshot()
+                .expect("same-value control snapshot")
+                .generation,
+            enabled_snapshot.generation
+        );
+        let preserved_retry: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT next_run_after,suspension_reason FROM startup_backfill_progress WHERE task_name=?",
+        )
+        .bind(task.name())
+        .fetch_one(&store.pool)
+        .await
+        .expect("read bounded continuation after repeated PATCH");
+        assert_eq!(preserved_retry.0.as_deref(), Some(retry_deadline));
+        assert_eq!(preserved_retry.1.as_deref(), Some("stats_page_pending"));
+
+        sqlx::query(
+            "CREATE TRIGGER fail_prompt_cache_control_checkpoint BEFORE UPDATE ON startup_backfill_progress WHEN OLD.task_name='prompt_cache_conversations_materialization_v1' BEGIN SELECT RAISE(ABORT,'injected checkpoint failure'); END",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("install control transaction failure fixture");
+        let failed_managed_update = update_managed_task_with_store(
+            state.clone(),
+            task_key.to_string(),
+            serde_json::from_str(r#"{"enabled":false}"#)
+                .expect("decode managed-task disable request"),
+            &store,
+        )
+        .await;
+        assert!(matches!(
+            failed_managed_update,
+            Err(ApiError::Unavailable(_))
+        ));
+        let failed_update =
+            update_prompt_cache_materialization_control_with_store(state.clone(), &store, false)
+                .await;
+        assert!(matches!(failed_update, Err(ApiError::Unavailable(_))));
+        let committed_enabled: bool =
+            sqlx::query_scalar("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(task_key)
+                .fetch_one(&store.pool)
+                .await
+                .expect("verify the failed control transaction rolled back");
+        assert!(committed_enabled);
+        assert_eq!(
+            store
+                .prompt_cache_materialization_control
+                .snapshot()
+                .expect("control snapshot after failed transaction"),
+            enabled_snapshot
+        );
+
+        let status = fetch_prompt_cache_materialization_status_with_store(state, &store)
+            .await
+            .expect("read status through shared maintenance store");
+        assert!(status.0.enabled);
+        assert_ne!(status.0.last_status, "disabled");
     }
 }
 

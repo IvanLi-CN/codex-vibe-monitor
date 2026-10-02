@@ -132,6 +132,22 @@ impl StartupBackfillScheduler {
         }
     }
 
+    fn clear_pending(&self, task: StartupBackfillTask) {
+        if let Ok(mut tasks) = self.woken_tasks.lock() {
+            tasks.remove(&task);
+        }
+        if let Ok(mut next_due) = self.next_due.lock() {
+            next_due.remove(&task);
+        }
+        if let Ok(mut tasks) = self.deferred_tasks.lock() {
+            tasks.remove(&task);
+        }
+        if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
+            tasks.remove(&task);
+        }
+        self.notify.notify_waiters();
+    }
+
     fn mark_pressure_deferred(&self, task: StartupBackfillTask) {
         if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
             tasks.insert(task);
@@ -470,6 +486,53 @@ async fn persist_startup_backfill_pressure_defer(
     Ok(startup_backfill_pressure_defer_outcome_at(
         task, reason, retry_at,
     ))
+}
+
+async fn persist_prompt_cache_materialization_defer(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    run: &StartupBackfillRunState,
+    defer_reason: &'static str,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    let retry_at =
+        Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
+    let retry_after = format_utc_iso(retry_at);
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .await;
+    save_startup_backfill_progress(
+        &state.pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: run.scanned,
+            updated: run.updated,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_IDLE,
+            suspension_reason: Some(defer_reason),
+        },
+    )
+    .await?;
+    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    info!(
+        task = task.log_label(),
+        task_name,
+        scanned = run.scanned,
+        updated = run.updated,
+        defer_reason,
+        next_run_after = %retry_after,
+        "prompt-cache materialization saved a bounded continuation"
+    );
+    Ok(StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    })
 }
 
 async fn persist_startup_backfill_archive_lock_defer(
@@ -967,6 +1030,13 @@ pub(crate) async fn load_startup_backfill_progress(
         pending.suspension_reason = Some("maintenance_database_unavailable".to_string());
         return Ok(pending);
     };
+    load_startup_backfill_progress_from_pool(pool, task_name).await
+}
+
+pub(crate) async fn load_startup_backfill_progress_from_pool(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+) -> Result<StartupBackfillProgress> {
     let progress = sqlx::query_as::<_, StartupBackfillProgressRow>(
         r#"
         SELECT
@@ -1003,18 +1073,25 @@ pub(crate) async fn load_startup_backfill_progress(
         .flatten()
         .map(|suffix| format!("startup_backfill.{suffix}"));
     let managed_enabled = if let Some(task_key) = managed_task_key.as_deref() {
-        Some(
-            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
-                .bind(task_key)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or(false),
-        )
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+            .bind(task_key)
+            .fetch_optional(pool)
+            .await?
     } else {
         None
     };
+    let is_prompt_cache_materialization =
+        crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+            == Some("prompt_cache_conversations_materialization");
+    if is_prompt_cache_materialization && managed_enabled.is_none() {
+        return Err(anyhow!("maintenance database control is unavailable"));
+    }
     if let Some(progress) = progress {
         let mut progress: StartupBackfillProgress = progress.into();
+        if is_prompt_cache_materialization {
+            progress.enabled = managed_enabled.unwrap_or(false);
+            return Ok(progress);
+        }
         if let Some(enabled) = managed_enabled
             && progress.enabled != enabled
         {
@@ -1110,6 +1187,12 @@ pub(crate) async fn set_startup_backfill_task_enabled(
     if crate::maintenance_store::managed_startup_backfill_suffix(task_name).is_none() {
         return Err(anyhow!("unknown startup backfill task: {task_name}"));
     }
+    if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+        let store = crate::maintenance_store::global()
+            .ok_or_else(|| anyhow!("maintenance database unavailable"))?;
+        return set_prompt_cache_materialization_enabled_with_store(pool, store, task, enabled)
+            .await;
+    }
     let mut previous_control = None;
     if let Some(store) = crate::maintenance_store::global() {
         let suffix = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
@@ -1145,6 +1228,35 @@ pub(crate) async fn set_startup_backfill_task_enabled(
             Err(progress_error)
         }
     }
+}
+
+pub(crate) async fn set_prompt_cache_materialization_enabled_with_store(
+    _business_pool: &Pool<Sqlite>,
+    store: &crate::maintenance_store::MaintenanceStore,
+    task: StartupBackfillTask,
+    enabled: bool,
+) -> Result<StartupBackfillProgress> {
+    if task != StartupBackfillTask::PromptCacheConversationsMaterialization {
+        return Err(anyhow!(
+            "unexpected task for prompt-cache materialization control"
+        ));
+    }
+    let task_name = task.name();
+    let suffix = crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+        .ok_or_else(|| anyhow!("unknown startup backfill task: {task_name}"))?;
+    let task_key = format!("startup_backfill.{suffix}");
+    let update = store
+        .update_prompt_cache_materialization_control(&task_key, task_name, enabled)
+        .await?
+        .ok_or_else(|| anyhow!("managed startup backfill task not found: {task_key}"))?;
+    if update.changed {
+        if enabled {
+            STARTUP_BACKFILL_SCHEDULER.wake(task);
+        } else {
+            STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
+        }
+    }
+    load_startup_backfill_progress_from_pool(&store.pool, task_name).await
 }
 
 pub(crate) async fn set_startup_backfill_progress_enabled(
@@ -1353,12 +1465,25 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
     pricing_catalog: Option<&PricingCatalog>,
     wake_reason: &'static str,
 ) -> Result<u64> {
-    let Some(pool) = startup_backfill_progress_pool(pool) else {
-        return Ok(0);
-    };
     let mut woken = 0;
+    if tasks.contains(&StartupBackfillTask::PromptCacheConversationsMaterialization)
+        && let Some(store) = crate::maintenance_store::global()
+    {
+        woken += wake_prompt_cache_materialization_with_store(store, wake_reason).await?;
+    }
+    let generic_tasks = tasks
+        .iter()
+        .copied()
+        .filter(|task| *task != StartupBackfillTask::PromptCacheConversationsMaterialization)
+        .collect::<Vec<_>>();
+    if generic_tasks.is_empty() {
+        return Ok(woken);
+    }
+    let Some(pool) = startup_backfill_progress_pool(pool) else {
+        return Ok(woken);
+    };
     let mut proxy_cost_catalog_missing = false;
-    for task in tasks {
+    for task in &generic_tasks {
         let task_name = match task {
             StartupBackfillTask::ProxyCost => {
                 let Some(catalog) = pricing_catalog else {
@@ -1452,6 +1577,76 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
         ));
     }
     Ok(woken)
+}
+
+pub(crate) async fn wake_prompt_cache_materialization_with_store(
+    store: &crate::maintenance_store::MaintenanceStore,
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
+        return Ok(0);
+    };
+    if !snapshot.enabled {
+        return Ok(0);
+    }
+
+    let task_name = task.name();
+    let mut transaction = store.pool.begin().await?;
+    let progress = sqlx::query_as::<_, (bool, Option<String>)>(
+        "SELECT enabled,next_run_after FROM startup_backfill_progress WHERE task_name=?",
+    )
+    .bind(task_name)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((progress_enabled, next_run_after)) = progress else {
+        transaction.commit().await?;
+        return Ok(0);
+    };
+    if !progress_enabled {
+        transaction.commit().await?;
+        return Ok(0);
+    }
+    if let Some(next_run_after) = next_run_after.as_deref()
+        && parse_to_utc_datetime(next_run_after).is_some_and(|deadline| deadline > Utc::now())
+    {
+        let deadline = parse_to_utc_datetime(next_run_after).expect("validated retry deadline");
+        transaction.commit().await?;
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, deadline);
+        return Ok(0);
+    }
+    let changed = sqlx::query(
+        "UPDATE startup_backfill_progress
+         SET next_run_after=NULL, suspension_reason=NULL, next_probe_at=NULL,
+             last_status=?, wake_generation=wake_generation + 1
+         WHERE task_name=? AND enabled != 0
+           AND EXISTS (
+               SELECT 1 FROM managed_tasks
+               WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'
+                 AND enabled=1
+           )",
+    )
+    .bind(STARTUP_BACKFILL_STATUS_IDLE)
+    .bind(task_name)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    transaction.commit().await?;
+    if changed > 0
+        && store
+            .prompt_cache_materialization_control
+            .snapshot()
+            .is_some_and(|current| current.enabled && current.generation == snapshot.generation)
+    {
+        STARTUP_BACKFILL_SCHEDULER.wake(task);
+        info!(
+            task = task.log_label(),
+            wake_reason, "woke prompt-cache materialization"
+        );
+        Ok(changed)
+    } else {
+        Ok(0)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2027,6 +2222,22 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
             STARTUP_BACKFILL_SCHEDULER.clear_next_due(*task);
             continue;
         }
+        let prompt_cache_control_generation =
+            if *task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+                crate::maintenance_store::global().and_then(|store| {
+                    store
+                        .prompt_cache_materialization_control
+                        .snapshot()
+                        .map(|snapshot| {
+                            (
+                                Arc::clone(&store.prompt_cache_materialization_control),
+                                snapshot.generation,
+                            )
+                        })
+                })
+            } else {
+                None
+            };
         let task_result = tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
@@ -2038,7 +2249,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 managed_run_id,
             ) => result,
         };
-        match task_result {
+        let apply_task_result = || match task_result {
             Ok((outcome, task_detail)) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
@@ -2065,6 +2276,21 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 );
                 warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
             }
+        };
+        if let Some((control, expected_generation)) = prompt_cache_control_generation {
+            if control
+                .with_current_generation(expected_generation, apply_task_result)
+                .is_none()
+            {
+                debug!(
+                    task = task.log_label(),
+                    expected_generation,
+                    "discarded a stale prompt-cache materialization scheduler result"
+                );
+                continue;
+            }
+        } else {
+            apply_task_result();
         }
     }
 
@@ -2273,6 +2499,69 @@ async fn run_startup_backfill_task_if_due_outcome(
         ));
     }
 
+    let prompt_cache_materialization_control =
+        if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+            let retry_at =
+                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
+            let Some(store) = crate::maintenance_store::global() else {
+                STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+                warn!(
+                    task = task.log_label(),
+                    defer_reason = "maintenance_database_unavailable",
+                    next_eligibility = %retry_at,
+                    "prompt-cache materialization control is unavailable"
+                );
+                return Ok((
+                    StartupBackfillTaskRunOutcome {
+                        actionable: false,
+                        failed: false,
+                        deferred: true,
+                        completed: true,
+                        next_due: retry_at,
+                    },
+                    None,
+                ));
+            };
+            let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
+                STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+                warn!(
+                    task = task.log_label(),
+                    defer_reason = "maintenance_database_unavailable",
+                    next_eligibility = %retry_at,
+                    "prompt-cache materialization control has not been initialized"
+                );
+                return Ok((
+                    StartupBackfillTaskRunOutcome {
+                        actionable: false,
+                        failed: false,
+                        deferred: true,
+                        completed: true,
+                        next_due: retry_at,
+                    },
+                    None,
+                ));
+            };
+            if !snapshot.enabled {
+                STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
+                return Ok((
+                    StartupBackfillTaskRunOutcome {
+                        actionable: false,
+                        failed: false,
+                        deferred: false,
+                        completed: true,
+                        next_due: Utc::now() + ChronoDuration::days(3650),
+                    },
+                    None,
+                ));
+            }
+            Some((
+                Arc::clone(&store.prompt_cache_materialization_control),
+                snapshot.generation,
+            ))
+        } else {
+            None
+        };
+
     if task == StartupBackfillTask::AccountActivityV2Coverage {
         return run_startup_backfill_coverage_repair_if_due(state, gate)
             .await
@@ -2339,19 +2628,6 @@ async fn run_startup_backfill_task_if_due_outcome(
         .inspect_err(|err| {
             record_startup_backfill_pressure_error(gate, err);
         })?;
-    if task == StartupBackfillTask::PromptCacheConversationsMaterialization && !progress.enabled {
-        STARTUP_BACKFILL_SCHEDULER.clear_next_due(task);
-        return Ok((
-            StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: false,
-                deferred: false,
-                completed: true,
-                next_due: Utc::now() + ChronoDuration::days(3650),
-            },
-            None,
-        ));
-    }
     let now = Utc::now();
     if !progress.is_due(now) {
         debug!(
@@ -2421,6 +2697,9 @@ async fn run_startup_backfill_task_if_due_outcome(
                 progress.zero_update_streak,
                 progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
                 Some(&prompt_cache_should_yield),
+                prompt_cache_materialization_control
+                    .as_ref()
+                    .map(|(control, generation)| (control, *generation)),
             ),
         )
         .await
@@ -2448,10 +2727,41 @@ async fn run_startup_backfill_task_if_due_outcome(
                     progress.zero_update_streak,
                     progress.last_status == STARTUP_BACKFILL_STATUS_SOURCE_UNAVAILABLE,
                     None,
+                    None,
                 )
             ) => result,
         }
     };
+    if let Some((control, expected_generation)) = prompt_cache_materialization_control.as_ref() {
+        let current = control.snapshot();
+        if current.is_none_or(|snapshot| snapshot.generation != *expected_generation) {
+            drop(write_permit);
+            if current.is_some_and(|snapshot| !snapshot.enabled) {
+                STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
+                return Ok((
+                    StartupBackfillTaskRunOutcome {
+                        actionable: false,
+                        failed: false,
+                        deferred: false,
+                        completed: true,
+                        next_due: Utc::now() + ChronoDuration::days(3650),
+                    },
+                    None,
+                ));
+            }
+            return Ok((
+                StartupBackfillTaskRunOutcome {
+                    actionable: false,
+                    failed: false,
+                    deferred: true,
+                    completed: false,
+                    next_due: Utc::now()
+                        + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+                },
+                None,
+            ));
+        }
+    }
     let outcome = match task_result {
         Ok((run, detail)) => {
             if run.deferred {
@@ -2470,17 +2780,41 @@ async fn run_startup_backfill_task_if_due_outcome(
                     if managed_run_id.is_none() {
                         observation.finish_with_status("skipped");
                     }
+                    STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
                     return Ok((
                         StartupBackfillTaskRunOutcome {
                             actionable: false,
                             failed: false,
-                            deferred: resumed,
-                            completed: !resumed,
-                            next_due: if resumed {
-                                Utc::now()
-                            } else {
-                                Utc::now() + ChronoDuration::days(3650)
-                            },
+                            deferred: false,
+                            completed: true,
+                            next_due: Utc::now() + ChronoDuration::days(3650),
+                        },
+                        None,
+                    ));
+                }
+                if let Some(
+                    reason @ ("stats_page_pending"
+                    | "stats_generation_changed"
+                    | "stats_budget_exhausted"),
+                ) = run.defer_reason
+                {
+                    return persist_prompt_cache_materialization_defer(
+                        state, task, &task_name, &progress, &run, reason,
+                    )
+                    .await
+                    .map(|outcome| (outcome, None));
+                }
+                if run.defer_reason == Some("maintenance_database_unavailable") {
+                    let retry_at = Utc::now()
+                        + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
+                    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+                    return Ok((
+                        StartupBackfillTaskRunOutcome {
+                            actionable: false,
+                            failed: false,
+                            deferred: true,
+                            completed: true,
+                            next_due: retry_at,
                         },
                         None,
                     ));
@@ -2695,8 +3029,28 @@ pub(crate) async fn run_startup_backfill_task(
         _zero_update_streak,
         source_unavailable_probe,
         None,
+        None,
     )
     .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_prompt_cache_materialization_with_control_for_test(
+    state: &Arc<AppState>,
+    control: &Arc<crate::maintenance_store::PromptCacheMaterializationControl>,
+    expected_generation: u64,
+) -> Result<()> {
+    run_startup_backfill_task_with_pressure(
+        state,
+        StartupBackfillTask::PromptCacheConversationsMaterialization,
+        0,
+        0,
+        false,
+        None,
+        Some((control, expected_generation)),
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn run_startup_backfill_task_with_pressure(
@@ -2706,6 +3060,10 @@ async fn run_startup_backfill_task_with_pressure(
     _zero_update_streak: u32,
     source_unavailable_probe: bool,
     prompt_cache_should_yield: Option<&(dyn Fn() -> bool + Send + Sync)>,
+    prompt_cache_materialization_control: Option<(
+        &Arc<crate::maintenance_store::PromptCacheMaterializationControl>,
+        u64,
+    )>,
 ) -> Result<(StartupBackfillRunState, String)> {
     let scan_limit = startup_backfill_scan_limit(source_unavailable_probe);
     let max_elapsed = Some(startup_backfill_run_budget(source_unavailable_probe));
@@ -2822,6 +3180,18 @@ async fn run_startup_backfill_task_with_pressure(
         StartupBackfillTask::PromptCacheConversationsMaterialization => {
             let never_yield = || false;
             let should_yield = prompt_cache_should_yield.unwrap_or(&never_yield);
+            let Some((control, expected_generation)) = prompt_cache_materialization_control else {
+                return Ok((
+                    StartupBackfillRunState {
+                        next_cursor_id: cursor_id,
+                        hit_scan_limit: true,
+                        deferred: true,
+                        defer_reason: Some("maintenance_database_unavailable"),
+                        ..Default::default()
+                    },
+                    "defer_reason=maintenance_database_unavailable".to_string(),
+                ));
+            };
             let run_started = Instant::now();
             let run_started_at = format_utc_iso(Utc::now());
             let outcome =
@@ -2830,6 +3200,8 @@ async fn run_startup_backfill_task_with_pressure(
                     scan_limit,
                     max_elapsed,
                     should_yield,
+                    control,
+                    expected_generation,
                 )
                 .await
                 {
@@ -2859,21 +3231,25 @@ async fn run_startup_backfill_task_with_pressure(
                         return Err(error);
                     }
                 };
-            if let Err(error) = record_prompt_cache_conversation_materialization_run(
-                &state.pool,
-                &run_started_at,
-                run_started.elapsed().as_millis() as u64,
-                &outcome,
-                if outcome.deferred {
-                    "deferred"
-                } else {
-                    "success"
-                },
-                None,
-            )
-            .await
+            if !outcome.control_generation_changed
+                && (!outcome.deferred || outcome.scanned > 0 || outcome.updated > 0)
             {
-                warn!(error = %error, "failed to record prompt-cache materialization run");
+                if let Err(error) = record_prompt_cache_conversation_materialization_run(
+                    &state.pool,
+                    &run_started_at,
+                    run_started.elapsed().as_millis() as u64,
+                    &outcome,
+                    if outcome.deferred {
+                        "deferred"
+                    } else {
+                        "success"
+                    },
+                    None,
+                )
+                .await
+                {
+                    warn!(error = %error, "failed to record prompt-cache materialization run");
+                }
             }
             let detail = format!(
                 "phase={} scanned={} updated={} complete={} batches={} last_batch_size={} max_batch_size={} batch_elapsed_ms={} deferred={} defer_reason={}",

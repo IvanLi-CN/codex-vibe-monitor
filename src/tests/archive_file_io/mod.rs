@@ -5,6 +5,7 @@ pub(crate) use super::*;
 
 mod archive_backfill_and_materialization;
 mod gpt6_cache_write_migration;
+mod prompt_cache_control_file_lock;
 mod raw_compression_budget;
 #[expect(
     clippy::await_holding_lock,

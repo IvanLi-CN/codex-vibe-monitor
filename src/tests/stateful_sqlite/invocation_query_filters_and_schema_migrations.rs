@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::{RuntimeStickyMutation, upsert_runtime_prompt_cache_conversation_sticky_route};
+use crate::maintenance_store::MaintenanceStore;
 use crate::upstream_accounts::{
     bump_sticky_affinity_generation_executor, delete_sticky_route_executor,
     delete_sticky_route_if_matches_with_cause, load_sticky_affinity_generation, load_sticky_route,
@@ -10,6 +11,30 @@ use crate::upstream_accounts::{
 };
 use serde_json::{Value, json};
 use tokio::time::{Duration, sleep};
+
+async fn prompt_cache_materialization_maintenance_store(enabled: bool) -> MaintenanceStore {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect independent maintenance pool");
+    let store = MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance schema and task registry");
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    sqlx::query("UPDATE managed_tasks SET enabled=? WHERE task_key=?")
+        .bind(enabled)
+        .bind(task_key)
+        .execute(&store.pool)
+        .await
+        .expect("set initial maintenance control");
+    store
+        .initialize_prompt_cache_materialization_control(task_key, task.name())
+        .await
+        .expect("initialize in-memory maintenance control");
+    store
+}
 
 async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
@@ -472,6 +497,7 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
     ensure_schema(&pool)
         .await
         .expect("install prompt-cache status schema");
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
 
     let outcome = run_prompt_cache_conversations_materialization(&pool, 400, None)
         .await
@@ -487,9 +513,13 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
     .await
     .expect("record materialization history");
 
-    let status = load_prompt_cache_conversation_materialization_status(&pool)
-        .await
-        .expect("load materialization status");
+    let status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &maintenance.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("load materialization status");
     assert!(status.enabled);
     assert_eq!(status.total_keys, Some(4));
     assert_eq!(status.completed_keys, 4);
@@ -498,28 +528,319 @@ async fn prompt_cache_materialization_status_reports_progress_history_and_contro
     assert_eq!(status.queue_pending, 0);
     assert_eq!(status.recent_runs.len(), 1);
 
-    let disabled = set_startup_backfill_task_enabled(
+    let disabled = set_prompt_cache_materialization_enabled_with_store(
         &pool,
+        &maintenance,
         StartupBackfillTask::PromptCacheConversationsMaterialization,
         false,
     )
     .await
     .expect("disable prompt-cache materialization");
     assert!(!disabled.enabled);
-    let disabled_status = load_prompt_cache_conversation_materialization_status(&pool)
-        .await
-        .expect("load disabled materialization status");
+    let disabled_status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &maintenance.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("load disabled materialization status");
     assert!(!disabled_status.enabled);
     assert_eq!(disabled_status.last_status, "disabled");
 
-    let enabled = set_startup_backfill_task_enabled(
+    let enabled = set_prompt_cache_materialization_enabled_with_store(
         &pool,
+        &maintenance,
         StartupBackfillTask::PromptCacheConversationsMaterialization,
         true,
     )
     .await
     .expect("enable prompt-cache materialization");
     assert!(enabled.enabled);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_uses_maintenance_control_when_legacy_business_flag_disagrees()
+{
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory business sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache status schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        ) VALUES ('dual-control-invocation', '2026-09-01 00:00:00', ?1, 'success', 7, 0.07, ?2, '{}')
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .bind(json!({"promptCacheKey": "dual-control-key"}).to_string())
+    .execute(&pool)
+    .await
+    .expect("insert dual-control fixture invocation");
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    sqlx::query(
+        "INSERT INTO startup_backfill_progress (task_name,cursor_id,zero_update_streak,last_scanned,last_updated,last_status,wake_generation,enabled) \
+         VALUES (?,0,0,0,0,'idle',0,0) \
+         ON CONFLICT(task_name) DO UPDATE SET enabled=0",
+    )
+    .bind(task.name())
+    .execute(&pool)
+    .await
+    .expect("make legacy business flag disagree with enabled maintenance task");
+
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let should_yield = || false;
+    let enabled_snapshot = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("enabled maintenance control");
+    let enabled_run = {
+        let mut completed = None;
+        for _ in 0..8 {
+            let run = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                &pool,
+                400,
+                None,
+                &should_yield,
+                &maintenance.prompt_cache_materialization_control,
+                enabled_snapshot.generation,
+            )
+            .await
+            .expect("run materialization using enabled maintenance control");
+            if run.complete {
+                completed = Some(run);
+                break;
+            }
+            assert_ne!(run.defer_reason, Some("operator_disabled"));
+        }
+        completed.expect("enabled materialization should finish its durable phases")
+    };
+    assert!(enabled_run.complete);
+    let legacy_enabled: bool =
+        sqlx::query_scalar("SELECT enabled FROM startup_backfill_progress WHERE task_name=?")
+            .bind(task.name())
+            .fetch_one(&pool)
+            .await
+            .expect("read unchanged legacy business flag");
+    assert!(!legacy_enabled);
+    let enabled_status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &maintenance.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("read status from maintenance control");
+    assert!(enabled_status.enabled);
+
+    sqlx::query("UPDATE startup_backfill_progress SET enabled=1 WHERE task_name=?")
+        .bind(task.name())
+        .execute(&pool)
+        .await
+        .expect("make legacy business flag disagree with disabled maintenance task");
+    set_prompt_cache_materialization_enabled_with_store(&pool, &maintenance, task, false)
+        .await
+        .expect("disable through the maintenance control");
+    let disabled_snapshot = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("disabled maintenance control");
+    let disabled_run = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &should_yield,
+        &maintenance.prompt_cache_materialization_control,
+        disabled_snapshot.generation,
+    )
+    .await
+    .expect("run materialization using disabled maintenance control");
+    assert_eq!(disabled_run.defer_reason, Some("operator_disabled"));
+    let legacy_enabled: bool =
+        sqlx::query_scalar("SELECT enabled FROM startup_backfill_progress WHERE task_name=?")
+            .bind(task.name())
+            .fetch_one(&pool)
+            .await
+            .expect("read unchanged legacy business flag after disable");
+    assert!(legacy_enabled);
+    let disabled_status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &maintenance.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("read disabled status from maintenance control");
+    assert!(!disabled_status.enabled);
+}
+
+#[tokio::test]
+async fn prompt_cache_materialization_pages_resume_across_generation_change_and_control_restart() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory business sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool)
+        .await
+        .expect("install prompt-cache materialization schema");
+    let mut transaction = pool.begin().await.expect("begin invocation fixture");
+    for index in 0..1024 {
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) \
+             VALUES (?1,?2,?3,'success',1,0.01,?4,'{}')",
+        )
+        .bind(format!("paged-invocation-{index:04}"))
+        .bind(format!("2026-09-01T00:{:02}:{:02}.000Z", index / 60, index % 60))
+        .bind(SOURCE_PROXY)
+        .bind(json!({"promptCacheKey": "paged-materialization-key"}).to_string())
+        .execute(&mut *transaction)
+        .await
+        .expect("insert paged materialization invocation");
+    }
+    transaction
+        .commit()
+        .await
+        .expect("commit invocation fixture");
+
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let snapshot = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized materialization control");
+    let should_yield = || false;
+    let first_page = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &should_yield,
+        &maintenance.prompt_cache_materialization_control,
+        snapshot.generation,
+    )
+    .await
+    .expect("run first statistics page");
+    assert_eq!(first_page.defer_reason, Some("stats_page_pending"));
+    let (outer_cursor, completed_keys): (Option<String>, i64) = sqlx::query_as(
+        "SELECT cursor_key,completed_keys FROM prompt_cache_conversation_migration_progress \
+         WHERE migration_name='prompt_cache_conversations_materialization_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load outer materialization cursor");
+    assert_eq!(outer_cursor, None);
+    assert_eq!(completed_keys, 0);
+    let staged_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+         WHERE prompt_cache_key='paged-materialization-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load committed statistics staging cursor");
+    assert_eq!(staged_cursor, 256);
+    let partial_request_count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations \
+         WHERE prompt_cache_key='paged-materialization-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load pre-completion aggregate");
+    assert_eq!(partial_request_count, 0);
+    assert!(
+        !prompt_cache_conversation_materialization_is_complete(&pool)
+            .await
+            .expect("check incomplete materialization")
+    );
+
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_stats_refresh_queue SET generation=generation+1 \
+         WHERE prompt_cache_key='paged-materialization-key'",
+    )
+    .execute(&pool)
+    .await
+    .expect("advance source generation during paged refresh");
+    let generation_change =
+        run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            400,
+            None,
+            &should_yield,
+            &maintenance.prompt_cache_materialization_control,
+            snapshot.generation,
+        )
+        .await
+        .expect("observe changed statistics source generation");
+    assert_eq!(
+        generation_change.defer_reason,
+        Some("stats_generation_changed")
+    );
+    let reset_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+         WHERE prompt_cache_key='paged-materialization-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load reset statistics staging cursor");
+    assert_eq!(reset_cursor, 0);
+
+    let restarted = MaintenanceStore::from_pool(maintenance.pool.clone());
+    restarted
+        .initialize_prompt_cache_materialization_control(
+            "startup_backfill.prompt_cache_conversations_materialization",
+            task.name(),
+        )
+        .await
+        .expect("restore control from persisted maintenance state");
+    let restarted_snapshot = restarted
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("restored materialization control");
+    let mut complete = false;
+    for _ in 0..16 {
+        let run = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            400,
+            None,
+            &should_yield,
+            &restarted.prompt_cache_materialization_control,
+            restarted_snapshot.generation,
+        )
+        .await
+        .expect("continue statistics materialization after restart");
+        if run.complete {
+            complete = true;
+            break;
+        }
+        assert_ne!(run.defer_reason, Some("operator_disabled"));
+    }
+    assert!(complete, "all paged statistics should eventually complete");
+    let final_request_count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations \
+         WHERE prompt_cache_key='paged-materialization-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load final aggregate");
+    assert_eq!(final_request_count, 1024);
+    let queue_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue \
+         WHERE prompt_cache_key='paged-materialization-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("check drained statistics queue");
+    assert_eq!(queue_count, 0);
+    assert!(
+        prompt_cache_conversation_materialization_is_complete(&pool)
+            .await
+            .expect("check complete materialization")
+    );
 }
 
 #[tokio::test]
@@ -534,6 +855,7 @@ async fn prompt_cache_materialization_status_does_not_report_complete_with_pendi
     ensure_schema(&pool)
         .await
         .expect("install prompt-cache status schema");
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
     complete_prompt_cache_conversation_materialization_for_test(&pool).await;
 
     sqlx::query(
@@ -544,9 +866,13 @@ async fn prompt_cache_materialization_status_does_not_report_complete_with_pendi
     .await
     .expect("enqueue pending refresh");
 
-    let status = load_prompt_cache_conversation_materialization_status(&pool)
-        .await
-        .expect("load incomplete materialization status");
+    let status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &maintenance.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("load incomplete materialization status");
     assert_eq!(status.queue_pending, 1);
     assert_ne!(status.progress_percent, Some(100.0));
     assert_ne!(status.estimated_remaining_ms, Some(0));
@@ -564,6 +890,7 @@ async fn prompt_cache_materialization_repairs_complete_progress_counters() {
     ensure_schema(&pool)
         .await
         .expect("install prompt-cache materialization schema");
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
     sqlx::query(
         "INSERT INTO prompt_cache_conversations (conversation_id, prompt_cache_key) \
          VALUES ('ABCDEF', 'legacy-complete-key')",
@@ -583,9 +910,13 @@ async fn prompt_cache_materialization_repairs_complete_progress_counters() {
     ensure_schema(&pool)
         .await
         .expect("repair legacy complete progress counters");
-    let status = load_prompt_cache_conversation_materialization_status(&pool)
-        .await
-        .expect("load repaired materialization status");
+    let status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &maintenance.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("load repaired materialization status");
     assert_eq!(status.total_keys, Some(1));
     assert_eq!(status.completed_keys, 1);
     assert_eq!(status.progress_percent, Some(99.0));
@@ -604,6 +935,7 @@ async fn prompt_cache_materialization_honors_operator_disable_before_a_batch() {
     ensure_schema(&pool)
         .await
         .expect("install prompt-cache status schema");
+    let maintenance = prompt_cache_materialization_maintenance_store(false).await;
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
@@ -616,20 +948,18 @@ async fn prompt_cache_materialization_honors_operator_disable_before_a_batch() {
     .execute(&pool)
     .await
     .expect("insert operator-disable fixture invocation");
-    set_startup_backfill_task_enabled(
-        &pool,
-        StartupBackfillTask::PromptCacheConversationsMaterialization,
-        false,
-    )
-    .await
-    .expect("disable prompt-cache materialization");
-
     let should_yield = || false;
+    let control = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized maintenance control");
     let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
         &pool,
         400,
         None,
         &should_yield,
+        &maintenance.prompt_cache_materialization_control,
+        control.generation,
     )
     .await
     .expect("run disabled prompt-cache materialization");
@@ -656,6 +986,7 @@ async fn prompt_cache_materialization_honors_operator_disable_in_queue_drain() {
     ensure_schema(&pool)
         .await
         .expect("install prompt-cache status schema");
+    let maintenance = prompt_cache_materialization_maintenance_store(false).await;
     sqlx::query(
         "UPDATE prompt_cache_conversation_migration_progress \
          SET phase = 'queue_drain' \
@@ -664,20 +995,18 @@ async fn prompt_cache_materialization_honors_operator_disable_in_queue_drain() {
     .execute(&pool)
     .await
     .expect("set queue-drain phase");
-    set_startup_backfill_task_enabled(
-        &pool,
-        StartupBackfillTask::PromptCacheConversationsMaterialization,
-        false,
-    )
-    .await
-    .expect("disable prompt-cache materialization in queue drain");
-
     let should_yield = || false;
+    let control = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized maintenance control");
     let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
         &pool,
         400,
         None,
         &should_yield,
+        &maintenance.prompt_cache_materialization_control,
+        control.generation,
     )
     .await
     .expect("run disabled queue-drain materialization");
@@ -707,13 +1036,11 @@ async fn prompt_cache_materialization_honors_operator_disable_before_empty_phase
     ensure_schema(&pool)
         .await
         .expect("install prompt-cache status schema");
-    set_startup_backfill_task_enabled(
-        &pool,
-        StartupBackfillTask::PromptCacheConversationsMaterialization,
-        false,
-    )
-    .await
-    .expect("disable prompt-cache materialization before empty phases");
+    let maintenance = prompt_cache_materialization_maintenance_store(false).await;
+    let control = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized maintenance control");
 
     for phase in ["identity_reconciliation", "stats_rebuild"] {
         sqlx::query(
@@ -731,6 +1058,8 @@ async fn prompt_cache_materialization_honors_operator_disable_before_empty_phase
             400,
             None,
             &should_yield,
+            &maintenance.prompt_cache_materialization_control,
+            control.generation,
         )
         .await
         .expect("run disabled empty materialization phase");

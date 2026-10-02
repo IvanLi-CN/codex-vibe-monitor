@@ -2521,15 +2521,34 @@ async fn prompt_cache_materialization_wake_preserves_operator_disable() {
     )
     .await;
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
-
-    let disabled = set_startup_backfill_task_enabled(&state.pool, task, false)
+    let maintenance_pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
-        .expect("disable prompt-cache materialization");
-    let woken = wake_startup_backfill_tasks(&state.pool, &[task], "test_terminal_write")
+        .expect("connect independent maintenance pool");
+    let maintenance = crate::maintenance_store::MaintenanceStore::from_pool(maintenance_pool);
+    maintenance
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize independent maintenance schema");
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
+        .bind(task_key)
+        .execute(&maintenance.pool)
+        .await
+        .expect("enable maintenance task fixture");
+    maintenance
+        .initialize_prompt_cache_materialization_control(task_key, task.name())
+        .await
+        .expect("initialize injected prompt-cache control");
+
+    let disabled =
+        set_prompt_cache_materialization_enabled_with_store(&state.pool, &maintenance, task, false)
+            .await
+            .expect("disable prompt-cache materialization");
+    let woken = wake_prompt_cache_materialization_with_store(&maintenance, "test_terminal_write")
         .await
         .expect("wake prompt-cache materialization");
 
-    let progress = load_startup_backfill_progress(&state.pool, task.name())
+    let progress = load_startup_backfill_progress_from_pool(&maintenance.pool, task.name())
         .await
         .expect("load disabled prompt-cache progress");
     assert_eq!(woken, 0);
@@ -2573,14 +2592,33 @@ async fn prompt_cache_materialization_failure_history_reports_per_run_work() {
     .await
     .expect("install prompt-cache failure trigger");
 
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
-    run_startup_backfill_task_if_due_with_gate(
+    let maintenance_pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect independent maintenance pool");
+    let maintenance = crate::maintenance_store::MaintenanceStore::from_pool(maintenance_pool);
+    maintenance
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize independent maintenance schema");
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
+        .bind(task_key)
+        .execute(&maintenance.pool)
+        .await
+        .expect("enable maintenance task fixture");
+    let snapshot = maintenance
+        .initialize_prompt_cache_materialization_control(task_key, task.name())
+        .await
+        .expect("initialize injected prompt-cache control");
+
+    run_prompt_cache_materialization_with_control_for_test(
         &state,
-        StartupBackfillTask::PromptCacheConversationsMaterialization,
-        &gate,
+        &maintenance.prompt_cache_materialization_control,
+        snapshot.generation,
     )
     .await
-    .expect("failed materialization should be recorded and retried");
+    .expect_err("database trigger should fail materialization and record the failure");
 
     let (status, scanned, updated, error): (String, i64, i64, Option<String>) = sqlx::query_as(
         "SELECT status, scanned, updated, error \
