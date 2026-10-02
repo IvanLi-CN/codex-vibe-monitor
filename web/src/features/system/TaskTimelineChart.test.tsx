@@ -124,6 +124,29 @@ describe("TaskTimelineChart", () => {
     expect(bars[0].querySelector("rect")?.getAttribute("fill")).toBe("#c2410c");
   });
 
+  it("marks failed executions separately and exposes complete timing details", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const failed = {
+      ...segment("failed-run", nowMs - 120_000, nowMs - 60_000),
+      triggerKind: "manual",
+      status: "failed",
+    } satisfies TaskTimelineSegment;
+    renderChart({ nowMs, executions: [failed] });
+
+    const bar = host?.querySelector<SVGGElement>('g[role="button"]');
+    const rect = bar?.querySelector("rect");
+    expect(rect?.getAttribute("stroke")).toBe("#be123c");
+    expect(rect?.getAttribute("stroke-dasharray")).toBe("2 1");
+    expect(bar?.getAttribute("aria-label")).toContain("结果：失败");
+
+    act(() => bar?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(host?.textContent).toContain("触发：manual");
+    expect(host?.textContent).toContain("实际开始：");
+    expect(host?.textContent).toContain("实际结束：");
+    expect(host?.textContent).toContain("实际用时：1 分 00 秒");
+    expect(host?.textContent).toContain("结果：失败");
+  });
+
   it("advances an open execution bar when the shared clock advances", () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const activeRun: CurrentTaskExecution = {
@@ -139,6 +162,7 @@ describe("TaskTimelineChart", () => {
     };
     const { render } = renderChart({ nowMs, activeRuns: [activeRun] });
     const activeBar = host?.querySelector<SVGRectElement>('g[role="button"] rect');
+    expect(activeBar?.getAttribute("stroke")).toBe("#0e7490");
     const before = Number(activeBar?.getAttribute("width"));
     render(nowMs + 1_000);
     const after = Number(
@@ -167,7 +191,7 @@ describe("TaskTimelineChart", () => {
     });
     const bar = host?.querySelector<SVGGElement>('g[role="button"]');
     expect(bar?.getAttribute("aria-label")).toContain("结果：未知");
-    expect(bar?.getAttribute("aria-label")).toContain("最后确认于");
+    expect(bar?.getAttribute("aria-label")).toContain("最后观测于");
   });
 
   it("shows persistence outages as unknown coverage", () => {
@@ -198,11 +222,13 @@ describe("TaskTimelineChart", () => {
       nowMs,
       executions: Array.from({ length: 8 }, (_, index) => {
         const start = nowMs - 15_000 + index * 100;
-        return segment(`dense-${index}`, start, start + 30);
+        const run = segment(`dense-${index}`, start, start + 30);
+        return index === 4 ? { ...run, status: "failed" } : run;
       }),
     });
     const aggregate = host?.querySelector<SVGGElement>('g[role="button"]');
     expect(aggregate?.getAttribute("aria-label")).toContain("8 次");
+    expect(aggregate?.getAttribute("aria-label")).toContain("失败 1");
     act(() => aggregate?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(host?.textContent).toContain("8 次任务执行");
     expect(host?.textContent).toContain("数据保留与归档");

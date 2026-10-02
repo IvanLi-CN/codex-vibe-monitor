@@ -150,6 +150,10 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("已入队");
     expect(host?.textContent).toContain("等待准入 / 压力延后");
     expect(host?.textContent).toContain("压力冷却让行");
+    expect(host?.textContent).toContain("请求时间");
+    expect(host?.textContent).toContain("等待开始");
+    expect(host?.textContent).toContain("08:00:01");
+    expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
     expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1);
     expect(host?.textContent).toContain("raw_compression");
   });

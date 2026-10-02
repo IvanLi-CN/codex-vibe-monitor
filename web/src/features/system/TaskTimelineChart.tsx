@@ -57,6 +57,27 @@ function compactTime(value: number): string {
   }).format(new Date(value));
 }
 
+function exactTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(value));
+}
+
+function durationLabel(durationMs: number): string {
+  const seconds = Math.max(0, Math.round(durationMs / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes} 分 ${String(remainingSeconds).padStart(2, "0")} 秒`;
+  return `${Math.floor(minutes / 60)} 小时 ${String(minutes % 60).padStart(2, "0")} 分`;
+}
+
 function outcomeLabel(status: string): string {
   switch (status) {
     case "success":
@@ -67,6 +88,8 @@ function outcomeLabel(status: string): string {
       return "已跳过";
     case "interrupted":
       return "中断，结束时间未知";
+    case "cancelled":
+      return "已取消";
     case "running":
       return "进行中";
     case "released":
@@ -76,6 +99,42 @@ function outcomeLabel(status: string): string {
     default:
       return "未知";
   }
+}
+
+function outcomeAppearance(
+  status: string,
+  dark: boolean,
+): { stroke: string; dashArray?: string } | null {
+  switch (status) {
+    case "success":
+      return null;
+    case "running":
+      return { stroke: dark ? "#22d3ee" : "#0e7490" };
+    case "failed":
+      return { stroke: dark ? "#fb7185" : "#be123c", dashArray: "2 1" };
+    case "interrupted":
+      return { stroke: dark ? "#cbd5e1" : "#475569", dashArray: "3 2" };
+    case "skipped":
+    case "cancelled":
+      return { stroke: dark ? "#60a5fa" : "#2563eb", dashArray: "1 2" };
+    case "unknown":
+      return { stroke: dark ? "#cbd5e1" : "#64748b", dashArray: "4 2" };
+    default:
+      return { stroke: dark ? "#cbd5e1" : "#64748b", dashArray: "4 2" };
+  }
+}
+
+function aggregateOutcome(members: ExecutionBar[]): { status: string; summary: string } {
+  const counts = new Map<string, number>();
+  for (const member of members) {
+    const status = member.segment.status;
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  const summary = [...counts]
+    .map(([status, count]) => `${outcomeLabel(status)} ${count}`)
+    .join("，");
+  const priority = ["failed", "interrupted", "unknown", "running", "cancelled", "skipped"];
+  return { status: priority.find((status) => counts.has(status)) ?? "success", summary };
 }
 
 function reasonLabel(reason: string | null | undefined): string {
@@ -142,15 +201,15 @@ function executionTitle(bar: ExecutionBar): string {
   const end = segment.finishedAt ? timestamp(segment.finishedAt, bar.endMs) : bar.endMs;
   const duration =
     segment.durationMs != null
-      ? `${Math.round(segment.durationMs / 1000)} 秒`
+      ? durationLabel(segment.durationMs)
       : bar.active
-        ? `${Math.round((bar.endMs - bar.startMs) / 1000)} 秒（进行中）`
+        ? `${durationLabel(bar.endMs - bar.startMs)}（进行中）`
         : "未知";
   return [
     segment.title,
     `触发：${segment.triggerKind ?? "未知"}`,
-    `开始：${compactTime(bar.startMs)}`,
-    `结束：${segment.finishedAt ? compactTime(end) : bar.active ? "进行中" : `最后确认于 ${compactTime(end)}`}`,
+    `开始：${exactTime(bar.startMs)}`,
+    `结束：${segment.finishedAt ? exactTime(end) : bar.active ? "进行中" : `未确认，最后观测于 ${exactTime(end)}`}`,
     `用时：${duration}`,
     `结果：${outcomeLabel(segment.status)}`,
     segment.activeChildTitle ? `当前子阶段：${segment.activeChildTitle}` : null,
@@ -392,6 +451,40 @@ export function TaskTimelineChart({
           className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/65"
           aria-label="时间图图例"
         >
+          <li className="font-medium text-base-content/75">执行结果</li>
+          <li className="inline-flex items-center gap-1.5">
+            <i className="size-2.5 rounded-sm bg-base-content/55" />
+            成功
+          </li>
+          <li className="inline-flex items-center gap-1.5">
+            <i
+              className="size-2.5 rounded-sm border"
+              style={{ borderColor: dark ? "#22d3ee" : "#0e7490" }}
+            />
+            进行中
+          </li>
+          <li className="inline-flex items-center gap-1.5">
+            <i
+              className="size-2.5 rounded-sm border border-dashed"
+              style={{ borderColor: dark ? "#fb7185" : "#be123c" }}
+            />
+            失败
+          </li>
+          <li className="inline-flex items-center gap-1.5">
+            <i
+              className="size-2.5 rounded-sm border border-dashed"
+              style={{ borderColor: dark ? "#cbd5e1" : "#475569" }}
+            />
+            中断 / 未知
+          </li>
+          <li className="inline-flex items-center gap-1.5">
+            <i
+              className="size-2.5 rounded-sm border border-dotted"
+              style={{ borderColor: dark ? "#60a5fa" : "#2563eb" }}
+            />
+            取消 / 跳过
+          </li>
+          <li className="font-medium text-base-content/75">准入 / 压力</li>
           <li className="inline-flex items-center gap-1.5">
             <i className="size-2 rounded-full bg-emerald-600" />
             正常
@@ -494,6 +587,7 @@ export function TaskTimelineChart({
               const barY = AXIS_HEIGHT + bar.lane * LANE_HEIGHT + 3;
               const width = Math.max(MIN_BAR_WIDTH, x(bar.endMs) - barX);
               const color = managedTaskColor(taskByKey.get(bar.segment.taskKey), dark);
+              const appearance = outcomeAppearance(bar.segment.status, dark);
               return (
                 <g
                   key={bar.segment.segmentId}
@@ -521,8 +615,9 @@ export function TaskTimelineChart({
                     rx={2}
                     fill={color}
                     fillOpacity={bar.active ? 1 : 0.82}
-                    stroke={bar.active ? color : "none"}
-                    strokeWidth={bar.active ? 1 : 0}
+                    stroke={appearance?.stroke ?? (bar.active ? color : "none")}
+                    strokeDasharray={appearance?.dashArray}
+                    strokeWidth={appearance ? 1.5 : bar.active ? 1 : 0}
                   />
                   <title>{executionTitle(bar)}</title>
                 </g>
@@ -533,10 +628,12 @@ export function TaskTimelineChart({
               const barY = AXIS_HEIGHT + group.lane * LANE_HEIGHT + 3;
               const width = Math.max(7, x(group.endMs) - barX);
               const color = managedTaskColor(taskByKey.get(group.taskKey), dark);
+              const outcome = aggregateOutcome(group.members);
+              const appearance = outcomeAppearance(outcome.status, dark);
               return (
                 <g
                   key={group.key}
-                  aria-label={`${group.members.length} 次${taskByKey.get(group.taskKey)?.title ?? group.taskKey}执行，选择查看详情`}
+                  aria-label={`${group.members.length} 次${taskByKey.get(group.taskKey)?.title ?? group.taskKey}执行；${outcome.summary}；选择查看详情`}
                   className="cursor-pointer outline-none focus-visible:opacity-75"
                   onClick={() => {
                     setSelectedExecutions(group.members);
@@ -552,7 +649,17 @@ export function TaskTimelineChart({
                   role="button"
                   tabIndex={0}
                 >
-                  <rect x={barX} y={barY} width={width} height={11} rx={2} fill={color} />
+                  <rect
+                    x={barX}
+                    y={barY}
+                    width={width}
+                    height={11}
+                    rx={2}
+                    fill={color}
+                    stroke={appearance?.stroke ?? "none"}
+                    strokeDasharray={appearance?.dashArray}
+                    strokeWidth={appearance ? 1.5 : 0}
+                  />
                   <text x={barX + width + 2} y={barY + 9} fill="currentColor" fontSize="9">
                     ×{group.members.length}
                   </text>
@@ -566,7 +673,7 @@ export function TaskTimelineChart({
               const bandY = pressureTop + lane * 12 + 2;
               const bandX = x(startMs);
               const width = Math.max(MIN_BAR_WIDTH, x(endMs) - bandX);
-              const title = `${segment.title}；${reasonLabel(segment.reason)}；开始 ${compactTime(startMs)}；${segment.finishedAt ? `恢复 ${compactTime(timestamp(segment.finishedAt, endMs))}` : "尚未确认恢复"}${segment.retryAt ? `；重试时间 ${compactTime(timestamp(segment.retryAt, endMs))}` : "；重试时间未知"}`;
+              const title = `${segment.title}；${reasonLabel(segment.reason)}；开始 ${exactTime(startMs)}；${segment.finishedAt ? `恢复 ${exactTime(timestamp(segment.finishedAt, endMs))}` : "尚未确认恢复"}${segment.retryAt ? `；重试时间 ${exactTime(timestamp(segment.retryAt, endMs))}` : "；重试时间未知"}`;
               return (
                 <g
                   key={segment.segmentId}
@@ -618,25 +725,39 @@ export function TaskTimelineChart({
             {selectedExecutions.map((bar) => (
               <li
                 key={bar.segment.segmentId}
-                className="grid gap-1 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+                className="grid gap-1 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
               >
-                <Link
-                  className="flex min-w-0 items-center gap-2 font-medium hover:underline"
-                  to={`/system/tasks/${encodeURIComponent(bar.segment.taskKey)}`}
-                >
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{
-                      backgroundColor: managedTaskColor(taskByKey.get(bar.segment.taskKey), dark),
-                    }}
-                  />
-                  <span className="truncate">{bar.segment.title}</span>
-                </Link>
+                <div className="min-w-0">
+                  <Link
+                    className="flex min-w-0 items-center gap-2 font-medium hover:underline"
+                    to={`/system/tasks/${encodeURIComponent(bar.segment.taskKey)}`}
+                  >
+                    <span
+                      className="size-2 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor: managedTaskColor(taskByKey.get(bar.segment.taskKey), dark),
+                      }}
+                    />
+                    <span className="truncate">{bar.segment.title}</span>
+                  </Link>
+                  <div className="mt-1 text-xs leading-relaxed text-base-content/65">
+                    触发：{bar.segment.triggerKind ?? "未知"} · 实际开始：
+                    {exactTime(timestamp(bar.segment.startedAt, nowMs))} · 实际结束：
+                    {bar.segment.finishedAt
+                      ? exactTime(timestamp(bar.segment.finishedAt, nowMs))
+                      : bar.active
+                        ? "进行中"
+                        : `未确认（最后观测于 ${exactTime(timestamp(bar.segment.lastObservedAt, nowMs))}）`}
+                    {" · "}实际用时：
+                    {bar.segment.durationMs != null
+                      ? durationLabel(bar.segment.durationMs)
+                      : bar.active
+                        ? `${durationLabel(bar.endMs - bar.startMs)}（进行中）`
+                        : "未知"}
+                  </div>
+                </div>
                 <span className="text-xs text-base-content/65">
-                  {compactTime(timestamp(bar.segment.startedAt, nowMs))}
-                </span>
-                <span className="text-xs text-base-content/65">
-                  {outcomeLabel(bar.segment.status)}
+                  结果：{outcomeLabel(bar.segment.status)}
                 </span>
               </li>
             ))}
@@ -653,6 +774,16 @@ export function TaskTimelineChart({
               {reasonLabel(selectedDeferral.reason)}
             </span>
             <div className="mt-1 text-xs text-base-content/60">{selectedDeferral.taskKey}</div>
+            <div className="mt-1 text-xs text-base-content/60">
+              开始：{exactTime(timestamp(selectedDeferral.startedAt, nowMs))} · 恢复：
+              {selectedDeferral.finishedAt
+                ? exactTime(timestamp(selectedDeferral.finishedAt, nowMs))
+                : "尚未确认"}
+              {" · "}重试时间：
+              {selectedDeferral.retryAt
+                ? exactTime(timestamp(selectedDeferral.retryAt, nowMs))
+                : "未知"}
+            </div>
           </div>
           <span className="text-xs text-base-content/65">
             受影响任务：{selectedDeferral.title}；恢复条件：

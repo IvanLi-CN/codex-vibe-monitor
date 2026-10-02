@@ -90,7 +90,7 @@ function RunningTask({
 }): JSX.Element {
   return (
     <div
-      className={`grid gap-3 border-b border-primary/20 px-3 py-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] sm:items-center ${stale ? "bg-base-200/35" : "bg-primary/5"}`}
+      className={`grid gap-x-3 gap-y-1 border-b border-primary/20 px-3 py-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] sm:items-center ${stale ? "bg-base-200/35" : "bg-primary/5"}`}
     >
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
@@ -105,9 +105,9 @@ function RunningTask({
           </div>
         ) : null}
       </div>
-      <div className="text-sm">
+      <div className="text-sm sm:flex sm:items-center sm:gap-2">
         <div className="text-xs text-base-content/55">触发 / 执行级别</div>
-        <div className="mt-1 font-medium">
+        <div className="mt-1 font-medium sm:mt-0">
           {managedTaskTriggerLabel(
             task ?? {
               triggerMode: run.triggerKind,
@@ -119,13 +119,15 @@ function RunningTask({
           {managedTaskExecutionClassLabel(run.executionClass)}
         </div>
       </div>
-      <div className="text-sm">
+      <div className="text-sm sm:flex sm:items-center sm:gap-2">
         <div className="text-xs text-base-content/55">实际开始</div>
-        <div className="mt-1 font-medium">{formatUtc(run.startedAt)}</div>
+        <div className="mt-1 font-medium sm:mt-0">{formatUtc(run.startedAt)}</div>
       </div>
-      <div className="text-sm sm:text-right">
+      <div className="text-sm sm:flex sm:items-center sm:justify-end sm:gap-2">
         <div className="text-xs text-base-content/55">用时</div>
-        <div className="mt-1 font-mono font-medium tabular-nums">{formatElapsed(elapsed)}</div>
+        <div className="mt-1 font-mono font-medium tabular-nums sm:mt-0">
+          {formatElapsed(elapsed)}
+        </div>
       </div>
     </div>
   );
@@ -137,6 +139,7 @@ function WaitingTask({
   task,
   dark,
   kind,
+  waitingStartedAt,
   waitingMs,
   receivedAt,
   detail,
@@ -146,12 +149,13 @@ function WaitingTask({
   task: ManagedTask | undefined;
   dark: boolean;
   kind: "queue" | "admission";
+  waitingStartedAt: string | null | undefined;
   waitingMs: number;
   receivedAt: number | null;
   detail: string;
 }): JSX.Element {
   return (
-    <div className="grid gap-2 border-b border-base-300/60 px-3 py-2.5 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_auto] sm:items-center">
+    <div className="grid gap-x-2 gap-y-1 border-b border-base-300/60 px-3 py-2 sm:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_auto] sm:items-center">
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
           <TaskDot task={task} dark={dark} />
@@ -159,13 +163,22 @@ function WaitingTask({
           <span className="shrink-0 text-xs text-base-content/50">
             {kind === "queue" ? "已入队" : "等待准入"}
           </span>
+          <span className="hidden min-w-0 truncate text-xs text-base-content/50 sm:inline">
+            · {taskKey}
+          </span>
         </div>
-        <div className="mt-1 truncate pl-4 text-xs text-base-content/55">{taskKey}</div>
+        <div className="mt-1 truncate pl-4 text-xs text-base-content/55 sm:hidden">{taskKey}</div>
       </div>
-      <div className="text-sm text-base-content/70">{detail}</div>
-      <div className="text-sm sm:text-right">
+      <div className="text-sm text-base-content/70">
+        <div>{detail}</div>
+        <div className="mt-0.5 text-xs text-base-content/55">
+          {kind === "queue" ? "请求时间" : "等待开始"} ·{" "}
+          {waitingStartedAt ? formatUtc(waitingStartedAt) : "未知"}
+        </div>
+      </div>
+      <div className="text-sm sm:flex sm:items-center sm:justify-end sm:gap-2">
         <div className="text-xs text-base-content/55">等待时长</div>
-        <div className="mt-1 font-mono tabular-nums">
+        <div className="mt-1 font-mono tabular-nums sm:mt-0">
           {formatElapsed(getElapsed(waitingMs, receivedAt))}
         </div>
       </div>
@@ -351,8 +364,11 @@ export default function SystemTasksPage(): JSX.Element {
         </div>
         {error ? <Alert variant="error">任务目录不可用：{error}</Alert> : null}
 
-        <section aria-labelledby="current-tasks-heading" className="space-y-3">
-          <div className="flex flex-wrap items-end justify-between gap-2">
+        <section
+          aria-labelledby="current-tasks-heading"
+          className="overflow-hidden rounded-md border border-base-300/70"
+        >
+          <div className="flex flex-wrap items-end justify-between gap-2 border-b border-base-300/70 px-3 py-2">
             <div>
               <h3 id="current-tasks-heading" className="text-lg font-semibold">
                 当前任务
@@ -370,13 +386,10 @@ export default function SystemTasksPage(): JSX.Element {
             </span>
           </div>
           {runtimeError ? <Alert variant="warning">实时运行观测未知：{runtimeError}</Alert> : null}
-          <section
-            aria-labelledby="running-tasks-heading"
-            className="overflow-hidden rounded-md border border-base-300/70"
-          >
+          <section aria-labelledby="running-tasks-heading">
             <h4
               id="running-tasks-heading"
-              className="border-b border-base-300/60 px-3 py-2 text-sm font-semibold"
+              className="border-b border-base-300/60 bg-base-100/35 px-3 py-1.5 text-xs font-semibold"
             >
               {runtimeFresh ? "正在执行" : "执行状态未知"}{" "}
               <span className="font-normal text-base-content/55">
@@ -402,13 +415,10 @@ export default function SystemTasksPage(): JSX.Element {
               </div>
             )}
           </section>
-          <section
-            aria-labelledby="queued-tasks-heading"
-            className="overflow-hidden rounded-md border border-base-300/70"
-          >
+          <section aria-labelledby="queued-tasks-heading">
             <h4
               id="queued-tasks-heading"
-              className="border-b border-base-300/60 px-3 py-2 text-sm font-semibold"
+              className="border-y border-base-300/60 bg-base-100/35 px-3 py-1.5 text-xs font-semibold"
             >
               已入队{" "}
               <span className="font-normal text-base-content/55">
@@ -432,6 +442,7 @@ export default function SystemTasksPage(): JSX.Element {
                   task={taskByKey.get(run.taskKey)}
                   dark={dark}
                   kind="queue"
+                  waitingStartedAt={run.requestedAt}
                   waitingMs={run.waitingMs}
                   receivedAt={runtimeReceivedAt}
                   detail={`第 ${run.position} 位 · ${managedTaskTriggerLabel({ triggerMode: run.triggerKind, isManual: run.triggerKind === "manual", cronExpr: null })}`}
@@ -441,13 +452,10 @@ export default function SystemTasksPage(): JSX.Element {
               <div className="px-3 py-3 text-sm text-base-content/60">当前没有已入队请求。</div>
             )}
           </section>
-          <section
-            aria-labelledby="admission-waits-heading"
-            className="overflow-hidden rounded-md border border-base-300/70"
-          >
+          <section aria-labelledby="admission-waits-heading">
             <h4
               id="admission-waits-heading"
-              className="border-b border-base-300/60 px-3 py-2 text-sm font-semibold"
+              className="border-y border-base-300/60 bg-base-100/35 px-3 py-1.5 text-xs font-semibold"
             >
               等待准入 / 压力延后{" "}
               <span className="font-normal text-base-content/55">
@@ -471,6 +479,7 @@ export default function SystemTasksPage(): JSX.Element {
                   task={taskByKey.get(wait.taskKey)}
                   dark={dark}
                   kind="admission"
+                  waitingStartedAt={wait.startedAt}
                   waitingMs={wait.waitingMs}
                   receivedAt={runtimeReceivedAt}
                   detail={admissionReason(wait)}
