@@ -64,6 +64,25 @@ fn percentile_micros(samples: &[u128], percentile: usize) -> u128 {
     sorted[rank.min(sorted.len().saturating_sub(1))]
 }
 
+async fn retention_recovery_retry_delay(pool: &SqlitePool) -> Duration {
+    let delay_seconds = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(0, CAST(strftime('%s', MIN(next_retry_at)) - strftime('%s', 'now') AS INTEGER))
+         FROM retention_recovery_cursors
+         WHERE next_retry_at IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+    .clamp(0, 300);
+    if delay_seconds > 0 {
+        Duration::from_secs(delay_seconds as u64 + 1)
+    } else {
+        Duration::from_millis(100)
+    }
+}
+
 async fn seed_retention_capacity_fixture(pool: &SqlitePool, config: &AppConfig) -> usize {
     let total_rows = benchmark_total_rows();
     let hot_rows = benchmark_hot_rows(total_rows);
@@ -325,7 +344,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
                 recoverable_retry_attempts < 100,
                 "retention capacity benchmark stayed in recoverable failure for too many retries"
             );
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(retention_recovery_retry_delay(&pool).await).await;
             continue;
         }
         let remaining: i64 = sqlx::query_scalar(
@@ -352,7 +371,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
                 no_progress_retries < 1_000,
                 "retention capacity benchmark made no progress for too many retries"
             );
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(retention_recovery_retry_delay(&pool).await).await;
             continue;
         }
         assert!(
