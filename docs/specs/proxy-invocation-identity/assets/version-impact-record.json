@@ -41,7 +41,7 @@
         "src/maintenance_store.rs",
         "src/maintenance/startup_backfill.rs",
         "src/prompt_cache_conversations.rs",
-        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs"
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs"
       ]
     },
     "verified": {
@@ -52,7 +52,7 @@
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/old-reader-http.json",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/result.json",
         "src/maintenance_store.rs: existing_maintenance_prompt_cache_control_and_checkpoint_win_over_legacy_state and legacy_only_prompt_cache_control_is_imported_once_into_maintenance",
-        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs: independent-database control, status, single-traversal paging, and restart regressions",
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs: independent-database control, status, single-traversal paging, and restart regressions",
         "src/api/slices/system_routes_and_tasks.rs: prompt_cache_control_patch_paths_share_the_injected_maintenance_store"
       ]
     }

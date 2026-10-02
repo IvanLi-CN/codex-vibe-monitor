@@ -37,7 +37,7 @@
 - `cargo test prompt_cache_control -- --nocapture`
 - `cargo test prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale -- --ignored --nocapture --test-threads=1`
 - `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
-- Focused stateful SQLite tests in `src/tests/stateful_sqlite/proxy_long_wait_allocation_and_index.rs` and `src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs`.
+- Focused stateful SQLite tests in `src/tests/stateful_sqlite/proxy_long_wait_allocation_and_index.rs` and `src/tests/stateful_sqlite/prompt_cache_materialization_control.rs`.
 - The long-wait workload is a required Linux shared-testbox acceptance run; its candidate SHA, run directory, and per-round gate results are recorded with the delivery evidence.
 - Baseline `prompt-cache-control` replay at `b68295595d875aead33ef31514eaf602279ece94`: the isolated service accepted a managed run with maintenance control enabled and the legacy business bit disabled, but after 60 seconds retained 400 queued keys with zero materialized identities, staging rows, or materialization-run records. Evidence: `/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/runs/20261002_143605_performance_b68295595d87_75209/logs/loadgen.jsonl` and `run-metadata.json`.
 
