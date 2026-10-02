@@ -34,7 +34,9 @@ vi.mock("../../lib/api", async () => ({
 vi.mock("../../hooks/useSubscriptionTopic", () => ({
   useSubscriptionTopic: streamMocks.useSubscriptionTopic,
 }));
-vi.mock("../../hooks/useSseStatus", () => ({ default: streamMocks.useSseStatus }));
+vi.mock("../../hooks/useSseStatus", () => ({
+  default: streamMocks.useSseStatus,
+}));
 vi.mock("../../lib/sse", async () => ({
   ...(await vi.importActual<typeof import("../../lib/sse")>("../../lib/sse")),
   requestImmediateReconnect: streamMocks.requestImmediateReconnect,
@@ -43,19 +45,25 @@ vi.mock("../../lib/sse", async () => ({
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+function pageElement() {
+  return (
+    <MemoryRouter>
+      <I18nProvider>
+        <SystemTasksPage />
+      </I18nProvider>
+    </MemoryRouter>
+  );
+}
+
 function renderPage() {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() =>
-    root?.render(
-      <MemoryRouter>
-        <I18nProvider>
-          <SystemTasksPage />
-        </I18nProvider>
-      </MemoryRouter>,
-    ),
-  );
+  act(() => root?.render(pageElement()));
+}
+
+function updatePage() {
+  act(() => root?.render(pageElement()));
 }
 
 async function flushEffects() {
@@ -153,7 +161,13 @@ describe("SystemTasksPage", () => {
           refresh: streamMocks.timelineRefresh,
         };
       }
-      return { data: null, lastReceivedAt: null, error: null, isLoading: true, refresh: vi.fn() };
+      return {
+        data: null,
+        lastReceivedAt: null,
+        error: null,
+        isLoading: true,
+        refresh: vi.fn(),
+      };
     });
     apiMocks.fetchManagedTasks.mockResolvedValue([
       {
@@ -291,6 +305,157 @@ describe("SystemTasksPage", () => {
     expect(within(host as HTMLElement).getByRole("status").textContent).toContain(
       "实时数据连接中，正在等待服务端快照",
     );
+  });
+
+  it("merges SSE timeline deltas by segment identity and revision", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T00:00:10.000Z"));
+    const originalSegment = {
+      segmentId: "timeline-run-1",
+      kind: "execution",
+      taskKey: "retention_archive",
+      title: "数据保留与归档",
+      startedAt: "2026-10-01T00:00:00.000Z",
+      lastObservedAt: "2026-10-01T00:00:04.000Z",
+      finishedAt: "2026-10-01T00:00:04.000Z",
+      durationMs: 4_000,
+      status: "failed",
+      triggerKind: "manual",
+      executionClass: null,
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 1,
+      sessionId: "session-one",
+      revision: 1,
+    };
+    streamMocks.timelineData = {
+      observedAt: "2026-10-01T00:00:05.000Z",
+      windowStart: "2026-09-30T12:00:05.000Z",
+      windowEnd: "2026-10-01T00:00:05.000Z",
+      watermark: 1,
+      segments: [originalSegment],
+      coverage: [],
+      nextCursor: null,
+      resetRequired: false,
+    };
+    renderPage();
+    await flushEffects();
+    const initialBars = host?.querySelectorAll('[data-testid="task-timeline"] g[role="button"]');
+    expect(
+      Array.from(initialBars ?? []).some((bar) =>
+        bar.getAttribute("aria-label")?.includes("结果：失败"),
+      ),
+    ).toBe(true);
+
+    streamMocks.timelineData = {
+      observedAt: "2026-10-01T00:00:08.000Z",
+      windowStart: "2026-09-30T12:00:08.000Z",
+      windowEnd: "2026-10-01T00:00:08.000Z",
+      watermark: 2,
+      replace: false,
+      segments: [
+        { ...originalSegment, status: "success", revision: 2 },
+        {
+          ...originalSegment,
+          segmentId: "timeline-run-2",
+          startedAt: "2026-09-30T22:00:00.000Z",
+          lastObservedAt: "2026-09-30T22:00:05.000Z",
+          finishedAt: "2026-09-30T22:00:05.000Z",
+          status: "success",
+          revision: 1,
+        },
+      ],
+      coverage: [],
+      nextCursor: null,
+      resetRequired: false,
+    };
+    updatePage();
+    await flushEffects();
+
+    const bars = Array.from(
+      host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
+    );
+    expect(bars).toHaveLength(3);
+    expect(
+      bars.filter((bar) => bar.getAttribute("aria-label")?.includes("结果：成功")),
+    ).toHaveLength(2);
+    expect(bars.some((bar) => bar.getAttribute("aria-label")?.includes("结果：失败"))).toBe(false);
+
+    streamMocks.timelineData = {
+      observedAt: "2026-10-01T00:00:09.000Z",
+      windowStart: "2026-09-30T12:00:09.000Z",
+      windowEnd: "2026-10-01T00:00:09.000Z",
+      watermark: 1,
+      replace: false,
+      segments: [{ ...originalSegment, status: "failed", revision: 3 }],
+      coverage: [],
+      nextCursor: null,
+      resetRequired: false,
+    };
+    updatePage();
+    await flushEffects();
+    const afterStaleDelta = Array.from(
+      host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
+    );
+    expect(
+      afterStaleDelta.filter((bar) => bar.getAttribute("aria-label")?.includes("结果：成功")),
+    ).toHaveLength(2);
+
+    streamMocks.timelineData = {
+      observedAt: "2026-10-01T00:00:10.000Z",
+      windowStart: "2026-10-01T00:00:00.000Z",
+      windowEnd: "2026-10-01T00:00:10.000Z",
+      watermark: 3,
+      replace: false,
+      segments: [],
+      coverage: [],
+      nextCursor: null,
+      resetRequired: false,
+    };
+    updatePage();
+    await flushEffects();
+    const afterWindowSlide = Array.from(
+      host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
+    );
+    expect(
+      afterWindowSlide.filter((bar) => bar.getAttribute("aria-label")?.includes("结果：成功")),
+    ).toHaveLength(1);
+
+    streamMocks.timelineData = {
+      observedAt: "2026-10-01T00:00:10.000Z",
+      windowStart: "2026-09-30T12:00:10.000Z",
+      windowEnd: "2026-10-01T00:00:10.000Z",
+      watermark: 4,
+      replace: true,
+      segments: [
+        {
+          ...originalSegment,
+          segmentId: "resnapshot-run",
+          title: "重新同步后的执行",
+          startedAt: "2026-10-01T00:00:08.000Z",
+          lastObservedAt: "2026-10-01T00:00:09.000Z",
+          finishedAt: "2026-10-01T00:00:09.000Z",
+          status: "success",
+          revision: 1,
+        },
+      ],
+      coverage: [],
+      nextCursor: null,
+      resetRequired: true,
+    };
+    updatePage();
+    await flushEffects();
+    const resnapshotBars = Array.from(
+      host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
+    );
+    expect(
+      resnapshotBars.some((bar) => bar.getAttribute("aria-label")?.includes("重新同步后的执行")),
+    ).toBe(true);
+    expect(
+      resnapshotBars.some((bar) => bar.getAttribute("aria-label")?.includes("结果：失败")),
+    ).toBe(false);
   });
 
   it("offers manual reconnection when SSE updates are disabled", async () => {

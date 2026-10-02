@@ -23,6 +23,8 @@ const EVENT_CAPACITY: usize = 4096;
 const BATCH_SIZE: usize = 256;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const SHUTDOWN_FLUSH_ATTEMPTS: usize = 3;
+const SHUTDOWN_FLUSH_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TaskObservationChange {
@@ -97,6 +99,43 @@ struct EventSender {
     session_id: String,
     tx: mpsc::Sender<TimelineEvent>,
     dropped: Arc<AtomicU64>,
+    dropped_interval: Arc<Mutex<Option<DroppedInterval>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DroppedInterval {
+    id: String,
+    started_at: String,
+    finished_at: String,
+}
+
+fn record_dropped_event(dropped: &AtomicU64, interval: &Mutex<Option<DroppedInterval>>) {
+    dropped.fetch_add(1, Ordering::Relaxed);
+    let now = format_utc_iso_millis(Utc::now());
+    let Ok(mut interval) = interval.lock() else {
+        return;
+    };
+    match interval.as_mut() {
+        Some(interval) => interval.finished_at = now,
+        None => {
+            *interval = Some(DroppedInterval {
+                id: nanoid::nanoid!(),
+                started_at: now.clone(),
+                finished_at: now,
+            });
+        }
+    }
+}
+
+fn clear_persisted_dropped_interval(
+    interval: &Mutex<Option<DroppedInterval>>,
+    persisted: &DroppedInterval,
+) {
+    if let Ok(mut interval) = interval.lock()
+        && interval.as_ref() == Some(persisted)
+    {
+        *interval = None;
+    }
 }
 
 fn event_sender() -> &'static Mutex<Option<EventSender>> {
@@ -123,7 +162,7 @@ fn send_event(event: TimelineEvent) {
     let sender = event_sender().lock().ok().and_then(|sender| sender.clone());
     let Some(sender) = sender else { return };
     if sender.tx.try_send(event).is_err() {
-        sender.dropped.fetch_add(1, Ordering::Relaxed);
+        record_dropped_event(&sender.dropped, &sender.dropped_interval);
     }
 }
 
@@ -246,6 +285,7 @@ fn task_key_for_pressure_source(source: &str) -> Option<&'static str> {
             "summary_coverage_recovery"
         }
         "retention_archive" | "retention" => "retention_archive",
+        "data_retention_maintenance" | "system_task_run_retention" => "retention_archive",
         "raw_orphan_sweep" | "raw_sweep_directory_probe" => "retention_archive",
         "hourly_rollup_refresh" => "startup_hourly_rollup_bootstrap",
         "upstream_account_maintenance" => "upstream_account_maintenance",
@@ -283,18 +323,27 @@ pub(crate) async fn start_recorder(store: Arc<MaintenanceStore>) {
     let session_id = nanoid::nanoid!();
     let (tx, rx) = mpsc::channel(EVENT_CAPACITY);
     let dropped = Arc::new(AtomicU64::new(0));
+    let dropped_interval = Arc::new(Mutex::new(None));
     if let Ok(mut sender) = event_sender().lock() {
         *sender = Some(EventSender {
             session_id: session_id.clone(),
             tx,
             dropped: dropped.clone(),
+            dropped_interval: dropped_interval.clone(),
         });
     }
     let shutdown = CancellationToken::new();
     if let Ok(mut cancel) = recorder_cancel().lock() {
         *cancel = Some(shutdown.clone());
     }
-    let handle = tokio::spawn(run_recorder(store, session_id, rx, dropped, shutdown));
+    let handle = tokio::spawn(run_recorder(
+        store,
+        session_id,
+        rx,
+        dropped,
+        dropped_interval,
+        shutdown,
+    ));
     if let Ok(mut slot) = recorder_handle().lock() {
         *slot = Some(handle);
     }
@@ -322,6 +371,7 @@ async fn run_recorder(
     session_id: String,
     mut rx: mpsc::Receiver<TimelineEvent>,
     dropped: Arc<AtomicU64>,
+    dropped_interval: Arc<Mutex<Option<DroppedInterval>>>,
     shutdown: CancellationToken,
 ) {
     let started_at = loop {
@@ -357,7 +407,7 @@ async fn run_recorder(
             _ = shutdown.cancelled() => break,
             event = rx.recv() => match event {
                 Some(event) if pending.len() < EVENT_CAPACITY => pending.push(event),
-                Some(_) => { dropped.fetch_add(1, Ordering::Relaxed); }
+                Some(_) => record_dropped_event(&dropped, &dropped_interval),
                 None => break,
             },
             _ = ticker.tick() => {
@@ -372,6 +422,15 @@ async fn run_recorder(
                 if !pending.is_empty() || heartbeat || dropped_total != last_dropped {
                     let now = format_utc_iso_millis(Utc::now());
                     let mut events = pending.clone();
+                    let dropped_gap = dropped_interval.lock().ok().and_then(|gap| gap.clone());
+                    if let Some(gap) = &dropped_gap {
+                        events.push(TimelineEvent::CoverageGap {
+                            id: gap.id.clone(),
+                            started_at: gap.started_at.clone(),
+                            finished_at: gap.finished_at.clone(),
+                            reason: "event_channel_overflow".to_string(),
+                        });
+                    }
                     if let Some((gap_id, gap_started_at)) = &coverage_gap {
                         events.push(TimelineEvent::CoverageGap {
                             id: gap_id.clone(),
@@ -397,6 +456,9 @@ async fn run_recorder(
                                 notify_runtime_changed();
                             }
                             pending.clear();
+                            if let Some(gap) = dropped_gap.as_ref() {
+                                clear_persisted_dropped_interval(&dropped_interval, gap);
+                            }
                             last_success_at = now;
                             coverage_gap = None;
                             last_dropped = dropped_total;
@@ -420,11 +482,20 @@ async fn run_recorder(
         }
     }
     while rx.try_recv().is_ok() {
-        dropped.fetch_add(1, Ordering::Relaxed);
+        record_dropped_event(&dropped, &dropped_interval);
     }
     let now = format_utc_iso_millis(Utc::now());
     let dropped_total = dropped.load(Ordering::Relaxed);
     let mut events = pending.clone();
+    let dropped_gap = dropped_interval.lock().ok().and_then(|gap| gap.clone());
+    if let Some(gap) = &dropped_gap {
+        events.push(TimelineEvent::CoverageGap {
+            id: gap.id.clone(),
+            started_at: gap.started_at.clone(),
+            finished_at: gap.finished_at.clone(),
+            reason: "event_channel_overflow".to_string(),
+        });
+    }
     if let Some((gap_id, gap_started_at)) = &coverage_gap {
         events.push(TimelineEvent::CoverageGap {
             id: gap_id.clone(),
@@ -433,10 +504,25 @@ async fn run_recorder(
             reason: "maintenance_store_write_unavailable".to_string(),
         });
     }
-    let persisted = store
-        .write_timeline_batch(&session_id, &events, dropped_total, &now, true)
-        .await
-        .is_ok();
+    let mut persisted = false;
+    for attempt in 0..SHUTDOWN_FLUSH_ATTEMPTS {
+        match store
+            .write_timeline_batch(&session_id, &events, dropped_total, &now, true)
+            .await
+        {
+            Ok(()) => {
+                persisted = true;
+                break;
+            }
+            Err(error) if attempt + 1 < SHUTDOWN_FLUSH_ATTEMPTS => {
+                tracing::warn!(%error, attempt = attempt + 1, "task timeline shutdown flush failed; retrying");
+                tokio::time::sleep(SHUTDOWN_FLUSH_RETRY_DELAY).await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "task timeline shutdown flush failed; leaving coverage open for restart recovery");
+            }
+        }
+    }
     if persisted {
         notify_timeline_changed();
         if events.iter().any(|event| {
@@ -447,6 +533,14 @@ async fn run_recorder(
         }) {
             notify_runtime_changed();
         }
+        if let Some(gap) = dropped_gap.as_ref() {
+            clear_persisted_dropped_interval(&dropped_interval, gap);
+        }
+    } else {
+        tracing::warn!(
+            session_id,
+            "task timeline coverage remains open so the next recorder can expose the unobserved interval"
+        );
     }
     if persisted && let Err(error) = store.finish_timeline_session(&session_id, &now).await {
         tracing::warn!(%error, "task timeline session close could not be persisted");
@@ -597,4 +691,54 @@ fn validate_decoded_cursor(cursor: &TimelineCursor) -> anyhow::Result<()> {
 fn decode_cursor(raw: &str) -> anyhow::Result<TimelineCursor> {
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw)?;
     Ok(serde_json::from_slice(&payload)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pressure_retention_sources_resolve_to_the_managed_task() {
+        assert_eq!(
+            task_key_for_pressure_source("data_retention_maintenance"),
+            Some("retention_archive")
+        );
+        assert_eq!(
+            task_key_for_pressure_source("system_task_run_retention"),
+            Some("retention_archive")
+        );
+    }
+
+    #[test]
+    fn dropped_events_accumulate_only_while_the_gap_is_open() {
+        let dropped = AtomicU64::new(0);
+        let interval = Mutex::new(None);
+        record_dropped_event(&dropped, &interval);
+        let first = interval
+            .lock()
+            .expect("lock drop interval")
+            .clone()
+            .unwrap();
+        record_dropped_event(&dropped, &interval);
+        let extended = interval
+            .lock()
+            .expect("lock drop interval")
+            .clone()
+            .unwrap();
+
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(first.id, extended.id);
+        assert_eq!(first.started_at, extended.started_at);
+        assert!(extended.finished_at >= first.finished_at);
+
+        clear_persisted_dropped_interval(&interval, &extended);
+        assert!(interval.lock().expect("lock drop interval").is_none());
+        record_dropped_event(&dropped, &interval);
+        let next = interval
+            .lock()
+            .expect("lock drop interval")
+            .clone()
+            .unwrap();
+        assert_ne!(next.id, extended.id);
+    }
 }

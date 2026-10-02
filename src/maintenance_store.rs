@@ -1482,7 +1482,7 @@ impl MaintenanceStore {
                     finished_at,
                     reason,
                 } => {
-                    sqlx::query("INSERT OR IGNORE INTO task_timeline_segments(segment_id,session_id,kind,task_key,title,started_at,last_observed_at,finished_at,status,reason,revision) VALUES(?,?,'coverage_gap','__timeline__','观测缺口',?,?,?,'unknown',?,?)")
+                    sqlx::query("INSERT INTO task_timeline_segments(segment_id,session_id,kind,task_key,title,started_at,last_observed_at,finished_at,status,reason,revision) VALUES(?,?,'coverage_gap','__timeline__','观测缺口',?,?,?,'unknown',?,?) ON CONFLICT(segment_id) DO UPDATE SET last_observed_at=excluded.last_observed_at,finished_at=excluded.finished_at,reason=excluded.reason,revision=excluded.revision")
                         .bind(id).bind(session_id).bind(started_at).bind(finished_at)
                         .bind(finished_at).bind(reason).bind(revision)
                         .execute(&mut *transaction).await?;
@@ -2681,6 +2681,35 @@ mod tests {
                 reason: "maintenance_store_write_unavailable".to_string(),
             },
         ];
+        sqlx::query("CREATE TRIGGER reject_pending_timeline_write BEFORE INSERT ON task_timeline_segments BEGIN SELECT RAISE(ABORT, 'simulated maintenance write failure'); END")
+            .execute(&store.pool)
+            .await
+            .expect("simulate shutdown persistence failure");
+        let unpersisted = crate::task_timeline::TimelineEvent::ExecutionStarted {
+            id: "lost-on-shutdown".to_string(),
+            task_key: "retention_archive".to_string(),
+            title: "数据保留与归档".to_string(),
+            trigger_kind: "manual".to_string(),
+            execution_class: None,
+            started_at: "2026-10-02T00:00:12.000Z".to_string(),
+            managed_run_id: None,
+        };
+        assert!(
+            store
+                .write_timeline_batch(
+                    "session-one",
+                    &[unpersisted],
+                    0,
+                    "2026-10-02T00:00:13.000Z",
+                    true,
+                )
+                .await
+                .is_err()
+        );
+        sqlx::query("DROP TRIGGER reject_pending_timeline_write")
+            .execute(&store.pool)
+            .await
+            .expect("restore maintenance writes");
         store
             .write_timeline_batch(
                 "session-one",
@@ -2695,6 +2724,24 @@ mod tests {
             .start_timeline_session("session-two", "2026-10-02T00:00:20.000Z")
             .await
             .expect("recover open observations after restart");
+        let coverage: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT session_id,last_seen_at,ended_at FROM task_timeline_coverage ORDER BY started_at",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .expect("read coverage after failed shutdown persistence");
+        assert_eq!(coverage[0].0, "session-one");
+        assert_eq!(coverage[0].1, "2026-10-02T00:00:09.000Z");
+        assert_eq!(coverage[0].2.as_deref(), Some("2026-10-02T00:00:09.000Z"));
+        assert_eq!(coverage[1].0, "session-two");
+        assert_eq!(coverage[1].1, "2026-10-02T00:00:20.000Z");
+        let missing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_timeline_segments WHERE segment_id='lost-on-shutdown'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("ensure unpersisted execution was not fabricated");
+        assert_eq!(missing, 0);
         let recovered: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
             "SELECT segment_id,status,finished_at,last_observed_at FROM task_timeline_segments WHERE segment_id IN ('execution-open','deferral-open') ORDER BY segment_id",
         )
@@ -2728,6 +2775,74 @@ mod tests {
         assert_eq!(unknown.0, None);
         assert_eq!(unknown.1, None);
         assert_eq!(unknown.2, "unknown");
+    }
+
+    #[tokio::test]
+    async fn dropped_event_gaps_are_persisted_as_bounded_intervals() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect timeline gap fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        ensure_task_colors(&pool)
+            .await
+            .expect("seed stable task colors");
+        let store = MaintenanceStore { pool };
+        store
+            .start_timeline_session("drop-session", "2026-10-02T00:00:00.000Z")
+            .await
+            .expect("start drop session");
+        let first = crate::task_timeline::TimelineEvent::CoverageGap {
+            id: "drop-gap".to_string(),
+            started_at: "2026-10-02T00:00:05.000Z".to_string(),
+            finished_at: "2026-10-02T00:00:06.000Z".to_string(),
+            reason: "event_channel_overflow".to_string(),
+        };
+        store
+            .write_timeline_batch(
+                "drop-session",
+                &[first],
+                1,
+                "2026-10-02T00:00:06.000Z",
+                false,
+            )
+            .await
+            .expect("persist first overflow interval");
+        let extended = crate::task_timeline::TimelineEvent::CoverageGap {
+            id: "drop-gap".to_string(),
+            started_at: "2026-10-02T00:00:05.000Z".to_string(),
+            finished_at: "2026-10-02T00:00:09.000Z".to_string(),
+            reason: "event_channel_overflow".to_string(),
+        };
+        store
+            .write_timeline_batch(
+                "drop-session",
+                &[extended],
+                4,
+                "2026-10-02T00:00:09.000Z",
+                false,
+            )
+            .await
+            .expect("extend overflow interval");
+
+        let persisted: (String, String, i64) = sqlx::query_as(
+            "SELECT started_at,finished_at,revision FROM task_timeline_segments WHERE segment_id='drop-gap'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read localized overflow interval");
+        let dropped_total: i64 = sqlx::query_scalar(
+            "SELECT dropped_events FROM task_timeline_coverage WHERE session_id='drop-session'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read cumulative drop count");
+        assert_eq!(persisted.0, "2026-10-02T00:00:05.000Z");
+        assert_eq!(persisted.1, "2026-10-02T00:00:09.000Z");
+        assert_eq!(persisted.2, 3);
+        assert_eq!(dropped_total, 4);
     }
 
     #[tokio::test]

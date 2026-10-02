@@ -44,6 +44,15 @@ describe("demo topic payloads", () => {
       segments: expect.any(Array),
       coverage: expect.any(Array),
     });
+    expect(timeline).toMatchObject({
+      segments: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "coverage_gap",
+          reason: "event_channel_overflow",
+        }),
+      ]),
+      coverage: expect.arrayContaining([expect.objectContaining({ droppedEvents: 4 })]),
+    });
   });
 
   it("keeps model routing subscription filters in the demo snapshot", async () => {

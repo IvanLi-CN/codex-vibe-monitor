@@ -128,6 +128,47 @@ describe("DemoTopicEventSource", () => {
     source.close();
   });
 
+  it("publishes live task runtime and timeline events to both demo topics", async () => {
+    vi.useFakeTimers();
+    mocks.resolveDemoTopicPayload.mockImplementation(async (topic: { topic: string }) => ({
+      observedAt: "2026-10-01T00:00:00.000Z",
+      topic: topic.topic,
+    }));
+    let publishRealtime: ((payload: DemoRealtimePayload) => void) | undefined;
+    mocks.subscribeToDemoRealtime.mockImplementation((listener) => {
+      publishRealtime = listener;
+      return vi.fn();
+    });
+    const topics = [
+      { topic: "system.managed-tasks.runtime" },
+      { topic: "system.managed-tasks.timeline" },
+    ];
+    const encodedTopics = btoa(JSON.stringify(topics));
+    const source = new DemoTopicEventSource(`/events?topics=${encodedTopics}`);
+    const messages: Array<{ type: string; topic: { topic: string } }> = [];
+    source.addEventListener("message", (event) => {
+      messages.push(JSON.parse((event as MessageEvent<string>).data));
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      messages
+        .filter((message) => message.type === "snapshot")
+        .map((message) => message.topic.topic),
+    ).toEqual(topics.map((topic) => topic.topic));
+
+    publishRealtime?.({
+      type: "records",
+      records: [{ taskKey: "retention_archive" }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      messages.filter((message) => message.type === "live").map((message) => message.topic.topic),
+    ).toEqual(topics.map((topic) => topic.topic));
+    source.close();
+  });
+
   it("matches the topic SSE endpoint beneath a deploy base", () => {
     expect(isDemoTopicEventSourcePath("/repo/demo/events?topics=abc", "/repo/demo/")).toBe(true);
     expect(isDemoTopicEventSourcePath("/events?topics=abc", "/repo/demo/")).toBe(false);

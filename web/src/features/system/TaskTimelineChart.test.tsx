@@ -4,7 +4,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
-import type { CurrentTaskExecution, ManagedTask, TaskTimelineSegment } from "../../lib/api";
+import type {
+  CurrentTaskExecution,
+  ManagedTask,
+  TaskTimelineCoverage,
+  TaskTimelineSegment,
+} from "../../lib/api";
 import { TaskTimelineChart } from "./TaskTimelineChart";
 
 const task: ManagedTask = {
@@ -32,6 +37,18 @@ const segment = (id: string, startMs: number, endMs: number): TaskTimelineSegmen
   executionClass: "maintenance_retention",
   sessionId: "test-session",
   revision: 1,
+});
+
+const deferral = (
+  id: string,
+  startMs: number,
+  endMs: number,
+  reason: string,
+): TaskTimelineSegment => ({
+  ...segment(id, startMs, endMs),
+  kind: "deferral",
+  status: "released",
+  reason,
 });
 
 let host: HTMLDivElement | null = null;
@@ -87,6 +104,7 @@ function renderChart(props: {
   runtimeFresh?: boolean;
   runtimeBoundaryMs?: number;
   chartWidth?: number;
+  coverage?: TaskTimelineCoverage[];
 }) {
   observedChartWidth = props.chartWidth ?? 1_200;
   resizeObserverDescriptor ??= Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
@@ -106,7 +124,7 @@ function renderChart(props: {
             tasks={[task]}
             executions={props.executions ?? []}
             activeRuns={props.activeRuns ?? []}
-            coverage={[]}
+            coverage={props.coverage ?? []}
             nowMs={nowMs}
             runtimeFresh={props.runtimeFresh ?? true}
             runtimeBoundaryMs={props.runtimeBoundaryMs ?? nowMs}
@@ -135,7 +153,10 @@ afterEach(() => {
 
 describe("TaskTimelineChart", () => {
   it("fits the timeline into a narrow container without a horizontal scroller", () => {
-    renderChart({ nowMs: Date.parse("2026-10-02T00:00:00.000Z"), chartWidth: 249 });
+    renderChart({
+      nowMs: Date.parse("2026-10-02T00:00:00.000Z"),
+      chartWidth: 249,
+    });
     const container = host?.querySelector<HTMLDivElement>("[data-testid='task-timeline-viewport']");
     const grid = container?.parentElement;
     const rowLabels = host?.querySelector<HTMLDivElement>(
@@ -216,6 +237,33 @@ describe("TaskTimelineChart", () => {
       bars[1].querySelector("rect")?.getAttribute("y"),
     );
     expect(bars[0].querySelector("rect")?.getAttribute("fill")).toBe("#c2410c");
+  });
+
+  it("keeps overlapping pressure causes in one shared chart row", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const one = deferral("resource-wait", nowMs - 60_000, nowMs - 20_000, "resource_busy");
+    renderChart({
+      nowMs,
+      executions: [
+        one,
+        deferral("pressure-wait", nowMs - 50_000, nowMs - 10_000, "pressure_cooldown"),
+      ],
+    });
+
+    const svg = host?.querySelector("svg");
+    const bars = Array.from(host?.querySelectorAll<SVGGElement>('g[role="button"]') ?? []);
+    const heights = Number(svg?.getAttribute("height"));
+
+    expect(bars).toHaveLength(2);
+    expect(bars[0].querySelector("rect")?.getAttribute("y")).toBe(
+      bars[1].querySelector("rect")?.getAttribute("y"),
+    );
+    expect(bars[0].getAttribute("aria-label")).toContain("资源占用等待");
+    expect(bars[0].getAttribute("aria-label")).toContain("压力冷却让行");
+    expect(heights).toBeGreaterThan(0);
+    expect(host?.querySelector('[data-testid="task-timeline-row-labels"]')?.textContent).toContain(
+      "准入 / 压力",
+    );
   });
 
   it("marks failed executions separately and exposes complete timing details", () => {
@@ -309,6 +357,43 @@ describe("TaskTimelineChart", () => {
     expect(
       Array.from(host?.querySelectorAll("svg rect title") ?? []).map((item) => item.textContent),
     ).toContain("maintenance_store_write_unavailable");
+  });
+
+  it("limits dropped-event coverage gaps to their recorded interval", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const gap: TaskTimelineSegment = {
+      ...segment("overflow-gap", nowMs - 5 * 60_000, nowMs - 3 * 60_000),
+      kind: "coverage_gap",
+      taskKey: "__timeline__",
+      title: "观测缺口",
+      status: "unknown",
+      reason: "event_channel_overflow",
+    };
+    const coverage: TaskTimelineCoverage[] = [
+      {
+        sessionId: "test-session",
+        startedAt: new Date(nowMs - 12 * 60 * 60_000).toISOString(),
+        lastSeenAt: new Date(nowMs - 10_000).toISOString(),
+        endedAt: null,
+        droppedEvents: 4,
+      },
+    ];
+    renderChart({ nowMs, executions: [gap], coverage });
+
+    const normalBands = Array.from(host?.querySelectorAll<SVGRectElement>("svg rect") ?? []).filter(
+      (rect) => rect.querySelector("title")?.textContent === "有记录器覆盖且未观测到任务让行",
+    );
+    const gapTitle = Array.from(host?.querySelectorAll("svg rect title") ?? []).find((title) =>
+      title.textContent?.includes("event_channel_overflow"),
+    );
+    const chartWidth = Number(host?.querySelector("svg")?.getAttribute("width"));
+    const coveredWidth = normalBands.reduce(
+      (total, rect) => total + Number(rect.getAttribute("width")),
+      0,
+    );
+
+    expect(gapTitle).toBeTruthy();
+    expect(coveredWidth).toBeGreaterThan(chartWidth * 0.95);
   });
 
   it("groups dense short executions and opens every member for inspection", () => {

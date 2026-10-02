@@ -126,7 +126,10 @@ function outcomeAppearance(
   }
 }
 
-function aggregateOutcome(members: ExecutionBar[]): { status: string; summary: string } {
+function aggregateOutcome(members: ExecutionBar[]): {
+  status: string;
+  summary: string;
+} {
   const counts = new Map<string, number>();
   for (const member of members) {
     const status = member.segment.status;
@@ -136,7 +139,10 @@ function aggregateOutcome(members: ExecutionBar[]): { status: string; summary: s
     .map(([status, count]) => `${outcomeLabel(status)} ${count}`)
     .join("，");
   const priority = ["failed", "interrupted", "unknown", "running", "cancelled", "skipped"];
-  return { status: priority.find((status) => counts.has(status)) ?? "success", summary };
+  return {
+    status: priority.find((status) => counts.has(status)) ?? "success",
+    summary,
+  };
 }
 
 function reasonLabel(reason: string | null | undefined): string {
@@ -181,12 +187,16 @@ function mergeCoverage(
       return {
         startMs,
         endMs,
-        status: item.droppedEvents > 0 ? ("gap" as const) : ("normal" as const),
+        status: "normal" as const,
       };
     })
     .filter((item) => item.endMs > item.startMs)
     .sort((left, right) => left.startMs - right.startMs);
-  const merged: Array<{ startMs: number; endMs: number; status: "normal" | "gap" }> = [];
+  const merged: Array<{
+    startMs: number;
+    endMs: number;
+    status: "normal" | "gap";
+  }> = [];
   for (const interval of intervals) {
     const last = merged.at(-1);
     if (!last || interval.startMs > last.endMs || interval.status !== last.status) {
@@ -336,7 +346,10 @@ export function TaskTimelineChart({
         .filter((item) => item.endMs >= windowStart && item.realStartMs <= nowMs)
         .map(({ realStartMs: _realStartMs, ...item }) => item),
     );
-    return packed.map((item) => ({ ...item, startMs: Math.max(windowStart, item.startMs) }));
+    return packed.map((item) => ({
+      ...item,
+      startMs: Math.max(windowStart, item.startMs),
+    }));
   }, [
     activeRuns,
     executions,
@@ -362,33 +375,46 @@ export function TaskTimelineChart({
     const startMs = Math.max(windowStart, interval.startMs);
     const endMs = Math.min(nowMs, interval.endMs);
     if (startMs > cursor)
-      coverageBands.push({ startMs: cursor, endMs: startMs, status: "gap", lane: 0 });
+      coverageBands.push({
+        startMs: cursor,
+        endMs: startMs,
+        status: "gap",
+        lane: 0,
+      });
     if (endMs > startMs) coverageBands.push({ startMs, endMs, status: interval.status, lane: 0 });
     cursor = Math.max(cursor, endMs);
   }
-  if (cursor < nowMs) coverageBands.push({ startMs: cursor, endMs: nowMs, status: "gap", lane: 0 });
+  if (cursor < nowMs)
+    coverageBands.push({
+      startMs: cursor,
+      endMs: nowMs,
+      status: "gap",
+      lane: 0,
+    });
 
-  const packedDeferrals = packLanes(
-    deferrals
-      .map((segment) => {
-        const startMs = timestamp(segment.startedAt, nowMs);
-        const active = segment.status === "waiting";
-        const endMs = segment.finishedAt
-          ? timestamp(segment.finishedAt, nowMs)
-          : active && runtimeFresh
-            ? nowMs
-            : active
-              ? Math.min(nowMs, runtimeBoundaryMs)
-              : timestamp(segment.lastObservedAt, startMs);
-        return { segment, startMs: Math.max(windowStart, startMs), endMs: Math.min(nowMs, endMs) };
-      })
-      .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs),
-  );
+  const positionedDeferrals = deferrals
+    .map((segment) => {
+      const startMs = timestamp(segment.startedAt, nowMs);
+      const active = segment.status === "waiting";
+      const endMs = segment.finishedAt
+        ? timestamp(segment.finishedAt, nowMs)
+        : active && runtimeFresh
+          ? nowMs
+          : active
+            ? Math.min(nowMs, runtimeBoundaryMs)
+            : timestamp(segment.lastObservedAt, startMs);
+      return {
+        segment,
+        startMs: Math.max(windowStart, startMs),
+        endMs: Math.min(nowMs, endMs),
+      };
+    })
+    .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs);
   const visibleCoverageBands: Band[] = coverageBands.flatMap((band): Band[] => {
     if (band.status === "gap") return [band];
     let clearIntervals = [{ startMs: band.startMs, endMs: band.endMs }];
     const unknownIntervals = [
-      ...packedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
+      ...positionedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
       ...explicitCoverageGaps.map((gap) => ({
         startMs: Math.max(windowStart, timestamp(gap.startedAt, nowMs)),
         endMs: Math.min(nowMs, timestamp(gap.finishedAt, timestamp(gap.lastObservedAt, nowMs))),
@@ -410,7 +436,11 @@ export function TaskTimelineChart({
       }
       clearIntervals = next;
     }
-    return clearIntervals.map((interval) => ({ ...interval, status: "normal", lane: 0 }));
+    return clearIntervals.map((interval) => ({
+      ...interval,
+      status: "normal",
+      lane: 0,
+    }));
   });
   visibleCoverageBands.push(
     ...explicitCoverageGaps.map((gap) => ({
@@ -423,9 +453,8 @@ export function TaskTimelineChart({
   );
 
   const laneCount = Math.max(1, ...executionBars.map((item) => item.lane + 1));
-  const pressureLaneCount = Math.max(1, ...packedDeferrals.map((item) => item.lane + 1));
   const pressureTop = AXIS_HEIGHT + laneCount * LANE_HEIGHT + 18;
-  const chartHeight = pressureTop + pressureLaneCount * 12 + 12;
+  const chartHeight = pressureTop + 12 + 12;
   const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
   const timeAxisHours =
     chartWidth < 220 ? [0, 12] : chartWidth < 520 ? [0, 6, 12] : TIME_AXIS_HOURS;
@@ -562,7 +591,9 @@ export function TaskTimelineChart({
             viewBox={`0 0 ${chartWidth} ${chartHeight}`}
             width={chartWidth}
             style={
-              { "--task-chart-execution-height": `${laneCount * LANE_HEIGHT}px` } as CSSProperties
+              {
+                "--task-chart-execution-height": `${laneCount * LANE_HEIGHT}px`,
+              } as CSSProperties
             }
           >
             <title>最近 12 小时任务执行时间图</title>
@@ -583,7 +614,7 @@ export function TaskTimelineChart({
                     x1={lineX}
                     x2={lineX}
                     y1={AXIS_HEIGHT}
-                    y2={pressureTop + pressureLaneCount * 12}
+                    y2={pressureTop + 12}
                     stroke="currentColor"
                     strokeOpacity="0.14"
                   />
@@ -613,7 +644,7 @@ export function TaskTimelineChart({
                 x={x(band.startMs)}
                 y={pressureTop}
                 width={Math.max(1, x(band.endMs) - x(band.startMs))}
-                height={pressureLaneCount * 12}
+                height={12}
                 fill={band.status === "normal" ? "#16a34a" : "#64748b"}
                 fillOpacity={band.status === "normal" ? 0.2 : 0.28}
               >
@@ -709,13 +740,27 @@ export function TaskTimelineChart({
                 </g>
               );
             })}
-            {packedDeferrals.map(({ segment, startMs, endMs, lane }) => {
+            {positionedDeferrals.map(({ segment, startMs, endMs }) => {
               const resourceBusy = segment.reason === "resource_busy";
               const color = resourceBusy ? "#d08700" : "#d63850";
-              const bandY = pressureTop + lane * 12 + 2;
+              const bandY = pressureTop + 2;
               const bandX = x(startMs);
               const width = Math.max(MIN_BAR_WIDTH, x(endMs) - bandX);
-              const title = `${segment.title}；${reasonLabel(segment.reason)}；开始 ${exactTime(startMs)}；${segment.finishedAt ? `恢复 ${exactTime(timestamp(segment.finishedAt, endMs))}` : "尚未确认恢复"}${segment.retryAt ? `；重试时间 ${exactTime(timestamp(segment.retryAt, endMs))}` : "；重试时间未知"}`;
+              const overlapping = positionedDeferrals.filter(
+                (other) =>
+                  other.segment.segmentId !== segment.segmentId &&
+                  other.startMs < endMs &&
+                  other.endMs > startMs,
+              );
+              const detail = (item: (typeof positionedDeferrals)[number]) =>
+                `${item.segment.title}；${reasonLabel(item.segment.reason)}；开始 ${exactTime(item.startMs)}；${item.segment.finishedAt ? `恢复 ${exactTime(timestamp(item.segment.finishedAt, item.endMs))}` : "尚未确认恢复"}${item.segment.retryAt ? `；重试时间 ${exactTime(timestamp(item.segment.retryAt, item.endMs))}` : "；重试时间未知"}`;
+              const title = [
+                positionedDeferrals.find((item) => item.segment.segmentId === segment.segmentId),
+                ...overlapping,
+              ]
+                .filter((item): item is (typeof positionedDeferrals)[number] => item != null)
+                .map(detail)
+                .join("\n");
               return (
                 <g
                   key={segment.segmentId}
@@ -735,7 +780,17 @@ export function TaskTimelineChart({
                   role="button"
                   tabIndex={0}
                 >
-                  <rect x={bandX} y={bandY} width={width} height={8} rx={2} fill={color} />
+                  <rect
+                    x={bandX}
+                    y={bandY}
+                    width={width}
+                    height={8}
+                    rx={2}
+                    fill={color}
+                    fillOpacity={overlapping.length ? 0.55 : 1}
+                    stroke={color}
+                    strokeWidth={1}
+                  />
                   <title>{title}</title>
                 </g>
               );

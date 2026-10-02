@@ -103,6 +103,17 @@ const mixedSegments: TaskTimelineSegment[] = [
     retryAt: new Date(NOW + 3_000).toISOString(),
     triggerKind: null,
   }),
+  segment({
+    segmentId: "overflow-gap",
+    kind: "coverage_gap",
+    taskKey: "__timeline__",
+    title: "观测缺口",
+    startedAt: new Date(NOW - 80 * 60_000).toISOString(),
+    lastObservedAt: new Date(NOW - 78 * 60_000).toISOString(),
+    finishedAt: new Date(NOW - 78 * 60_000).toISOString(),
+    status: "unknown",
+    reason: "event_channel_overflow",
+  }),
 ];
 
 const coverage: TaskTimelineCoverage[] = [
@@ -111,7 +122,7 @@ const coverage: TaskTimelineCoverage[] = [
     startedAt: new Date(NOW - 21 * 60 * 60_000).toISOString(),
     lastSeenAt: new Date(NOW).toISOString(),
     endedAt: null,
-    droppedEvents: 0,
+    droppedEvents: 3,
   },
 ];
 
@@ -151,8 +162,10 @@ function withTheme(theme: "vibe-light" | "vibe-dark") {
     );
     return (
       <MemoryRouter>
-        <div className="bg-base-100 p-5 text-base-content">
-          <Story />
+        <div data-visual-evidence-surface className="bg-base-100 p-6 text-base-content">
+          <div data-visual-evidence-target>
+            <Story />
+          </div>
         </div>
         <ThemeCleanup previousTheme={previousTheme} previousMode={previousMode} />
       </MemoryRouter>
@@ -191,6 +204,15 @@ type Story = StoryObj<typeof meta>;
 
 export const MixedOperations: Story = {
   args: baseArgs,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const pressureBars = canvas.getAllByRole("button", {
+      name: /资源占用等待/,
+    });
+    await expect(pressureBars).toHaveLength(2);
+    const yCoordinates = pressureBars.map((bar) => bar.querySelector("rect")?.getAttribute("y"));
+    await expect(new Set(yCoordinates).size).toBe(1);
+  },
 };
 
 export const DarkTheme: Story = {
@@ -203,16 +225,32 @@ export const DenseShortRuns: Story = {
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const aggregates = canvas.getAllByRole("button", { name: /12 次/ });
-    await expect(aggregates).toHaveLength(2);
+    const executionButtons = canvas.getAllByRole("button", { name: /汇总快照/ });
+    const groups = executionButtons.filter((button) =>
+      (button.getAttribute("aria-label") ?? "").includes("选择查看详情"),
+    );
+    const individualRuns = executionButtons.filter(
+      (button) => !(button.getAttribute("aria-label") ?? "").includes("选择查看详情"),
+    );
+    await expect(groups.length).toBeGreaterThan(0);
     let inspectedRuns = 0;
-    for (const aggregate of aggregates) {
-      await userEvent.click(aggregate);
-      await expect(canvas.getByText("12 次任务执行")).toBeVisible();
+    for (const [button, count] of [
+      ...groups.map(
+        (button) =>
+          [
+            button,
+            Number((button.getAttribute("aria-label") ?? "").match(/^(\d+) 次/)?.[1]),
+          ] as const,
+      ),
+      ...individualRuns.map((button) => [button, 1] as const),
+    ]) {
+      await userEvent.click(button);
+      await expect(canvas.getByText(`${count} 次任务执行`)).toBeVisible();
       const details = canvas.getByRole("list", { name: "执行记录详情" });
       const runs = within(details).getAllByRole("listitem");
-      await expect(runs).toHaveLength(12);
+      await expect(runs).toHaveLength(count);
       inspectedRuns += runs.length;
+      await userEvent.click(canvas.getByRole("button", { name: "收起" }));
     }
     await expect(inspectedRuns).toBe(24);
   },
