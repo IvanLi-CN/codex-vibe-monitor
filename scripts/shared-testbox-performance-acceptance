@@ -323,6 +323,10 @@ cleanup_remote() {
     stats_pid=""
   fi
   if [ -f "$COMPOSE_FILE" ]; then
+    if [ "$SCENARIO" = "prompt-cache-control" ] && [ -d "$LOG_DIR" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs --no-color app \
+        > "$LOG_DIR/app-on-exit.log" 2>/dev/null || true
+    fi
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down --remove-orphans >/dev/null 2>&1 || true
   fi
   rm -f "$MOCK_SCRIPT" "$LOADGEN_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE" "$BASE_COMPOSE_FILE"

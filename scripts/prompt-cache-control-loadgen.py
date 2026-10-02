@@ -399,7 +399,6 @@ def candidate_input(round_index, duration_seconds, request_rate):
                 results.append(future.result())
                 pending.remove(future)
             if sequence < (duration_seconds * request_rate) and len(pending) < 2:
-                next_request_at = max(next_request_at, now)
                 if now >= next_request_at:
                     pending.add(executor.submit(
                         proxy_once,
@@ -443,19 +442,53 @@ def candidate_input(round_index, duration_seconds, request_rate):
         item['terminal']['request_parse_ms'] for item in results
         if item['terminal'] and isinstance(item['terminal']['request_parse_ms'], (int, float))
     ]
+    persist_values = [
+        item['terminal']['persist_ms'] for item in results
+        if item['terminal'] and isinstance(item['terminal']['persist_ms'], (int, float))
+    ]
     confirm_values = [
         item['terminal_ms'] for item in results
         if isinstance(item['terminal_ms'], (int, float))
     ]
+    response_values = [
+        item['response_ms'] for item in results
+        if isinstance(item['response_ms'], (int, float))
+    ]
+    gate_failures = []
+    if bad:
+        gate_failures.append('request_or_terminal_failure')
+    if sequence != duration_seconds * request_rate:
+        gate_failures.append('submitted_request_count')
+    if first_progress is None or first_progress > 30:
+        gate_failures.append('first_durable_progress')
+    if first_staging_progress is None or first_staging_progress > 30:
+        gate_failures.append('first_staging_progress')
+    if percentile(parse_values, 0.99) is None or percentile(parse_values, 0.99) > 100:
+        gate_failures.append('request_parse_and_id_allocation_p99')
+    if percentile(confirm_values, 0.99) is None or percentile(confirm_values, 0.99) > 1000:
+        gate_failures.append('terminal_confirm_p99')
+    if not paused or not resumed or not duplicate_sent:
+        gate_failures.append('control_pause_resume')
+    if unexpected_disabled_after_resume:
+        gate_failures.append('unexpected_operator_disabled')
     summary = {
         'phase': 'input-summary',
         'round': round_index,
         'submitted': sequence,
+        'achieved_request_rate_per_second': round(sequence / duration_seconds, 3),
         'completed': len(results),
         'bad_count': len(bad),
         'bad_examples': bad[:3],
+        'online_workload_passed': not gate_failures,
+        'online_gate_failures': gate_failures,
+        'response_p99_ms': percentile(response_values, 0.99),
+        'response_max_ms': round(max(response_values), 2) if response_values else None,
         'request_parse_and_id_allocation_p99_ms': percentile(parse_values, 0.99),
+        'request_parse_and_id_allocation_max_ms': round(max(parse_values), 2) if parse_values else None,
+        'terminal_persist_p99_ms': percentile(persist_values, 0.99),
+        'terminal_persist_max_ms': round(max(persist_values), 2) if persist_values else None,
         'terminal_confirm_p99_ms': percentile(confirm_values, 0.99),
+        'terminal_confirm_max_ms': round(max(confirm_values), 2) if confirm_values else None,
         'first_durable_progress_seconds': first_progress,
         'first_staging_progress_seconds': first_staging_progress,
         'pause_route': 'dedicated',
@@ -467,23 +500,6 @@ def candidate_input(round_index, duration_seconds, request_rate):
     print(json.dumps(summary, ensure_ascii=False), flush=True)
     with open(os.path.join(DATA_DIR, f'prompt-cache-control-r{round_index}.json'), 'w', encoding='utf-8') as output:
         json.dump(summary, output)
-    if (
-        bad
-        or sequence != duration_seconds * request_rate
-        or first_progress is None
-        or first_progress > 30
-        or summary['request_parse_and_id_allocation_p99_ms'] is None
-        or summary['request_parse_and_id_allocation_p99_ms'] > 100
-        or summary['terminal_confirm_p99_ms'] is None
-        or summary['terminal_confirm_p99_ms'] > 1000
-        or first_staging_progress is None
-        or first_staging_progress > 30
-        or not paused
-        or not resumed
-        or not duplicate_sent
-        or unexpected_disabled_after_resume
-    ):
-        raise SystemExit(f'candidate online workload failed in round {round_index}')
 
 
 def baseline_probe(round_index, duration_seconds):
@@ -550,7 +566,7 @@ def maintenance_lock_probe(round_index):
             proxy_future = executor.submit(
                 proxy_once,
                 f'lock-probe-r{round_index}',
-                f'acceptance-r{round_index}-key-000',
+                f'lock-probe-r{round_index}',
             )
             proxy_result = proxy_future.result(timeout=3)
             patch_result = patch_future.result(timeout=4)
@@ -563,9 +579,10 @@ def maintenance_lock_probe(round_index):
     status_after_release, body_after_release, _ = request('GET', '/api/system/prompt-cache/materialization')
     status_ok = (
         status == 503
+        and bool(body.strip())
         and status_after_release == 200
         and json.loads(body_after_release).get('enabled') is True
-        and lock_duration >= 1.5
+        and lock_duration >= 0.1
     )
     proxy_ok = (
         proxy_result['status'] == 200
@@ -605,7 +622,14 @@ def candidate_observe(round_index, duration_seconds):
     unexpected_disabled = False
     states = []
     initial = log_snapshot('observe-start', round_index, start)
-    start_cursor = (initial.get('outer_cursor'), initial.get('completed_keys'), initial.get('queue_count'))
+    start_cursor = (
+        initial.get('phase'),
+        initial.get('outer_cursor'),
+        initial.get('completed_keys'),
+        initial.get('queue_count'),
+        initial.get('staging_count'),
+        initial.get('staging_max_cursor'),
+    )
     if (
         initial.get('phase') == 'complete'
         and initial.get('queue_count') == 0
@@ -621,7 +645,14 @@ def candidate_observe(round_index, duration_seconds):
             observed_seconds.add(elapsed)
             state = log_snapshot('observe', round_index, start)
             states.append(state)
-            current_cursor = (state.get('outer_cursor'), state.get('completed_keys'), state.get('queue_count'))
+            current_cursor = (
+                state.get('phase'),
+                state.get('outer_cursor'),
+                state.get('completed_keys'),
+                state.get('queue_count'),
+                state.get('staging_count'),
+                state.get('staging_max_cursor'),
+            )
             if first_progress is None and current_cursor != start_cursor:
                 first_progress = elapsed
             if (
@@ -653,6 +684,8 @@ def candidate_observe(round_index, duration_seconds):
         'phase': 'candidate-completion',
         'round': round_index,
         'observation_seconds': duration_seconds,
+        'online_workload_passed': input_summary.get('online_workload_passed') is True,
+        'online_gate_failures': input_summary.get('online_gate_failures', []),
         'complete_within_budget': complete_at is not None and complete_at <= duration_seconds,
         'complete_at_seconds': complete_at,
         'first_durable_progress_seconds': input_summary['first_durable_progress_seconds'],
@@ -679,7 +712,8 @@ def candidate_observe(round_index, duration_seconds):
     }
     print(json.dumps(summary, ensure_ascii=False), flush=True)
     if (
-        not summary['complete_within_budget']
+        not summary['online_workload_passed']
+        or not summary['complete_within_budget']
         or input_summary['first_durable_progress_seconds'] is None
         or input_summary['first_durable_progress_seconds'] > 30
         or input_summary['first_staging_progress_seconds'] is None

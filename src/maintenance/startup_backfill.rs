@@ -290,6 +290,13 @@ impl StartupBackfillScheduler {
             .and_then(|next_due| next_due.values().min().cloned())
     }
 
+    fn next_due_for(&self, task: StartupBackfillTask) -> Option<DateTime<Utc>> {
+        self.next_due
+            .lock()
+            .ok()
+            .and_then(|next_due| next_due.get(&task).cloned())
+    }
+
     async fn wait_for_wake(&self, observed_generation: u64) {
         loop {
             let notified = self.notify.notified();
@@ -1592,11 +1599,30 @@ pub(crate) async fn wake_prompt_cache_materialization_with_store(
     store: &crate::maintenance_store::MaintenanceStore,
     wake_reason: &'static str,
 ) -> Result<u64> {
+    wake_prompt_cache_materialization_with_scheduler(
+        store,
+        wake_reason,
+        &STARTUP_BACKFILL_SCHEDULER,
+    )
+    .await
+}
+
+async fn wake_prompt_cache_materialization_with_scheduler(
+    store: &crate::maintenance_store::MaintenanceStore,
+    wake_reason: &'static str,
+    scheduler: &StartupBackfillScheduler,
+) -> Result<u64> {
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
     let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
         return Ok(0);
     };
     if !snapshot.enabled {
+        return Ok(0);
+    }
+    if scheduler
+        .next_due_for(task)
+        .is_some_and(|deadline| deadline > Utc::now())
+    {
         return Ok(0);
     }
 
@@ -1621,7 +1647,7 @@ pub(crate) async fn wake_prompt_cache_materialization_with_store(
     {
         let deadline = parse_to_utc_datetime(next_run_after).expect("validated retry deadline");
         transaction.commit().await?;
-        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, deadline);
+        scheduler.record_next_due(task, deadline);
         return Ok(0);
     }
     let changed = sqlx::query(
@@ -1647,7 +1673,7 @@ pub(crate) async fn wake_prompt_cache_materialization_with_store(
             .snapshot()
             .is_some_and(|current| current.enabled && current.generation == snapshot.generation)
     {
-        STARTUP_BACKFILL_SCHEDULER.wake(task);
+        scheduler.wake(task);
         info!(
             task = task.log_label(),
             wake_reason, "woke prompt-cache materialization"
